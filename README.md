@@ -2,6 +2,8 @@
 
 *Neuroscience-grounded memory for AI agents*
 
+> **engram** /ˈɛnɡræm/ — a hypothesized physical trace in the brain that stores a memory. First proposed by Richard Semon (1904), the engram represents the idea that experiences leave lasting biological changes in neural tissue. We chose this name because, like its neuroscience namesake, this library treats memories not as static records but as living traces that strengthen, fade, and interact over time.
+
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](#)
@@ -44,7 +46,7 @@ The result? Agents that:
 
 ## The Key Insight
 
-> **LLMs are already the semantic layer.** You don't need embeddings to understand meaning — that's what the language model does. What you need is mathematical rigor in *when to remember, what to forget, and how to prioritize.*
+> **LLMs are already the semantic layer.** You don't need embeddings to understand meaning — that's what the language model does. What you need is mathematical rigor in *when to surface, what to deprioritize, and how to rank.*
 
 Engram implements actual peer-reviewed models from cognitive science:
 
@@ -189,7 +191,7 @@ Memories flow: **L3 (working) → L2 (core) → L4 (archive)** as they consolida
 | **Math grounding** | Peer-reviewed cognitive science | Engineering heuristics | Engineering heuristics |
 | **Core code** | ~500 lines | ~5,000+ lines | ~10,000+ lines |
 
-**Engram's thesis:** The LLM already understands semantics. Memory infrastructure should handle *dynamics* — when to remember, what to forget, how to prioritize — using proven mathematical models rather than re-implementing semantic understanding with embeddings.
+**Engram's thesis:** The LLM already understands semantics. Memory infrastructure should handle *dynamics* — when to surface, what to deprioritize, how to rank — using proven mathematical models rather than re-implementing semantic understanding with embeddings.
 
 ## MCP Server
 
