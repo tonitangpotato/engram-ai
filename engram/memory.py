@@ -37,6 +37,7 @@ import os
 import time
 
 
+from engram.config import MemoryConfig
 from engram.core import MemoryEntry, MemoryStore, MemoryType, MemoryLayer, DEFAULT_IMPORTANCE
 from engram.store import SQLiteStore
 from engram.activation import retrieve_top_k
@@ -63,17 +64,19 @@ class Memory:
     Backend: SQLiteStore for persistent storage with FTS5 search.
     """
 
-    def __init__(self, path: str = "./engram.db"):
+    def __init__(self, path: str = "./engram.db", config: MemoryConfig = None):
         """
         Initialize Engram memory system.
 
         Args:
             path: Path to SQLite database file. Created if it doesn't exist.
                   Use ":memory:" for in-memory (non-persistent) operation.
+            config: MemoryConfig with tunable parameters. None = literature defaults.
         """
         self.path = path
+        self.config = config or MemoryConfig.default()
         self._store = SQLiteStore(path)
-        self._tracker = BaselineTracker(window_size=100)
+        self._tracker = BaselineTracker(window_size=self.config.anomaly_window_size)
         self._created_at = time.time()
 
     def add(self, content: str, type: str = "factual", importance: float = None,
@@ -218,10 +221,19 @@ class Memory:
         Args:
             days: Simulated time step in days (1.0 = one day of consolidation)
         """
-        run_consolidation_cycle(self._store, dt_days=days)
-        synaptic_downscale(self._store, factor=0.95)
+        run_consolidation_cycle(
+            self._store, dt_days=days,
+            interleave_ratio=self.config.interleave_ratio,
+            alpha=self.config.alpha,
+            mu1=self.config.mu1, mu2=self.config.mu2,
+            replay_boost=self.config.replay_boost,
+            promote_threshold=self.config.promote_threshold,
+            demote_threshold=self.config.demote_threshold,
+            archive_threshold=self.config.archive_threshold,
+        )
+        synaptic_downscale(self._store, factor=self.config.downscale_factor)
 
-    def forget(self, memory_id: str = None, threshold: float = 0.01):
+    def forget(self, memory_id: str = None, threshold: float = None):
         """
         Forget a specific memory or prune all below threshold.
 
@@ -237,6 +249,8 @@ class Memory:
             memory_id: Specific memory to forget (None = prune all weak)
             threshold: Strength threshold for pruning (default 0.01)
         """
+        if threshold is None:
+            threshold = self.config.forget_threshold
         if memory_id is not None:
             self._store.delete(memory_id)
         else:
@@ -262,9 +276,9 @@ class Memory:
             return  # Not confident enough to act
 
         apply_reward(self._store, polarity, recent_n=recent_n,
-                     reward_magnitude=0.15 * conf)
+                     reward_magnitude=self.config.reward_magnitude * conf)
 
-    def downscale(self, factor: float = 0.95):
+    def downscale(self, factor: float = None):
         """
         Global synaptic downscaling — normalize all memory weights.
 
@@ -278,6 +292,8 @@ class Memory:
         Returns:
             Stats dict: {n_scaled, avg_before, avg_after}
         """
+        if factor is None:
+            factor = self.config.downscale_factor
         result = synaptic_downscale(self._store, factor=factor)
         return result
 

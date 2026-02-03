@@ -11,7 +11,8 @@ Usage:
 """
 
 from engram.memory import Memory
+from engram.config import MemoryConfig
 from engram.core import MemoryType, MemoryLayer, MemoryEntry, MemoryStore
 
-__all__ = ["Memory", "MemoryType", "MemoryLayer", "MemoryEntry", "MemoryStore"]
+__all__ = ["Memory", "MemoryConfig", "MemoryType", "MemoryLayer", "MemoryEntry", "MemoryStore"]
 __version__ = "0.1.0"

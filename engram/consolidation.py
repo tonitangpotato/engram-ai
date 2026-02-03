@@ -86,7 +86,12 @@ def consolidate_single(entry: MemoryEntry, dt_days: float = 1.0,
 
 def run_consolidation_cycle(store: MemoryStore, dt_days: float = 1.0,
                             interleave_ratio: float = 0.3,
-                            alpha: float = ALPHA):
+                            alpha: float = ALPHA,
+                            mu1: float = MU1, mu2: float = MU2,
+                            replay_boost: float = 0.01,
+                            promote_threshold: float = 0.25,
+                            demote_threshold: float = 0.05,
+                            archive_threshold: float = 0.15):
     """
     Run a full consolidation cycle ("sleep").
 
@@ -106,7 +111,7 @@ def run_consolidation_cycle(store: MemoryStore, dt_days: float = 1.0,
     # Step 1: Consolidate all L3 (working) memories
     working = [m for m in all_memories if m.layer == MemoryLayer.L3_WORKING]
     for entry in working:
-        consolidate_single(entry, dt_days=dt_days, alpha=alpha)
+        consolidate_single(entry, dt_days=dt_days, alpha=alpha, mu1=mu1, mu2=mu2)
         if _update:
             _update(entry)
 
@@ -118,7 +123,7 @@ def run_consolidation_cycle(store: MemoryStore, dt_days: float = 1.0,
         replay_sample = random.sample(archive, min(n_replay, len(archive)))
         for entry in replay_sample:
             # Replaying an archived memory slightly boosts its core_strength
-            entry.core_strength += 0.01 * (0.5 + entry.importance)
+            entry.core_strength += replay_boost * (0.5 + entry.importance)
             entry.consolidation_count += 1
             entry.last_consolidated = time.time()
             if _update:
@@ -127,12 +132,14 @@ def run_consolidation_cycle(store: MemoryStore, dt_days: float = 1.0,
     # Step 3: Also decay L2 (core) memories slightly
     core = [m for m in all_memories if m.layer == MemoryLayer.L2_CORE]
     for entry in core:
-        apply_decay(entry, dt_days, mu1=0, mu2=MU2)  # No working decay for L2
+        apply_decay(entry, dt_days, mu1=0, mu2=mu2)  # No working decay for L2
         if _update:
             _update(entry)
 
     # Step 4: Layer promotion/demotion
-    _rebalance_layers(store)
+    _rebalance_layers(store, promote_threshold=promote_threshold,
+                      demote_threshold=demote_threshold,
+                      archive_threshold=archive_threshold)
 
 
 def _rebalance_layers(store: MemoryStore,
