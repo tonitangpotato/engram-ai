@@ -351,21 +351,97 @@ Engram is grounded in peer-reviewed cognitive science:
 - [x] Contradiction detection & correction chains
 - [x] Configurable parameters with agent-type presets
 - [x] 89 tests (unit + e2e lifecycle)
-- [ ] TypeScript port (`npm install engram`)
+- [x] TypeScript port (`npm install engram`)
 - [ ] PyPI publish (`pip install engram`)
 - [ ] Pluggable store backends (Supabase, Turso, Postgres)
 - [ ] Benchmarks vs Mem0 / Zep on real agent workloads
 - [ ] Consolidation summaries via LLM (compress episodic → factual)
 - [ ] Research paper: *"Neuroscience-Grounded Memory for AI Agents"*
 
+## TypeScript Port
+
+A TypeScript/JavaScript port is available in the `engram-ts/` directory. It provides the same neuroscience-grounded memory models with a native Node.js/Bun API.
+
+```bash
+npm install engram
+```
+
+For TypeScript-specific documentation, see [engram-ts/README.md](./engram-ts/README.md).
+
 ## Contributing
 
 Contributions welcome! This is an early-stage project — the math is solid but the API surface is still evolving.
 
-```bash
-git clone https://github.com/tonitangpotato/engram
-cd engram
-python -m pytest tests/
+**To contribute:**
+
+1. **Fork** the repository on GitHub
+2. **Clone** your fork locally: `git clone https://github.com/YOUR_USERNAME/engram`
+3. **Create a branch** for your feature or fix: `git checkout -b feature/my-new-feature`
+4. **Make your changes** and add tests if applicable
+5. **Run tests** to ensure nothing breaks:
+   ```bash
+   python -m pytest tests/          # Python tests
+   cd engram-ts && npm test         # TypeScript tests
+   ```
+6. **Commit** with a clear message: `git commit -m "feat: add memory pruning scheduler"`
+7. **Push** to your fork: `git push origin feature/my-new-feature`
+8. **Open a Pull Request** on the main repository
+
+Please ensure your code follows the existing style and includes tests for new functionality.
+
+## Citation
+
+If you use Engram in academic work, please cite:
+
+```bibtex
+@software{engram2025,
+  title = {Engram: Neuroscience-Grounded Memory for AI Agents},
+  author = {Tang, Potato},
+  year = {2025},
+  url = {https://github.com/tonitangpotato/engram},
+  note = {Open-source memory system implementing ACT-R, Memory Chain Model, and Ebbinghaus forgetting curves for AI agents}
+}
+```
+
+Engram builds on foundational work in cognitive science:
+
+```bibtex
+@book{anderson2007act,
+  title = {How Can the Human Mind Occur in the Physical Universe?},
+  author = {Anderson, John R.},
+  year = {2007},
+  publisher = {Oxford University Press},
+  note = {ACT-R cognitive architecture}
+}
+
+@article{murre2011forgetting,
+  title = {One hundred years of forgetting: A quantitative description of retention},
+  author = {Murre, Jaap M. J. and Chessa, Antonio G.},
+  journal = {Psychonomic Bulletin \& Review},
+  volume = {18},
+  pages = {592--597},
+  year = {2011},
+  note = {Memory Chain Model}
+}
+
+@book{ebbinghaus1885memory,
+  title = {\"Uber das Ged\"achtnis: Untersuchungen zur experimentellen Psychologie},
+  author = {Ebbinghaus, Hermann},
+  year = {1885},
+  publisher = {Duncker \& Humblot},
+  note = {Original forgetting curve research}
+}
+
+@article{tononi2006synaptic,
+  title = {Sleep function and synaptic homeostasis},
+  author = {Tononi, Giulio and Cirelli, Chiara},
+  journal = {Sleep Medicine Reviews},
+  volume = {10},
+  number = {1},
+  pages = {49--62},
+  year = {2006},
+  note = {Synaptic homeostasis hypothesis}
+}
 ```
 
 ## License
