@@ -173,6 +173,27 @@ nodes:
     description: "migrate-memory.py: parses MEMORY.md + daily notes, classifies into 6 types, imports to .db"
 
   # ══════════════════════════════════════
+  # TODO: Parameter Configuration
+  # ══════════════════════════════════════
+  feat-config:
+    type: Feature
+    layer: application
+    status: draft
+    description: "Extract all hardcoded parameters into config. Three layers: configurable defaults (from literature), presets (chatbot/task-agent/personal-assistant/researcher), adaptive tuning (future)."
+
+  feat-presets:
+    type: Component
+    layer: application
+    status: draft
+    description: "Pre-tuned parameter sets for agent archetypes: chatbot, task-agent, personal-assistant, researcher"
+
+  feat-adaptive-tuning:
+    type: Component
+    layer: application
+    status: draft
+    description: "Self-adjusting parameters based on recall hit rate, reward feedback, miss rate. Paper contribution point."
+
+  # ══════════════════════════════════════
   # PHASE 4: Paper + Launch (TODO)
   # ══════════════════════════════════════
   phase-4:
@@ -396,6 +417,17 @@ edges:
     relation: depends_on
   - from: feat-migration
     to: feat-portability
+    relation: depends_on
+
+  # Parameter config
+  - from: feat-presets
+    to: feat-config
+    relation: implements
+  - from: feat-adaptive-tuning
+    to: feat-config
+    relation: implements
+  - from: feat-config
+    to: feat-api
     relation: depends_on
 
   # Phase 4 depends on everything
