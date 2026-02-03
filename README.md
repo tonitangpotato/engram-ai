@@ -92,7 +92,7 @@ Engram is **just the memory layer**. It doesn't include an LLM — you bring you
 ### 1. Install
 
 ```bash
-pip install engramai
+pip install neuromemory-ai
 ```
 
 ### 2. Basic Usage (standalone)
@@ -213,7 +213,7 @@ That's it. Your agent now has biologically-inspired memory that strengthens with
 ## Quick Start
 
 ```bash
-pip install engramai
+pip install neuromemory-ai
 ```
 
 ```python
@@ -487,8 +487,8 @@ Engram is grounded in peer-reviewed cognitive science:
 - [x] Contradiction detection & correction chains
 - [x] Configurable parameters with agent-type presets
 - [x] 89 tests (unit + e2e lifecycle)
-- [x] TypeScript port (`npm install engramai`)
-- [ ] PyPI publish (`pip install engramai`)
+- [x] TypeScript port (`npm install neuromemory-ai`)
+- [ ] PyPI publish (`pip install neuromemory-ai`)
 - [ ] Pluggable store backends (Supabase, Turso, Postgres)
 - [ ] Benchmarks vs Mem0 / Zep on real agent workloads
 - [ ] Consolidation summaries via LLM (compress episodic → factual)
@@ -499,7 +499,7 @@ Engram is grounded in peer-reviewed cognitive science:
 A TypeScript/JavaScript port is available in the `engram-ts/` directory. It provides the same neuroscience-grounded memory models with a native Node.js/Bun API.
 
 ```bash
-npm install engramai
+npm install neuromemory-ai
 ```
 
 For TypeScript-specific documentation, see [engram-ts/README.md](./engram-ts/README.md).
@@ -534,7 +534,7 @@ If you use Engram in academic work, please cite:
   title = {Engram: Neuroscience-Grounded Memory for AI Agents},
   author = {Tang, Potato},
   year = {2025},
-  url = {https://github.com/tonitangpotato/engramai},
+  url = {https://github.com/tonitangpotato/neuromemory-ai},
   note = {Open-source memory system implementing ACT-R, Memory Chain Model, and Ebbinghaus forgetting curves for AI agents}
 }
 ```

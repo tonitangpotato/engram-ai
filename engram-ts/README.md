@@ -1,13 +1,13 @@
 # engram-ts
 
-TypeScript port of [engram](https://github.com/tonitangpotato/engramai), a neuroscience-grounded memory system for AI agents.
+TypeScript port of [engram](https://github.com/tonitangpotato/neuromemory-ai), a neuroscience-grounded memory system for AI agents.
 
 Uses the same cognitive models (ACT-R activation, Ebbinghaus forgetting, synaptic consolidation) as the Python version, with native TypeScript types and async-friendly SQLite storage.
 
 ## Install
 
 ```bash
-npm install engramai
+npm install neuromemory-ai
 ```
 
 **Note:** Uses `better-sqlite3` (native SQLite binding) — not zero-dependency like the Python version.
@@ -37,7 +37,7 @@ await memory.consolidate();
 
 ## Documentation
 
-See the [main engram repository](https://github.com/tonitangpotato/engramai) for:
+See the [main engram repository](https://github.com/tonitangpotato/neuromemory-ai) for:
 - Full API reference
 - Memory model details (activation, forgetting, consolidation)
 - Advanced usage (spreading activation, anomaly detection, reward signals)
