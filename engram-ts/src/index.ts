@@ -11,3 +11,4 @@ export { synapticDownscale } from './downscaling';
 export { BaselineTracker } from './anomaly';
 export { SearchEngine, SearchResult } from './search';
 export { recordCoactivation, maybeCreateLink, getHebbianNeighbors, decayHebbianLinks, strengthenLink, getAllHebbianLinks } from './hebbian';
+export { SessionWorkingMemory, SessionRecallResult, getSessionWM, clearSession, listSessions } from './session_wm';

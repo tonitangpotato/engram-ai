@@ -1,6 +1,6 @@
 {
   "name": "@tonipotatonpm/engramai",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Neuroscience-grounded memory system for AI agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

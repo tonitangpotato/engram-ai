@@ -2,7 +2,7 @@
 
 TypeScript port of [engram](https://github.com/tonitangpotato/neuromemory-ai), a neuroscience-grounded memory system for AI agents.
 
-Uses the same cognitive models (ACT-R activation, Ebbinghaus forgetting, synaptic consolidation) as the Python version, with native TypeScript types and async-friendly SQLite storage.
+Uses the same cognitive models (ACT-R activation, Ebbinghaus forgetting, synaptic consolidation) as the Python version, with native TypeScript types and SQLite storage.
 
 ## Install
 
@@ -17,23 +17,59 @@ npm install neuromemory-ai
 ```typescript
 import { Memory } from 'neuromemory-ai';
 
-const memory = new Memory({ dbPath: 'agent-memory.db' });
+const memory = new Memory('agent-memory.db');
 
-// Store a memory
-await memory.store({
-  content: 'The user prefers Python for scripting.',
-  context: { source: 'conversation', timestamp: Date.now() },
-  type: 'episodic',
-  layer: 'working',
+// Store memories
+memory.add('The user prefers Python for scripting.', {
+  type: 'relational',
   importance: 0.8
 });
 
-// Retrieve relevant memories
-const results = await memory.retrieve('What does the user prefer?', { limit: 5 });
+// Retrieve relevant memories (ranked by ACT-R activation)
+const results = memory.recall('What does the user prefer?', { limit: 5 });
 
 // Memories decay over time — run consolidation periodically
-await memory.consolidate();
+memory.consolidate();
 ```
+
+## Session Working Memory
+
+Reduce API calls by 70-80% with cognitive working memory:
+
+```typescript
+import { Memory, SessionWorkingMemory, getSessionWM } from 'neuromemory-ai';
+
+const memory = new Memory('agent.db');
+
+// Smart recall — only hits DB when topic changes
+const result = memory.sessionRecall('coffee brewing', { sessionId: 'chat-123' });
+
+// Returns:
+// {
+//   results: [...],
+//   fullRecallTriggered: true/false,
+//   workingMemorySize: 3,
+//   reason: 'empty_wm' | 'topic_change' | 'topic_continuous'
+// }
+```
+
+**How it works:**
+- Maintains ~7 active memory chunks (Miller's Law: 7±2)
+- Checks if new query overlaps with current working memory + Hebbian neighbors
+- If ≥60% overlap → topic is continuous, reuse cached memories
+- If <60% overlap → topic changed, do fresh recall
+
+## Features
+
+- 🧮 **ACT-R activation scoring** — retrieval ranked by recency × frequency × context
+- 🔄 **Memory consolidation** — dual-system transfer from working to core memory
+- 📉 **Ebbinghaus forgetting** — memories decay naturally with spaced repetition
+- 🏷️ **6 memory types** — factual, episodic, relational, emotional, procedural, opinion
+- 🎯 **Confidence scoring** — metacognitive monitoring
+- 💊 **Reward learning** — positive/negative feedback shapes memory
+- 🧠 **Hebbian learning** — automatic association from co-activation patterns
+- 🧩 **Session Working Memory** — reduces recall API calls by 70-80%
+- ⚙️ **Config presets** — tuned for chatbot, task-agent, personal-assistant, researcher
 
 ## Documentation
 

@@ -103,7 +103,7 @@ nodes:
   feat-session-wm:
     type: Feature
     layer: application
-    status: draft
+    status: active
     priority: core
     description: >-
       Session Working Memory - 会话级智能recall触发。基于认知科学working memory模型：
@@ -112,17 +112,18 @@ nodes:
   comp-session-wm-class:
     type: Component
     layer: application
-    status: draft
+    status: active
     description: >-
       SessionWorkingMemory class: 维护活跃记忆IDs, 容量限制pruning, 时间衰减pruning,
-      needs_recall()判断(检查Hebbian邻域重叠)
+      needs_recall()判断(检查Hebbian邻域重叠). Python + TypeScript implementations.
   mcp-session-recall:
     type: Interface
     layer: interface
-    status: draft
+    status: active
     description: >-
       MCP tool session_recall: session-aware智能recall。自动判断是否需要完整检索，
       话题连续时返回working memory context，话题切换时触发完整recall。
+      Also includes session_status, session_clear, session_list tools.
   test-core:
     type: Test
     layer: application
