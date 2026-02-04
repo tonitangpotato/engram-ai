@@ -146,7 +146,7 @@ def cmd_list(args):
     
     # Filter by type if specified
     if args.type:
-        all_mems = [m for m in all_mems if m.type.value == args.type]
+        all_mems = [m for m in all_mems if m.memory_type.value == args.type]
     
     # Sort by created_at descending
     all_mems.sort(key=lambda m: m.created_at, reverse=True)
@@ -162,7 +162,7 @@ def cmd_list(args):
             content = m.content
             if len(content) > 70:
                 content = content[:67] + "..."
-            typ = m.type.value[:4]
+            typ = m.memory_type.value[:4]
             layer = m.layer.value[:4]
             print(f"  [{typ}] [{layer}] {content}")
     
