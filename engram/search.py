@@ -206,10 +206,20 @@ class SearchEngine:
             # Hebbian spreading activation boost
             # Memories linked to directly-matched candidates get a boost
             # This implements "neurons that fire together, wire together" for retrieval
-            hebbian_boost = hebbian_boosts.get(entry.id, 0.0)
+            # Cap at 3.0 to prevent overwhelming pinned/importance boosts
+            hebbian_boost = min(3.0, hebbian_boosts.get(entry.id, 0.0))
 
-            # Final combined score: ACT-R activation + relevance + Hebbian spreading
-            score = act_score + (0.5 * relevance) + hebbian_boost
+            # Pinned memory boost: pinned memories should rank higher
+            # This ensures critical memories aren't buried by Hebbian noise
+            # Use a significant boost (5.0) to overcome Hebbian accumulation
+            pinned_boost = 5.0 if entry.pinned else 0.0
+
+            # High importance boost: give extra weight to very important memories
+            # importance is already in ACT-R score, but we add extra for >= 0.8
+            importance_extra = 0.5 if entry.importance >= 0.8 else 0.0
+
+            # Final combined score: ACT-R activation + relevance + Hebbian + pinned + importance
+            score = act_score + (0.5 * relevance) + hebbian_boost + pinned_boost + importance_extra
 
             results.append(SearchResult(
                 entry=entry,
@@ -227,11 +237,16 @@ class SearchEngine:
         limit: int,
         min_confidence: float,
     ) -> list[SearchResult]:
-        """Sort by score, apply min_confidence filter, return top-k."""
+        """Sort by score, apply min_confidence filter, return top-k.
+        
+        Pinned memories are sorted first (like sticky posts), then by score.
+        """
         if min_confidence > 0:
             scored = [r for r in scored if r.confidence >= min_confidence]
 
-        scored.sort(key=lambda r: r.score, reverse=True)
+        # Sort: pinned first, then by score
+        # This ensures pinned memories always appear at the top
+        scored.sort(key=lambda r: (r.entry.pinned, r.score), reverse=True)
         return scored[:limit]
 
 

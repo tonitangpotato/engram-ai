@@ -259,6 +259,7 @@ class Memory:
                 "age_days": round(r.entry.age_days(), 1),
                 "layer": r.entry.layer.value,
                 "importance": round(r.entry.importance, 2),
+                "pinned": r.entry.pinned,  # Pinned memories are sorted first
                 "contradicted": bool(r.entry.contradicted_by),
                 "source": r.entry.source_file,  # Include source for evidence matching
             })
