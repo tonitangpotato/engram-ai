@@ -202,7 +202,16 @@ class SQLiteStore:
         
         # Tokenize CJK queries for better matching
         if contains_cjk(query):
-            query = tokenize_for_fts(query)
+            tokens = tokenize_for_fts(query).split()
+            # Filter out empty tokens and single-char punctuation
+            tokens = [t for t in tokens if len(t) > 0 and not (len(t) == 1 and not t.isalnum())]
+            if tokens:
+                # Use OR to match ANY token (more intuitive for semantic search)
+                # Escape special FTS5 chars and quote tokens
+                safe_tokens = [f'"{t}"' for t in tokens]
+                query = " OR ".join(safe_tokens)
+            else:
+                query = query  # fallback to original
         
         rows = self._conn.execute(
             """SELECT m.* FROM memories m
