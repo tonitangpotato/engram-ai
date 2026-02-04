@@ -144,9 +144,10 @@ def maybe_create_link(
             return False
     else:
         # First co-activation, create tracking record with strength=0
+        # Use INSERT OR IGNORE to handle race conditions in concurrent access
         now = time.time()
         conn.execute(
-            """INSERT INTO hebbian_links 
+            """INSERT OR IGNORE INTO hebbian_links 
                (source_id, target_id, strength, coactivation_count, created_at)
                VALUES (?, ?, 0.0, 1, ?)""",
             (id1, id2, now)

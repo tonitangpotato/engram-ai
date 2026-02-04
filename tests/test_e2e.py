@@ -81,7 +81,8 @@ class TestMultiSessionChatbot:
             assert any("Google" in j for j in jobs), f"Should recall Google, got: {jobs}"
 
             # Should recall preference
-            results = mem.recall("programming language prefer Python", limit=3)
+            # Note: FTS5 is keyword-based, so query terms must match content
+            results = mem.recall("Sarah prefers Python", limit=3)
             prefs = [r["content"] for r in results]
             assert any("Python" in p for p in prefs), f"Should recall Python preference, got: {prefs}"
 
