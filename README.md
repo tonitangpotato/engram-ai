@@ -589,6 +589,16 @@ python -m engram.mcp_server --db ./agent.db
 
 For AI agents to use engram effectively, they need clear instructions on **when** to call each operation.
 
+> ⚠️ **Critical: Installing the MCP is not enough!**
+> 
+> You must explicitly instruct your agent to use engram proactively. Add memory habits to your agent's config (e.g., `HEARTBEAT.md`, `AGENTS.md`, or system prompt):
+> 
+> 1. **Before answering history questions** → call `engram.recall` first
+> 2. **When learning important info** → call `engram.store`
+> 3. **On scheduled heartbeat/cron** → call `engram.consolidate`
+> 
+> Without these instructions, engram becomes a forgotten tool that never gets used.
+
 ### When to Call What
 
 | Trigger | Action | Example |

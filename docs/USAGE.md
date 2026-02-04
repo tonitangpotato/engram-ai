@@ -263,6 +263,31 @@ with open("MEMORY.md") as f:
 
 这一节详细说明 AI Agent 应该**何时**以及**如何**调用 engram。这是让 engram 正确工作的关键。
 
+### ⚠️ 关键：配置 Agent Habits
+
+**仅安装 MCP 是不够的！** Agent 需要被明确指示何时使用 engram。
+
+将以下内容加入 agent 的系统配置（如 Clawdbot 的 `HEARTBEAT.md` 或 `AGENTS.md`）：
+
+```markdown
+## Memory Habits (必须配置)
+
+### 对话中 — 主动使用
+1. **回答历史/偏好问题前** → 先 `engram.recall`
+2. **学到重要信息时** → 主动 `engram.store`
+3. **用户反馈时** → 调用 `engram.reward`
+
+### 定期维护 — Heartbeat/Cron
+每天至少一次：
+- `engram.consolidate` — 记忆整合
+- `engram.forget --threshold 0.01` — 清理弱记忆
+```
+
+**为什么这很重要？**
+- 工具安装了 ≠ 会自动使用
+- Agent 需要显式指令来形成"习惯"
+- 没有这些指令，engram 就是一个被遗忘的工具
+
 ### 核心原则
 
 engram 不是被动存储，而是**主动记忆系统**。Agent 需要在正确的时机调用正确的操作。
