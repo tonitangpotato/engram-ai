@@ -1,5 +1,5 @@
 {
-  "name": "@tonipotatonpm/engramai",
+  "name": "neuromemory-ai",
   "version": "1.0.0",
   "description": "Neuroscience-grounded memory system for AI agents with semantic search and auto-fallback",
   "main": "dist/index.js",
@@ -7,7 +7,7 @@
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tonitangpotato/neuromemory-ai"
+    "url": "https://github.com/tonitangpotato/engram-ai"
   },
   "keywords": [
     "memory",
