@@ -111,16 +111,22 @@ def store_memory(
     type: str = "factual",
     importance: float | None = None,
     source: str = "",
+    metadata: dict | None = None,
 ) -> dict:
-    """Store a new memory. Types: factual, episodic, relational, emotional, procedural, opinion."""
+    """Store a new memory. Types: factual, episodic, relational, emotional, procedural, opinion, causal.
+    
+    For causal memories, use metadata to provide structured cause/effect info:
+    metadata={"cause": "...", "effect": "...", "confidence": 0.9, "domain": "code"}
+    """
     mem = _get_mem()
-    mid = mem.add(content, type=type, importance=importance, source=source)
+    mid = mem.add(content, type=type, importance=importance, source=source, metadata=metadata)
     entry = mem._store.get(mid)
     return {
         "id": mid,
         "content": content,
         "type": type,
         "layer": entry.layer.value if entry else "working",
+        "metadata": metadata,
     }
 
 
@@ -143,6 +149,35 @@ def recall_memories(
             "confidence_label": r["confidence_label"],
             "strength": r["strength"],
             "age_days": r["age_days"],
+        }
+        for r in results
+    ]
+
+
+@mcp.tool(name="recall_causal", description="Retrieve causal memories (cause→effect relationships)")
+def recall_causal_memories(
+    cause_query: str | None = None,
+    limit: int = 10,
+    min_confidence: float = 0.0,
+) -> list[dict]:
+    """Recall causal memories. Optionally filter by cause description.
+    
+    Causal memories are either manually stored (type=causal) or 
+    auto-discovered by STDP during consolidation.
+    """
+    mem = _get_mem()
+    results = mem.recall_causal(
+        cause_query=cause_query,
+        limit=limit,
+        min_confidence=min_confidence,
+    )
+    return [
+        {
+            "id": r["id"],
+            "content": r["content"],
+            "confidence": r.get("confidence", 0),
+            "strength": r.get("strength", 0),
+            "metadata": r.get("metadata"),
         }
         for r in results
     ]

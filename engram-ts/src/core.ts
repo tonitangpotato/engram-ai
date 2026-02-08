@@ -13,6 +13,7 @@ export enum MemoryType {
   EMOTIONAL = 'emotional',
   PROCEDURAL = 'procedural',
   OPINION = 'opinion',
+  CAUSAL = 'causal',
 }
 
 export enum MemoryLayer {
@@ -28,6 +29,7 @@ export const DEFAULT_DECAY_RATES: Record<MemoryType, number> = {
   [MemoryType.EMOTIONAL]: 0.01,
   [MemoryType.PROCEDURAL]: 0.01,
   [MemoryType.OPINION]: 0.05,
+  [MemoryType.CAUSAL]: 0.02,
 };
 
 export const DEFAULT_IMPORTANCE: Record<MemoryType, number> = {
@@ -37,6 +39,7 @@ export const DEFAULT_IMPORTANCE: Record<MemoryType, number> = {
   [MemoryType.EMOTIONAL]: 0.9,
   [MemoryType.PROCEDURAL]: 0.5,
   [MemoryType.OPINION]: 0.3,
+  [MemoryType.CAUSAL]: 0.7,
 };
 
 export interface MemoryEntryData {
@@ -57,6 +60,7 @@ export interface MemoryEntryData {
   graph_node_ids: string[];
   contradicts: string;
   contradicted_by: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export class MemoryEntry {
@@ -78,6 +82,7 @@ export class MemoryEntry {
   contradicts: string;
   contradictedBy: string;
   graphNodeIds: string[];
+  metadata: Record<string, unknown> | null;
 
   constructor(opts: Partial<{
     id: string;
@@ -98,6 +103,7 @@ export class MemoryEntry {
     contradicts: string;
     contradictedBy: string;
     graphNodeIds: string[];
+    metadata: Record<string, unknown> | null;
   }> = {}) {
     this.id = opts.id ?? shortId();
     this.content = opts.content ?? '';
@@ -117,6 +123,7 @@ export class MemoryEntry {
     this.contradicts = opts.contradicts ?? '';
     this.contradictedBy = opts.contradictedBy ?? '';
     this.graphNodeIds = opts.graphNodeIds ?? [];
+    this.metadata = opts.metadata ?? null;
   }
 
   recordAccess(): void {
@@ -132,7 +139,7 @@ export class MemoryEntry {
   }
 
   toDict(): MemoryEntryData {
-    return {
+    const d: MemoryEntryData = {
       id: this.id,
       content: this.content,
       summary: this.summary,
@@ -151,6 +158,10 @@ export class MemoryEntry {
       contradicts: this.contradicts,
       contradicted_by: this.contradictedBy,
     };
+    if (this.metadata !== null) {
+      d.metadata = this.metadata;
+    }
+    return d;
   }
 
   static fromDict(d: MemoryEntryData): MemoryEntry {
@@ -172,6 +183,7 @@ export class MemoryEntry {
       graphNodeIds: d.graph_node_ids ?? [],
       contradicts: d.contradicts ?? '',
       contradictedBy: d.contradicted_by ?? '',
+      metadata: d.metadata ?? null,
     });
   }
 }

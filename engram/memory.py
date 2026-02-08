@@ -48,7 +48,7 @@ from engram.store import SQLiteStore
 from engram.activation import retrieve_top_k
 from engram.search import SearchEngine
 from engram.hybrid_search import HybridSearchEngine
-from engram.consolidation import run_consolidation_cycle, get_consolidation_stats
+from engram.consolidation import run_consolidation_cycle, get_consolidation_stats, consolidate_causal
 from engram.forgetting import effective_strength, should_forget, prune_forgotten
 from engram.confidence import confidence_score, confidence_label
 from engram.reward import detect_feedback, apply_reward
@@ -140,7 +140,7 @@ class Memory:
     def add(self, content: str, type: str = "factual", importance: float = None,
             source: str = "", tags: list[str] = None,
             entities: list = None, contradicts: str = None,
-            created_at: float = None) -> str:
+            created_at: float = None, metadata: dict = None) -> str:
         """
         Store a new memory. Returns memory ID.
 
@@ -155,10 +155,12 @@ class Memory:
         Args:
             content: The memory content (natural language)
             type: Memory type — one of: factual, episodic, relational,
-                  emotional, procedural, opinion
+                  emotional, procedural, opinion, causal
             importance: 0-1 importance score (None = auto from type)
             source: Source identifier (e.g., filename, conversation ID)
             tags: Optional tags for categorization (stored in content for now)
+            metadata: Optional structured metadata dict (e.g., causal memories
+                     use cause/effect/confidence/domain fields)
 
         Returns:
             Memory ID string (8-char UUID prefix)
@@ -176,6 +178,7 @@ class Memory:
             importance=importance,
             source_file=source,
             created_at=created_at,
+            metadata=metadata,
         )
 
         # Handle contradiction linking
@@ -275,12 +278,14 @@ class Memory:
             self._store.record_access(r.entry.id)
 
         # Hebbian learning: record co-activation for recalled memories
+        # STDP: also track temporal ordering for causal inference
         if self.config.hebbian_enabled and len(output) >= 2:
             memory_ids = [r["id"] for r in output]
             record_coactivation(
                 self._store,
                 memory_ids,
                 threshold=self.config.hebbian_threshold,
+                stdp_enabled=self.config.stdp_enabled,
             )
         
         # Adaptive tuning: record recall metrics
@@ -394,6 +399,10 @@ class Memory:
         # Decay Hebbian links during consolidation
         if self.config.hebbian_enabled:
             decay_hebbian_links(self._store, factor=self.config.hebbian_decay)
+        
+        # STDP: auto-create causal memories from temporal patterns
+        if self.config.stdp_enabled and self.config.hebbian_enabled:
+            consolidate_causal(self._store, self.config)
         
         # Adaptive tuning: record consolidation metrics
         if self._adaptive_tuner is not None:
@@ -561,6 +570,78 @@ class Memory:
         if entry:
             entry.pinned = False
             self._store.update(entry)
+
+    def recall_causal(self, cause_query: str = None, limit: int = 10,
+                      min_confidence: float = 0.0) -> list[dict]:
+        """
+        Recall causal memories — memories about cause→effect relationships.
+        
+        These are either:
+        1. Manually stored with type=causal
+        2. Auto-created by STDP during consolidation
+        
+        If cause_query is provided, does semantic search filtered to type=causal.
+        Otherwise returns all causal memories sorted by importance.
+        
+        Args:
+            cause_query: Optional search query to find relevant causal memories.
+                        If None, returns all causal memories.
+            limit: Maximum results to return
+            min_confidence: Minimum confidence from metadata (0-1)
+            
+        Returns:
+            List of dicts with causal memory info including metadata
+        """
+        import json
+        
+        if cause_query:
+            # Semantic search filtered to causal type
+            results = self.recall(
+                cause_query, limit=limit * 2,  # Over-fetch since we filter
+                types=["causal"],
+                min_confidence=0.0,
+                graph_expand=False,
+            )
+        else:
+            # Get all causal memories
+            entries = self._store.search_causal(limit=limit * 2)
+            now = time.time()
+            results = []
+            for entry in entries:
+                strength = effective_strength(entry, now=now)
+                conf = confidence_score(entry)
+                results.append({
+                    "id": entry.id,
+                    "content": entry.content,
+                    "type": "causal",
+                    "confidence": round(conf, 3),
+                    "confidence_label": confidence_label(conf),
+                    "strength": round(strength, 3),
+                    "age_days": round(entry.age_days(), 1),
+                    "layer": entry.layer.value,
+                    "importance": round(entry.importance, 2),
+                    "pinned": entry.pinned,
+                    "metadata": entry.metadata,
+                })
+        
+        # Filter by metadata confidence if requested
+        if min_confidence > 0:
+            filtered = []
+            for r in results:
+                meta = r.get("metadata") or {}
+                meta_conf = meta.get("confidence", 1.0)  # Default 1.0 for manual causal
+                if meta_conf >= min_confidence:
+                    filtered.append(r)
+            results = filtered
+        
+        # Ensure metadata is included in results from recall()
+        for r in results:
+            if "metadata" not in r:
+                entry = self._store.get(r["id"])
+                if entry:
+                    r["metadata"] = entry.metadata
+        
+        return results[:limit]
 
     def hebbian_links(self, memory_id: str = None) -> list[tuple[str, str, float]]:
         """

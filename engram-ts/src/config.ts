@@ -53,6 +53,11 @@ export interface MemoryConfigOptions {
   hebbianEnabled?: boolean;
   hebbianThreshold?: number;
   hebbianDecay?: number;
+
+  // STDP (Spike-Timing-Dependent Plasticity)
+  stdpEnabled?: boolean;
+  stdpCausalThreshold?: number;
+  stdpMinObservations?: number;
 }
 
 export class MemoryConfig {
@@ -99,6 +104,10 @@ export class MemoryConfig {
   hebbianThreshold: number;
   hebbianDecay: number;
 
+  stdpEnabled: boolean;
+  stdpCausalThreshold: number;
+  stdpMinObservations: number;
+
   constructor(opts: MemoryConfigOptions = {}) {
     this.spacingFactor = opts.spacingFactor ?? 0.5;
     this.importanceFloor = opts.importanceFloor ?? 0.5;
@@ -129,6 +138,7 @@ export class MemoryConfig {
       emotional: 0.95,
       procedural: 0.90,
       opinion: 0.60,
+      causal: 0.70,
     };
     this.confidenceReliabilityWeight = opts.confidenceReliabilityWeight ?? 0.7;
     this.confidenceSalienceWeight = opts.confidenceSalienceWeight ?? 0.3;
@@ -149,6 +159,10 @@ export class MemoryConfig {
     this.hebbianEnabled = opts.hebbianEnabled ?? true;
     this.hebbianThreshold = opts.hebbianThreshold ?? 3;
     this.hebbianDecay = opts.hebbianDecay ?? 0.95;
+
+    this.stdpEnabled = opts.stdpEnabled ?? true;
+    this.stdpCausalThreshold = opts.stdpCausalThreshold ?? 2.0;
+    this.stdpMinObservations = opts.stdpMinObservations ?? 3;
   }
 
   static default(): MemoryConfig {

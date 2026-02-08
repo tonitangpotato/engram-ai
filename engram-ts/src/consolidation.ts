@@ -7,6 +7,7 @@
 
 import { MemoryEntry, MemoryLayer, MemoryType } from './core';
 import { SQLiteStore } from './store';
+import { MemoryConfig } from './config';
 
 const MU1 = 0.15;
 const MU2 = 0.005;
@@ -116,6 +117,92 @@ function rebalanceLayers(
     if (entry.layer !== oldLayer) {
       store.update(entry);
     }
+  }
+}
+
+/**
+ * STDP-based causal memory creation during consolidation.
+ *
+ * Checks Hebbian links for strong temporal signals. When memory A
+ * consistently precedes memory B, creates a type=causal memory.
+ */
+export function consolidateCausal(
+  store: SQLiteStore,
+  config?: MemoryConfig,
+): void {
+  const cfg = config ?? MemoryConfig.default();
+  if (!cfg.stdpEnabled) return;
+
+  const { getStdpCandidates, updateLinkDirection } = require('./hebbian');
+
+  const candidates = getStdpCandidates(
+    store,
+    cfg.stdpCausalThreshold,
+    cfg.stdpMinObservations,
+  ) as Array<{
+    sourceId: string; targetId: string; strength: number;
+    temporalForward: number; temporalBackward: number;
+    direction: string; confidence: number;
+    causeId: string; effectId: string;
+  }>;
+
+  for (const c of candidates) {
+    // Fetch memory content
+    const causeRow = store.db.prepare('SELECT content FROM memories WHERE id=?')
+      .get(c.causeId) as { content: string } | undefined;
+    const effectRow = store.db.prepare('SELECT content FROM memories WHERE id=?')
+      .get(c.effectId) as { content: string } | undefined;
+
+    if (!causeRow || !effectRow) continue;
+
+    const causeContent = causeRow.content.substring(0, 100);
+    const effectContent = effectRow.content.substring(0, 100);
+
+    // Check for existing causal memory for this pair
+    const existingCausals = store.db.prepare(
+      "SELECT id, metadata FROM memories WHERE memory_type = 'causal' AND metadata IS NOT NULL"
+    ).all() as Array<{ id: string; metadata: string }>;
+
+    let alreadyExists = false;
+    for (const row of existingCausals) {
+      try {
+        const meta = JSON.parse(row.metadata);
+        if (meta.cause_id === c.causeId && meta.effect_id === c.effectId) {
+          alreadyExists = true;
+          // Update confidence if changed
+          if (Math.abs((meta.confidence ?? 0) - c.confidence) > 0.05) {
+            meta.confidence = c.confidence;
+            meta.observations = c.temporalForward + c.temporalBackward;
+            store.db.prepare('UPDATE memories SET metadata=? WHERE id=?')
+              .run(JSON.stringify(meta), row.id);
+          }
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    if (alreadyExists) continue;
+
+    // Create the causal memory
+    const causalContent = `CAUSAL: ${causeContent} → ${effectContent}`;
+    const metadata = {
+      cause_id: c.causeId,
+      effect_id: c.effectId,
+      cause: causeContent,
+      effect: effectContent,
+      confidence: c.confidence,
+      observations: c.temporalForward + c.temporalBackward,
+      temporal_forward: c.temporalForward,
+      temporal_backward: c.temporalBackward,
+    };
+
+    const importance = Math.min(1.0, c.strength * c.confidence);
+    store.add(causalContent, MemoryType.CAUSAL, importance, 'stdp:auto', metadata);
+
+    // Update link direction
+    updateLinkDirection(store, c.sourceId, c.targetId, c.direction);
   }
 }
 

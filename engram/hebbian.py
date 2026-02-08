@@ -22,6 +22,7 @@ def record_coactivation(
     store: SQLiteStore,
     memory_ids: list[str],
     threshold: int = 3,
+    stdp_enabled: bool = True,
 ) -> list[tuple[str, str]]:
     """
     Record co-activation for a set of memory IDs.
@@ -30,16 +31,30 @@ def record_coactivation(
     each pair gets their coactivation_count incremented. When the count
     reaches the threshold, a Hebbian link is automatically formed.
     
+    If STDP is enabled, also tracks temporal ordering (which memory was
+    created first) to infer causal direction.
+    
     Args:
         store: The SQLiteStore instance
         memory_ids: List of memory IDs that were co-activated
         threshold: Number of co-activations before link forms
+        stdp_enabled: Whether to track temporal ordering for STDP
         
     Returns:
         List of (id1, id2) tuples for newly formed links
     """
     if len(memory_ids) < 2:
         return []
+    
+    # Pre-fetch created_at timestamps if STDP is enabled
+    timestamps: dict[str, float] = {}
+    if stdp_enabled:
+        for mid in memory_ids:
+            row = store._conn.execute(
+                "SELECT created_at FROM memories WHERE id=?", (mid,)
+            ).fetchone()
+            if row:
+                timestamps[mid] = row[0]
     
     new_links = []
     
@@ -51,8 +66,62 @@ def record_coactivation(
         formed = maybe_create_link(store, id1, id2, threshold)
         if formed:
             new_links.append((id1, id2))
+        
+        # STDP: track temporal ordering
+        if stdp_enabled and id1 in timestamps and id2 in timestamps:
+            _update_temporal_counts(store, id1, id2, timestamps[id1], timestamps[id2])
     
     return new_links
+
+
+def _update_temporal_counts(
+    store: SQLiteStore,
+    id1: str,
+    id2: str,
+    ts1: float,
+    ts2: float,
+):
+    """
+    Update temporal forward/backward counts for a Hebbian link pair.
+    
+    With consistent ordering (id1 < id2):
+    - temporal_forward: id1 was created before id2 (id1 → id2 direction)
+    - temporal_backward: id2 was created before id1 (id2 → id1 direction)
+    
+    Args:
+        store: SQLiteStore instance
+        id1: First memory ID (should be <= id2)
+        id2: Second memory ID
+        ts1: created_at timestamp for id1
+        ts2: created_at timestamp for id2
+    """
+    if ts1 == ts2:
+        return  # Simultaneous — no temporal signal
+    
+    conn = store._conn
+    
+    # Check if the row exists (it should, since maybe_create_link runs first)
+    existing = conn.execute(
+        "SELECT temporal_forward, temporal_backward FROM hebbian_links WHERE source_id=? AND target_id=?",
+        (id1, id2)
+    ).fetchone()
+    
+    if existing is None:
+        return  # No link record yet — will be created on next co-activation
+    
+    if ts1 < ts2:
+        # id1 was created before id2 → forward direction
+        conn.execute(
+            "UPDATE hebbian_links SET temporal_forward = temporal_forward + 1 WHERE source_id=? AND target_id=?",
+            (id1, id2)
+        )
+    else:
+        # id2 was created before id1 → backward direction
+        conn.execute(
+            "UPDATE hebbian_links SET temporal_backward = temporal_backward + 1 WHERE source_id=? AND target_id=?",
+            (id1, id2)
+        )
+    conn.commit()
 
 
 def maybe_create_link(
@@ -269,3 +338,118 @@ def get_coactivation_stats(store: SQLiteStore) -> dict[tuple[str, str], int]:
         "SELECT source_id, target_id, coactivation_count FROM hebbian_links"
     ).fetchall()
     return {(r[0], r[1]): r[2] for r in rows}
+
+
+def get_stdp_candidates(
+    store: SQLiteStore,
+    causal_threshold: float = 2.0,
+    min_observations: int = 3,
+) -> list[dict]:
+    """
+    Find Hebbian links with strong temporal signal for causal inference.
+    
+    Returns links where temporal_forward > temporal_backward * causal_threshold
+    or vice versa, indicating a consistent temporal ordering (potential causation).
+    
+    Args:
+        store: SQLiteStore instance
+        causal_threshold: Ratio threshold (forward/backward) to consider causal
+        min_observations: Minimum total temporal observations required
+        
+    Returns:
+        List of dicts with keys:
+            source_id, target_id, strength, temporal_forward, temporal_backward,
+            direction ('forward' or 'backward'), confidence, cause_id, effect_id
+    """
+    rows = store._conn.execute(
+        """SELECT source_id, target_id, strength, temporal_forward, temporal_backward
+           FROM hebbian_links 
+           WHERE strength > 0 
+             AND (temporal_forward + temporal_backward) >= ?""",
+        (min_observations,)
+    ).fetchall()
+    
+    candidates = []
+    for r in rows:
+        source_id = r[0]
+        target_id = r[1]
+        strength = r[2]
+        fwd = r[3] or 0
+        bwd = r[4] or 0
+        total = fwd + bwd
+        
+        if total < min_observations:
+            continue
+        
+        # Check forward direction: source was created before target
+        if bwd == 0 and fwd >= min_observations:
+            # Pure forward — strong causal signal
+            candidates.append({
+                "source_id": source_id,
+                "target_id": target_id,
+                "strength": strength,
+                "temporal_forward": fwd,
+                "temporal_backward": bwd,
+                "direction": "forward",
+                "confidence": 1.0,
+                "cause_id": source_id,
+                "effect_id": target_id,
+            })
+        elif fwd == 0 and bwd >= min_observations:
+            # Pure backward — reverse causal signal
+            candidates.append({
+                "source_id": source_id,
+                "target_id": target_id,
+                "strength": strength,
+                "temporal_forward": fwd,
+                "temporal_backward": bwd,
+                "direction": "backward",
+                "confidence": 1.0,
+                "cause_id": target_id,
+                "effect_id": source_id,
+            })
+        elif fwd > bwd * causal_threshold:
+            # Forward dominant
+            candidates.append({
+                "source_id": source_id,
+                "target_id": target_id,
+                "strength": strength,
+                "temporal_forward": fwd,
+                "temporal_backward": bwd,
+                "direction": "forward",
+                "confidence": round(fwd / total, 3),
+                "cause_id": source_id,
+                "effect_id": target_id,
+            })
+        elif bwd > fwd * causal_threshold:
+            # Backward dominant
+            candidates.append({
+                "source_id": source_id,
+                "target_id": target_id,
+                "strength": strength,
+                "temporal_forward": fwd,
+                "temporal_backward": bwd,
+                "direction": "backward",
+                "confidence": round(bwd / total, 3),
+                "cause_id": target_id,
+                "effect_id": source_id,
+            })
+    
+    return candidates
+
+
+def update_link_direction(store: SQLiteStore, source_id: str, target_id: str, direction: str):
+    """
+    Update the direction field of a Hebbian link.
+    
+    Args:
+        store: SQLiteStore instance
+        source_id: Source memory ID
+        target_id: Target memory ID  
+        direction: One of 'bidirectional', 'forward', 'backward'
+    """
+    store._conn.execute(
+        "UPDATE hebbian_links SET direction = ? WHERE source_id = ? AND target_id = ?",
+        (direction, source_id, target_id)
+    )
+    store._conn.commit()

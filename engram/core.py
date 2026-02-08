@@ -19,6 +19,7 @@ class MemoryType(Enum):
     EMOTIONAL = "emotional"      # "potato said I kinda like you"
     PROCEDURAL = "procedural"    # "Use www.moltbook.com not moltbook.com"
     OPINION = "opinion"          # "I think graph+text hybrid is best"
+    CAUSAL = "causal"            # "changing auth.py → downstream tests fail"
 
 
 class MemoryLayer(Enum):
@@ -36,6 +37,7 @@ DEFAULT_DECAY_RATES = {
     MemoryType.EMOTIONAL: 0.01,     # Emotional memories are very durable
     MemoryType.PROCEDURAL: 0.01,    # How-to knowledge is very durable
     MemoryType.OPINION: 0.05,       # Opinions evolve
+    MemoryType.CAUSAL: 0.02,        # Causal knowledge is durable (learned patterns)
 }
 
 # Default emotional significance per type
@@ -46,6 +48,7 @@ DEFAULT_IMPORTANCE = {
     MemoryType.EMOTIONAL: 0.9,
     MemoryType.PROCEDURAL: 0.5,
     MemoryType.OPINION: 0.3,
+    MemoryType.CAUSAL: 0.7,         # Causal memories are important (predictions)
 }
 
 
@@ -86,6 +89,10 @@ class MemoryEntry:
     # Graph linkage
     graph_node_ids: list[str] = field(default_factory=list)  # Connected graph nodes
 
+    # Structured metadata (JSON dict, optional)
+    # Used by causal memories for cause/effect/confidence/domain etc.
+    metadata: Optional[dict] = None
+
     def record_access(self):
         """Record a memory access (for ACT-R activation calculation)."""
         self.access_times.append(time.time())
@@ -99,7 +106,7 @@ class MemoryEntry:
         return self.age_hours() / 24
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "content": self.content,
             "summary": self.summary,
@@ -118,6 +125,9 @@ class MemoryEntry:
             "contradicts": self.contradicts,
             "contradicted_by": self.contradicted_by,
         }
+        if self.metadata is not None:
+            d["metadata"] = self.metadata
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "MemoryEntry":
@@ -139,6 +149,7 @@ class MemoryEntry:
             graph_node_ids=d.get("graph_node_ids", []),
             contradicts=d.get("contradicts", ""),
             contradicted_by=d.get("contradicted_by", ""),
+            metadata=d.get("metadata"),
         )
         return entry
 

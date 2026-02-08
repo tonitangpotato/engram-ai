@@ -3,6 +3,7 @@ SQLite-backed memory store for Engram.
 Replaces the in-memory dict-based MemoryStore with persistent storage.
 """
 
+import json
 import sqlite3
 import shutil
 import time
@@ -88,6 +89,15 @@ END;
 
 
 def _row_to_entry(row: sqlite3.Row, access_times: list[float] | None = None) -> MemoryEntry:
+    # Parse metadata JSON if present
+    metadata_raw = row["metadata"] if "metadata" in row.keys() else None
+    metadata = None
+    if metadata_raw:
+        try:
+            metadata = json.loads(metadata_raw)
+        except (json.JSONDecodeError, TypeError):
+            metadata = None
+
     return MemoryEntry(
         id=row["id"],
         content=row["content"],
@@ -105,6 +115,7 @@ def _row_to_entry(row: sqlite3.Row, access_times: list[float] | None = None) -> 
         source_file=row["source_file"] or "",
         contradicts=row["contradicts"] or "",
         contradicted_by=row["contradicted_by"] or "",
+        metadata=metadata,
     )
 
 
@@ -119,6 +130,7 @@ class SQLiteStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
         self._migrate_contradiction_columns()
+        self._migrate_stdp_columns()
         self._conn.executescript(_FTS_SCHEMA)
         self._conn.executescript(_FTS_TRIGGERS)
         self._conn.commit()
@@ -131,10 +143,33 @@ class SQLiteStore:
             self._conn.execute("ALTER TABLE memories ADD COLUMN contradicts TEXT DEFAULT ''")
         if "contradicted_by" not in columns:
             self._conn.execute("ALTER TABLE memories ADD COLUMN contradicted_by TEXT DEFAULT ''")
+        # Phase 1: metadata column for structured data (causal memories etc.)
+        if "metadata" not in columns:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN metadata TEXT")
+        # Index on memory_type for type-filtered queries (e.g. recall_causal)
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)")
+
+    def _migrate_stdp_columns(self):
+        """Add STDP temporal tracking columns to hebbian_links (migration for older DBs)."""
+        cursor = self._conn.execute("PRAGMA table_info(hebbian_links)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "direction" not in columns:
+            self._conn.execute(
+                "ALTER TABLE hebbian_links ADD COLUMN direction TEXT DEFAULT 'bidirectional'"
+            )
+        if "temporal_forward" not in columns:
+            self._conn.execute(
+                "ALTER TABLE hebbian_links ADD COLUMN temporal_forward INTEGER DEFAULT 0"
+            )
+        if "temporal_backward" not in columns:
+            self._conn.execute(
+                "ALTER TABLE hebbian_links ADD COLUMN temporal_backward INTEGER DEFAULT 0"
+            )
 
     def add(self, content: str, memory_type: MemoryType = MemoryType.FACTUAL,
             importance: Optional[float] = None, source_file: str = "",
-            created_at: Optional[float] = None) -> MemoryEntry:
+            created_at: Optional[float] = None,
+            metadata: Optional[dict] = None) -> MemoryEntry:
         entry = MemoryEntry(
             content=content,
             memory_type=memory_type,
@@ -142,6 +177,7 @@ class SQLiteStore:
             working_strength=1.0,
             core_strength=0.0,
             source_file=source_file,
+            metadata=metadata,
         )
         # Override created_at if provided (for temporal simulation)
         if created_at is not None:
@@ -151,16 +187,19 @@ class SQLiteStore:
         from engram.engram_tokenizers import contains_cjk, tokenize_for_fts
         tokens = tokenize_for_fts(content) if contains_cjk(content) else ""
         
+        # Serialize metadata to JSON
+        metadata_json = json.dumps(metadata) if metadata is not None else None
+        
         self._conn.execute(
             """INSERT INTO memories (id, content, summary, tokens, memory_type, layer, created_at,
                working_strength, core_strength, importance, pinned, consolidation_count,
-               last_consolidated, source_file, contradicts, contradicted_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               last_consolidated, source_file, contradicts, contradicted_by, metadata)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (entry.id, entry.content, entry.summary, tokens, entry.memory_type.value,
              entry.layer.value, entry.created_at, entry.working_strength,
              entry.core_strength, entry.importance, int(entry.pinned),
              entry.consolidation_count, entry.last_consolidated, entry.source_file,
-             entry.contradicts, entry.contradicted_by),
+             entry.contradicts, entry.contradicted_by, metadata_json),
         )
         # Record initial access
         self._conn.execute(
@@ -184,16 +223,18 @@ class SQLiteStore:
         return [_row_to_entry(r, self.get_access_times(r["id"])) for r in rows]
 
     def update(self, entry: MemoryEntry):
+        metadata_json = json.dumps(entry.metadata) if entry.metadata is not None else None
         self._conn.execute(
             """UPDATE memories SET content=?, summary=?, memory_type=?, layer=?,
                working_strength=?, core_strength=?, importance=?, pinned=?,
                consolidation_count=?, last_consolidated=?, source_file=?,
-               contradicts=?, contradicted_by=?
+               contradicts=?, contradicted_by=?, metadata=?
                WHERE id=?""",
             (entry.content, entry.summary, entry.memory_type.value, entry.layer.value,
              entry.working_strength, entry.core_strength, entry.importance,
              int(entry.pinned), entry.consolidation_count, entry.last_consolidated,
-             entry.source_file, entry.contradicts, entry.contradicted_by, entry.id),
+             entry.source_file, entry.contradicts, entry.contradicted_by,
+             metadata_json, entry.id),
         )
         self._conn.commit()
 
@@ -225,6 +266,14 @@ class SQLiteStore:
     def search_by_type(self, memory_type: MemoryType) -> list[MemoryEntry]:
         rows = self._conn.execute(
             "SELECT * FROM memories WHERE memory_type=?", (memory_type.value,)
+        ).fetchall()
+        return [_row_to_entry(r, self.get_access_times(r["id"])) for r in rows]
+
+    def search_causal(self, limit: int = 20) -> list[MemoryEntry]:
+        """Get all causal memories, ordered by importance descending."""
+        rows = self._conn.execute(
+            "SELECT * FROM memories WHERE memory_type=? ORDER BY importance DESC LIMIT ?",
+            (MemoryType.CAUSAL.value, limit),
         ).fetchall()
         return [_row_to_entry(r, self.get_access_times(r["id"])) for r in rows]
 

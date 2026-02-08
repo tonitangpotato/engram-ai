@@ -324,9 +324,102 @@ Currently, all co-activations count equally. Future versions could weight by:
 C(i, j) += α · position_weight(i, j) · confidence_weight(i, j)
 ```
 
-### 2. Link Type Inference
-Automatically infer link types from co-activation patterns:
-- **Causal:** A always precedes B in time (episodic sequences)
+### 2. Causal Direction via STDP (Spike-Timing-Dependent Plasticity)
+
+> **Priority: HIGH — Key upgrade for causal reasoning integration**
+> See also: `/Users/potato/clawd/projects/causal-agent/DESIGN.md`
+
+**Problem:** Current Hebbian links are **symmetric** (A↔B). They encode correlation ("A and B are related") but not causation ("A causes B").
+
+**Solution:** Borrow STDP from neuroscience — use **temporal ordering** to infer causal direction.
+
+**Principle:**
+- If memory A is consistently activated/stored **before** memory B → strengthen A→B (A might cause B)
+- If A is consistently activated/stored **after** B → strengthen B→A
+- If simultaneous → correlation only (keep symmetric link)
+
+**Implementation in `consolidate()`:**
+
+```python
+def consolidate_causal(self):
+    """During consolidation, check temporal ordering of co-activated pairs."""
+    for link in self.hebbian_links:
+        mem_a = self.get(link.source_id)
+        mem_b = self.get(link.target_id)
+
+        # Check temporal ordering across all co-activations
+        a_before_b = count_temporal_order(mem_a, mem_b)  # A activated before B
+        b_before_a = count_temporal_order(mem_b, mem_a)  # B activated before A
+
+        if a_before_b > b_before_a * 2:  # A consistently precedes B
+            # Create/strengthen causal link A→B
+            self.store(
+                content=f"CAUSAL: {mem_a.summary} → {mem_b.summary}",
+                type="causal",
+                importance=link.strength,
+                metadata={
+                    "cause_id": mem_a.id,
+                    "effect_id": mem_b.id,
+                    "cause": mem_a.content[:100],
+                    "effect": mem_b.content[:100],
+                    "confidence": a_before_b / (a_before_b + b_before_a),
+                    "observations": a_before_b + b_before_a
+                }
+            )
+        elif b_before_a > a_before_b * 2:  # B consistently precedes A
+            # Create/strengthen causal link B→A
+            self.store(
+                content=f"CAUSAL: {mem_b.summary} → {mem_a.summary}",
+                type="causal",
+                metadata={"cause_id": mem_b.id, "effect_id": mem_a.id, ...}
+            )
+        # else: symmetric correlation, keep existing bidirectional link
+```
+
+**Example:**
+```
+Observation sequence over time:
+  t1: "changed auth.py signature"        (A)
+  t2: "3 downstream tests failed"        (B)
+  t5: "changed auth.py signature"        (A)
+  t6: "2 downstream tests failed"        (B)
+  t9: "changed auth.py signature"        (A)
+  t10: "4 downstream tests failed"       (B)
+
+consolidate() detects:
+  A precedes B: 3 times
+  B precedes A: 0 times
+  Ratio: 3:0 → strong causal signal
+
+Auto-creates:
+  type=causal memory: "changing auth.py signature → downstream tests fail"
+  confidence: 1.0
+  strength: 0.9 (from Hebbian link strength)
+```
+
+**Schema change — add direction to hebbian_links:**
+
+```sql
+ALTER TABLE hebbian_links ADD COLUMN direction TEXT DEFAULT 'bidirectional';
+-- Values: 'bidirectional' | 'forward' (source→target) | 'backward' (target→source)
+
+ALTER TABLE hebbian_links ADD COLUMN temporal_forward INTEGER DEFAULT 0;
+-- Count of times source was activated before target
+
+ALTER TABLE hebbian_links ADD COLUMN temporal_backward INTEGER DEFAULT 0;
+-- Count of times target was activated before source
+```
+
+**Integration with two-layer causal architecture:**
+- GID graph = structural causation (code analysis, static)
+- Engram STDP = experiential causation (learned from observations, dynamic)
+- When both agree (GID says A→B, Engram confirms A→B) → high confidence
+- When they disagree → interesting signal for investigation
+
+**This is the bridge between GID (structure) and Engram (experience).**
+
+### 3. Link Type Inference (General)
+Beyond causal, automatically infer other link types from co-activation patterns:
 - **Attributive:** A describes B (factual relations)
 - **Contrastive:** A and B co-occur but contradict (opinions)
 

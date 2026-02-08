@@ -71,6 +71,7 @@ class MemoryConfig:
         "emotional": 0.95,
         "procedural": 0.90,
         "opinion": 0.60,
+        "causal": 0.70,         # Causal inferences — moderate reliability
     })
     # Weight of reliability vs salience in combined confidence
     confidence_reliability_weight: float = 0.7
@@ -109,6 +110,15 @@ class MemoryConfig:
     hebbian_threshold: int = 3
     # Link strength decay per consolidation cycle
     hebbian_decay: float = 0.95
+
+    # === STDP (Spike-Timing-Dependent Plasticity) ===
+    # Enable temporal direction tracking for causal inference
+    stdp_enabled: bool = True
+    # Forward/backward ratio threshold to trigger causal inference
+    # (if forward > backward * threshold → create causal link)
+    stdp_causal_threshold: float = 2.0
+    # Minimum total co-activations before STDP inference is attempted
+    stdp_min_observations: int = 3
 
     @classmethod
     def default(cls) -> "MemoryConfig":

@@ -28,6 +28,7 @@ import math
 import time
 from typing import Optional
 from engram.core import MemoryEntry, MemoryStore, MemoryLayer, MemoryType
+from engram.config import MemoryConfig
 
 
 # Default parameters (per day)
@@ -172,6 +173,119 @@ def _rebalance_layers(store: MemoryStore,
 
         if _update and entry.layer != old_layer:
             _update(entry)
+
+
+def consolidate_causal(store, config: Optional[MemoryConfig] = None):
+    """
+    STDP-based causal memory creation during consolidation.
+    
+    Checks Hebbian links for strong temporal signals. When memory A
+    consistently precedes memory B in co-activation patterns, creates
+    a type=causal memory capturing the inferred A→B relationship.
+    
+    This bridges correlation (Hebbian) with causation (STDP) —
+    temporal ordering provides weak-but-useful causal evidence.
+    
+    Args:
+        store: SQLiteStore instance (must have STDP columns migrated)
+        config: MemoryConfig with STDP parameters. None = defaults.
+    """
+    if config is None:
+        config = MemoryConfig.default()
+    
+    if not config.stdp_enabled:
+        return
+    
+    from engram.hebbian import get_stdp_candidates, update_link_direction
+    
+    candidates = get_stdp_candidates(
+        store,
+        causal_threshold=config.stdp_causal_threshold,
+        min_observations=config.stdp_min_observations,
+    )
+    
+    for c in candidates:
+        cause_id = c["cause_id"]
+        effect_id = c["effect_id"]
+        confidence = c["confidence"]
+        
+        # Fetch the actual memory content
+        cause_row = store._conn.execute(
+            "SELECT content FROM memories WHERE id=?", (cause_id,)
+        ).fetchone()
+        effect_row = store._conn.execute(
+            "SELECT content FROM memories WHERE id=?", (effect_id,)
+        ).fetchone()
+        
+        if not cause_row or not effect_row:
+            continue
+        
+        cause_content = cause_row[0][:100]
+        effect_content = effect_row[0][:100]
+        
+        # Check if we already created a causal memory for this pair
+        # (avoid duplicates across multiple consolidation cycles)
+        import json
+        existing = store._conn.execute(
+            """SELECT id FROM memories 
+               WHERE memory_type = 'causal' AND metadata IS NOT NULL""",
+        ).fetchall()
+        
+        already_exists = False
+        for row in existing:
+            mid = row[0]
+            meta_row = store._conn.execute(
+                "SELECT metadata FROM memories WHERE id=?", (mid,)
+            ).fetchone()
+            if meta_row and meta_row[0]:
+                try:
+                    meta = json.loads(meta_row[0])
+                    if meta.get("cause_id") == cause_id and meta.get("effect_id") == effect_id:
+                        already_exists = True
+                        # Update confidence if it changed
+                        if abs(meta.get("confidence", 0) - confidence) > 0.05:
+                            meta["confidence"] = confidence
+                            meta["observations"] = c["temporal_forward"] + c["temporal_backward"]
+                            store._conn.execute(
+                                "UPDATE memories SET metadata=? WHERE id=?",
+                                (json.dumps(meta), mid)
+                            )
+                            store._conn.commit()
+                        break
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        
+        if already_exists:
+            continue
+        
+        # Create the causal memory
+        causal_content = f"CAUSAL: {cause_content} → {effect_content}"
+        metadata = {
+            "cause_id": cause_id,
+            "effect_id": effect_id,
+            "cause": cause_content,
+            "effect": effect_content,
+            "confidence": confidence,
+            "observations": c["temporal_forward"] + c["temporal_backward"],
+            "temporal_forward": c["temporal_forward"],
+            "temporal_backward": c["temporal_backward"],
+        }
+        
+        # Use link strength as importance basis, scaled by confidence
+        importance = min(1.0, c["strength"] * confidence)
+        
+        store.add(
+            content=causal_content,
+            memory_type=MemoryType.CAUSAL,
+            importance=importance,
+            source_file="stdp:auto",
+            metadata=metadata,
+        )
+        
+        # Update the Hebbian link direction
+        update_link_direction(
+            store, c["source_id"], c["target_id"], c["direction"]
+        )
 
 
 def get_consolidation_stats(store: MemoryStore) -> dict:

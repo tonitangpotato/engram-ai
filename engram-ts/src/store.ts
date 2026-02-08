@@ -92,9 +92,20 @@ interface MemoryRow {
   source_file: string | null;
   contradicts: string | null;
   contradicted_by: string | null;
+  metadata: string | null;
 }
 
 function rowToEntry(row: MemoryRow, accessTimes?: number[]): MemoryEntry {
+  // Parse metadata JSON if present
+  let metadata: Record<string, unknown> | null = null;
+  if (row.metadata) {
+    try {
+      metadata = JSON.parse(row.metadata);
+    } catch {
+      metadata = null;
+    }
+  }
+
   return new MemoryEntry({
     id: row.id,
     content: row.content,
@@ -112,6 +123,7 @@ function rowToEntry(row: MemoryRow, accessTimes?: number[]): MemoryEntry {
     sourceFile: row.source_file ?? '',
     contradicts: row.contradicts ?? '',
     contradictedBy: row.contradicted_by ?? '',
+    metadata,
   });
 }
 
@@ -126,6 +138,7 @@ export class SQLiteStore {
     this.db.pragma('foreign_keys = ON');
     this.db.exec(_SCHEMA);
     this._migrateContradictionColumns();
+    this._migrateStdpColumns();
     this.db.exec(_FTS_SCHEMA);
     this.db.exec(_FTS_TRIGGERS);
   }
@@ -139,10 +152,31 @@ export class SQLiteStore {
     if (!colNames.has('contradicted_by')) {
       this.db.exec("ALTER TABLE memories ADD COLUMN contradicted_by TEXT DEFAULT ''");
     }
+    // Phase 1: metadata column for structured data (causal memories etc.)
+    if (!colNames.has('metadata')) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN metadata TEXT");
+    }
+    // Index on memory_type for type-filtered queries
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)");
+  }
+
+  private _migrateStdpColumns(): void {
+    const cols = this.db.pragma('table_info(hebbian_links)') as Array<{ name: string }>;
+    const colNames = new Set(cols.map(c => c.name));
+    if (!colNames.has('direction')) {
+      this.db.exec("ALTER TABLE hebbian_links ADD COLUMN direction TEXT DEFAULT 'bidirectional'");
+    }
+    if (!colNames.has('temporal_forward')) {
+      this.db.exec("ALTER TABLE hebbian_links ADD COLUMN temporal_forward INTEGER DEFAULT 0");
+    }
+    if (!colNames.has('temporal_backward')) {
+      this.db.exec("ALTER TABLE hebbian_links ADD COLUMN temporal_backward INTEGER DEFAULT 0");
+    }
   }
 
   add(content: string, memoryType: MemoryType = MemoryType.FACTUAL,
-      importance?: number, sourceFile: string = ''): MemoryEntry {
+      importance?: number, sourceFile: string = '',
+      metadata?: Record<string, unknown> | null): MemoryEntry {
     const entry = new MemoryEntry({
       content,
       memoryType,
@@ -150,19 +184,22 @@ export class SQLiteStore {
       workingStrength: 1.0,
       coreStrength: 0.0,
       sourceFile,
+      metadata: metadata ?? null,
     });
+
+    const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
     this.db.prepare(`
       INSERT INTO memories (id, content, summary, memory_type, layer, created_at,
         working_strength, core_strength, importance, pinned, consolidation_count,
-        last_consolidated, source_file, contradicts, contradicted_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        last_consolidated, source_file, contradicts, contradicted_by, metadata)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       entry.id, entry.content, entry.summary, entry.memoryType,
       entry.layer, entry.createdAt, entry.workingStrength,
       entry.coreStrength, entry.importance, entry.pinned ? 1 : 0,
       entry.consolidationCount, entry.lastConsolidated, entry.sourceFile,
-      entry.contradicts, entry.contradictedBy,
+      entry.contradicts, entry.contradictedBy, metadataJson,
     );
 
     this.db.prepare('INSERT INTO access_log (memory_id, accessed_at) VALUES (?,?)')
@@ -186,17 +223,19 @@ export class SQLiteStore {
   }
 
   update(entry: MemoryEntry): void {
+    const metadataJson = entry.metadata ? JSON.stringify(entry.metadata) : null;
     this.db.prepare(`
       UPDATE memories SET content=?, summary=?, memory_type=?, layer=?,
         working_strength=?, core_strength=?, importance=?, pinned=?,
         consolidation_count=?, last_consolidated=?, source_file=?,
-        contradicts=?, contradicted_by=?
+        contradicts=?, contradicted_by=?, metadata=?
       WHERE id=?
     `).run(
       entry.content, entry.summary, entry.memoryType, entry.layer,
       entry.workingStrength, entry.coreStrength, entry.importance,
       entry.pinned ? 1 : 0, entry.consolidationCount, entry.lastConsolidated,
-      entry.sourceFile, entry.contradicts, entry.contradictedBy, entry.id,
+      entry.sourceFile, entry.contradicts, entry.contradictedBy,
+      metadataJson, entry.id,
     );
   }
 

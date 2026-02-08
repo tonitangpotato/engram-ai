@@ -35,6 +35,19 @@ export function recordCoactivation(
     return [];
   }
 
+  // Pre-fetch created_at timestamps if STDP is enabled
+  const timestamps: Map<string, number> = new Map();
+  if (config.stdpEnabled) {
+    for (const mid of memoryIds) {
+      const row = store.db.prepare(
+        'SELECT created_at FROM memories WHERE id=?'
+      ).get(mid) as { created_at: number } | undefined;
+      if (row) {
+        timestamps.set(mid, row.created_at);
+      }
+    }
+  }
+
   const newLinks: Array<[string, string]> = [];
 
   // Generate all pairs
@@ -52,10 +65,51 @@ export function recordCoactivation(
       if (formed) {
         newLinks.push([id1, id2]);
       }
+
+      // STDP: track temporal ordering
+      if (config.stdpEnabled && timestamps.has(id1) && timestamps.has(id2)) {
+        updateTemporalCounts(store, id1, id2, timestamps.get(id1)!, timestamps.get(id2)!);
+      }
     }
   }
 
   return newLinks;
+}
+
+/**
+ * Update temporal forward/backward counts for a Hebbian link pair.
+ *
+ * With consistent ordering (id1 < id2):
+ * - temporal_forward: id1 was created before id2 (id1 → id2 direction)
+ * - temporal_backward: id2 was created before id1 (id2 → id1 direction)
+ */
+function updateTemporalCounts(
+  store: SQLiteStore,
+  id1: string,
+  id2: string,
+  ts1: number,
+  ts2: number,
+): void {
+  if (ts1 === ts2) return; // Simultaneous — no temporal signal
+
+  // Check if the row exists
+  const existing = store.db.prepare(
+    'SELECT temporal_forward, temporal_backward FROM hebbian_links WHERE source_id=? AND target_id=?'
+  ).get(id1, id2) as { temporal_forward: number; temporal_backward: number } | undefined;
+
+  if (!existing) return;
+
+  if (ts1 < ts2) {
+    // id1 was created before id2 → forward direction
+    store.db.prepare(
+      'UPDATE hebbian_links SET temporal_forward = temporal_forward + 1 WHERE source_id=? AND target_id=?'
+    ).run(id1, id2);
+  } else {
+    // id2 was created before id1 → backward direction
+    store.db.prepare(
+      'UPDATE hebbian_links SET temporal_backward = temporal_backward + 1 WHERE source_id=? AND target_id=?'
+    ).run(id1, id2);
+  }
 }
 
 /**
@@ -180,4 +234,100 @@ export function getAllHebbianLinks(
   store: SQLiteStore,
 ): Array<{ sourceId: string; targetId: string; strength: number }> {
   return store.getAllHebbianLinks();
+}
+
+/**
+ * STDP candidate for causal inference.
+ */
+export interface StdpCandidate {
+  sourceId: string;
+  targetId: string;
+  strength: number;
+  temporalForward: number;
+  temporalBackward: number;
+  direction: 'forward' | 'backward';
+  confidence: number;
+  causeId: string;
+  effectId: string;
+}
+
+/**
+ * Find Hebbian links with strong temporal signal for causal inference.
+ *
+ * Returns links where temporal_forward > temporal_backward * causalThreshold
+ * or vice versa, indicating a consistent temporal ordering (potential causation).
+ */
+export function getStdpCandidates(
+  store: SQLiteStore,
+  causalThreshold: number = 2.0,
+  minObservations: number = 3,
+): StdpCandidate[] {
+  const rows = store.db.prepare(`
+    SELECT source_id, target_id, strength, temporal_forward, temporal_backward
+    FROM hebbian_links
+    WHERE strength > 0
+      AND (temporal_forward + temporal_backward) >= ?
+  `).all(minObservations) as Array<{
+    source_id: string;
+    target_id: string;
+    strength: number;
+    temporal_forward: number;
+    temporal_backward: number;
+  }>;
+
+  const candidates: StdpCandidate[] = [];
+
+  for (const r of rows) {
+    const fwd = r.temporal_forward ?? 0;
+    const bwd = r.temporal_backward ?? 0;
+    const total = fwd + bwd;
+
+    if (total < minObservations) continue;
+
+    if (bwd === 0 && fwd >= minObservations) {
+      candidates.push({
+        sourceId: r.source_id, targetId: r.target_id,
+        strength: r.strength, temporalForward: fwd, temporalBackward: bwd,
+        direction: 'forward', confidence: 1.0,
+        causeId: r.source_id, effectId: r.target_id,
+      });
+    } else if (fwd === 0 && bwd >= minObservations) {
+      candidates.push({
+        sourceId: r.source_id, targetId: r.target_id,
+        strength: r.strength, temporalForward: fwd, temporalBackward: bwd,
+        direction: 'backward', confidence: 1.0,
+        causeId: r.target_id, effectId: r.source_id,
+      });
+    } else if (fwd > bwd * causalThreshold) {
+      candidates.push({
+        sourceId: r.source_id, targetId: r.target_id,
+        strength: r.strength, temporalForward: fwd, temporalBackward: bwd,
+        direction: 'forward', confidence: parseFloat((fwd / total).toFixed(3)),
+        causeId: r.source_id, effectId: r.target_id,
+      });
+    } else if (bwd > fwd * causalThreshold) {
+      candidates.push({
+        sourceId: r.source_id, targetId: r.target_id,
+        strength: r.strength, temporalForward: fwd, temporalBackward: bwd,
+        direction: 'backward', confidence: parseFloat((bwd / total).toFixed(3)),
+        causeId: r.target_id, effectId: r.source_id,
+      });
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Update the direction field of a Hebbian link.
+ */
+export function updateLinkDirection(
+  store: SQLiteStore,
+  sourceId: string,
+  targetId: string,
+  direction: string,
+): void {
+  store.db.prepare(
+    'UPDATE hebbian_links SET direction = ? WHERE source_id = ? AND target_id = ?'
+  ).run(direction, sourceId, targetId);
 }
