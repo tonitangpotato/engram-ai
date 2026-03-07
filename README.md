@@ -76,11 +76,17 @@ export ENGRAM_EMBEDDING=sentence-transformers  # or ollama, openai, none, auto
 python3 -m engram.mcp_server
 ```
 
+### 📦 OpenClaw Integration
+
+Full integration guide with sample configs for agents running on [OpenClaw](https://github.com/openclaw/openclaw):
+
+→ **[examples/openclaw/](examples/openclaw/)** — AGENTS.md, SOUL.md, HEARTBEAT.md templates + step-by-step setup
+
 ---
 
 ## 🏆 Battle-Tested in Production
 
-These aren't benchmarks — they're real numbers from a live AI agent running 24/7 in [OpenClaw](https://github.com/anthropics/openclaw):
+These aren't benchmarks — they're real numbers from a live AI agent running 24/7 in [OpenClaw](https://github.com/openclaw/openclaw):
 
 | Metric | Value |
 |--------|-------|
