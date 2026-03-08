@@ -8,6 +8,9 @@
 
 > Give your AI agent a brain that actually remembers, associates, and forgets like a human.
 
+### 🦀 Also available in Rust: [`engramai` on crates.io](https://crates.io/crates/engramai) — [GitHub](https://github.com/tonitangpotato/engram-ai-rust)
+> Pure Rust, zero external dependencies, 5ms recall. Integrates with [IronClaw](https://github.com/nearai/ironclaw) and any Rust-based agent framework.
+
 ## What is Engram?
 
 Engram is a production-ready memory system for AI agents, inspired by cognitive neuroscience. It provides:
