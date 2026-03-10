@@ -10,7 +10,7 @@ readme = "README.md"
 authors = [
     {name = "potato", email = "potato@example.com"}
 ]
-license = {text = "MIT"}
+license = {text = "AGPL-3.0-or-later"}
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
