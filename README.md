@@ -2,7 +2,7 @@
 
 **Neuroscience-grounded memory for AI agents — ACT-R activation, Hebbian learning, cognitive consolidation**
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-blue)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/engramai)](https://pypi.org/project/engramai/)
 
@@ -290,6 +290,6 @@ Built on research from:
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+AGPL-3.0-or-later — see [LICENSE](LICENSE) for details. Commercial licensing available, see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
 **[GitHub](https://github.com/tonitangpotato/engram-ai)** · **[PyPI](https://pypi.org/project/engramai/)** · **[crates.io](https://crates.io/crates/engramai)** · **[Issues](https://github.com/tonitangpotato/engram-ai/issues)**
