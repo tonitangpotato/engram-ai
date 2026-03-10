@@ -1,6 +1,6 @@
 # Engram AI 🧠
 
-**Neuroscience-grounded memory system for AI agents — semantic search, Hebbian learning, and cognitive consolidation**
+**Neuroscience-grounded memory for AI agents — ACT-R activation, Hebbian learning, cognitive consolidation**
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-blue)](https://www.python.org/)
@@ -8,427 +8,283 @@
 
 > Give your AI agent a brain that actually remembers, associates, and forgets like a human.
 
-### 🦀 Also available in Rust: [`engramai` on crates.io](https://crates.io/crates/engramai) — [GitHub](https://github.com/tonitangpotato/engram-ai-rust)
-> Pure Rust, zero external dependencies, 5ms recall. Integrates with [IronClaw](https://github.com/nearai/ironclaw) and any Rust-based agent framework.
+### Available in 3 runtimes:
 
-## What is Engram?
-
-Engram is a production-ready memory system for AI agents, inspired by cognitive neuroscience. It provides:
-
-- 🧠 **ACT-R Activation** — Memory recall based on frequency, recency, and importance
-- 🔗 **Hebbian Learning** — Automatic association between co-activated memories
-- 💤 **Consolidation** — Transfer memories from working → long-term storage
-- 🌍 **Semantic Search** — Cross-language memory recall (50+ languages)
-- 🔄 **Auto-Fallback** — Zero-config deployment with automatic provider detection
-
-## 📚 Documentation
-
-- **[Integration Guide](INTEGRATION-GUIDE.md)** — Level 3 auto-recall/store implementation
-- **[Performance Analysis](PERFORMANCE.md)** — Real production metrics and optimization
-- **[Embedding Configuration](engram/EMBEDDING-CONFIG.md)** — Provider setup and tuning
+| Runtime | Package | Use When |
+|---------|---------|----------|
+| 🐍 **Python** | [`engramai` on PyPI](https://pypi.org/project/engramai/) | Python agents, MCP server, Claude Desktop |
+| 🦀 **Rust** | [`engramai` on crates.io](https://crates.io/crates/engramai) — [GitHub](https://github.com/tonitangpotato/engram-ai-rust) | Performance-critical, embedded, zero-dependency |
+| 📦 **TypeScript** | [`engram-ts/`](engram-ts/) | Node.js agents, OpenClaw |
+| 🔌 **OpenClaw Plugin** | [`openclaw-plugin/`](openclaw-plugin/) | **Drop-in replacement** for OpenClaw's default context engine |
 
 ---
 
-## Quick Start
+## What is Engram?
 
-### Installation
+Most AI agents use a dumb FIFO window for context — keep the last N messages, throw away the rest. Engram replaces this with a **cognitive memory system** based on how human brains actually work:
 
-```bash
-# Basic installation (FTS5 keyword search only)
-pip install engramai
+- 🧠 **ACT-R Activation** — Memories strengthen with use, decay with time (not a fixed window)
+- 🔗 **Hebbian Learning** — "Neurons that fire together, wire together" — related memories auto-associate
+- 💤 **Consolidation** — Periodic forgetting + strengthening cycles (like sleep)
+- 🎯 **Working Memory** — Miller's Law 7±2 chunks, automatic topic-change detection
+- 🌍 **Cross-Language Search** — Recall memories across 50+ languages
+- 💰 **Zero Cost** — Heuristic capture + prompt caching = $0 additional spend
 
-# With semantic search (recommended)
-pip install "engramai[sentence-transformers]"
+## 🔌 OpenClaw Context Engine Plugin
 
-# With all embedding providers
-pip install "engramai[all]"
+**The fastest way to use Engram** — replace OpenClaw's default FIFO context with cognitive scoring in one config line:
+
+```yaml
+# openclaw.yaml
+plugins:
+  slots:
+    contextEngine: engram
+  entries:
+    engram:
+      autoCapture: true
 ```
 
-### Basic Usage
+Instead of keeping the last N messages, Engram scores every message by **ACT-R activation × Hebbian association × content importance**, then packs the most cognitively relevant ones into the token budget. Long-term memories persist across sessions automatically.
 
-```python
-from engram import Memory
+| | Default (Legacy) | Engram |
+|--|--------|--------|
+| Strategy | Keep last N messages (FIFO) | Score by cognitive relevance |
+| Long-term memory | None | ACT-R + Hebbian |
+| Cross-session | Compaction summaries (LLM cost) | Persistent recall (zero cost) |
+| Topic awareness | None | Working memory + topic detection |
+| Auto-capture | None | Preferences, facts, decisions, corrections |
+| Cost | LLM summarization tokens | Zero (heuristic) |
 
-# Create memory system (auto-detects best embedding provider)
-memory = Memory("./my-agent.db")
-
-# Store memories
-memory.add("User prefers detailed explanations", type="relational", importance=0.8)
-memory.add("Project deadline: Feb 10", type="factual")
-
-# Recall memories (semantic search)
-results = memory.recall("user preferences", limit=5)
-for r in results:
-    print(f"{r['confidence']:.2f}: {r['content']}")
-
-# Run consolidation (strengthens important memories)
-memory.consolidate(days=1.0)
-```
-
-### MCP Server (for OpenClaw, Claude Desktop, etc.)
-
-```bash
-# Set database path
-export ENGRAM_DB_PATH=./my-agent.db
-
-# Start MCP server (auto-detects embedding provider)
-python3 -m engram.mcp_server
-
-# Or configure specific provider
-export ENGRAM_EMBEDDING=sentence-transformers  # or ollama, openai, none, auto
-python3 -m engram.mcp_server
-```
-
-### 📦 OpenClaw Integration
-
-Full integration guide with sample configs for agents running on [OpenClaw](https://github.com/openclaw/openclaw):
-
-→ **[examples/openclaw/](examples/openclaw/)** — AGENTS.md, SOUL.md, HEARTBEAT.md templates + step-by-step setup
+→ **[Full plugin docs](openclaw-plugin/README.md)** | **[Source](openclaw-plugin/src/)**
 
 ---
 
 ## 🏆 Battle-Tested in Production
 
-These aren't benchmarks — they're real numbers from a live AI agent running 24/7 in [OpenClaw](https://github.com/openclaw/openclaw):
+Real numbers from a live AI agent running 24/7:
 
 | Metric | Value |
 |--------|-------|
 | **Memories stored** | 3,846 |
 | **Recalls served** | 230,103 |
 | **Hebbian links formed** | 12,510 (automatic) |
-| **Max co-activations** | 91 |
 | **Consolidation layers** | 320 working → 224 core → 3,302 archive |
 | **Database size** | 48 MB |
 | **Recall latency** | ~90ms |
 | **Additional cost** | **$0** (prompt caching absorbs overhead) |
-| **Continuous uptime** | 29.5 days |
-
-**How is it $0?** Anthropic caches entire system prompts including injected memories. Memory injection adds ~250-500 tokens/turn in theory, but cache hits (87,726+ reads/session) make it free in practice. Infinite context, zero cost.
 
 ---
 
-## Features
+## Quick Start
 
-### 🎯 Zero-Config Deployment
-
-Engram automatically detects and uses the best available embedding provider:
-
-1. **Ollama** (if running locally with embedding models)
-2. **Sentence Transformers** (if installed)
-3. **OpenAI** (if API key configured)
-4. **FTS5** (always available as fallback)
+### Python
 
 ```bash
-# Just install and go — no configuration needed!
-pip install "engramai[sentence-transformers]"
+pip install engramai
+```
+
+```python
+from engram import Memory
+
+memory = Memory("./my-agent.db")
+
+# Store
+memory.add("User prefers detailed explanations", type="relational", importance=0.8)
+memory.add("Project deadline: Feb 10", type="factual")
+
+# Recall (ACT-R activation + Hebbian association + semantic similarity)
+results = memory.recall("user preferences", limit=5)
+
+# Consolidate (Ebbinghaus forgetting + strengthening)
+memory.consolidate(days=1.0)
+```
+
+### TypeScript
+
+```typescript
+import { Memory } from 'neuromemory-ai';
+
+const memory = new Memory('./my-agent.db');
+
+memory.add("User prefers TypeScript over JavaScript", { type: "preference", importance: 0.8 });
+
+const results = memory.recall("user language preferences", { limit: 5 });
+```
+
+### Rust
+
+```rust
+use engramai::Memory;
+
+let mut memory = Memory::new("./my-agent.db", None)?;
+
+memory.add("User prefers Rust for systems programming", "preference", 0.8, None)?;
+
+let results = memory.recall("user preferences", 5, None, None)?;
+```
+
+### MCP Server (Claude Desktop, etc.)
+
+```bash
+export ENGRAM_DB_PATH=./my-agent.db
 python3 -m engram.mcp_server
 ```
 
-### 🌍 Cross-Language Semantic Search
+---
 
-Find memories across languages with zero additional configuration:
+## Core Concepts
 
-```python
-memory.add("marketing是个大难题")  # Chinese
+### 🧠 ACT-R Activation
 
-# Query in English — finds the Chinese memory!
-results = memory.recall("marketing is difficult")
-# ✅ Returns: "marketing是个大难题"
+Every memory has an activation level that decays over time but strengthens with each access:
+
+```
+activation = base_level + spreading + importance_boost
+
+base_level = ln(Σ tᵢ^(-d))    # frequency × recency decay
+spreading  = Σ wⱼ × Sⱼᵢ       # context similarity
 ```
 
-Supports 50+ languages including English, Chinese, Spanish, French, German, Russian, Japanese, Korean, Arabic, Hindi, and many more.
+This means frequently-accessed, recent memories surface first — but old important memories can still be recalled if they're relevant to the current context.
 
-### 🔬 Neuroscience-Grounded
+### 🔗 Hebbian Learning
 
-Based on cognitive science models:
+Memories that are recalled together form automatic associations:
 
-- **ACT-R** — Activation from frequency, recency, spreading activation
-- **Hebbian Learning** — "Neurons that fire together, wire together"
-- **Memory Consolidation** — Simulates sleep-based memory strengthening
-- **Forgetting Curve** — Natural decay based on Ebbinghaus' research
-
-### 📊 Session-Aware Working Memory
-
-Reduces API calls by 70-80% for continuous conversations:
-
-```python
-# First query — full retrieval
-results = memory.session_recall("user preferences", session_id="chat_123")
-
-# Follow-up query on same topic — uses cached working memory!
-results = memory.session_recall("what does user like?", session_id="chat_123")
-# ⚡ No database query — instant response
 ```
+ΔW = η × aᵢ × aⱼ    # co-activation strengthens links
+```
+
+Ask about "Docker" and "deployment" in the same conversation → they become linked. Next time you ask about deployment, Docker memories get boosted automatically.
+
+### 💤 Consolidation
+
+Like human sleep, periodic consolidation:
+1. **Decays weak memories** (Ebbinghaus forgetting curve)
+2. **Strengthens frequently-used ones** (move working → core → long-term)
+3. **Prunes noise** (below-threshold memories removed)
+
+### 🎯 Working Memory (TypeScript / OpenClaw Plugin)
+
+Session-level state based on Miller's Law (7±2 chunks):
+- Tracks what's "active" in the current conversation
+- Detects topic changes → triggers full recall
+- Continuous topic → reuses cached memories (70-80% fewer DB queries)
 
 ---
 
 ## 🧩 Memory Types
 
-| Type | Description | Example |
-|------|-------------|---------|
+| Type | Use For | Example |
+|------|---------|---------|
 | `factual` | Facts and knowledge | "Project uses Python 3.12" |
-| `episodic` | Events and experiences | "Shipped v2.0 on Jan 15" |
-| `relational` | Relationships and preferences | "User prefers concise answers" |
-| `emotional` | Emotional moments | "User was frustrated with deploy" |
-| `procedural` | How-to knowledge | "Deploy requires running tests first" |
-| `opinion` | Beliefs and opinions | "User thinks React is better than Vue" |
-
----
-
-## 🤖 AI Agent Best Practices
-
-Building an AI agent with memory? Here's what we learned running Engram in production.
-
-### When to Call What
-
-| Trigger | Action | Example |
-|---------|--------|---------|
-| Learn user preference | `store(type="relational")` | "User prefers concise answers" |
-| Learn important fact | `store(type="factual")` | "Project uses Python 3.12" |
-| Learn how to do something | `store(type="procedural")` | "Deploy requires running tests first" |
-| Question about history | `recall()` first, then answer | "What did I say about X?" |
-| User satisfied | `reward("positive feedback")` | Strengthens recent memories |
-| User unsatisfied | `reward("negative feedback")` | Suppresses recent memories |
-| Daily maintenance | `consolidate()` + `forget()` | Run via cron or heartbeat |
-
-### What to Store vs. What to Skip
-
-✅ **Store:** User preferences & habits, important facts & decisions, lessons learned, procedural knowledge
-
-❌ **Don't store:** Every single message (too noisy), temporary info ("remind me in 5 min"), publicly available facts (Wikipedia-level stuff)
-
-### Importance Guide
-
-| Level | Use For |
-|-------|---------|
-| 0.9–1.0 | Critical — API keys location, absolute preferences |
-| 0.7–0.8 | Important — code style, project structure |
-| 0.5–0.6 | Normal — general facts, experiences |
-| 0.3–0.4 | Low priority — casual chat, temporary notes |
-
-### 🔀 Hybrid Memory Pattern
-
-For production agents, we recommend pairing Engram with file-based memory:
-
-| Layer | Purpose | Strengths |
-|-------|---------|-----------|
-| **Engram** | Active memory | Retrieval, associations, dynamic weighting, consolidation |
-| **Files** (`memory/*.md`) | Memory logs | Transparency, debugging, manual editing, version control |
-
-Engram handles the *thinking* — which memories matter, how they connect, when to forget. Files handle the *record* — what happened, in order, readable by humans. Use both.
-
----
-
-## 💻 CLI Usage
-
-Engram includes the `neuromem` CLI for quick operations:
-
-```bash
-# Add a memory
-neuromem add "User prefers dark mode" --type preference --importance 0.8
-
-# Recall memories
-neuromem recall "user preferences"
-
-# View database stats
-neuromem stats
-
-# Run consolidation (strengthen important memories)
-neuromem consolidate
-
-# Prune weak memories
-neuromem forget --threshold 0.01
-
-# List recent memories
-neuromem list --limit 20
-
-# Inspect Hebbian links for a concept
-neuromem hebbian "dark mode"
-```
-
----
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-| Variable | Values | Description |
-|----------|--------|-------------|
-| `ENGRAM_EMBEDDING` | `auto` (default), `sentence-transformers`, `ollama`, `openai`, `none` | Embedding provider |
-| `ENGRAM_ST_MODEL` | Model name (default: `paraphrase-multilingual-MiniLM-L12-v2`) | Sentence Transformers model |
-| `ENGRAM_OLLAMA_MODEL` | Model name (default: `nomic-embed-text`) | Ollama embedding model |
-| `OPENAI_API_KEY` | API key | Required for OpenAI embeddings |
-| `ENGRAM_DB_PATH` | File path | Database location (for MCP server) |
-
-### Provider Comparison
-
-| Provider | Pros | Cons | Use When |
-|----------|------|------|----------|
-| **Auto** ⭐ (default) | Zero config, adapts to environment | Non-deterministic selection | Production, distribution |
-| **Sentence Transformers** | Free, offline, 50+ languages | ~118MB model download | Privacy-sensitive, no API costs |
-| **Ollama** | Free, offline, customizable | Requires Ollama running | You already use Ollama |
-| **OpenAI** | Highest quality | Costs API credits, needs internet | Prototyping, cloud-only |
-| **None (FTS5)** | No dependencies, instant | Keyword-only, no semantic search | Testing, minimal setups |
-
----
-
-## Examples
-
-### Store Different Memory Types
-
-```python
-# Factual knowledge
-memory.add("Paris is the capital of France", type="factual")
-
-# Personal relationships
-memory.add("User likes detailed technical explanations", type="relational", importance=0.9)
-
-# Procedural knowledge (how-to)
-memory.add("To deploy: git push origin main", type="procedural", importance=0.8)
-
-# Episodic memories (events)
-memory.add("Shipped feature X on Jan 15", type="episodic")
-```
-
-### Recall with Filters
-
-```python
-# Only relational memories
-results = memory.recall("user preferences", types=["relational"], limit=3)
-
-# High-confidence only
-results = memory.recall("deadlines", min_confidence=0.7)
-
-# Context-aware (spreading activation)
-results = memory.recall("project status", context=["planning", "timeline"])
-```
-
-### Memory Consolidation
-
-```python
-# Simulate one day of sleep (strengthens important memories)
-memory.consolidate(days=1.0)
-
-# Prune weak memories below threshold
-memory.forget(threshold=0.01)
-
-# Apply reward/punishment
-memory.reward("Great job!", recent_n=3)  # Strengthens last 3 memories
-```
-
-### Export/Import
-
-```python
-# Export to file
-memory.export("backup.db")
-
-# Import from file
-from shutil import copyfile
-copyfile("backup.db", "./my-agent.db")
-memory = Memory("./my-agent.db")
-```
+| `episodic` | Events | "Shipped v2.0 on Jan 15" |
+| `preference` | User preferences | "Prefers concise answers" |
+| `procedural` | How-to knowledge | "Deploy: run tests first, then push" |
+| `semantic` | Concepts and relationships | "Causal inference relates to Pearl" |
+| `causal` | Cause-effect relationships | "Rate hikes → USD strengthens" |
 
 ---
 
 ## Architecture
 
 ```
-User Query
-    ↓
-Vector Search (semantic)
-    ↓
-FTS5 Search (lexical)
-    ↓
-Merge & Dedupe
-    ↓
-ACT-R Activation (cognitive dynamics)
-    ↓
-Hebbian Spreading (association boost)
-    ↓
-Confidence Scoring (metacognition)
-    ↓
-Ranked Results
+Query
+  ↓
+┌─────────────────────────┐
+│  Vector Search (semantic)│  ← optional embedding provider
+│  FTS5 Search (lexical)   │  ← always available, zero-cost
+│  Merge & Dedupe          │
+└──────────┬──────────────┘
+           ↓
+┌─────────────────────────┐
+│  ACT-R Activation        │  ← frequency × recency decay
+│  Hebbian Spreading       │  ← association boost from linked memories
+│  Importance Weighting    │  ← user-set priority
+│  Confidence Scoring      │  ← metacognition layer
+└──────────┬──────────────┘
+           ↓
+     Ranked Results
 ```
 
 ---
 
-## ⚡ Performance
+## Configuration
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Model size | 118MB | One-time download (Sentence Transformers) |
-| Startup time | ~200ms | After first download |
-| Vector generation | ~250 mem/sec | CPU (M2 chip) |
-| Search latency | 10–50ms | 1,000 memories |
-| Cross-language accuracy | 100% | Test cases: 3/3 ✅ |
+### Embedding Providers
+
+Engram works **without any embedding provider** (FTS5 keyword search). Add one for cross-language semantic search:
+
+| Provider | Cost | Setup | Best For |
+|----------|------|-------|----------|
+| **None / FTS5** | Free | Zero config | Simple agents, testing |
+| **Sentence Transformers** | Free | `pip install "engramai[sentence-transformers]"` | Privacy, offline |
+| **Ollama** | Free | Ollama + embedding model | Already using Ollama |
+| **OpenAI** | ~$0.0001/query | `OPENAI_API_KEY` | Highest quality |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENGRAM_EMBEDDING` | `auto` | Provider: `auto`, `sentence-transformers`, `ollama`, `openai`, `none` |
+| `ENGRAM_DB_PATH` | `./engram.db` | Database path |
+| `ENGRAM_ST_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Sentence Transformers model |
+| `OPENAI_API_KEY` | — | Required for OpenAI embeddings |
+
+---
+
+## CLI
+
+```bash
+neuromem add "User prefers dark mode" --type preference --importance 0.8
+neuromem recall "user preferences"
+neuromem stats
+neuromem consolidate
+neuromem forget --threshold 0.01
+neuromem hebbian "dark mode"
+```
+
+---
+
+## 📚 Documentation
+
+- **[OpenClaw Plugin Guide](openclaw-plugin/README.md)** — Drop-in context engine replacement
+- **[Integration Guide](INTEGRATION-GUIDE.md)** — Level 3 auto-recall/store implementation
+- **[Performance Analysis](PERFORMANCE.md)** — Production metrics and optimization
+- **[Embedding Configuration](engram/EMBEDDING-CONFIG.md)** — Provider setup and tuning
+- **[Vision](VISION.md)** — Where Engram is heading
 
 ---
 
 ## Development
 
 ```bash
-# Clone repository
 git clone https://github.com/tonitangpotato/engram-ai.git
 cd engram-ai
 
-# Install in development mode
+# Python
 pip install -e ".[dev,all]"
-
-# Run tests
 pytest
 
-# Run provider detection test
-python3 engram/provider_detection.py
+# TypeScript
+cd engram-ts && npm install && npm test
+
+# OpenClaw Plugin
+cd openclaw-plugin && npm install && npm test
 ```
-
----
-
-## Integration
-
-### With OpenClaw
-
-Engram is the default memory system for OpenClaw agents. Just configure the MCP server and it works out of the box.
-
-### With Claude Desktop
-
-```json
-{
-  "mcpServers": {
-    "engram": {
-      "command": "python3",
-      "args": ["-m", "engram.mcp_server"],
-      "env": {
-        "ENGRAM_DB_PATH": "./my-agent.db"
-      }
-    }
-  }
-}
-```
-
-### Standalone Python
-
-```python
-from engram import Memory
-
-memory = Memory("./agent.db")
-memory.add("Remember this", importance=0.8)
-results = memory.recall("what to remember?")
-```
-
-### Any MCP Client
-
-Any MCP-compatible client can use Engram via the standard protocol.
 
 ---
 
 ## Credits
 
-Engram is inspired by:
+Built on research from:
 
-- **ACT-R** (Adaptive Control of Thought-Rational) — Carnegie Mellon
-- **Hebbian Learning** — Donald Hebb
-- **Memory Consolidation** — Sleep research by Walker, Stickgold
-- **Forgetting Curve** — Hermann Ebbinghaus
+- **ACT-R** (Adaptive Control of Thought-Rational) — Anderson, Carnegie Mellon
+- **Hebbian Learning** — Donald Hebb, 1949
+- **Memory Consolidation** — Walker & Stickgold (sleep research)
+- **Forgetting Curve** — Hermann Ebbinghaus, 1885
+- **Working Memory** — Baddeley & Hitch, 1974
+- **Miller's Law** — George Miller, 1956 ("The Magical Number Seven")
 
 ---
 
@@ -436,7 +292,4 @@ Engram is inspired by:
 
 MIT License — see [LICENSE](LICENSE) for details.
 
-## Support
-
-- Issues: [github.com/tonitangpotato/engram-ai/issues](https://github.com/tonitangpotato/engram-ai/issues)
-- Discussions: [github.com/tonitangpotato/engram-ai/discussions](https://github.com/tonitangpotato/engram-ai/discussions)
+**[GitHub](https://github.com/tonitangpotato/engram-ai)** · **[PyPI](https://pypi.org/project/engramai/)** · **[crates.io](https://crates.io/crates/engramai)** · **[Issues](https://github.com/tonitangpotato/engram-ai/issues)**
