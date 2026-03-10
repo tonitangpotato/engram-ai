@@ -1,0 +1,41 @@
+{
+  "name": "@engram-ai/openclaw-context-engine",
+  "version": "1.0.0",
+  "description": "Engram cognitive context engine plugin for OpenClaw — ACT-R, Hebbian, working memory",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "tsx src/test.ts"
+  },
+  "dependencies": {
+    "neuromemory-ai": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "tsx": "^4.0.0",
+    "better-sqlite3": "^11.0.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-agent-core": "*"
+  },
+  "keywords": [
+    "openclaw",
+    "context-engine",
+    "engram",
+    "act-r",
+    "hebbian",
+    "cognitive",
+    "memory",
+    "neuroscience",
+    "ai-agent"
+  ],
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tonitangpotato/engram-ai",
+    "directory": "openclaw-plugin"
+  }
+}

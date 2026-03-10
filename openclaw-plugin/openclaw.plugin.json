@@ -1,0 +1,90 @@
+{
+  "id": "engram",
+  "name": "Engram Context Engine",
+  "description": "Neuroscience-grounded context engine using ACT-R activation decay, Hebbian association, and cognitive working memory instead of FIFO message windowing.",
+  "version": "1.0.0",
+  "kind": "context-engine",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dbPath": {
+        "type": "string",
+        "description": "Path to Engram SQLite database (default: ~/.openclaw/engram.db)"
+      },
+      "embedding": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["openai", "ollama", "mcp", "none"],
+            "description": "Embedding provider for semantic search (default: none = FTS5 only)"
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "baseUrl": {
+            "type": "string"
+          }
+        }
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "description": "Automatically store important messages as memories (default: true)"
+      },
+      "consolidateAfterTurns": {
+        "type": "number",
+        "description": "Run consolidation every N turns (default: 20)"
+      },
+      "workingMemoryCapacity": {
+        "type": "number",
+        "description": "Max active memory chunks — Miller's Law 7±2 (default: 7)"
+      },
+      "workingMemoryDecaySec": {
+        "type": "number",
+        "description": "Seconds before working memory item decays (default: 300)"
+      },
+      "maxRecallResults": {
+        "type": "number",
+        "description": "Max memories to inject into context (default: 10)"
+      },
+      "minConfidence": {
+        "type": "number",
+        "description": "Minimum confidence threshold for recall (default: 0.3)"
+      }
+    }
+  },
+  "uiHints": {
+    "dbPath": {
+      "label": "Database Path",
+      "placeholder": "~/.openclaw/engram.db",
+      "advanced": true
+    },
+    "embedding.provider": {
+      "label": "Embedding Provider",
+      "help": "Optional vector embedding for cross-language semantic recall. FTS5 works well without it."
+    },
+    "embedding.apiKey": {
+      "label": "Embedding API Key",
+      "sensitive": true
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Automatically detect and store important information from conversations"
+    },
+    "consolidateAfterTurns": {
+      "label": "Consolidation Interval",
+      "help": "Run Ebbinghaus forgetting + Hebbian strengthening every N turns",
+      "advanced": true
+    },
+    "workingMemoryCapacity": {
+      "label": "Working Memory Capacity",
+      "help": "Based on Miller's Law (7±2 chunks)",
+      "advanced": true
+    }
+  }
+}
