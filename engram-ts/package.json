@@ -1,6 +1,6 @@
 {
   "name": "neuromemory-ai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Neuroscience-grounded memory system for AI agents with semantic search and auto-fallback",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -43,6 +43,8 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "testMatch": ["**/tests/**/*.test.ts"]
+    "testMatch": [
+      "**/tests/**/*.test.ts"
+    ]
   }
 }
