@@ -50,7 +50,7 @@ def cmd_add(args):
     
     mem_id = mem.add(args.content, **kwargs)
     print(f"✓ Added memory: {mem_id[:8]}...")
-    print(f"  Content: {args.content[:60]}{'...' if len(args.content) > 60 else ''}")
+    print(f"  Content: {args.content[:120]}{'...' if len(args.content) > 120 else ''}")
     
     mem.close()
 
@@ -69,8 +69,8 @@ def cmd_recall(args):
             conf = r.get("confidence_label", "?")
             typ = r.get("type", "?")[:4]
             content = r["content"]
-            if len(content) > 80:
-                content = content[:77] + "..."
+            # No truncation — show full content for AI agent recall
+            pass
             print(f"  {i}. [{conf:8}] [{typ}] {content}")
     
     mem.close()
@@ -190,7 +190,7 @@ def cmd_hebbian(args):
     for link_id in links[:10]:
         linked = mem._store.get(link_id)
         if linked:
-            print(f"  → {linked.content[:60]}...")
+            print(f"  → {linked.content}")
     
     mem.close()
 
