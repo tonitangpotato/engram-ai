@@ -33,14 +33,22 @@ except ImportError:
 DEFAULT_DB = os.environ.get("NEUROMEM_DB", "./neuromem.db")
 
 
-def get_memory(db_path: str = DEFAULT_DB) -> Memory:
+def get_memory(db_path: str = DEFAULT_DB, embedding: str = None) -> Memory:
     """Get or create a memory instance."""
-    return Memory(db_path)
+    if embedding is None:
+        # Auto-detect: if Ollama is running locally, use it
+        try:
+            import urllib.request
+            urllib.request.urlopen("http://localhost:11434/api/tags", timeout=0.5)
+            embedding = "ollama"
+        except Exception:
+            pass  # FTS5-only mode
+    return Memory(db_path, embedding=embedding)
 
 
 def cmd_add(args):
     """Add a new memory."""
-    mem = get_memory(args.db)
+    mem = get_memory(args.db, getattr(args, "embedding", None))
     
     kwargs = {}
     if args.type:
@@ -57,7 +65,7 @@ def cmd_add(args):
 
 def cmd_recall(args):
     """Recall memories matching a query."""
-    mem = get_memory(args.db)
+    mem = get_memory(args.db, getattr(args, "embedding", None))
     
     results = mem.recall(args.query, limit=args.limit)
     
@@ -78,7 +86,7 @@ def cmd_recall(args):
 
 def cmd_stats(args):
     """Show memory statistics."""
-    mem = get_memory(args.db)
+    mem = get_memory(args.db, getattr(args, "embedding", None))
     stats = mem.stats()
     
     print("=== neuromemory-ai Stats ===\n")
@@ -100,7 +108,7 @@ def cmd_stats(args):
 
 def cmd_consolidate(args):
     """Run a consolidation cycle (like sleep)."""
-    mem = get_memory(args.db)
+    mem = get_memory(args.db, getattr(args, "embedding", None))
     result = mem.consolidate(days=args.days)
     
     print(f"✓ Consolidation complete ({args.days} day(s))")
@@ -112,7 +120,7 @@ def cmd_consolidate(args):
 
 def cmd_forget(args):
     """Prune weak memories."""
-    mem = get_memory(args.db)
+    mem = get_memory(args.db, getattr(args, "embedding", None))
     
     # Get count before
     before = mem.stats()["total_memories"]
@@ -130,7 +138,7 @@ def cmd_forget(args):
 
 def cmd_export(args):
     """Export memory database."""
-    mem = get_memory(args.db)
+    mem = get_memory(args.db, getattr(args, "embedding", None))
     mem.export(args.output)
     
     size = os.path.getsize(args.output)
@@ -141,7 +149,7 @@ def cmd_export(args):
 
 def cmd_list(args):
     """List memories."""
-    mem = get_memory(args.db)
+    mem = get_memory(args.db, getattr(args, "embedding", None))
     
     all_mems = list(mem._store.all())
     
@@ -172,7 +180,7 @@ def cmd_list(args):
 
 def cmd_hebbian(args):
     """Show Hebbian links for a memory."""
-    mem = get_memory(args.db)
+    mem = get_memory(args.db, getattr(args, "embedding", None))
     
     # Find memory by content match
     results = mem.recall(args.query, limit=1)
@@ -220,6 +228,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--db", default=DEFAULT_DB, help="Database path")
+    parser.add_argument("--embedding", "-e", choices=["ollama", "openai"], default=None,
+                       help="Embedding provider (default: auto-detect ollama, then FTS5-only)")
     
     subparsers = parser.add_subparsers(dest="command", help="Commands")
     
