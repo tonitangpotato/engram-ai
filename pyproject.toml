@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "engramai"
-version = "1.1.0"
-description = "Neuroscience-grounded memory system for AI agents with semantic search and auto-fallback"
+version = "2.1.0"
+description = "Neuroscience-grounded memory system for AI agents with multi-agent support, emotional feedback, and semantic search"
 readme = "README.md"
 authors = [
     {name = "potato", email = "potato@example.com"}

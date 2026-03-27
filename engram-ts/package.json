@@ -1,6 +1,6 @@
 {
   "name": "neuromemory-ai",
-  "version": "1.1.0",
+  "version": "2.1.0",
   "description": "Neuroscience-grounded memory system for AI agents with semantic search and auto-fallback",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

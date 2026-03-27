@@ -235,3 +235,123 @@ export class MemoryConfig {
     });
   }
 }
+
+// === Config File Hierarchy ===
+// Priority: code params > ANTHROPIC_AUTH_TOKEN env > ANTHROPIC_API_KEY env > ~/.config/engram/config.json > no extractor
+
+/**
+ * Engram config file format (~/.config/engram/config.json)
+ *
+ * NOTE: Auth tokens are NEVER stored in config file. They come from env vars.
+ */
+export interface EngramFileConfig {
+  extractor?: {
+    /** Provider: "anthropic" | "ollama" */
+    provider: string;
+    /** Model name */
+    model?: string;
+    /** Host URL (for Ollama) */
+    host?: string;
+  };
+  embedding?: {
+    /** Provider: "ollama" | "openai" | "mcp" */
+    provider?: string;
+    /** Model name */
+    model?: string;
+    /** Host URL */
+    host?: string;
+  };
+}
+
+/**
+ * Get the config file path (~/.config/engram/config.json)
+ */
+export function getConfigPath(): string {
+  const os = require('os');
+  const path = require('path');
+  return path.join(os.homedir(), '.config', 'engram', 'config.json');
+}
+
+/**
+ * Load config from ~/.config/engram/config.json
+ * Returns null if file doesn't exist or is invalid.
+ */
+export function loadFileConfig(): EngramFileConfig | null {
+  try {
+    const fs = require('fs');
+    const configPath = getConfigPath();
+    if (!fs.existsSync(configPath)) return null;
+    const content = fs.readFileSync(configPath, 'utf-8');
+    return JSON.parse(content) as EngramFileConfig;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save config to ~/.config/engram/config.json
+ * Creates parent directories if needed.
+ */
+export function saveFileConfig(config: EngramFileConfig): void {
+  const fs = require('fs');
+  const path = require('path');
+  const configPath = getConfigPath();
+  const dir = path.dirname(configPath);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+}
+
+/**
+ * Interactive config setup (for `engram init` CLI command).
+ * Uses readline to prompt the user.
+ */
+export async function interactiveConfigSetup(): Promise<void> {
+  const readline = require('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  const ask = (question: string): Promise<string> =>
+    new Promise((resolve) => rl.question(question, resolve));
+
+  console.log('\n🧠 Engram Configuration Setup\n');
+  console.log('This sets up ~/.config/engram/config.json');
+  console.log('NOTE: Auth tokens are stored in env vars, NOT in the config file.\n');
+
+  const config: EngramFileConfig = loadFileConfig() ?? {};
+
+  // Extractor setup
+  const setupExtractor = await ask('Set up LLM extraction? (y/N): ');
+  if (setupExtractor.toLowerCase() === 'y') {
+    const provider = await ask('Extractor provider (anthropic/ollama) [anthropic]: ');
+    const selectedProvider = provider.trim() || 'anthropic';
+
+    config.extractor = { provider: selectedProvider };
+
+    if (selectedProvider === 'anthropic') {
+      const model = await ask('Model [claude-haiku-4-5-20251001]: ');
+      if (model.trim()) config.extractor.model = model.trim();
+
+      // Remind about env vars
+      const hasOAuth = Boolean(process.env.ANTHROPIC_AUTH_TOKEN);
+      const hasApiKey = Boolean(process.env.ANTHROPIC_API_KEY);
+      if (!hasOAuth && !hasApiKey) {
+        console.log('\n⚠️  No Anthropic auth token found in environment.');
+        console.log('Set one of:');
+        console.log('  export ANTHROPIC_AUTH_TOKEN=sk-ant-oat01-...');
+        console.log('  export ANTHROPIC_API_KEY=sk-ant-api03-...\n');
+      } else {
+        console.log(`✅ Using ${hasOAuth ? 'ANTHROPIC_AUTH_TOKEN (OAuth)' : 'ANTHROPIC_API_KEY'}`);
+      }
+    } else if (selectedProvider === 'ollama') {
+      const model = await ask('Model [llama3.2:3b]: ');
+      if (model.trim()) config.extractor.model = model.trim();
+      const host = await ask('Ollama host [http://localhost:11434]: ');
+      if (host.trim()) config.extractor.host = host.trim();
+    }
+  }
+
+  // Save
+  saveFileConfig(config);
+  console.log(`\n✅ Config saved to ${getConfigPath()}`);
+
+  rl.close();
+}

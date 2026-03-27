@@ -132,9 +132,6 @@ class HybridSearchEngine:
         query = query.strip()
         candidates: dict[str, tuple[MemoryEntry, float, bool]] = {}  # id -> (entry, vector_score, fts_matched)
         
-        # Detect query type and set alpha for score blending
-        self._alpha = detect_temporal_alpha(query)
-        
         # 1. Vector search (semantic matching)
         if self.vector_store and query:
             vector_results = self.vector_store.search(query, limit=100, min_similarity=0.1)
@@ -239,9 +236,30 @@ class HybridSearchEngine:
         hebbian_boosts: dict[str, float],
         vector_weight: float,
     ) -> list[HybridSearchResult]:
-        """Score candidates using ACT-R activation + vector similarity."""
+        """Score candidates using combined FTS + embedding + ACT-R.
+        
+        Weights (matching Rust implementation):
+        - 15% FTS for exact term matching
+        - ~60% embedding for semantic similarity
+        - ~25% ACT-R for recency/frequency/importance
+        
+        This ensures users always get the benefit of both search strategies
+        without needing to choose.
+        """
         now = time.time()
         results = []
+        
+        # Weights matching Rust: fts=0.15, embedding=embedding_weight*0.85, actr=actr_weight
+        fts_weight = 0.15
+        emb_adj_weight = vector_weight * 0.85  # ~0.6 with default vector_weight=0.7
+        actr_adj_weight = 1.0 - vector_weight   # ~0.3 with default vector_weight=0.7
+        
+        # Build FTS rank-based score map for proper normalization
+        fts_entries = [(e, v, f) for e, v, f in candidates if f]
+        fts_count = len(fts_entries)
+        fts_rank_scores: dict[str, float] = {}
+        for rank, (entry, _, _) in enumerate(fts_entries):
+            fts_rank_scores[entry.id] = 1.0 - (rank / max(1, fts_count))
         
         for entry, vector_score, fts_matched in candidates:
             # Ensure access_times are populated
@@ -258,29 +276,33 @@ class HybridSearchEngine:
             if act_score == float("-inf"):
                 continue
             
+            # Normalize activation to 0..1 range (matching Rust)
+            activation_normalized = max(0.0, min(1.0, (act_score + 10.0) / 20.0))
+            
+            # Normalize embedding score to 0..1 range
+            embedding_score = (vector_score + 1.0) / 2.0 if vector_score != 0.0 else 0.0
+            
+            # FTS score (rank-based, 0 if not in FTS results)
+            fts_score = fts_rank_scores.get(entry.id, 0.0)
+            
             # Confidence
             conf = confidence_score(entry, store=None, now=now)
             label = confidence_label(conf)
             
             # Hebbian boost
-            hebbian_boost = hebbian_boosts.get(entry.id, 0.0)
+            hebbian_boost = min(3.0, hebbian_boosts.get(entry.id, 0.0))
             
-            # Combined score using alpha blending:
-            # High alpha (>0.7) = embedding-only mode (ACT-R as tiny tiebreaker)
-            # Low alpha (<0.5) = ACT-R-heavy mode for temporal queries
-            fts_bonus = 0.1 if fts_matched else 0.0
+            # Pinned memory boost
+            pinned_boost = 5.0 if entry.pinned else 0.0
             
-            if self._alpha >= 0.7:
-                # Semantic mode: pure embedding ranking, ACT-R completely ignored
-                combined_score = vector_score + fts_bonus
-            else:
-                # Temporal mode: blend more heavily toward ACT-R
-                combined_score = (
-                    (vector_score * 10.0 * self._alpha) +
-                    (act_score * (1 - self._alpha)) +
-                    hebbian_boost +
-                    fts_bonus
-                )
+            # Combined score: FTS + embedding + ACT-R (always blended)
+            combined_score = (
+                (fts_weight * fts_score)
+                + (emb_adj_weight * embedding_score)
+                + (actr_adj_weight * activation_normalized)
+                + hebbian_boost
+                + pinned_boost
+            )
             
             results.append(HybridSearchResult(
                 entry=entry,

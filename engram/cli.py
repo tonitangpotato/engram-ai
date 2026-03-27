@@ -13,6 +13,11 @@ Usage:
     engram export OUTPUT_PATH
     engram list [--limit LIMIT] [--type TYPE]
     engram import PATH [PATH...] [--verbose]
+    engram update ID NEW_CONTENT
+    engram pin ID
+    engram unpin ID
+    engram reward "feedback text"
+    engram info ID
 """
 
 import argparse
@@ -91,12 +96,35 @@ def cmd_init(args):
         print("  Continuing with FTS5 text search only.\n")
         cfg["embedding"] = None
 
+    # LLM Extractor
+    print("\n--- LLM Extraction (optional) ---")
+    print("Extract structured facts from raw text using an LLM.")
+    print("Auth tokens come from environment variables (never stored in config).")
+    print("  ANTHROPIC_AUTH_TOKEN → OAuth (Claude Max)")
+    print("  ANTHROPIC_API_KEY   → API key")
+
+    ext_choices = ["anthropic", "ollama", "none"]
+    ext_current = cfg.get("extractor", {}).get("provider", "none")
+    ext_choice = input(f"\nExtractor provider [{ext_current}]: ").strip() or ext_current
+
+    if ext_choice == "anthropic":
+        ext_model = input("  Model [claude-haiku-4-5-20251001]: ").strip() or "claude-haiku-4-5-20251001"
+        cfg["extractor"] = {"provider": "anthropic", "model": ext_model}
+    elif ext_choice == "ollama":
+        ext_model = input("  Model [llama3.2:3b]: ").strip() or "llama3.2:3b"
+        ext_host = input("  Host [http://localhost:11434]: ").strip() or "http://localhost:11434"
+        cfg["extractor"] = {"provider": "ollama", "model": ext_model, "host": ext_host}
+    else:
+        cfg.pop("extractor", None)
+
     save_config(cfg)
     print(f"\n✅ Config saved to {CONFIG_FILE}")
     print(f"   DB: {cfg['db']}")
     print(f"   Embedding: {cfg.get('embedding') or 'none (FTS5)'}")
     if cfg.get("embedding_model"):
         print(f"   Model: {cfg['embedding_model']}")
+    ext_info = cfg.get("extractor", {}).get("provider", "none")
+    print(f"   Extractor: {ext_info}")
 
 
 def cmd_status(args):
@@ -307,6 +335,87 @@ def cmd_hebbian(args):
     mem.close()
 
 
+def cmd_update(args):
+    """Update a memory's content."""
+    mem = get_memory(args.db, getattr(args, "embedding", None))
+
+    new_id = mem.update_memory(args.id, args.new_content)
+    print(f"✓ Updated memory {args.id[:8]}...")
+    print(f"  New memory: {new_id[:8]}...")
+    print(f"  Content: {args.new_content[:120]}{'...' if len(args.new_content) > 120 else ''}")
+
+    mem.close()
+
+
+def cmd_pin(args):
+    """Pin a memory (won't decay or be pruned)."""
+    mem = get_memory(args.db, getattr(args, "embedding", None))
+    mem.pin(args.id)
+    print(f"✓ Pinned memory {args.id[:8]}...")
+    mem.close()
+
+
+def cmd_unpin(args):
+    """Unpin a memory (resumes normal decay)."""
+    mem = get_memory(args.db, getattr(args, "embedding", None))
+    mem.unpin(args.id)
+    print(f"✓ Unpinned memory {args.id[:8]}...")
+    mem.close()
+
+
+def cmd_reward(args):
+    """Reward recent memories based on feedback."""
+    mem = get_memory(args.db, getattr(args, "embedding", None))
+    mem.reward(args.feedback)
+    print(f"✓ Applied reward feedback: {args.feedback[:120]}{'...' if len(args.feedback) > 120 else ''}")
+    mem.close()
+
+
+def cmd_info(args):
+    """Show full details of a single memory."""
+    mem = get_memory(args.db, getattr(args, "embedding", None))
+
+    entry = mem._store.get(args.id)
+    if entry is None:
+        print(f"Memory {args.id} not found.")
+        mem.close()
+        sys.exit(1)
+
+    print(f"=== Memory Details ===\n")
+    print(f"ID:         {entry.id}")
+    print(f"Content:    {entry.content}")
+    print(f"Type:       {entry.memory_type.value}")
+    print(f"Layer:      {entry.layer.value}")
+    print(f"Importance: {entry.importance:.3f}")
+    print(f"Created:    {entry.created_at}")
+    access_count = len(entry.access_times) if hasattr(entry, 'access_times') and entry.access_times else 0
+    print(f"Accessed:   {access_count} times")
+    print(f"Pinned:     {entry.pinned}")
+
+    # Hebbian links
+    links = mem.hebbian_links(entry.id)
+    if links:
+        print(f"\nHebbian links ({len(links)}):")
+        for link_id in links[:10]:
+            linked = mem._store.get(link_id)
+            if linked:
+                content = linked.content
+                if len(content) > 60:
+                    content = content[:57] + "..."
+                print(f"  → [{linked.memory_type.value[:4]}] {content}")
+    else:
+        print(f"\nHebbian links: none")
+
+    mem.close()
+
+
+def cmd_migrate(args):
+    """Migrate database to v1 unified schema."""
+    from engram.migrate import migrate_to_v1
+    db = resolve_db(args.db)
+    migrate_to_v1(db, dry_run=args.dry_run)
+
+
 def cmd_import(args):
     """Import memories from markdown files."""
     from .import_markdown import import_memories
@@ -346,7 +455,7 @@ def main():
     # add
     add_parser = subparsers.add_parser("add", help="Add a memory")
     add_parser.add_argument("content", help="Memory content")
-    add_parser.add_argument("--type", "-t", choices=["factual", "episodic", "relational", "emotional", "procedural", "opinion"])
+    add_parser.add_argument("--type", "-t", choices=["factual", "episodic", "relational", "emotional", "procedural", "opinion", "causal"])
     add_parser.add_argument("--importance", "-i", type=float, help="Importance (0-1)")
 
     # recall
@@ -372,11 +481,32 @@ def main():
     # list
     list_parser = subparsers.add_parser("list", help="List memories")
     list_parser.add_argument("--limit", "-l", type=int, default=20)
-    list_parser.add_argument("--type", "-t", choices=["factual", "episodic", "relational", "emotional", "procedural", "opinion"])
+    list_parser.add_argument("--type", "-t", choices=["factual", "episodic", "relational", "emotional", "procedural", "opinion", "causal"])
 
     # hebbian
     hebb_parser = subparsers.add_parser("hebbian", help="Show Hebbian links")
     hebb_parser.add_argument("query", help="Query to find memory")
+
+    # update
+    update_parser = subparsers.add_parser("update", help="Update a memory's content")
+    update_parser.add_argument("id", help="Memory ID to update")
+    update_parser.add_argument("new_content", help="New content for the memory")
+
+    # pin
+    pin_parser = subparsers.add_parser("pin", help="Pin a memory (prevents decay)")
+    pin_parser.add_argument("id", help="Memory ID to pin")
+
+    # unpin
+    unpin_parser = subparsers.add_parser("unpin", help="Unpin a memory (resumes decay)")
+    unpin_parser.add_argument("id", help="Memory ID to unpin")
+
+    # reward
+    reward_parser = subparsers.add_parser("reward", help="Reward recent memories with feedback")
+    reward_parser.add_argument("feedback", help="Feedback text (positive/negative)")
+
+    # info
+    info_parser = subparsers.add_parser("info", help="Show full details of a memory")
+    info_parser.add_argument("id", help="Memory ID to inspect")
 
     # import
     import_parser = subparsers.add_parser("import", help="Import from markdown files")
@@ -384,11 +514,29 @@ def main():
     import_parser.add_argument("--no-consolidate", action="store_true", help="Skip consolidation")
     import_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
+    # migrate
+    migrate_parser = subparsers.add_parser("migrate", help="Migrate database to v1 schema")
+    migrate_parser.add_argument("--dry-run", action="store_true", help="Print SQL without executing")
+
+    # mcp
+    subparsers.add_parser("mcp", help="Start MCP server (stdio transport)")
+
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
         sys.exit(1)
+
+    # MCP server gets special handling — pass config via env before import
+    if args.command == "mcp":
+        resolved_db_path = resolve_db(args.db)
+        resolved_embed = resolve_embedding(getattr(args, "embedding", None))
+        os.environ["ENGRAM_DB"] = resolved_db_path
+        if resolved_embed:
+            os.environ["ENGRAM_EMBEDDING"] = resolved_embed
+        from engram.mcp_server import run_server
+        run_server()
+        return
 
     commands = {
         "init": cmd_init,
@@ -402,6 +550,12 @@ def main():
         "list": cmd_list,
         "hebbian": cmd_hebbian,
         "import": cmd_import,
+        "migrate": cmd_migrate,
+        "update": cmd_update,
+        "pin": cmd_pin,
+        "unpin": cmd_unpin,
+        "reward": cmd_reward,
+        "info": cmd_info,
     }
 
     commands[args.command](args)

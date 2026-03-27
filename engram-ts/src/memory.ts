@@ -5,7 +5,7 @@
 import { MemoryConfig } from './config';
 import { MemoryEntry, MemoryType, MemoryLayer, DEFAULT_IMPORTANCE } from './core';
 import { SQLiteStore } from './store';
-import { retrieveTopK } from './activation';
+import { retrieveTopK, retrievalActivation as calcRetrievalActivation } from './activation';
 import { SearchEngine, SearchResult } from './search';
 import { runConsolidationCycle, getConsolidationStats } from './consolidation';
 import { effectiveStrength, shouldForget, pruneforgotten } from './forgetting';
@@ -17,8 +17,13 @@ import { recordCoactivation, decayHebbianLinks, getHebbianNeighbors } from './he
 import { SessionWorkingMemory, SessionRecallResult, getSessionWM } from './session_wm';
 import { EmbeddingProvider, EmbeddingConfig, DEFAULT_EMBEDDING_CONFIG } from './embeddings/base';
 import { detectProvider, getAvailableProviders } from './embeddings/provider_detection';
-import { migrateVectorColumn, storeVector, getVectorCount } from './vector_search';
+import { migrateVectorColumn, storeVector, getVector, getVectorCount, vectorSearch, cosineSimilarity } from './vector_search';
 import { hybridSearch, adaptiveHybridSearch } from './hybrid_search';
+import { Permission, AclEntry, RecallResult } from './types';
+import { grantPermission, revokePermission, checkPermission, listPermissions } from './acl';
+import { SubscriptionManager, Subscription, Notification } from './subscriptions';
+import { EmotionalBus, SoulUpdate, HeartbeatUpdate } from './bus/index';
+import { MemoryExtractor, ExtractedFact, autoDetectExtractor } from './extractor';
 
 const TYPE_MAP: Record<string, MemoryType> = {};
 for (const t of Object.values(MemoryType)) {
@@ -34,6 +39,10 @@ export class Memory {
   private _embeddingProvider: EmbeddingProvider | null = null;
   private _embeddingConfig: EmbeddingConfig;
   private _embeddingInitialized = false;
+  private _agentId: string | null = null;
+  private _emotionalBus: EmotionalBus | null = null;
+  private _subscriptionManager: SubscriptionManager | null = null;
+  private _extractor: MemoryExtractor | null = null;
 
   constructor(path: string = './engram.db', config?: MemoryConfig, embeddingConfig?: EmbeddingConfig) {
     this.path = path;
@@ -45,6 +54,56 @@ export class Memory {
     
     // Migrate vector column if needed
     migrateVectorColumn(this._store.db);
+    
+    // Initialize subscription manager
+    this._subscriptionManager = new SubscriptionManager(this._store.db);
+    
+    // Auto-configure extractor from environment/config
+    this._extractor = autoDetectExtractor();
+  }
+
+  /**
+   * Create a Memory instance with an Emotional Bus attached
+   */
+  static withEmotionalBus(
+    path: string,
+    workspaceDir: string,
+    config?: MemoryConfig,
+    embeddingConfig?: EmbeddingConfig,
+  ): Memory {
+    const mem = new Memory(path, config, embeddingConfig);
+    mem._emotionalBus = new EmotionalBus(workspaceDir, mem._store.db);
+    return mem;
+  }
+
+  /** Get the Emotional Bus, if attached */
+  get emotionalBus(): EmotionalBus | null {
+    return this._emotionalBus;
+  }
+
+  /** Set the agent ID for this memory instance (for ACL checks) */
+  setAgentId(id: string): void {
+    this._agentId = id;
+  }
+
+  /** Get the current agent ID */
+  get agentId(): string | null {
+    return this._agentId;
+  }
+
+  /** Set a memory extractor for LLM-based fact extraction. */
+  setExtractor(extractor: MemoryExtractor): void {
+    this._extractor = extractor;
+  }
+
+  /** Remove the memory extractor (revert to storing raw content). */
+  clearExtractor(): void {
+    this._extractor = null;
+  }
+
+  /** Check if an extractor is configured. */
+  get hasExtractor(): boolean {
+    return this._extractor !== null;
   }
 
   /**
@@ -116,6 +175,55 @@ export class Memory {
   }
 
   /**
+   * Add a new memory with LLM extraction + embedding support (async).
+   *
+   * If an extractor is configured, passes content through LLM to extract
+   * structured facts. Each extracted fact is stored as a separate memory.
+   * Falls back to raw text if extraction fails or returns nothing.
+   *
+   * Also generates embeddings if a provider is available.
+   */
+  async addWithExtraction(
+    content: string,
+    opts: {
+      type?: string;
+      importance?: number;
+      source?: string;
+      tags?: string[];
+      entities?: Array<string | [string, string]>;
+      contradicts?: string;
+      namespace?: string;
+    } = {},
+  ): Promise<string> {
+    if (this._extractor) {
+      try {
+        const facts = await this._extractor.extract(content);
+        if (facts.length > 0) {
+          let lastId = '';
+          for (const fact of facts) {
+            lastId = await this.addWithEmbedding(fact.content, {
+              type: fact.memoryType,
+              importance: fact.importance,
+              source: opts.source,
+              tags: opts.tags,
+              entities: opts.entities,
+            });
+          }
+          return lastId;
+        }
+        // No facts extracted — nothing worth storing
+        return '';
+      } catch (e) {
+        // Extraction failed — fall back to raw storage
+        console.warn('Extractor failed, storing raw:', e);
+      }
+    }
+
+    // No extractor or extraction failed — store raw (backward compatible)
+    return this.addWithEmbedding(content, opts);
+  }
+
+  /**
    * Add a new memory with embedding support (async)
    */
   async addWithEmbedding(
@@ -178,34 +286,114 @@ export class Memory {
       graphExpand = true,
     } = opts;
 
-    const engine = new SearchEngine(this._store);
-    const searchResults = engine.search({
-      query,
-      limit,
-      contextKeywords: context,
-      types,
-      minConfidence,
-      graphExpand,
-    });
-
+    // === Hybrid Search: FTS + embedding + ACT-R (matching Rust weights) ===
+    // Weights: 15% FTS, ~60% embedding, ~25% ACT-R
+    const FTS_WEIGHT = 0.15;
+    const EMBEDDING_WEIGHT = 0.60;
+    const ACTR_WEIGHT = 0.25;
     const now = Date.now() / 1000;
-    const output = searchResults.map(r => ({
-      id: r.entry.id,
-      content: r.entry.content,
-      type: r.entry.memoryType,
-      confidence: Math.round(r.confidence * 1000) / 1000,
-      confidence_label: r.confidenceLabel,
-      strength: Math.round(effectiveStrength(r.entry, now) * 1000) / 1000,
-      activation: Math.round(r.score * 1000) / 1000,
-      age_days: Math.round(r.entry.ageDays() * 10) / 10,
-      layer: r.entry.layer,
-      importance: Math.round(r.entry.importance * 100) / 100,
-      contradicted: Boolean(r.entry.contradictedBy),
-    }));
+    const fetchLimit = limit * 3;
+
+    // 1. Get FTS results (always)
+    const ftsResults = this._store.searchFtsNs(query, fetchLimit, 'default');
+    const ftsScoreMap = new Map<string, number>();
+    for (let i = 0; i < ftsResults.length; i++) {
+      const score = 1.0 - (i / Math.max(ftsResults.length, 1));
+      ftsScoreMap.set(ftsResults[i].id, score);
+    }
+
+    // 2. Get vector results (if embeddings exist)
+    const vectorScoreMap = new Map<string, number>();
+    const vectorCount = getVectorCount(this._store.db);
+    if (vectorCount > 0) {
+      // We need the query vector — try to get it synchronously from stored vectors
+      // For sync recall, use the vectorSearch from hybrid_search which works with stored vectors
+      const hybridResults = hybridSearch(this._store.db, null, query, {
+        limit: fetchLimit,
+        vectorWeight: 0,
+        ftsWeight: 1.0,
+      });
+      // Note: We can't do async embedding here in sync recall.
+      // Vector scores will be used only if recallWithEmbedding() is called.
+    }
+
+    // 3. Collect all candidate IDs
+    const allIds = new Set<string>();
+    for (const entry of ftsResults) allIds.add(entry.id);
+
+    // 4. Score each candidate with FTS + ACT-R (sync path — no embedding)
+    const scored: Array<{ entry: MemoryEntry; combinedScore: number; activation: number }> = [];
+
+    for (const id of allIds) {
+      const entry = this._store.get(id);
+      if (!entry) continue;
+      if (types && !types.includes(entry.memoryType)) continue;
+
+      const ftsScore = ftsScoreMap.get(id) ?? 0;
+      const activation = calcRetrievalActivation(
+        entry,
+        context ?? [],
+        now,
+        this.config.actrDecay,
+        this.config.contextWeight,
+        this.config.importanceWeight,
+      );
+      // Normalize activation to 0..1
+      const activationNorm = Math.max(0, Math.min(1, (activation + 10) / 20));
+
+      // Without embedding in sync path: redistribute embedding weight to FTS + ACT-R
+      const combinedScore = (FTS_WEIGHT + EMBEDDING_WEIGHT * 0.3) * ftsScore
+        + (ACTR_WEIGHT + EMBEDDING_WEIGHT * 0.7) * activationNorm;
+
+      scored.push({ entry, combinedScore, activation });
+    }
+
+    // Also run the original search engine for graph expansion (catches things FTS misses)
+    if (graphExpand) {
+      const engine = new SearchEngine(this._store);
+      const extraResults = engine.search({
+        query,
+        limit: fetchLimit,
+        contextKeywords: context,
+        types,
+        minConfidence: 0,
+        graphExpand: true,
+      });
+      for (const r of extraResults) {
+        if (!allIds.has(r.entry.id)) {
+          allIds.add(r.entry.id);
+          const ftsScore = ftsScoreMap.get(r.entry.id) ?? 0;
+          const activationNorm = Math.max(0, Math.min(1, (r.score + 10) / 20));
+          const combinedScore = (FTS_WEIGHT + EMBEDDING_WEIGHT * 0.3) * ftsScore
+            + (ACTR_WEIGHT + EMBEDDING_WEIGHT * 0.7) * activationNorm;
+          scored.push({ entry: r.entry, combinedScore, activation: r.score });
+        }
+      }
+    }
+
+    // Sort by combined score
+    scored.sort((a, b) => b.combinedScore - a.combinedScore);
+
+    const output = scored.slice(0, limit).map(({ entry, combinedScore, activation }) => {
+      const conf = Math.max(0, Math.min(1, combinedScore));
+      return {
+        id: entry.id,
+        content: entry.content,
+        type: entry.memoryType,
+        confidence: Math.round(conf * 1000) / 1000,
+        confidence_label: confidenceLabel(conf),
+        strength: Math.round(effectiveStrength(entry, now) * 1000) / 1000,
+        activation: Math.round(activation * 1000) / 1000,
+        age_days: Math.round(entry.ageDays() * 10) / 10,
+        layer: entry.layer,
+        importance: Math.round(entry.importance * 100) / 100,
+        contradicted: Boolean(entry.contradictedBy),
+      };
+    }).filter(r => r.confidence >= minConfidence);
 
     // Record Hebbian co-activation
-    if (this.config.hebbianEnabled && searchResults.length >= 2) {
-      const resultIds = searchResults.map(r => r.entry.id);
+    if (this.config.hebbianEnabled && output.length >= 2) {
+      const resultIds = output.map(r => r.id);
       recordCoactivation(this._store, resultIds, this.config);
     }
 
@@ -563,5 +751,316 @@ export class Memory {
 
   toString(): string {
     return `Memory(path='${this.path}', entries=${this.length})`;
+  }
+
+  // === v2: Namespace Support ===
+
+  /**
+   * Add a memory to a specific namespace
+   */
+  addToNamespace(
+    content: string,
+    opts: {
+      type?: string;
+      importance?: number;
+      source?: string;
+      tags?: string[];
+      entities?: Array<string | [string, string]>;
+      contradicts?: string;
+      namespace?: string;
+    } = {},
+  ): string {
+    const namespace = opts.namespace || 'default';
+    const {
+      type = 'factual',
+      importance,
+      source = '',
+      tags,
+      entities,
+      contradicts,
+    } = opts;
+
+    const memoryType = TYPE_MAP[type] ?? MemoryType.FACTUAL;
+
+    let actualContent = content;
+    if (tags && tags.length > 0) {
+      actualContent = `${content} [tags: ${tags.join(', ')}]`;
+    }
+
+    // Calculate base importance
+    let baseImportance = importance ?? DEFAULT_IMPORTANCE[memoryType];
+
+    // Apply drive alignment boost if Emotional Bus is attached
+    if (this._emotionalBus) {
+      const boost = this._emotionalBus.alignImportance(content);
+      baseImportance = Math.min(1.0, baseImportance * boost);
+    }
+
+    const entry = this._store.add(actualContent, memoryType, baseImportance, source, null, namespace);
+
+    if (contradicts) {
+      const oldEntry = this._store.get(contradicts);
+      if (oldEntry) {
+        entry.contradicts = contradicts;
+        this._store.update(entry);
+        oldEntry.contradictedBy = entry.id;
+        this._store.update(oldEntry);
+      }
+    }
+
+    if (entities) {
+      for (const ent of entities) {
+        if (Array.isArray(ent)) {
+          const [entity, relation] = ent;
+          this._store.addGraphLink(entry.id, entity, relation ?? '');
+        } else {
+          this._store.addGraphLink(entry.id, ent, '');
+        }
+      }
+    }
+
+    this._tracker.update('encoding_rate', 1.0);
+    return entry.id;
+  }
+
+  /**
+   * Add a memory with emotional tracking
+   */
+  addWithEmotion(
+    content: string,
+    opts: {
+      type?: string;
+      importance?: number;
+      source?: string;
+      tags?: string[];
+      entities?: Array<string | [string, string]>;
+      contradicts?: string;
+      namespace?: string;
+      emotion: number;
+      domain: string;
+    },
+  ): string {
+    const memoryId = this.addToNamespace(content, opts);
+
+    // Record emotion if bus is attached
+    if (this._emotionalBus) {
+      this._emotionalBus.processInteraction(content, opts.emotion, opts.domain);
+    }
+
+    return memoryId;
+  }
+
+  /**
+   * Recall from a specific namespace
+   */
+  recallFromNamespace(
+    query: string,
+    limit: number = 10,
+    opts: {
+      context?: string[];
+      minConfidence?: number;
+      namespace?: string;
+    } = {},
+  ): RecallResult[] {
+    const namespace = opts.namespace || 'default';
+    const now = Date.now() / 1000;
+    const context = opts.context ?? [];
+    const minConf = opts.minConfidence ?? 0.0;
+
+    // Get candidate memories via FTS (namespace-aware)
+    const candidates = this._store.searchFtsNs(query, limit * 3, namespace);
+
+    // Score each candidate with ACT-R activation
+    const scored = candidates.map(entry => {
+      const activation = calcRetrievalActivation(
+        entry,
+        context,
+        now,
+        this.config.actrDecay,
+        this.config.contextWeight,
+        this.config.importanceWeight,
+      );
+      return { entry, activation };
+    }).filter(x => x.activation > -Infinity);
+
+    // Sort by activation descending
+    scored.sort((a, b) => b.activation - a.activation);
+
+    // Take top-k and compute confidence
+    const results = scored.slice(0, limit).map(({ entry, activation }) => {
+      const conf = confidenceScore(entry, this._store, now);
+      const label = confidenceLabel(conf);
+      return { entry, activation, confidence: conf, confidenceLabel: label };
+    }).filter(r => r.confidence >= minConf) as RecallResult[];
+
+    // Record access for all retrieved memories
+    for (const result of results) {
+      this._store.recordAccess(result.entry.id);
+    }
+
+    // Hebbian learning: record co-activation (namespace-aware)
+    if (this.config.hebbianEnabled && results.length >= 2) {
+      const memoryIds = results.map(r => r.entry.id);
+      recordCoactivation(this._store, memoryIds, this.config);
+    }
+
+    return results;
+  }
+
+  // === Recall Associated (renamed from recall_causal) ===
+
+  /**
+   * Recall associated memories using Hebbian links and causal type filtering.
+   *
+   * Uses Hebbian links to find memories that frequently co-occur.
+   * Note: this finds *associations*, not true causal relationships.
+   * LLMs can infer causality from the associated context.
+   *
+   * @param causeQuery Optional query to filter causal memories
+   * @param limit Maximum number of results
+   * @param minConfidence Minimum confidence threshold
+   * @param namespace Namespace to search
+   */
+  recallAssociated(
+    causeQuery?: string,
+    limit: number = 5,
+    minConfidence: number = 0.0,
+    namespace?: string,
+  ): RecallResult[] {
+    const now = Date.now() / 1000;
+    const ns = namespace || 'default';
+
+    if (causeQuery) {
+      // Do normal recall but filter to causal type
+      const results = this.recallFromNamespace(causeQuery, limit * 2, {
+        minConfidence,
+        namespace: ns,
+      });
+      return results
+        .filter((r) => r.entry.memoryType === MemoryType.CAUSAL)
+        .slice(0, limit);
+    }
+
+    // Get all causal memories sorted by importance
+    const allMemories = this._store.all();
+    const causalMemories = allMemories
+      .filter((m) => m.memoryType === MemoryType.CAUSAL)
+      .map((entry) => {
+        const activation = calcRetrievalActivation(
+          entry,
+          [],
+          now,
+          this.config.actrDecay,
+          this.config.contextWeight,
+          this.config.importanceWeight,
+        );
+        const conf = confidenceScore(entry, this._store, now);
+        return {
+          entry,
+          activation,
+          confidence: conf,
+          confidenceLabel: confidenceLabel(conf),
+        };
+      })
+      .filter((r) => r.confidence >= minConfidence)
+      .sort((a, b) => b.entry.importance - a.entry.importance)
+      .slice(0, limit);
+
+    return causalMemories;
+  }
+
+  /**
+   * @deprecated Use `recallAssociated()` instead. This is a compatibility alias.
+   */
+  recallCausal(
+    causeQuery?: string,
+    limit: number = 5,
+    minConfidence: number = 0.0,
+    namespace?: string,
+  ): RecallResult[] {
+    return this.recallAssociated(causeQuery, limit, minConfidence, namespace);
+  }
+
+  // === v2: ACL Support ===
+
+  /**
+   * Grant a permission to an agent for a namespace
+   */
+  grant(agentId: string, namespace: string, permission: Permission): void {
+    const grantor = this._agentId || 'system';
+    grantPermission(this._store.db, agentId, namespace, permission, grantor);
+  }
+
+  /**
+   * Revoke a permission from an agent for a namespace
+   */
+  revoke(agentId: string, namespace: string): boolean {
+    return revokePermission(this._store.db, agentId, namespace);
+  }
+
+  /**
+   * Check if an agent has a specific permission for a namespace
+   */
+  checkPermission(agentId: string, namespace: string, permission: Permission): boolean {
+    return checkPermission(this._store.db, agentId, namespace, permission);
+  }
+
+  /**
+   * List all permissions for an agent
+   */
+  listPermissions(agentId: string): AclEntry[] {
+    return listPermissions(this._store.db, agentId);
+  }
+
+  // === v2: Subscription Support ===
+
+  /**
+   * Subscribe to notifications for a namespace
+   */
+  subscribe(agentId: string, namespace: string, minImportance: number): void {
+    if (!this._subscriptionManager) {
+      throw new Error('Subscription manager not initialized');
+    }
+    this._subscriptionManager.subscribe(agentId, namespace, minImportance);
+  }
+
+  /**
+   * Unsubscribe from a namespace
+   */
+  unsubscribe(agentId: string, namespace: string): boolean {
+    if (!this._subscriptionManager) {
+      throw new Error('Subscription manager not initialized');
+    }
+    return this._subscriptionManager.unsubscribe(agentId, namespace);
+  }
+
+  /**
+   * List subscriptions for an agent
+   */
+  listSubscriptions(agentId: string): Subscription[] {
+    if (!this._subscriptionManager) {
+      throw new Error('Subscription manager not initialized');
+    }
+    return this._subscriptionManager.listSubscriptions(agentId);
+  }
+
+  /**
+   * Check for notifications since last check
+   */
+  checkNotifications(agentId: string): Notification[] {
+    if (!this._subscriptionManager) {
+      throw new Error('Subscription manager not initialized');
+    }
+    return this._subscriptionManager.checkNotifications(agentId);
+  }
+
+  /**
+   * Peek at notifications without updating cursor
+   */
+  peekNotifications(agentId: string): Notification[] {
+    if (!this._subscriptionManager) {
+      throw new Error('Subscription manager not initialized');
+    }
+    return this._subscriptionManager.peekNotifications(agentId);
   }
 }

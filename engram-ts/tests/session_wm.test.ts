@@ -8,9 +8,9 @@ import * as path from 'path';
 
 describe('SessionWorkingMemory', () => {
   describe('Capacity and Activation', () => {
-    test('default capacity is 7 (Miller\'s Law)', () => {
+    test('default capacity is 15 (matching Rust implementation)', () => {
       const swm = new SessionWorkingMemory();
-      expect(swm.capacity).toBe(7);
+      expect(swm.capacity).toBe(15);
     });
 
     test('custom capacity', () => {

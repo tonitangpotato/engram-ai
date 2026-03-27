@@ -132,6 +132,238 @@ python3 -m engram.mcp_server
 
 ---
 
+## 🆕 Engram v2: Multi-Agent Intelligence
+
+Engram v2 adds powerful features for building **multi-agent systems** with shared memory, emotional feedback, and cross-agent intelligence:
+
+### 🔐 Namespace Isolation & ACL
+
+Separate memory spaces for different agents/domains with fine-grained access control:
+
+```python
+from engram import Memory
+from engram.acl import Permission
+
+memory = Memory("./shared.db")
+memory.set_agent_id("trading_agent")
+
+# Store in namespace
+memory.add_to_namespace(
+    "Oil prices spiked 15%",
+    type="factual",
+    importance=0.9,
+    namespace="trading"
+)
+
+# ACL: Grant read permission to another agent
+memory.grant("ceo_agent", "trading", Permission.READ)
+
+# Subscribe to high-importance events
+memory.subscribe("ceo_agent", "*", min_importance=0.8)
+
+# Check for notifications
+notifications = memory.check_notifications("ceo_agent")
+# → [{memory_id: "...", namespace: "trading", content: "Oil prices...", importance: 0.9}]
+```
+
+**Use cases:**
+- **CEO pattern** — Supervisor agent monitors specialist agents' discoveries
+- **Team collaboration** — Agents share knowledge in topic-specific namespaces
+- **Privacy isolation** — Sensitive memories stay in restricted namespaces
+
+### 🎭 Emotional Bus — Memory ↔ Personality Feedback Loop
+
+The Emotional Bus connects memory to agent workspace files (`SOUL.md`, `HEARTBEAT.md`), creating a **closed-loop** between what the agent experiences and how it evolves:
+
+```python
+from engram import Memory
+from engram.bus import EmotionalBus
+
+memory = Memory.with_emotional_bus(
+    db_path="./agent.db",
+    workspace_dir="./workspace"
+)
+
+# Store memory with emotional tracking
+memory.add_with_emotion(
+    "Debugging session took 3 hours with no progress",
+    type="episodic",
+    emotion=-0.8,  # Negative experience
+    domain="debugging"
+)
+
+# Bus accumulates emotional trends
+bus = memory.emotional_bus()
+trends = bus.get_trends()
+# → [EmotionalTrend(domain="debugging", valence=-0.75, count=5)]
+
+# Suggest SOUL updates based on patterns
+suggestions = bus.suggest_soul_updates()
+# → [SoulUpdate(domain="debugging", action="add drive", 
+#     content="Avoid lengthy debugging sessions without breaks")]
+
+# Drive alignment boosts importance
+# Memory matching SOUL drives gets automatic importance boost
+bus.drives  # → [Drive(name="curiosity", description="...")]
+```
+
+**Workspace files:**
+
+`SOUL.md` — Core drives/values:
+```markdown
+# Core Drives
+curiosity: Always seek to understand new things
+efficiency: Prefer action over endless discussion
+```
+
+`HEARTBEAT.md` — Periodic tasks:
+```markdown
+- [ ] Check email
+- [x] Run consolidation
+```
+
+**How it works:**
+1. **Memory → SOUL**: Negative emotional patterns trigger drive suggestions
+2. **SOUL → Memory**: Memories aligned with drives get importance boost
+3. **Behavior → HEARTBEAT**: Failed actions get deprioritization suggestions
+4. **HEARTBEAT → Behavior**: Successful patterns get reinforced
+
+**Use cases:**
+- **Self-improving agents** — Personality evolves from experience
+- **Emotional coherence** — Agent behavior aligns with "values"
+- **Adaptive task scheduling** — HEARTBEAT learns what works
+
+### 🌐 Cross-Namespace Intelligence
+
+Hebbian links can span namespaces, enabling **cross-domain insights**:
+
+```python
+# Recall with cross-namespace associations
+result = memory.recall_with_associations(
+    "market volatility",
+    namespace="*",  # Search all namespaces
+    limit=5
+)
+
+# Returns both memories + cross-links
+for link in result.cross_links:
+    print(f"{link.source_ns}:{link.source_id} → {link.target_ns}:{link.target_id}")
+    # trading:abc123 → geopolitics:def456 (strength: 0.85)
+```
+
+**Discovery pattern:**
+```python
+# Find connections between two domains
+links = memory.discover_cross_links("trading", "geopolitics")
+# → Reveals how trading events correlate with political events
+```
+
+---
+
+## 🆕 v2.1.0: LLM Extraction & Hybrid Search
+
+### 🤖 LLM-Powered Memory Extraction
+
+Instead of storing raw conversation text, **extract key facts automatically**:
+
+```python
+from engram import Memory, AnthropicExtractor
+
+memory = Memory("./agent.db")
+
+# Option 1: Auto-configure from environment
+# Just set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN and it works automatically
+
+# Option 2: Explicit setup
+memory.set_extractor(AnthropicExtractor(api_key="sk-ant-..."))
+
+# Now add() extracts facts automatically
+memory.add("I had pizza yesterday and it was great, but my girlfriend didn't like it")
+# Stores two separate facts:
+# 1. "User likes pizza" (relational, importance 0.6)
+# 2. "User's girlfriend doesn't like pizza" (relational, importance 0.6)
+```
+
+**Why it matters:**
+- **Better recall**: Search for "user food preferences" finds "pizza" even if the word "preference" wasn't in the original text
+- **Cleaner memory**: Facts are normalized, not duplicated across conversations
+- **Cost-effective**: Uses Claude Haiku (~$0.0001 per memory) or local Ollama models (free)
+
+### 🔧 Config Hierarchy
+
+Engram now supports layered configuration with clear priority:
+
+| Priority | Source | Use Case |
+|----------|--------|----------|
+| 1. Code | `memory.set_extractor(...)` | Agent harnesses (RustClaw, etc.) |
+| 2. Env vars | `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` | Local dev, Docker |
+| 3. Config file | `~/.config/engram/config.json` | User preferences |
+| 4. No extractor | Falls back to raw text storage | Backward compatible |
+
+```bash
+# Initialize config interactively
+python3 -m engram init
+```
+
+Config file (`~/.config/engram/config.json`):
+```json
+{
+  "embedding": {
+    "provider": "ollama",
+    "model": "nomic-embed-text"
+  },
+  "extractor": {
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5-20251001"
+  }
+}
+```
+
+> ⚠️ **Security**: Never store API keys in config files. Use environment variables.
+
+### 🎯 Hybrid Search (FTS + Embedding + ACT-R)
+
+`recall()` now uses **triple scoring** by default:
+
+```python
+results = memory.recall("user preferences", limit=5)
+# Automatically combines:
+#   15% FTS (exact term matching)
+#   60% Embedding (semantic similarity)
+#   25% ACT-R (recency/frequency/importance)
+```
+
+**Why three signals?**
+- **FTS**: Catches exact matches (project names, technical terms)
+- **Embedding**: Catches semantically similar concepts ("preference" ≈ "like")
+- **ACT-R**: Prioritizes recently/frequently accessed memories
+
+**Configurable weights** (Rust crate only, Python coming soon):
+```rust
+let mut config = MemoryConfig::default();
+config.fts_weight = 0.30;        // 30% exact matching
+config.embedding_weight = 0.50;   // 50% semantic
+config.actr_weight = 0.20;        // 20% temporal
+```
+
+### 🈶 CJK Tokenization (Rust only, Python coming soon)
+
+Chinese/Japanese/Korean text now gets **intelligent word segmentation** via jieba:
+
+```
+❌ Before:
+   "engram是认知记忆系统" → split into 8 characters
+   Search "记忆系统" matches poorly
+
+✅ After (with jieba):
+   "engram是认知记忆系统" → ["engram", "是", "认知", "记忆系统"]
+   Search "记忆系统" matches precisely
+```
+
+**Performance impact:** Negligible (~0.02ms per memory vs ~50ms for embedding generation)
+
+---
+
 ## Core Concepts
 
 ### 🧠 ACT-R Activation

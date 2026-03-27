@@ -52,10 +52,10 @@ export class SessionWorkingMemory {
   /**
    * Initialize working memory.
    *
-   * @param capacity Maximum number of active memory chunks (Miller's Law: 7±2)
-   * @param decaySeconds Time until a memory fades from working memory (default: 5 min)
+   * @param capacity Maximum number of active memory chunks (default: 15, matching Rust)
+   * @param decaySeconds Time until a memory fades from working memory (default: 300s)
    */
-  constructor(capacity: number = 7, decaySeconds: number = 300.0) {
+  constructor(capacity: number = 15, decaySeconds: number = 300.0) {
     this.capacity = capacity;
     this.decaySeconds = decaySeconds;
     this.items = new Map();
@@ -255,9 +255,9 @@ const sessionRegistry = new Map<string, SessionWorkingMemory>();
 /**
  * Get or create a SessionWorkingMemory for a given session ID.
  */
-export function getSessionWM(sessionId: string = 'default'): SessionWorkingMemory {
+export function getSessionWM(sessionId: string = 'default', capacity: number = 15, decaySeconds: number = 300): SessionWorkingMemory {
   if (!sessionRegistry.has(sessionId)) {
-    sessionRegistry.set(sessionId, new SessionWorkingMemory());
+    sessionRegistry.set(sessionId, new SessionWorkingMemory(capacity, decaySeconds));
   }
   return sessionRegistry.get(sessionId)!;
 }

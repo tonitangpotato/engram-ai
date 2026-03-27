@@ -61,6 +61,7 @@ from engram.hebbian import (
     decay_hebbian_links,
 )
 from engram.adaptive_tuning import AdaptiveTuner
+from engram.extractor import MemoryExtractor, ExtractedFact
 
 
 # Map string type names to MemoryType enum
@@ -83,6 +84,7 @@ class Memory:
         config: MemoryConfig = None,
         embedding = None,
         adaptive_tuning: bool = False,
+        extractor: Optional[MemoryExtractor] = None,
     ):
         """
         Initialize Engram memory system.
@@ -97,6 +99,9 @@ class Memory:
                       - "ollama" -> OllamaAdapter (requires local Ollama)
                       - None -> FTS5-only mode (no embeddings)
             adaptive_tuning: Enable automatic parameter tuning based on performance.
+            extractor: Optional MemoryExtractor for LLM-based fact extraction.
+                      If set, add() will extract structured facts from raw text.
+                      If None, auto-configures from env vars / config file.
         """
         self.path = path
         self.config = config or MemoryConfig.default()
@@ -115,6 +120,11 @@ class Memory:
         
         if embedding is not None:
             self._init_embedding(embedding)
+        
+        # Initialize extractor (code param > auto-detect from env/config)
+        self._extractor: Optional[MemoryExtractor] = extractor
+        if self._extractor is None:
+            self._extractor = self._auto_configure_extractor()
 
     def _init_embedding(self, embedding):
         """Initialize embedding adapter and vector store."""
@@ -137,20 +147,100 @@ class Memory:
         # Initialize vector store
         self._vector_store = VectorStore(self._store._conn, self._embedding_adapter)
 
+    def _auto_configure_extractor(self) -> Optional[MemoryExtractor]:
+        """
+        Auto-configure extractor from environment and config file.
+
+        Detection order (high → low priority):
+        1. ANTHROPIC_AUTH_TOKEN env var → AnthropicExtractor with OAuth
+        2. ANTHROPIC_API_KEY env var → AnthropicExtractor with API key
+        3. ~/.config/engram/config.json extractor section
+        4. None → no extraction (backward compatible)
+
+        Model can be overridden via ENGRAM_EXTRACTOR_MODEL env var.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        model = os.environ.get("ENGRAM_EXTRACTOR_MODEL", "claude-haiku-4-5-20251001")
+
+        # 1. ANTHROPIC_AUTH_TOKEN (OAuth mode)
+        token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        if token:
+            from engram.extractor import AnthropicExtractor
+            logger.info("Extractor: Anthropic (OAuth) from ANTHROPIC_AUTH_TOKEN")
+            return AnthropicExtractor(auth_token=token, is_oauth=True, model=model)
+
+        # 2. ANTHROPIC_API_KEY (API key mode)
+        key = os.environ.get("ANTHROPIC_API_KEY")
+        if key:
+            from engram.extractor import AnthropicExtractor
+            logger.info("Extractor: Anthropic (API key) from ANTHROPIC_API_KEY")
+            return AnthropicExtractor(auth_token=key, is_oauth=False, model=model)
+
+        # 3. Config file
+        return self._load_extractor_from_config()
+
+    def _load_extractor_from_config(self) -> Optional[MemoryExtractor]:
+        """Load extractor configuration from ~/.config/engram/config.json."""
+        import json
+        import logging
+        from pathlib import Path
+        logger = logging.getLogger(__name__)
+
+        config_path = Path("~/.config/engram/config.json").expanduser()
+        if not config_path.exists():
+            return None
+
+        try:
+            data = json.loads(config_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+        ext_cfg = data.get("extractor")
+        if not ext_cfg:
+            return None
+
+        provider = ext_cfg.get("provider")
+        if provider == "anthropic":
+            # Still need env var for auth — config file NEVER stores tokens
+            token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
+            if not token:
+                return None
+            is_oauth = bool(os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+            model = ext_cfg.get("model", "claude-haiku-4-5-20251001")
+            from engram.extractor import AnthropicExtractor
+            logger.info("Extractor: Anthropic (%s) from config file", model)
+            return AnthropicExtractor(auth_token=token, is_oauth=is_oauth, model=model)
+        elif provider == "ollama":
+            model = ext_cfg.get("model", "llama3.2:3b")
+            host = ext_cfg.get("host", "http://localhost:11434")
+            from engram.extractor import OllamaExtractor
+            logger.info("Extractor: Ollama (%s) from config file", model)
+            return OllamaExtractor(model=model, host=host)
+
+        return None
+
+    def set_extractor(self, extractor: Optional[MemoryExtractor]):
+        """Set or clear the memory extractor."""
+        self._extractor = extractor
+
+    def has_extractor(self) -> bool:
+        """Check if an extractor is configured."""
+        return self._extractor is not None
+
     def add(self, content: str, type: str = "factual", importance: float = None,
             source: str = "", tags: list[str] = None,
             entities: list = None, contradicts: str = None,
-            created_at: float = None, metadata: dict = None) -> str:
+            created_at: float = None, metadata: dict = None,
+            extract: bool = True) -> str:
         """
         Store a new memory. Returns memory ID.
 
-        The memory is encoded with initial working_strength=1.0 (strong
-        hippocampal trace) and core_strength=0.0 (no neocortical trace yet).
-        Consolidation cycles will gradually transfer it to core.
-
-        Importance modulates encoding strength — high importance memories
-        (emotional, relational) are encoded more strongly, mimicking the
-        amygdala's role in memory modulation.
+        If an extractor is configured and extract=True, the content is first
+        passed through the LLM to extract structured facts. Each extracted
+        fact is stored as a separate memory. If extraction fails or returns
+        nothing, the raw content is stored as a fallback.
 
         Args:
             content: The memory content (natural language)
@@ -161,10 +251,53 @@ class Memory:
             tags: Optional tags for categorization (stored in content for now)
             metadata: Optional structured metadata dict (e.g., causal memories
                      use cause/effect/confidence/domain fields)
+            extract: If True and extractor is configured, extract facts from content.
+                    Set to False to force raw storage (e.g., for already-extracted facts).
 
         Returns:
-            Memory ID string (8-char UUID prefix)
+            Memory ID string (8-char UUID prefix). If multiple facts extracted,
+            returns the ID of the last one stored.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # If extractor is configured and extraction is enabled, try to extract facts
+        if extract and self._extractor is not None:
+            try:
+                facts = self._extractor.extract(content)
+                if facts:
+                    logger.info(
+                        "Extracted %d facts from content (%.40s...)",
+                        len(facts), content,
+                    )
+                    last_id = ""
+                    for fact in facts:
+                        logger.info(
+                            "  → [%s] (imp=%.1f) %.80s",
+                            fact.memory_type, fact.importance, fact.content,
+                        )
+                        last_id = self.add(
+                            content=fact.content,
+                            type=fact.memory_type,
+                            importance=fact.importance,
+                            source=source,
+                            tags=tags,
+                            entities=entities,
+                            created_at=created_at,
+                            metadata=metadata,
+                            extract=False,  # Don't re-extract extracted facts
+                        )
+                    return last_id
+                else:
+                    # Nothing worth storing according to the LLM
+                    logger.info(
+                        "Extractor: nothing worth storing in: %.50s...", content,
+                    )
+                    return ""
+            except Exception as e:
+                # Extractor failed — fall back to storing raw text
+                logger.warning("Extractor failed, storing raw: %s", e)
+
         memory_type = _TYPE_MAP.get(type, MemoryType.FACTUAL)
 
         # If tags provided, append to content for searchability
@@ -571,26 +704,29 @@ class Memory:
             entry.pinned = False
             self._store.update(entry)
 
-    def recall_causal(self, cause_query: str = None, limit: int = 10,
-                      min_confidence: float = 0.0) -> list[dict]:
+    def recall_associated(self, cause_query: str = None, limit: int = 10,
+                          min_confidence: float = 0.0) -> list[dict]:
         """
-        Recall causal memories — memories about cause→effect relationships.
+        Recall associated memories — memories about cause→effect relationships.
         
         These are either:
         1. Manually stored with type=causal
         2. Auto-created by STDP during consolidation
         
+        Note: Renamed from recall_causal for API consistency with Rust crate.
+        Uses Hebbian links to find memories that frequently co-occur.
+        
         If cause_query is provided, does semantic search filtered to type=causal.
         Otherwise returns all causal memories sorted by importance.
         
         Args:
-            cause_query: Optional search query to find relevant causal memories.
+            cause_query: Optional search query to find relevant associated memories.
                         If None, returns all causal memories.
             limit: Maximum results to return
             min_confidence: Minimum confidence from metadata (0-1)
             
         Returns:
-            List of dicts with causal memory info including metadata
+            List of dicts with associated memory info including metadata
         """
         import json
         
@@ -643,6 +779,11 @@ class Memory:
         
         return results[:limit]
 
+    # Backward compatibility alias
+    def recall_causal(self, *args, **kwargs):
+        """Deprecated: Use recall_associated() instead."""
+        return self.recall_associated(*args, **kwargs)
+
     def hebbian_links(self, memory_id: str = None) -> list[tuple[str, str, float]]:
         """
         Get Hebbian links for a specific memory or all links.
@@ -672,6 +813,316 @@ class Memory:
             return links
         else:
             return get_all_hebbian_links(self._store)
+
+    # ═══ Engram v2: Multi-Agent & Emotional Bus ═══
+    
+    @staticmethod
+    def with_emotional_bus(
+        db_path: str,
+        workspace_dir: str,
+        config: MemoryConfig = None,
+        embedding = None,
+    ):
+        """
+        Create a Memory instance with an Emotional Bus attached.
+        
+        The Emotional Bus connects memory to workspace files (SOUL.md, HEARTBEAT.md)
+        for drive alignment and emotional feedback loops.
+        
+        Args:
+            db_path: Path to SQLite database file
+            workspace_dir: Path to the agent workspace directory
+            config: Optional MemoryConfig
+            embedding: Optional embedding adapter
+            
+        Returns:
+            Memory instance with emotional bus attached
+        """
+        from engram.bus import EmotionalBus
+        
+        mem = Memory(db_path, config, embedding)
+        mem._emotional_bus = EmotionalBus(workspace_dir, mem._store._conn)
+        mem._agent_id = None
+        return mem
+    
+    def set_agent_id(self, agent_id: str):
+        """
+        Set the agent ID for this memory instance.
+        
+        This is used for ACL checks when storing and recalling memories.
+        Each agent should identify itself before performing operations.
+        """
+        self._agent_id = agent_id
+        if not hasattr(self, '_acl_manager'):
+            from engram.acl import AclManager
+            self._acl_manager = AclManager(self._store._conn)
+    
+    def add_to_namespace(
+        self,
+        content: str,
+        type: str = "factual",
+        importance: float = None,
+        source: str = "",
+        namespace: str = "default",
+        **kwargs
+    ) -> str:
+        """
+        Store a new memory in a specific namespace.
+        
+        Args:
+            content: The memory content
+            type: Memory type (factual, episodic, etc.)
+            importance: 0-1 importance score (None = auto from type)
+            source: Source identifier
+            namespace: Namespace to store in (default: "default")
+            **kwargs: Additional arguments (tags, entities, metadata, etc.)
+            
+        Returns:
+            Memory ID string
+        """
+        memory_type = _TYPE_MAP.get(type, MemoryType.FACTUAL)
+        
+        # Apply drive alignment boost if Emotional Bus is attached
+        base_importance = importance or DEFAULT_IMPORTANCE[memory_type]
+        if hasattr(self, '_emotional_bus') and self._emotional_bus:
+            boost = self._emotional_bus.align_importance(content)
+            importance = min(1.0, base_importance * boost)
+        else:
+            importance = base_importance
+        
+        # Store with namespace
+        entry = self._store.add(
+            content=content,
+            memory_type=memory_type,
+            importance=importance,
+            source_file=source,
+            namespace=namespace,
+            **kwargs
+        )
+        
+        # Store embedding if adapter is configured
+        if self._vector_store is not None:
+            self._vector_store.add(entry.id, content)
+        
+        return entry.id
+    
+    def add_with_emotion(
+        self,
+        content: str,
+        type: str = "factual",
+        importance: float = None,
+        source: str = "",
+        namespace: str = "default",
+        emotion: float = 0.0,
+        domain: str = "general",
+    ) -> str:
+        """
+        Store a new memory with emotional tracking.
+        
+        This method both stores the memory and records the emotional valence
+        in the Emotional Bus for trend tracking. Requires an Emotional Bus
+        to be attached.
+        
+        Args:
+            content: The memory content
+            type: Memory type
+            importance: 0-1 importance score (None = auto)
+            source: Source identifier
+            namespace: Namespace to store in
+            emotion: Emotional valence (-1.0 to 1.0)
+            domain: Domain for emotional tracking
+            
+        Returns:
+            Memory ID string
+        """
+        if not hasattr(self, '_emotional_bus') or not self._emotional_bus:
+            raise RuntimeError("Emotional Bus not attached. Use Memory.with_emotional_bus()")
+        
+        # Store the memory (with importance boost from alignment)
+        memory_id = self.add_to_namespace(content, type, importance, source, namespace)
+        
+        # Record emotion
+        self._emotional_bus.process_interaction(content, emotion, domain)
+        
+        return memory_id
+    
+    def recall_from_namespace(
+        self,
+        query: str,
+        namespace: str = "default",
+        limit: int = 5,
+        context: list[str] = None,
+        min_confidence: float = 0.0,
+    ) -> list[dict]:
+        """
+        Retrieve relevant memories from a specific namespace.
+        
+        Args:
+            query: Natural language query
+            namespace: Namespace to search (None = "default", "*" = all namespaces)
+            limit: Maximum number of results
+            context: Additional context keywords to boost relevant memories
+            min_confidence: Minimum confidence threshold (0-1)
+            
+        Returns:
+            List of memory dicts
+        """
+        # Use namespace-aware FTS search
+        candidates = self._store.search_fts_ns(query, limit * 3, namespace)
+        
+        # Score with ACT-R activation
+        from engram.activation import retrieval_activation
+        
+        now = time.time()
+        scored = []
+        
+        for entry in candidates:
+            activation = retrieval_activation(
+                entry,
+                context or [],
+                now,
+                self.config.actr_decay,
+                self.config.context_weight,
+                self.config.importance_weight,
+            )
+            conf = confidence_score(entry, activation, now)
+            
+            if conf >= min_confidence:
+                scored.append((entry, activation, conf))
+        
+        # Sort by activation descending
+        scored.sort(key=lambda x: x[1], reverse=True)
+        scored = scored[:limit]
+        
+        # Record access
+        for entry, _, _ in scored:
+            self._store.record_access(entry.id)
+        
+        # Format output
+        output = []
+        for entry, activation, conf in scored:
+            output.append({
+                "id": entry.id,
+                "content": entry.content,
+                "type": entry.memory_type.value,
+                "confidence": round(conf, 3),
+                "confidence_label": confidence_label(conf),
+                "strength": round(effective_strength(entry, now), 3),
+                "activation": round(activation, 3),
+                "age_days": round(entry.age_days(), 1),
+                "layer": entry.layer.value,
+                "importance": round(entry.importance, 2),
+                "pinned": entry.pinned,
+                "source": entry.source_file,
+            })
+        
+        return output
+    
+    def emotional_bus(self):
+        """Get the Emotional Bus, if attached."""
+        return getattr(self, '_emotional_bus', None)
+    
+    def grant(self, agent_id: str, namespace: str, permission: str, as_system: bool = False):
+        """
+        Grant a permission to an agent for a namespace.
+        
+        Args:
+            agent_id: The agent ID to grant permission to
+            namespace: Namespace this permission applies to ("*" = all namespaces)
+            permission: Permission level ("read", "write", or "admin")
+            as_system: If True, bypass permission checks (use for initial setup)
+        """
+        from engram.acl import Permission
+        
+        if not hasattr(self, '_acl_manager'):
+            from engram.acl import AclManager
+            self._acl_manager = AclManager(self._store._conn)
+        
+        perm = Permission[permission.upper()]
+        
+        if as_system:
+            grantor = "system"
+        else:
+            grantor = getattr(self, '_agent_id', None) or "system"
+        
+        self._acl_manager.grant(agent_id, namespace, perm, grantor)
+    
+    def revoke(self, agent_id: str, namespace: str) -> bool:
+        """
+        Revoke a permission from an agent for a namespace.
+        
+        Returns:
+            True if permission was revoked, False if no permission existed
+        """
+        if not hasattr(self, '_acl_manager'):
+            from engram.acl import AclManager
+            self._acl_manager = AclManager(self._store._conn)
+        
+        return self._acl_manager.revoke(agent_id, namespace)
+    
+    def subscribe(self, agent_id: str, namespace: str, min_importance: float):
+        """
+        Subscribe to notifications for a namespace.
+        
+        The agent will receive notifications when new memories are stored
+        with importance >= min_importance in the specified namespace.
+        
+        Args:
+            agent_id: The subscribing agent's ID
+            namespace: Namespace to watch ("*" for all)
+            min_importance: Minimum importance threshold (0.0-1.0)
+        """
+        if not hasattr(self, '_subscription_manager'):
+            from engram.subscriptions import SubscriptionManager
+            self._subscription_manager = SubscriptionManager(self._store._conn)
+        
+        self._subscription_manager.subscribe(agent_id, namespace, min_importance)
+    
+    def unsubscribe(self, agent_id: str, namespace: str) -> bool:
+        """
+        Unsubscribe from a namespace.
+        
+        Returns:
+            True if subscription was removed, False if no subscription existed
+        """
+        if not hasattr(self, '_subscription_manager'):
+            from engram.subscriptions import SubscriptionManager
+            self._subscription_manager = SubscriptionManager(self._store._conn)
+        
+        return self._subscription_manager.unsubscribe(agent_id, namespace)
+    
+    def check_notifications(self, agent_id: str) -> list:
+        """
+        Check for notifications since last check.
+        
+        Returns new memories that exceed the subscription thresholds.
+        Updates the cursor so the same notifications aren't returned twice.
+        
+        Args:
+            agent_id: The agent ID to check notifications for
+            
+        Returns:
+            List of notification dicts
+        """
+        if not hasattr(self, '_subscription_manager'):
+            from engram.subscriptions import SubscriptionManager
+            self._subscription_manager = SubscriptionManager(self._store._conn)
+        
+        notifs = self._subscription_manager.check_notifications(agent_id)
+        
+        # Convert to dicts for easier use
+        return [
+            {
+                "memory_id": n.memory_id,
+                "namespace": n.namespace,
+                "content": n.content,
+                "importance": n.importance,
+                "created_at": n.created_at.isoformat(),
+                "subscription_namespace": n.subscription_namespace,
+                "threshold": n.threshold,
+            }
+            for n in notifs
+        ]
 
     def close(self):
         """Close the underlying database connection."""

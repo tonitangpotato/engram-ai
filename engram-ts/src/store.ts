@@ -4,6 +4,7 @@
 
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import { MemoryEntry, MemoryType, MemoryLayer, DEFAULT_IMPORTANCE } from './core';
+import { initAclTables } from './acl';
 
 const _SCHEMA = `
 CREATE TABLE IF NOT EXISTS memories (
@@ -21,7 +22,8 @@ CREATE TABLE IF NOT EXISTS memories (
     last_consolidated REAL,
     source_file TEXT DEFAULT '',
     contradicts TEXT DEFAULT '',
-    contradicted_by TEXT DEFAULT ''
+    contradicted_by TEXT DEFAULT '',
+    namespace TEXT NOT NULL DEFAULT 'default'
 );
 
 CREATE TABLE IF NOT EXISTS access_log (
@@ -49,6 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_graph_links_mid ON graph_links(memory_id);
 CREATE INDEX IF NOT EXISTS idx_graph_links_nid ON graph_links(node_id);
 CREATE INDEX IF NOT EXISTS idx_hebbian_source ON hebbian_links(source_id);
 CREATE INDEX IF NOT EXISTS idx_hebbian_target ON hebbian_links(target_id);
+CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace);
 `;
 
 const _FTS_SCHEMA = `
@@ -141,6 +144,8 @@ export class SQLiteStore {
     this._migrateStdpColumns();
     this.db.exec(_FTS_SCHEMA);
     this.db.exec(_FTS_TRIGGERS);
+    // Initialize v2 features
+    initAclTables(this.db);
   }
 
   private _migrateContradictionColumns(): void {
@@ -155,6 +160,11 @@ export class SQLiteStore {
     // Phase 1: metadata column for structured data (causal memories etc.)
     if (!colNames.has('metadata')) {
       this.db.exec("ALTER TABLE memories ADD COLUMN metadata TEXT");
+    }
+    // v2: namespace column for multi-agent memory sharing
+    if (!colNames.has('namespace')) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace)");
     }
     // Index on memory_type for type-filtered queries
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)");
@@ -176,7 +186,7 @@ export class SQLiteStore {
 
   add(content: string, memoryType: MemoryType = MemoryType.FACTUAL,
       importance?: number, sourceFile: string = '',
-      metadata?: Record<string, unknown> | null): MemoryEntry {
+      metadata?: Record<string, unknown> | null, namespace: string = 'default'): MemoryEntry {
     const entry = new MemoryEntry({
       content,
       memoryType,
@@ -192,14 +202,14 @@ export class SQLiteStore {
     this.db.prepare(`
       INSERT INTO memories (id, content, summary, memory_type, layer, created_at,
         working_strength, core_strength, importance, pinned, consolidation_count,
-        last_consolidated, source_file, contradicts, contradicted_by, metadata)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        last_consolidated, source_file, contradicts, contradicted_by, metadata, namespace)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       entry.id, entry.content, entry.summary, entry.memoryType,
       entry.layer, entry.createdAt, entry.workingStrength,
       entry.coreStrength, entry.importance, entry.pinned ? 1 : 0,
       entry.consolidationCount, entry.lastConsolidated, entry.sourceFile,
-      entry.contradicts, entry.contradictedBy, metadataJson,
+      entry.contradicts, entry.contradictedBy, metadataJson, namespace,
     );
 
     this.db.prepare('INSERT INTO access_log (memory_id, accessed_at) VALUES (?,?)')
@@ -247,6 +257,51 @@ export class SQLiteStore {
       ORDER BY rank LIMIT ?
     `).all(query, limit) as MemoryRow[];
     return rows.map(r => rowToEntry(r, this.getAccessTimes(r.id)));
+  }
+
+  /** Namespace-aware FTS search */
+  searchFtsNs(query: string, limit: number = 20, namespace?: string): MemoryEntry[] {
+    if (!namespace || namespace === 'default') {
+      return this.searchFts(query, limit);
+    }
+
+    if (namespace === '*') {
+      // Search all namespaces
+      return this.searchFts(query, limit);
+    }
+
+    // Specific namespace
+    const rows = this.db.prepare(`
+      SELECT m.* FROM memories m
+      JOIN memories_fts f ON m.rowid = f.rowid
+      WHERE memories_fts MATCH ? AND m.namespace = ?
+      ORDER BY rank LIMIT ?
+    `).all(query, namespace, limit) as MemoryRow[];
+    return rows.map(r => rowToEntry(r, this.getAccessTimes(r.id)));
+  }
+
+  /** Get all memories in a namespace */
+  allInNamespace(namespace?: string): MemoryEntry[] {
+    if (!namespace || namespace === 'default') {
+      const rows = this.db.prepare('SELECT * FROM memories WHERE namespace = ?')
+        .all('default') as MemoryRow[];
+      return rows.map(r => rowToEntry(r, this.getAccessTimes(r.id)));
+    }
+
+    if (namespace === '*') {
+      return this.all();
+    }
+
+    const rows = this.db.prepare('SELECT * FROM memories WHERE namespace = ?')
+      .all(namespace) as MemoryRow[];
+    return rows.map(r => rowToEntry(r, this.getAccessTimes(r.id)));
+  }
+
+  /** Get namespace for a memory */
+  getNamespace(memoryId: string): string | null {
+    const row = this.db.prepare('SELECT namespace FROM memories WHERE id = ?')
+      .get(memoryId) as { namespace: string } | undefined;
+    return row?.namespace ?? null;
   }
 
   searchByType(memoryType: MemoryType): MemoryEntry[] {
