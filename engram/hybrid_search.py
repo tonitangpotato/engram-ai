@@ -89,16 +89,18 @@ class HybridSearchEngine:
     This is the recommended search engine when using embeddings.
     """
 
-    def __init__(self, store: SQLiteStore, vector_store=None):
+    def __init__(self, store: SQLiteStore, vector_store=None, config=None):
         """
         Initialize hybrid search.
         
         Args:
             store: SQLite store for memories
             vector_store: Optional VectorStore for embedding-based retrieval
+            config: Optional MemoryConfig with search weight settings
         """
         self.store = store
         self.vector_store = vector_store
+        self._config = config
 
     def search(
         self,
@@ -249,10 +251,15 @@ class HybridSearchEngine:
         now = time.time()
         results = []
         
-        # Weights matching Rust: fts=0.15, embedding=embedding_weight*0.85, actr=actr_weight
-        fts_weight = 0.15
-        emb_adj_weight = vector_weight * 0.85  # ~0.6 with default vector_weight=0.7
-        actr_adj_weight = 1.0 - vector_weight   # ~0.3 with default vector_weight=0.7
+        # Weights from config (defaults: fts=0.15, embedding=0.60, actr=0.25)
+        if self._config is not None:
+            fts_weight = getattr(self._config, 'fts_weight', 0.15)
+            emb_adj_weight = getattr(self._config, 'embedding_weight', 0.60)
+            actr_adj_weight = getattr(self._config, 'actr_weight', 0.25)
+        else:
+            fts_weight = 0.15
+            emb_adj_weight = vector_weight * 0.85  # ~0.6 with default vector_weight=0.7
+            actr_adj_weight = 1.0 - vector_weight   # ~0.3 with default vector_weight=0.7
         
         # Build FTS rank-based score map for proper normalization
         fts_entries = [(e, v, f) for e, v, f in candidates if f]

@@ -37,3 +37,6 @@ export { MemoryExtractor, ExtractedFact, AnthropicExtractor, AnthropicExtractorC
 
 // Config file hierarchy
 export { EngramFileConfig, getConfigPath, loadFileConfig, saveFileConfig, interactiveConfigSetup } from './config';
+
+// CJK Tokenization
+export { isCjkChar, containsCjk, insertCjkBoundaries, tokenizeCjkCharacters, tokenizeForFts, getTokenizerStatus } from './tokenizers';

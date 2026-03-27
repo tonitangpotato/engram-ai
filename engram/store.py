@@ -133,22 +133,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 );
 """
 
-_FTS_TRIGGERS = """
-CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
-    INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, content)
-    VALUES ('delete', old.rowid, old.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, content)
-    VALUES ('delete', old.rowid, old.content);
-    INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-END;
-"""
+# NOTE: FTS triggers removed - we now manually manage FTS insertions
+# with tokenized content for CJK support (like Rust implementation).
+# This allows us to preprocess content with jieba before indexing.
 
 
 def _row_to_entry(row: sqlite3.Row, access_times: list[float] | None = None) -> MemoryEntry:
@@ -196,8 +183,14 @@ class SQLiteStore:
         self._migrate_contradiction_columns()
         self._migrate_stdp_columns()
         self._conn.executescript(_FTS_SCHEMA)
-        self._conn.executescript(_FTS_TRIGGERS)
+        self._drop_fts_triggers()  # Remove old triggers if they exist
         self._conn.commit()
+
+    def _drop_fts_triggers(self):
+        """Drop FTS triggers if they exist (we now manage FTS manually for CJK tokenization)."""
+        self._conn.execute("DROP TRIGGER IF EXISTS memories_fts_ai")
+        self._conn.execute("DROP TRIGGER IF EXISTS memories_fts_ad")
+        self._conn.execute("DROP TRIGGER IF EXISTS memories_fts_au")
 
     def _seed_meta(self):
         """Ensure engram_meta has schema_version set for new databases."""
@@ -283,6 +276,18 @@ class SQLiteStore:
              entry.consolidation_count, entry.last_consolidated, entry.source_file,
              entry.contradicts, entry.contradicted_by, metadata_json, namespace),
         )
+        
+        # Get rowid for FTS insertion
+        rowid = self._conn.execute("SELECT rowid FROM memories WHERE id=?", (entry.id,)).fetchone()[0]
+        
+        # Insert into FTS with tokenized content (CJK support)
+        # Use tokenized version if CJK present, otherwise use original content
+        fts_content = tokenize_for_fts(content) if contains_cjk(content) else content
+        self._conn.execute(
+            "INSERT INTO memories_fts(rowid, content) VALUES (?,?)",
+            (rowid, fts_content),
+        )
+        
         # Record initial access
         self._conn.execute(
             "INSERT INTO access_log (memory_id, accessed_at) VALUES (?,?)",
@@ -305,7 +310,16 @@ class SQLiteStore:
         return [_row_to_entry(r, self.get_access_times(r["id"])) for r in rows]
 
     def update(self, entry: MemoryEntry):
+        from engram.engram_tokenizers import contains_cjk, tokenize_for_fts
+        
         metadata_json = json.dumps(entry.metadata) if entry.metadata is not None else None
+        
+        # Get rowid before update
+        row = self._conn.execute("SELECT rowid FROM memories WHERE id=?", (entry.id,)).fetchone()
+        if row is None:
+            return  # Entry not found
+        rowid = row[0]
+        
         self._conn.execute(
             """UPDATE memories SET content=?, summary=?, memory_type=?, layer=?,
                working_strength=?, core_strength=?, importance=?, pinned=?,
@@ -318,6 +332,18 @@ class SQLiteStore:
              entry.source_file, entry.contradicts, entry.contradicted_by,
              metadata_json, entry.id),
         )
+        
+        # Update FTS index with tokenized content
+        fts_content = tokenize_for_fts(entry.content) if contains_cjk(entry.content) else entry.content
+        self._conn.execute(
+            "INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', ?, ?)",
+            (rowid, fts_content),  # Note: for delete, content doesn't matter but we include it
+        )
+        self._conn.execute(
+            "INSERT INTO memories_fts(rowid, content) VALUES (?,?)",
+            (rowid, fts_content),
+        )
+        
         self._conn.commit()
 
     def search_fts(self, query: str, limit: int = 20) -> list[MemoryEntry]:
@@ -380,6 +406,23 @@ class SQLiteStore:
         self._conn.commit()
 
     def delete(self, memory_id: str):
+        # Get rowid and content for FTS deletion before deleting from main table
+        row = self._conn.execute(
+            "SELECT rowid, content FROM memories WHERE id=?", (memory_id,)
+        ).fetchone()
+        
+        if row is not None:
+            rowid, content = row["rowid"], row["content"]
+            
+            # Delete from FTS index
+            from engram.engram_tokenizers import contains_cjk, tokenize_for_fts
+            fts_content = tokenize_for_fts(content) if contains_cjk(content) else content
+            self._conn.execute(
+                "INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', ?, ?)",
+                (rowid, fts_content),
+            )
+        
+        # Delete from main table
         self._conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
         self._conn.commit()
 

@@ -58,6 +58,11 @@ export interface MemoryConfigOptions {
   stdpEnabled?: boolean;
   stdpCausalThreshold?: number;
   stdpMinObservations?: number;
+
+  // Search Weights (hybrid search scoring)
+  ftsWeight?: number;
+  embeddingWeight?: number;
+  actrWeight?: number;
 }
 
 export class MemoryConfig {
@@ -107,6 +112,18 @@ export class MemoryConfig {
   stdpEnabled: boolean;
   stdpCausalThreshold: number;
   stdpMinObservations: number;
+
+  // Search Weights (hybrid search scoring)
+  // Weight for FTS exact matching in hybrid recall (0.0-1.0)
+  // Recommended: 0.15 for 15% FTS contribution
+  ftsWeight: number;
+  // Weight for embedding similarity in recall scoring (0.0-1.0)
+  // Recommended: 0.60 for 60% semantic similarity contribution
+  embeddingWeight: number;
+  // Weight for ACT-R activation in recall scoring (0.0-1.0)
+  // Recommended: 0.25 for 25% recency/frequency contribution
+  // Note: ftsWeight + embeddingWeight + actrWeight should sum to ~1.0
+  actrWeight: number;
 
   constructor(opts: MemoryConfigOptions = {}) {
     this.spacingFactor = opts.spacingFactor ?? 0.5;
@@ -163,6 +180,11 @@ export class MemoryConfig {
     this.stdpEnabled = opts.stdpEnabled ?? true;
     this.stdpCausalThreshold = opts.stdpCausalThreshold ?? 2.0;
     this.stdpMinObservations = opts.stdpMinObservations ?? 3;
+
+    // Search weights for hybrid scoring
+    this.ftsWeight = opts.ftsWeight ?? 0.15;        // 15% exact matching
+    this.embeddingWeight = opts.embeddingWeight ?? 0.60;   // 60% semantic similarity
+    this.actrWeight = opts.actrWeight ?? 0.25;        // 25% recency/frequency/importance
   }
 
   static default(): MemoryConfig {

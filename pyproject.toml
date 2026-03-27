@@ -36,6 +36,15 @@ sentence-transformers = ["sentence-transformers>=2.2.0"]
 ollama = ["requests>=2.31.0"]
 openai = ["openai>=1.0.0"]
 
+# CJK tokenization (optional — falls back to character n-grams if not installed)
+cjk = [
+    "jieba>=0.42.1",         # Chinese word segmentation
+]
+japanese = [
+    "sudachipy>=0.6.0",      # Japanese word segmentation
+    "sudachidict-core>=20230927",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
@@ -49,6 +58,7 @@ all = [
     "sentence-transformers>=2.2.0",
     "requests>=2.31.0",
     "openai>=1.0.0",
+    "jieba>=0.42.1",
 ]
 
 [project.urls]

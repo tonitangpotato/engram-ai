@@ -120,6 +120,18 @@ class MemoryConfig:
     # Minimum total co-activations before STDP inference is attempted
     stdp_min_observations: int = 3
 
+    # === Search Weights (hybrid search scoring) ===
+    # Weight for FTS exact matching in hybrid recall (0.0-1.0)
+    # Recommended: 0.15 for 15% FTS contribution
+    fts_weight: float = 0.15
+    # Weight for embedding similarity in recall scoring (0.0-1.0)
+    # Recommended: 0.60 for 60% semantic similarity contribution
+    embedding_weight: float = 0.60
+    # Weight for ACT-R activation in recall scoring (0.0-1.0)
+    # Recommended: 0.25 for 25% recency/frequency contribution
+    # Note: fts_weight + embedding_weight + actr_weight should sum to ~1.0
+    actr_weight: float = 0.25
+
     @classmethod
     def default(cls) -> "MemoryConfig":
         """Literature-based defaults (same as no-arg constructor)."""

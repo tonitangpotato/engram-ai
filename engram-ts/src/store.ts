@@ -5,6 +5,7 @@
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import { MemoryEntry, MemoryType, MemoryLayer, DEFAULT_IMPORTANCE } from './core';
 import { initAclTables } from './acl';
+import { containsCjk, tokenizeForFts } from './tokenizers';
 
 const _SCHEMA = `
 CREATE TABLE IF NOT EXISTS memories (
@@ -60,24 +61,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 );
 `;
 
-const _FTS_TRIGGERS = `
-CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-    INSERT INTO memories_fts(rowid, content, summary)
-    VALUES (new.rowid, new.content, new.summary);
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, content, summary)
-    VALUES ('delete', old.rowid, old.content, old.summary);
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, content, summary)
-    VALUES ('delete', old.rowid, old.content, old.summary);
-    INSERT INTO memories_fts(rowid, content, summary)
-    VALUES (new.rowid, new.content, new.summary);
-END;
-`;
+// NOTE: FTS triggers removed - we now manually manage FTS insertions
+// with tokenized content for CJK support (like Rust implementation).
+// This allows us to preprocess content with jieba/character tokenization before indexing.
 
 interface MemoryRow {
   id: string;
@@ -143,9 +129,16 @@ export class SQLiteStore {
     this._migrateContradictionColumns();
     this._migrateStdpColumns();
     this.db.exec(_FTS_SCHEMA);
-    this.db.exec(_FTS_TRIGGERS);
+    this._dropFtsTriggers(); // Remove old triggers - we manage FTS manually for CJK support
     // Initialize v2 features
     initAclTables(this.db);
+  }
+
+  /** Drop FTS triggers if they exist (we now manage FTS manually for CJK tokenization). */
+  private _dropFtsTriggers(): void {
+    this.db.exec('DROP TRIGGER IF EXISTS memories_ai');
+    this.db.exec('DROP TRIGGER IF EXISTS memories_ad');
+    this.db.exec('DROP TRIGGER IF EXISTS memories_au');
   }
 
   private _migrateContradictionColumns(): void {
@@ -212,6 +205,16 @@ export class SQLiteStore {
       entry.contradicts, entry.contradictedBy, metadataJson, namespace,
     );
 
+    // Get rowid for FTS insertion
+    const rowInfo = this.db.prepare('SELECT rowid FROM memories WHERE id = ?').get(entry.id) as { rowid: number };
+    const rowid = rowInfo.rowid;
+
+    // Insert into FTS with tokenized content (CJK support)
+    const ftsContent = containsCjk(content) ? tokenizeForFts(content) : content;
+    const ftsSummary = entry.summary && containsCjk(entry.summary) ? tokenizeForFts(entry.summary) : entry.summary;
+    this.db.prepare('INSERT INTO memories_fts(rowid, content, summary) VALUES (?,?,?)')
+      .run(rowid, ftsContent, ftsSummary);
+
     this.db.prepare('INSERT INTO access_log (memory_id, accessed_at) VALUES (?,?)')
       .run(entry.id, entry.createdAt);
 
@@ -233,7 +236,13 @@ export class SQLiteStore {
   }
 
   update(entry: MemoryEntry): void {
+    // Get rowid before update
+    const rowInfo = this.db.prepare('SELECT rowid FROM memories WHERE id = ?').get(entry.id) as { rowid: number } | undefined;
+    if (!rowInfo) return; // Entry not found
+
+    const rowid = rowInfo.rowid;
     const metadataJson = entry.metadata ? JSON.stringify(entry.metadata) : null;
+
     this.db.prepare(`
       UPDATE memories SET content=?, summary=?, memory_type=?, layer=?,
         working_strength=?, core_strength=?, importance=?, pinned=?,
@@ -247,15 +256,36 @@ export class SQLiteStore {
       entry.sourceFile, entry.contradicts, entry.contradictedBy,
       metadataJson, entry.id,
     );
+
+    // Update FTS index with tokenized content
+    const ftsContent = containsCjk(entry.content) ? tokenizeForFts(entry.content) : entry.content;
+    const ftsSummary = entry.summary && containsCjk(entry.summary) ? tokenizeForFts(entry.summary) : entry.summary;
+    // Delete old FTS entry
+    this.db.prepare("INSERT INTO memories_fts(memories_fts, rowid, content, summary) VALUES ('delete', ?, ?, ?)")
+      .run(rowid, ftsContent, ftsSummary);
+    // Insert new FTS entry
+    this.db.prepare('INSERT INTO memories_fts(rowid, content, summary) VALUES (?,?,?)')
+      .run(rowid, ftsContent, ftsSummary);
   }
 
   searchFts(query: string, limit: number = 20): MemoryEntry[] {
+    // Tokenize CJK queries for better matching
+    let ftsQuery = query;
+    if (containsCjk(query)) {
+      const tokens = tokenizeForFts(query).split(' ').filter(t => t.length > 0);
+      if (tokens.length > 0) {
+        // Use OR to match ANY token (more intuitive for semantic search)
+        // Quote tokens to handle special characters
+        ftsQuery = tokens.map(t => `"${t}"`).join(' OR ');
+      }
+    }
+
     const rows = this.db.prepare(`
       SELECT m.* FROM memories m
       JOIN memories_fts f ON m.rowid = f.rowid
       WHERE memories_fts MATCH ?
       ORDER BY rank LIMIT ?
-    `).all(query, limit) as MemoryRow[];
+    `).all(ftsQuery, limit) as MemoryRow[];
     return rows.map(r => rowToEntry(r, this.getAccessTimes(r.id)));
   }
 
@@ -270,13 +300,22 @@ export class SQLiteStore {
       return this.searchFts(query, limit);
     }
 
+    // Tokenize CJK queries for better matching
+    let ftsQuery = query;
+    if (containsCjk(query)) {
+      const tokens = tokenizeForFts(query).split(' ').filter(t => t.length > 0);
+      if (tokens.length > 0) {
+        ftsQuery = tokens.map(t => `"${t}"`).join(' OR ');
+      }
+    }
+
     // Specific namespace
     const rows = this.db.prepare(`
       SELECT m.* FROM memories m
       JOIN memories_fts f ON m.rowid = f.rowid
       WHERE memories_fts MATCH ? AND m.namespace = ?
       ORDER BY rank LIMIT ?
-    `).all(query, namespace, limit) as MemoryRow[];
+    `).all(ftsQuery, namespace, limit) as MemoryRow[];
     return rows.map(r => rowToEntry(r, this.getAccessTimes(r.id)));
   }
 
@@ -329,6 +368,20 @@ export class SQLiteStore {
   }
 
   delete(memoryId: string): void {
+    // Get rowid and content for FTS deletion before deleting from main table
+    const row = this.db.prepare('SELECT rowid, content, summary FROM memories WHERE id = ?')
+      .get(memoryId) as { rowid: number; content: string; summary: string | null } | undefined;
+
+    if (row) {
+      const { rowid, content, summary } = row;
+      // Delete from FTS index
+      const ftsContent = containsCjk(content) ? tokenizeForFts(content) : content;
+      const ftsSummary = summary && containsCjk(summary) ? tokenizeForFts(summary) : summary ?? '';
+      this.db.prepare("INSERT INTO memories_fts(memories_fts, rowid, content, summary) VALUES ('delete', ?, ?, ?)")
+        .run(rowid, ftsContent, ftsSummary);
+    }
+
+    // Delete from main table
     this.db.prepare('DELETE FROM memories WHERE id=?').run(memoryId);
   }
 

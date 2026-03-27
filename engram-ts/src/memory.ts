@@ -288,9 +288,9 @@ export class Memory {
 
     // === Hybrid Search: FTS + embedding + ACT-R (matching Rust weights) ===
     // Weights: 15% FTS, ~60% embedding, ~25% ACT-R
-    const FTS_WEIGHT = 0.15;
-    const EMBEDDING_WEIGHT = 0.60;
-    const ACTR_WEIGHT = 0.25;
+    const FTS_WEIGHT = this.config.ftsWeight ?? 0.15;
+    const EMBEDDING_WEIGHT = this.config.embeddingWeight ?? 0.60;
+    const ACTR_WEIGHT = this.config.actrWeight ?? 0.25;
     const now = Date.now() / 1000;
     const fetchLimit = limit * 3;
 
@@ -432,8 +432,8 @@ export class Memory {
   }>> {
     const {
       limit = 5,
-      vectorWeight = 0.7,
-      ftsWeight = 0.3,
+      vectorWeight = this.config.embeddingWeight ?? 0.7,
+      ftsWeight = this.config.ftsWeight ?? 0.3,
     } = opts;
 
     // Ensure embedding provider initialized
