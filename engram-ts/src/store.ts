@@ -130,6 +130,7 @@ export class SQLiteStore {
     this._migrateStdpColumns();
     this.db.exec(_FTS_SCHEMA);
     this._dropFtsTriggers(); // Remove old triggers - we manage FTS manually for CJK support
+    this._rebuildFtsIfNeeded(); // Re-tokenize FTS index for CJK support
     // Initialize v2 features
     initAclTables(this.db);
   }
@@ -139,6 +140,64 @@ export class SQLiteStore {
     this.db.exec('DROP TRIGGER IF EXISTS memories_ai');
     this.db.exec('DROP TRIGGER IF EXISTS memories_ad');
     this.db.exec('DROP TRIGGER IF EXISTS memories_au');
+  }
+
+  /** Current FTS tokenization version — bump when tokenization logic changes. */
+  private static readonly FTS_CJK_VERSION = '1';
+
+  /**
+   * Rebuild FTS index with CJK tokenization if not already done.
+   * Uses engram_meta 'fts_cjk_version' to track whether the FTS index
+   * has been rebuilt with CJK-aware tokenization.
+   */
+  private _rebuildFtsIfNeeded(): void {
+    // Check if engram_meta table exists
+    const metaExists = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='engram_meta'"
+    ).get();
+    if (!metaExists) return; // No meta table = very old DB, skip
+
+    const row = this.db.prepare(
+      "SELECT value FROM engram_meta WHERE key = 'fts_cjk_version'"
+    ).get() as { value: string } | undefined;
+
+    if (row?.value === SQLiteStore.FTS_CJK_VERSION) return; // Already up to date
+
+    const countRow = this.db.prepare('SELECT COUNT(*) as cnt FROM memories').get() as { cnt: number };
+    if (countRow.cnt === 0) {
+      // Empty DB, just mark as done
+      this.db.prepare(
+        "INSERT OR REPLACE INTO engram_meta (key, value) VALUES ('fts_cjk_version', ?)"
+      ).run(SQLiteStore.FTS_CJK_VERSION);
+      return;
+    }
+
+    // Rebuild: clear FTS and re-insert all with tokenization
+    this.db.exec('DELETE FROM memories_fts');
+
+    const rows = this.db.prepare(
+      'SELECT rowid, content, summary FROM memories'
+    ).all() as Array<{ rowid: number; content: string; summary: string | null }>;
+
+    const insertStmt = this.db.prepare(
+      'INSERT INTO memories_fts(rowid, content, summary) VALUES (?, ?, ?)'
+    );
+
+    const rebuildAll = this.db.transaction(() => {
+      for (const r of rows) {
+        const content = r.content || '';
+        const summary = r.summary || '';
+        const ftsContent = containsCjk(content) ? tokenizeForFts(content) : content;
+        const ftsSummary = summary && containsCjk(summary) ? tokenizeForFts(summary) : summary;
+        insertStmt.run(r.rowid, ftsContent, ftsSummary);
+      }
+      this.db.prepare(
+        "INSERT OR REPLACE INTO engram_meta (key, value) VALUES ('fts_cjk_version', ?)"
+      ).run(SQLiteStore.FTS_CJK_VERSION);
+    });
+
+    rebuildAll();
+    console.log(`[engram] Rebuilt FTS index with CJK tokenization for ${rows.length} memories`);
   }
 
   private _migrateContradictionColumns(): void {

@@ -184,6 +184,7 @@ class SQLiteStore:
         self._migrate_stdp_columns()
         self._conn.executescript(_FTS_SCHEMA)
         self._drop_fts_triggers()  # Remove old triggers if they exist
+        self._rebuild_fts_if_needed()  # Re-tokenize FTS for CJK support
         self._conn.commit()
 
     def _drop_fts_triggers(self):
@@ -191,6 +192,63 @@ class SQLiteStore:
         self._conn.execute("DROP TRIGGER IF EXISTS memories_fts_ai")
         self._conn.execute("DROP TRIGGER IF EXISTS memories_fts_ad")
         self._conn.execute("DROP TRIGGER IF EXISTS memories_fts_au")
+
+    # Current FTS tokenization version — bump when tokenization logic changes
+    _FTS_CJK_VERSION = "1"
+
+    def _rebuild_fts_if_needed(self):
+        """Rebuild FTS index with CJK tokenization if not already done.
+        
+        Uses engram_meta 'fts_cjk_version' to track whether the FTS index
+        has been built with CJK-aware tokenization. On first run after the
+        CJK tokenization feature is added, this rebuilds the entire FTS index
+        so old memories get proper tokenization too.
+        """
+        row = self._conn.execute(
+            "SELECT value FROM engram_meta WHERE key = 'fts_cjk_version'"
+        ).fetchone()
+        current_version = row[0] if row else None
+
+        if current_version == self._FTS_CJK_VERSION:
+            return  # Already up to date
+
+        from engram.engram_tokenizers import contains_cjk, tokenize_for_fts
+
+        # Count memories to decide whether to rebuild
+        count = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        if count == 0:
+            # Empty DB, just mark as done
+            self._conn.execute(
+                "INSERT OR REPLACE INTO engram_meta VALUES ('fts_cjk_version', ?)",
+                (self._FTS_CJK_VERSION,),
+            )
+            return
+
+        # Rebuild: clear FTS and re-insert all with tokenization
+        self._conn.execute("DELETE FROM memories_fts")
+        
+        rows = self._conn.execute(
+            "SELECT rowid, content FROM memories"
+        ).fetchall()
+        
+        for row in rows:
+            content = row[1] or ""
+            fts_content = tokenize_for_fts(content) if contains_cjk(content) else content
+            self._conn.execute(
+                "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
+                (row[0], fts_content),
+            )
+
+        # Mark migration complete
+        self._conn.execute(
+            "INSERT OR REPLACE INTO engram_meta VALUES ('fts_cjk_version', ?)",
+            (self._FTS_CJK_VERSION,),
+        )
+        
+        import logging
+        logging.getLogger("engram").info(
+            f"Rebuilt FTS index with CJK tokenization for {len(rows)} memories"
+        )
 
     def _seed_meta(self):
         """Ensure engram_meta has schema_version set for new databases."""
