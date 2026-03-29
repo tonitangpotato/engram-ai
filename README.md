@@ -346,6 +346,48 @@ config.embedding_weight = 0.50;   // 50% semantic
 config.actr_weight = 0.20;        // 20% temporal
 ```
 
+### 🌐 Cross-Language Drive Alignment (Rust only)
+
+EmotionalBus drives written in one language now align with content in any other language:
+
+```
+SOUL.md: "帮potato实现财务自由，找到市场机会"  (Chinese)
+Message: "trading profit market opportunity"   (English)
+
+❌ Keyword matching: score = 0.0 (can't match across languages)
+✅ Embedding alignment: score = 0.14 (semantic similarity via nomic-embed-text)
+```
+
+**How it works:**
+- Drive descriptions are pre-embedded at startup (768-dim vectors via Ollama)
+- At store time, content embeddings (already computed for recall) are reused — **zero additional cost**
+- `score_alignment_hybrid()` = `max(keyword_score, embedding_score)` — best of both
+- Same-language: keyword matching wins (precise, score=1.0)
+- Cross-language: embedding matching wins (semantic, score=0.1-0.3)
+
+### 🔄 Dynamic Token Refresh (Rust only)
+
+The `TokenProvider` trait enables OAuth tokens that auto-refresh:
+
+```rust
+use engramai::{AnthropicExtractor, AnthropicExtractorConfig, TokenProvider};
+
+struct MyOAuthProvider { /* ... */ }
+impl TokenProvider for MyOAuthProvider {
+    fn get_token(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
+        // Refresh token if expired, return valid token
+    }
+}
+
+let extractor = AnthropicExtractor::with_token_provider(
+    Box::new(MyOAuthProvider::new()),
+    true,  // is_oauth
+    AnthropicExtractorConfig::default(),
+);
+memory.set_extractor(Box::new(extractor));
+// Token refreshes automatically before each extraction — no more 401 errors
+```
+
 ### 🈶 CJK Tokenization (Rust only, Python coming soon)
 
 Chinese/Japanese/Korean text now gets **intelligent word segmentation** via jieba:
@@ -421,22 +463,52 @@ Session-level state based on Miller's Law (7±2 chunks):
 ## Architecture
 
 ```
-Query
-  ↓
-┌─────────────────────────┐
-│  Vector Search (semantic)│  ← optional embedding provider
-│  FTS5 Search (lexical)   │  ← always available, zero-cost
-│  Merge & Dedupe          │
-└──────────┬──────────────┘
-           ↓
-┌─────────────────────────┐
-│  ACT-R Activation        │  ← frequency × recency decay
-│  Hebbian Spreading       │  ← association boost from linked memories
-│  Importance Weighting    │  ← user-set priority
-│  Confidence Scoring      │  ← metacognition layer
-└──────────┬──────────────┘
-           ↓
-     Ranked Results
+                    ┌──────── STORE PATH ────────┐
+                    │                             │
+                    ▼                             │
+               Input Text                        │
+                    │                             │
+          ┌────────▼────────┐                    │
+          │ LLM Extraction  │ ← Claude Haiku     │
+          │ (key facts)     │   (Rust only)      │
+          └────────┬────────┘                    │
+                   ▼                             │
+          ┌────────────────┐                     │
+          │ Embedding      │ ← nomic-embed-text  │
+          │ (768-dim vec)  │   (local Ollama)    │
+          └───┬────────────┘                     │
+              │    ▼                             │
+              │ ┌──────────────┐                 │
+              │ │Drive Alignment│ ← pre-embedded  │
+              │ │(importance↑)  │  SOUL drives    │
+              │ └──────────────┘  (Rust only)    │
+              ▼                                  │
+          ┌────────────────┐                     │
+          │ SQLite Storage │                     │
+          │ text+FTS5+vec  │                     │
+          └────────────────┘                     │
+                                                 │
+                    ┌──────── RECALL PATH ───────┘
+                    ▼
+               Query Text
+                    │
+          ┌────────▼────────┐
+          │ Embedding       │ ← same model
+          └────────┬────────┘
+                   ▼
+          ┌─────────────────────────┐
+          │ Hybrid Search           │
+          │  15% FTS (exact match)  │
+          │  60% Embedding (cosine) │
+          │  25% ACT-R (temporal)   │
+          └──────────┬──────────────┘
+                     ▼
+          ┌─────────────────────────┐
+          │ Hebbian Spreading       │ ← association boost
+          │ Confidence Scoring      │ ← metacognition
+          └──────────┬──────────────┘
+                     ▼
+               Ranked Results
 ```
 
 ---
