@@ -120,8 +120,15 @@ class VectorStore:
         ).fetchall()
         
         results = []
-        for memory_id, embedding_json in rows:
-            embedding = json.loads(embedding_json)
+        for memory_id, embedding_data in rows:
+            # Support both JSON string (Python-written) and binary blob (Rust-written)
+            if isinstance(embedding_data, bytes):
+                import struct
+                # Rust stores Vec<f32> as little-endian binary blob
+                n_floats = len(embedding_data) // 4
+                embedding = list(struct.unpack(f'<{n_floats}f', embedding_data))
+            else:
+                embedding = json.loads(embedding_data)
             similarity = cosine_similarity(query_embedding, embedding)
             if similarity >= min_similarity:
                 results.append((memory_id, similarity))
