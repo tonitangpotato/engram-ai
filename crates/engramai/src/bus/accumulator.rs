@@ -191,6 +191,32 @@ impl<'a> EmotionalAccumulator<'a> {
         )?;
         Ok(affected)
     }
+
+    /// Convert an emotional trend into an [`InteroceptiveSignal`].
+    ///
+    /// - `valence`: directly from the trend's running average.
+    /// - `arousal`: derived from event count (more events = higher confidence, higher arousal).
+    pub fn to_signal(
+        &self,
+        domain: &str,
+    ) -> Result<Option<crate::interoceptive::InteroceptiveSignal>, rusqlite::Error> {
+        use crate::interoceptive::{InteroceptiveSignal, SignalSource};
+
+        let trend = self.get_trend(domain)?;
+        Ok(trend.map(|t| {
+            // Arousal based on how extreme the valence + how many events.
+            let arousal = (t.valence.abs() * 0.7
+                + (t.count as f64 / 20.0).min(1.0) * 0.3)
+                .clamp(0.0, 1.0);
+
+            InteroceptiveSignal::new(
+                SignalSource::Accumulator,
+                Some(domain.to_string()),
+                t.valence.clamp(-1.0, 1.0),
+                arousal,
+            )
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -267,5 +293,45 @@ mod tests {
         let trend = acc.get_trend("extreme").unwrap().unwrap();
         // Average of 1.0 and -1.0 = 0.0
         assert!((trend.valence).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_to_signal_positive_trend() {
+        let conn = Connection::open_in_memory().unwrap();
+        let acc = EmotionalAccumulator::new(&conn).unwrap();
+
+        for _ in 0..5 {
+            acc.record_emotion("coding", 0.8).unwrap();
+        }
+
+        let sig = acc.to_signal("coding").unwrap().unwrap();
+        assert!(matches!(sig.source, crate::interoceptive::SignalSource::Accumulator));
+        assert_eq!(sig.domain.as_deref(), Some("coding"));
+        assert!(sig.valence > 0.5, "valence was {}", sig.valence);
+        assert!(sig.arousal > 0.0); // positive arousal from |valence| + event count
+    }
+
+    #[test]
+    fn test_to_signal_negative_trend() {
+        let conn = Connection::open_in_memory().unwrap();
+        let acc = EmotionalAccumulator::new(&conn).unwrap();
+
+        for _ in 0..10 {
+            acc.record_emotion("debugging", -0.7).unwrap();
+        }
+
+        let sig = acc.to_signal("debugging").unwrap().unwrap();
+        assert!(sig.valence < -0.5, "valence was {}", sig.valence);
+        // High arousal: |valence| is large + many events
+        assert!(sig.arousal > 0.4, "arousal was {}", sig.arousal);
+    }
+
+    #[test]
+    fn test_to_signal_no_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        let acc = EmotionalAccumulator::new(&conn).unwrap();
+
+        let sig = acc.to_signal("nonexistent").unwrap();
+        assert!(sig.is_none());
     }
 }

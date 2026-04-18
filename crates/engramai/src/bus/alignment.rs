@@ -240,6 +240,33 @@ pub fn find_aligned_drives(content: &str, drives: &[Drive]) -> Vec<(String, f64)
     aligned
 }
 
+/// Convert a drive alignment score into an [`InteroceptiveSignal`].
+///
+/// - `valence`: alignment_score mapped to [-1, 1] (0.5 → 0, 1.0 → 1.0, 0.0 → -1.0).
+/// - `arousal`: low — alignment is a slow background signal.
+pub fn alignment_to_signal(
+    content: &str,
+    drives: &[Drive],
+) -> crate::interoceptive::InteroceptiveSignal {
+    use crate::interoceptive::{InteroceptiveSignal, SignalContext, SignalSource};
+
+    let score = score_alignment(content, drives);
+    let valence = score * 2.0 - 1.0; // [0,1] → [-1,1]
+    let arousal = 0.15; // alignment is a slow background signal
+
+    let snippet = if content.len() > 80 {
+        format!("{}...", &content[..80])
+    } else {
+        content.to_string()
+    };
+
+    InteroceptiveSignal::new(SignalSource::Alignment, None, valence, arousal)
+        .with_context(SignalContext::DriveAlignment {
+            content_snippet: snippet,
+            alignment_score: score,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +462,41 @@ mod embedding_tests {
         assert_eq!(keyword_cross, 0.0, "Keywords alone can't match cross-language");
 
         println!("\n🎉 Embedding alignment solves cross-language: English→Chinese works!");
+    }
+
+    fn test_drives() -> Vec<Drive> {
+        vec![
+            Drive {
+                name: "curiosity".into(),
+                description: "Always seek to understand and learn new things".into(),
+                keywords: vec!["curiosity".into(), "understand".into(), "learn".into(), "new".into()],
+            },
+            Drive {
+                name: "helpfulness".into(),
+                description: "Help users solve problems effectively".into(),
+                keywords: vec!["helpfulness".into(), "help".into(), "solve".into(), "problems".into()],
+            },
+        ]
+    }
+
+    #[test]
+    fn test_alignment_to_signal_high_alignment() {
+        let drives = test_drives();
+        let sig = alignment_to_signal("I want to understand and learn new things", &drives);
+        assert!(matches!(sig.source, crate::interoceptive::SignalSource::Alignment));
+        assert!(sig.domain.is_none());
+        assert!(sig.valence > 0.0, "aligned content → positive valence, got {}", sig.valence);
+        assert!((sig.arousal - 0.15).abs() < 0.01);
+        assert!(matches!(
+            sig.context,
+            Some(crate::interoceptive::SignalContext::DriveAlignment { .. })
+        ));
+    }
+
+    #[test]
+    fn test_alignment_to_signal_no_alignment() {
+        let drives = test_drives();
+        let sig = alignment_to_signal("the weather is nice today", &drives);
+        assert!(sig.valence < 0.0, "unaligned content → negative valence, got {}", sig.valence);
     }
 }

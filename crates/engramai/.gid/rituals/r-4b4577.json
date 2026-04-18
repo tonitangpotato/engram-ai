@@ -1,0 +1,69 @@
+{
+  "id": "r-4b4577",
+  "phase": "Escalated",
+  "task": "Implement ISS-009: Entity indexing for engramai crate. Three layers:\n\n1. **Entity Extraction on Write** — When add()/add_raw() stores a memory, automatically extract entities (project names, concepts, people, tools) and write to `entities` table (upsert) + `memory_entities` junction table. Use LLM extraction (Haiku) or regex/NER hybrid.\n\n2. **Entity Relation Building** — Entities co-occurring in the same memory get automatic entity↔entity relations in `entity_relations` table. Relation types: has_feature, part_of, related_to, created_by, etc.\n\n3. **Entity-Aware Recall** — On recall, match query to entities first, then find entity-associated memories. Multi-hop: query → entity → related entities → memories. Integrate as 4th retrieval channel in hybrid search (currently FTS5 15% + Embedding 60% + ACT-R 25%).\n\nKey context:\n- Schema already exists: `entities`, `memory_entities`, `entity_relations` tables — but 0 rows, 0 code calls\n- ~8000 memories in production DB\n- Existing hybrid search in recall() needs a 4th entity channel\n- Must not break existing add()/recall() APIs — additive changes only\n- Related: ISS-003 (dedup can piggyback on entity extraction)\nProject location: /Users/potato/clawd/projects/engram-ai-rust",
+  "target_root": "/Users/potato/clawd/projects/engram-ai-rust",
+  "project": {
+    "has_requirements": false,
+    "has_design": false,
+    "has_graph": true,
+    "has_source": true,
+    "has_tests": true,
+    "language": "rust",
+    "source_file_count": 23,
+    "verify_command": "cargo build && cargo test"
+  },
+  "strategy": null,
+  "verify_retries": 0,
+  "phase_retries": {
+    "requirements": 2
+  },
+  "failed_phase": "WritingRequirements",
+  "error_context": "error sending request for url (https://api.anthropic.com/v1/messages)",
+  "review_target": null,
+  "triage_size": "large",
+  "phase_tokens": {
+    "triage": 793
+  },
+  "review_round": 0,
+  "transitions": [
+    {
+      "from": "Idle",
+      "to": "Initializing",
+      "event": "Idle → Initializing",
+      "timestamp": "2026-04-09T17:30:06.072075Z"
+    },
+    {
+      "from": "Initializing",
+      "to": "Triaging",
+      "event": "Initializing → Triaging",
+      "timestamp": "2026-04-09T17:30:06.074146Z"
+    },
+    {
+      "from": "Triaging",
+      "to": "WritingRequirements",
+      "event": "Triaging → WritingRequirements",
+      "timestamp": "2026-04-09T17:30:06.957009Z"
+    },
+    {
+      "from": "WritingRequirements",
+      "to": "WritingRequirements",
+      "event": "WritingRequirements → WritingRequirements",
+      "timestamp": "2026-04-09T17:32:49.787382Z"
+    },
+    {
+      "from": "WritingRequirements",
+      "to": "WritingRequirements",
+      "event": "WritingRequirements → WritingRequirements",
+      "timestamp": "2026-04-09T17:35:31.309984Z"
+    },
+    {
+      "from": "WritingRequirements",
+      "to": "Escalated",
+      "event": "WritingRequirements → Escalated",
+      "timestamp": "2026-04-09T17:38:03.274247Z"
+    }
+  ],
+  "started_at": "2026-04-09T17:30:06.071088Z",
+  "updated_at": "2026-04-09T17:38:03.274248Z"
+}

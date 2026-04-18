@@ -268,6 +268,34 @@ impl<'a> BehaviorFeedback<'a> {
         )?;
         Ok(deleted)
     }
+
+    /// Convert the stats for an action into an [`InteroceptiveSignal`].
+    ///
+    /// - `valence`: success_rate mapped to [-1, 1] (0.5 rate → 0 valence).
+    /// - `arousal`: higher when success rate is very low (danger signal).
+    pub fn to_signal(
+        &self,
+        action: &str,
+    ) -> Result<Option<crate::interoceptive::InteroceptiveSignal>, rusqlite::Error> {
+        use crate::interoceptive::{InteroceptiveSignal, SignalContext, SignalSource};
+
+        let stats = self.get_action_stats(action)?;
+        Ok(stats.map(|s| {
+            let valence = s.score * 2.0 - 1.0; // [0,1] → [-1,1]
+            let arousal = if s.score < 0.3 {
+                (1.0 - s.score) * 0.8 // low success → high arousal
+            } else {
+                0.2
+            };
+
+            InteroceptiveSignal::new(SignalSource::Feedback, None, valence, arousal)
+                .with_context(SignalContext::ActionOutcome {
+                    action: action.to_string(),
+                    success: s.score > 0.5,
+                    cumulative_score: s.score,
+                })
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -355,5 +383,52 @@ mod tests {
         assert_eq!(logs.len(), 3);
         // Most recent first
         assert!(logs[0].outcome); // Last logged was true
+    }
+
+    #[test]
+    fn test_to_signal_high_success() {
+        let conn = Connection::open_in_memory().unwrap();
+        let feedback = BehaviorFeedback::new(&conn).unwrap();
+
+        for _ in 0..8 {
+            feedback.log_outcome("good_action", true).unwrap();
+        }
+        for _ in 0..2 {
+            feedback.log_outcome("good_action", false).unwrap();
+        }
+
+        let sig = feedback.to_signal("good_action").unwrap().unwrap();
+        assert!(matches!(sig.source, crate::interoceptive::SignalSource::Feedback));
+        // 80% success → valence = 0.8*2-1 = 0.6
+        assert!(sig.valence > 0.4, "valence was {}", sig.valence);
+        assert!(sig.arousal < 0.3, "arousal was {}", sig.arousal); // not alarming
+        // Should have ActionOutcome context
+        assert!(matches!(
+            sig.context,
+            Some(crate::interoceptive::SignalContext::ActionOutcome { success: true, .. })
+        ));
+    }
+
+    #[test]
+    fn test_to_signal_low_success() {
+        let conn = Connection::open_in_memory().unwrap();
+        let feedback = BehaviorFeedback::new(&conn).unwrap();
+
+        for _ in 0..10 {
+            feedback.log_outcome("failing_action", false).unwrap();
+        }
+
+        let sig = feedback.to_signal("failing_action").unwrap().unwrap();
+        // 0% success → valence = -1.0, high arousal
+        assert!(sig.valence < -0.8, "valence was {}", sig.valence);
+        assert!(sig.arousal > 0.5, "arousal was {}", sig.arousal);
+    }
+
+    #[test]
+    fn test_to_signal_unknown_action() {
+        let conn = Connection::open_in_memory().unwrap();
+        let feedback = BehaviorFeedback::new(&conn).unwrap();
+
+        assert!(feedback.to_signal("nope").unwrap().is_none());
     }
 }

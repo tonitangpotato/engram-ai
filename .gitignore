@@ -6,3 +6,7 @@ Cargo.lock
 *.db-wal
 .DS_Store
 .DS_Store
+node_modules/
+dist/
+__pycache__/
+*.pyc

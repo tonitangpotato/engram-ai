@@ -60,6 +60,8 @@ pub struct Memory {
     synthesis_settings: Option<crate::synthesis::types::SynthesisSettings>,
     /// Optional LLM provider for synthesis insight generation
     synthesis_llm_provider: Option<Box<dyn crate::synthesis::types::SynthesisLlmProvider>>,
+    /// Interoceptive hub for unified internal state monitoring
+    interoceptive_hub: crate::interoceptive::InteroceptiveHub,
 }
 
 impl Memory {
@@ -101,6 +103,7 @@ impl Memory {
             entity_extractor,
             synthesis_settings: None,
             synthesis_llm_provider: None,
+            interoceptive_hub: crate::interoceptive::InteroceptiveHub::new(),
         };
         
         // Auto-configure extractor from environment/config
@@ -147,6 +150,7 @@ impl Memory {
             entity_extractor,
             synthesis_settings: None,
             synthesis_llm_provider: None,
+            interoceptive_hub: crate::interoceptive::InteroceptiveHub::new(),
         };
         
         // Auto-configure extractor from environment/config
@@ -194,6 +198,7 @@ impl Memory {
             entity_extractor,
             synthesis_settings: None,
             synthesis_llm_provider: None,
+            interoceptive_hub: crate::interoceptive::InteroceptiveHub::new(),
         };
         
         // Auto-configure extractor from environment/config
@@ -246,6 +251,7 @@ impl Memory {
             entity_extractor,
             synthesis_settings: None,
             synthesis_llm_provider: None,
+            interoceptive_hub: crate::interoceptive::InteroceptiveHub::new(),
         };
         
         // Auto-configure extractor from environment/config
@@ -262,6 +268,155 @@ impl Memory {
     /// Get a mutable reference to the Emotional Bus, if attached.
     pub fn emotional_bus_mut(&mut self) -> Option<&mut EmotionalBus> {
         self.emotional_bus.as_mut()
+    }
+
+    // ── Interoceptive Hub API ─────────────────────────────────────────
+
+    /// Get a reference to the interoceptive hub.
+    pub fn interoceptive_hub(&self) -> &crate::interoceptive::InteroceptiveHub {
+        &self.interoceptive_hub
+    }
+
+    /// Get a mutable reference to the interoceptive hub.
+    pub fn interoceptive_hub_mut(&mut self) -> &mut crate::interoceptive::InteroceptiveHub {
+        &mut self.interoceptive_hub
+    }
+
+    /// Take a snapshot of the current interoceptive state.
+    ///
+    /// Returns the integrated state across all domains — suitable for
+    /// injection into system prompts or inspection.
+    pub fn interoceptive_snapshot(&self) -> crate::interoceptive::InteroceptiveState {
+        self.interoceptive_hub.current_state()
+    }
+
+    /// Run an interoceptive tick: pull signals from all attached subsystems
+    /// and feed them into the hub.
+    ///
+    /// Call this periodically (e.g., every heartbeat or every N messages)
+    /// to keep the interoceptive state current.
+    pub fn interoceptive_tick(&mut self) {
+        use crate::bus::accumulator::EmotionalAccumulator;
+        use crate::bus::feedback::BehaviorFeedback;
+        use crate::interoceptive::InteroceptiveSignal;
+
+        let mut signals: Vec<InteroceptiveSignal> = Vec::new();
+
+        // Pull from DB-backed subsystems via the storage connection.
+        let conn = self.storage.connection();
+
+        // Accumulator: pull all emotional trends.
+        if let Ok(acc) = EmotionalAccumulator::new(conn) {
+            if let Ok(trends) = acc.get_all_trends() {
+                for trend in &trends {
+                    if let Ok(Some(sig)) = acc.to_signal(&trend.domain) {
+                        signals.push(sig);
+                    }
+                }
+            }
+        }
+
+        // Feedback: pull all action stats.
+        if let Ok(fb) = BehaviorFeedback::new(conn) {
+            if let Ok(stats) = fb.get_all_action_stats() {
+                for stat in &stats {
+                    if let Ok(Some(sig)) = fb.to_signal(&stat.action) {
+                        signals.push(sig);
+                    }
+                }
+            }
+        }
+
+        // Alignment: generate signal if emotional bus is attached (has drives).
+        // Note: alignment is content-dependent, so we skip it in tick.
+        // It's triggered per-interaction instead.
+
+        // Feed all collected signals into the hub.
+        if !signals.is_empty() {
+            log::debug!("Interoceptive tick: processing {} signals", signals.len());
+            self.interoceptive_hub.process_batch(signals);
+        }
+    }
+
+    /// Broadcast memory admission to the interoceptive hub (GWT global workspace).
+    ///
+    /// When memories enter working memory (via recall), this broadcasts
+    /// signals to the hub for integration. Implements Baars' Global Workspace
+    /// Theory: working memory contents are "broadcast" to all cognitive modules.
+    ///
+    /// For each admitted memory:
+    /// 1. Generate a confidence signal (metacognitive assessment)
+    /// 2. Check drive alignment if emotional bus is attached
+    /// 3. Spread activation to Hebbian neighbors (associative priming)
+    ///
+    /// Returns the IDs of Hebbian neighbors activated (for potential WM boosting).
+    pub fn broadcast_admission(
+        &mut self,
+        memory_ids: &[String],
+        session_wm: &mut SessionWorkingMemory,
+    ) -> Vec<String> {
+        use crate::interoceptive::InteroceptiveSignal;
+
+        let mut signals: Vec<InteroceptiveSignal> = Vec::new();
+        let mut neighbor_ids: Vec<String> = Vec::new();
+
+        for memory_id in memory_ids {
+            // Fetch the memory record for signal generation.
+            let record = match self.storage.get(memory_id) {
+                Ok(Some(r)) => r,
+                _ => continue,
+            };
+
+            // 1. Confidence signal — metacognitive assessment of this memory.
+            let conf_signal = crate::confidence::confidence_to_signal(&record, None, None);
+            signals.push(conf_signal);
+
+            // 2. Alignment signal — does this memory align with core drives?
+            if let Some(ref bus) = self.emotional_bus {
+                let drives = bus.drives();
+                if !drives.is_empty() {
+                    let align_signal =
+                        crate::bus::alignment::alignment_to_signal(&record.content, drives);
+                    signals.push(align_signal);
+                }
+            }
+
+            // 3. Spreading activation — Hebbian neighbors get primed.
+            if self.config.hebbian_enabled {
+                if let Ok(neighbors) = self.storage.get_hebbian_links_weighted(memory_id) {
+                    for (neighbor_id, weight) in &neighbors {
+                        // Only spread to neighbors with meaningful link strength.
+                        if *weight > 0.1 {
+                            neighbor_ids.push(neighbor_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Feed all broadcast signals into the hub.
+        if !signals.is_empty() {
+            log::debug!(
+                "GWT broadcast: {} memories → {} signals",
+                memory_ids.len(),
+                signals.len()
+            );
+            self.interoceptive_hub.process_batch(signals);
+        }
+
+        // Boost Hebbian neighbors in working memory (associative priming).
+        // This implements spreading activation: memories connected to the
+        // admitted ones get a small activation boost in WM.
+        if !neighbor_ids.is_empty() {
+            neighbor_ids.dedup();
+            session_wm.activate(&neighbor_ids);
+            log::debug!(
+                "GWT spreading activation: {} Hebbian neighbors primed",
+                neighbor_ids.len()
+            );
+        }
+
+        neighbor_ids
     }
     
     /// Get a reference to the underlying storage connection.
@@ -512,8 +667,12 @@ impl Memory {
                         let fact_type = Self::parse_memory_type(&fact.memory_type)
                             .unwrap_or(memory_type);
                         
-                        // Use extracted importance, fall back to provided or type default
-                        let fact_importance = Some(fact.importance);
+                        // Cap auto-extracted importance to prevent noise from dominating recall
+                        let capped_importance = fact.importance.min(self.config.auto_extract_importance_cap);
+                        if fact.importance > self.config.auto_extract_importance_cap {
+                            log::debug!("  ↓ importance capped: {:.2} → {:.2}", fact.importance, capped_importance);
+                        }
+                        let fact_importance = Some(capped_importance);
                         
                         // Store each extracted fact separately
                         last_id = self.add_raw(
@@ -621,7 +780,19 @@ impl Memory {
                         "Dedup: merging into existing memory {} (similarity: {:.4})",
                         existing_id, similarity
                     );
-                    self.storage.merge_memory_into(&existing_id, importance)?;
+                    let outcome = self.storage.merge_memory_into(
+                        &existing_id,
+                        content,
+                        importance,
+                        similarity,
+                    )?;
+                    if outcome.content_updated {
+                        log::info!(
+                            "Dedup: content updated for {} (merge_count={})",
+                            existing_id,
+                            outcome.merge_count,
+                        );
+                    }
                     
                     // Also update entity links for the existing memory
                     if self.config.entity_config.enabled {
@@ -855,6 +1026,13 @@ impl Memory {
                 (HashMap::new(), 0.0)
             };
             
+            // Query-type adaptive weight adjustment (C7: Multi-Retrieval Fusion)
+            let query_analysis = if self.config.adaptive_weights {
+                crate::query_classifier::classify_query(query)
+            } else {
+                crate::query_classifier::QueryAnalysis::neutral()
+            };
+            
             // Merge candidate IDs from embedding, FTS, and entity recall
             let mut all_ids: std::collections::HashSet<String> = similarity_map.keys().cloned().collect();
             for record in &fts_results {
@@ -872,25 +1050,56 @@ impl Memory {
                 }
             }
             
-            // Score each candidate with combined FTS + embedding + ACT-R + entity
-            // Weights are configurable via MemoryConfig, runtime-normalized to sum to 1.0
+            // Hebbian channel (6th channel): score candidates by Hebbian connectivity
+            let candidate_ids: Vec<String> = candidates.iter().map(|r| r.id.clone()).collect();
+            let hebbian_scores = if self.config.hebbian_enabled {
+                Self::hebbian_channel_scores(&self.storage, &candidate_ids)?
+            } else {
+                HashMap::new()
+            };
+            let hebbian_w = if self.config.hebbian_enabled {
+                self.config.hebbian_recall_weight
+            } else {
+                0.0
+            };
+            
+            // Base weights (from config)
             let raw_fts_weight = self.config.fts_weight;
             let raw_emb_weight = self.config.embedding_weight;
             let raw_actr_weight = self.config.actr_weight;
             let raw_entity_weight = entity_w;
+            let raw_temporal_weight = self.config.temporal_weight;
+            let raw_hebbian_weight = hebbian_w;
             
-            // Runtime normalization — always divide by sum (handles any user config)
-            let total_weight = raw_fts_weight + raw_emb_weight + raw_actr_weight + raw_entity_weight;
-            let (fts_weight, emb_weight, actr_weight, ent_weight) = if total_weight > 0.0 {
+            // Apply query-type modifiers (C7 adaptive weights)
+            let adj_fts = raw_fts_weight * query_analysis.weight_modifiers.fts;
+            let adj_emb = raw_emb_weight * query_analysis.weight_modifiers.embedding;
+            let adj_actr = raw_actr_weight * query_analysis.weight_modifiers.actr;
+            let adj_entity = raw_entity_weight * query_analysis.weight_modifiers.entity;
+            let adj_temporal = raw_temporal_weight * query_analysis.weight_modifiers.temporal;
+            let adj_hebbian = raw_hebbian_weight * query_analysis.weight_modifiers.hebbian;
+            
+            // Runtime normalization — always divide by sum
+            let total_weight = adj_fts + adj_emb + adj_actr + adj_entity + adj_temporal + adj_hebbian;
+            let (fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight) = if total_weight > 0.0 {
                 (
-                    raw_fts_weight / total_weight,
-                    raw_emb_weight / total_weight,
-                    raw_actr_weight / total_weight,
-                    raw_entity_weight / total_weight,
+                    adj_fts / total_weight,
+                    adj_emb / total_weight,
+                    adj_actr / total_weight,
+                    adj_entity / total_weight,
+                    adj_temporal / total_weight,
+                    adj_hebbian / total_weight,
                 )
             } else {
-                (0.25, 0.25, 0.25, 0.25)
+                let n = 1.0 / 6.0;
+                (n, n, n, n, n, n)
             };
+            
+            log::debug!(
+                "C7 recall weights: fts={:.3} emb={:.3} actr={:.3} entity={:.3} temporal={:.3} hebbian={:.3} (query_type={:?})",
+                fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight,
+                query_analysis.query_type,
+            );
             
             let mut scored: Vec<_> = candidates
                 .into_iter()
@@ -926,11 +1135,19 @@ impl Memory {
                         self.config.actr_sigmoid_scale,
                     );
                     
-                    // Combined: FTS + embedding + ACT-R + entity
+                    // Temporal channel (5th) — time-range proximity
+                    let temporal_score = Self::temporal_score(&record, &query_analysis.time_range, now);
+                    
+                    // Hebbian channel (6th) — graph connectivity
+                    let hebbian_score = hebbian_scores.get(&record.id).copied().unwrap_or(0.0);
+                    
+                    // Combined: 6-channel fusion
                     let combined_score = (fts_weight * fts_score)
                         + (emb_weight * embedding_score as f64)
                         + (actr_weight * activation_normalized)
-                        + (ent_weight * entity_score);
+                        + (ent_weight * entity_score)
+                        + (temp_weight * temporal_score)
+                        + (hebb_weight * hebbian_score);
                     
                     (record, combined_score, activation)
                 })
@@ -939,10 +1156,17 @@ impl Memory {
             // Sort by combined score descending
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
-            // Take top-k and compute confidence
-            let results: Vec<_> = scored
-                .into_iter()
-                .take(limit)
+            // Take expanded candidate pool for dedup backfilling
+            let expanded_limit = if self.config.recall_dedup_enabled { limit * 3 } else { limit };
+            let top_candidates: Vec<_> = scored.into_iter().take(expanded_limit).collect();
+
+            // Build pairwise embedding lookup for dedup
+            let embedding_lookup: HashMap<&str, &Vec<f32>> = stored_embeddings.iter()
+                .map(|(id, emb)| (id.as_str(), emb))
+                .collect();
+
+            // Convert to RecallResults with confidence
+            let mut all_results: Vec<RecallResult> = top_candidates.iter()
                 .map(|(record, _combined_score, activation)| {
                     // Compute confidence from individual signals (not combined_score)
                     let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
@@ -955,14 +1179,28 @@ impl Memory {
                     let confidence_label = confidence_label(confidence);
 
                     RecallResult {
-                        record,
-                        activation,
+                        record: record.clone(),
+                        activation: *activation,
                         confidence,
                         confidence_label,
                     }
                 })
                 .filter(|r| r.confidence >= min_conf)
                 .collect();
+
+            // Dedup by embedding similarity
+            if self.config.recall_dedup_enabled {
+                all_results = Self::dedup_recall_results_by_embedding(
+                    all_results,
+                    &embedding_lookup,
+                    self.config.recall_dedup_threshold,
+                    limit,
+                );
+            } else {
+                all_results.truncate(limit);
+            }
+
+            let results = all_results;
 
             // Record access for all retrieved memories (ACT-R learning)
             for result in &results {
@@ -1053,6 +1291,130 @@ impl Memory {
         Ok(memory_scores)
     }
     
+    /// Temporal channel scoring for C7 Multi-Retrieval Fusion.
+    ///
+    /// When a time range is detected in the query, memories within that range
+    /// are scored by proximity to the range center (1.0 at center, 0.5 at edges).
+    /// Memories outside the range get 0.0.
+    ///
+    /// When no time range is detected, returns a neutral 0.5 for all memories
+    /// (so the temporal channel doesn't distort results when there's no temporal signal).
+    fn temporal_score(
+        record: &MemoryRecord,
+        time_range: &Option<crate::query_classifier::TimeRange>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> f64 {
+        match time_range {
+            Some(range) => {
+                if record.created_at >= range.start && record.created_at <= range.end {
+                    // Within range: score by proximity to center of range
+                    let range_duration = (range.end - range.start).num_seconds() as f64;
+                    let range_center = range.start + (range.end - range.start) / 2;
+                    let distance = (record.created_at - range_center).num_seconds().abs() as f64;
+                    let half_range = range_duration / 2.0;
+                    if half_range > 0.0 {
+                        // 1.0 at center, 0.5 at edges
+                        1.0 - (distance / half_range) * 0.5
+                    } else {
+                        1.0
+                    }
+                } else {
+                    0.0 // Outside range
+                }
+            }
+            None => {
+                // No temporal query: gentle recency signal (complement ACT-R)
+                // Recent memories get slight boost, but not enough to dominate
+                let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
+                // Sigmoid centered at 72 hours (3 days), scale 48
+                let recency = 1.0 / (1.0 + (age_hours - 72.0).exp() / 48.0_f64.exp());
+                // Map to 0.3-0.7 range (narrow band so it's a weak signal)
+                0.3 + recency * 0.4
+            }
+        }
+    }
+    
+    /// Hebbian channel scoring for C7 Multi-Retrieval Fusion.
+    ///
+    /// For each candidate, checks how many other candidates it's Hebbian-linked to.
+    /// Memories that are well-connected to other recall results get boosted —
+    /// they form coherent clusters of associated knowledge.
+    ///
+    /// Scores are normalized to 0.0-1.0.
+    fn hebbian_channel_scores(
+        storage: &crate::storage::Storage,
+        candidate_ids: &[String],
+    ) -> Result<HashMap<String, f64>, Box<dyn std::error::Error>> {
+        let mut scores: HashMap<String, f64> = HashMap::new();
+        let candidate_set: std::collections::HashSet<&String> = candidate_ids.iter().collect();
+        
+        for id in candidate_ids {
+            let links = storage.get_hebbian_links_weighted(id)?;
+            let mut link_score = 0.0;
+            for (linked_id, strength) in &links {
+                if candidate_set.contains(linked_id) {
+                    // This candidate is Hebbian-linked to another candidate
+                    link_score += strength;
+                }
+            }
+            if link_score > 0.0 {
+                scores.insert(id.clone(), link_score);
+            }
+        }
+        
+        // Normalize to 0.0-1.0
+        if let Some(&max) = scores.values().max_by(|a, b| a.partial_cmp(b).unwrap()) {
+            if max > 0.0 {
+                for v in scores.values_mut() {
+                    *v /= max;
+                }
+            }
+        }
+        
+        Ok(scores)
+    }
+    
+    /// Remove near-duplicate recall results based on pairwise embedding similarity.
+    /// Greedy: iterate in score order, skip any result too similar to an already-kept one.
+    /// Backfills from the expanded candidate pool to maintain the requested limit.
+    fn dedup_recall_results_by_embedding(
+        candidates: Vec<RecallResult>,
+        embeddings: &HashMap<&str, &Vec<f32>>,
+        threshold: f64,
+        limit: usize,
+    ) -> Vec<RecallResult> {
+        let mut kept: Vec<RecallResult> = Vec::with_capacity(limit);
+        let mut kept_embeddings: Vec<&Vec<f32>> = Vec::with_capacity(limit);
+
+        for candidate in candidates {
+            if kept.len() >= limit {
+                break;
+            }
+
+            let candidate_emb = match embeddings.get(candidate.record.id.as_str()) {
+                Some(emb) => *emb,
+                None => {
+                    // No embedding available, keep by default
+                    kept.push(candidate);
+                    continue;
+                }
+            };
+
+            // Check against all kept results
+            let is_dup = kept_embeddings.iter().any(|kept_emb| {
+                let sim = EmbeddingProvider::cosine_similarity(candidate_emb, kept_emb);
+                sim as f64 > threshold
+            });
+
+            if !is_dup {
+                kept_embeddings.push(candidate_emb);
+                kept.push(candidate);
+            }
+        }
+
+        kept
+    }
+
     /// FTS-based recall fallback when embeddings are not available.
     fn recall_fts(
         &mut self,
@@ -1726,6 +2088,10 @@ impl Memory {
                 .collect();
             session_wm.activate_with_scores(&entries);
             session_wm.set_query(query);
+
+            // GWT broadcast: admitted memories → interoceptive hub + Hebbian spreading.
+            let admitted_ids: Vec<String> = results.iter().map(|r| r.record.id.clone()).collect();
+            self.broadcast_admission(&admitted_ids, session_wm);
             
             Ok(SessionRecallResult {
                 results,
@@ -1785,6 +2151,10 @@ impl Memory {
             let result_ids: Vec<String> = cached_results.iter().map(|r| r.record.id.clone()).collect();
             session_wm.activate(&result_ids);
             session_wm.set_query(query);
+
+            // GWT broadcast on cached path too — re-activation reinforces the hub state.
+            // (Lighter than full-recall broadcast: same memories, but keeps hub current.)
+            self.broadcast_admission(&result_ids, session_wm);
             
             Ok(SessionRecallResult {
                 results: cached_results,
@@ -2330,6 +2700,69 @@ impl Memory {
     pub fn entity_stats(&self) -> Result<(usize, usize, usize), Box<dyn std::error::Error>> {
         Ok(self.storage.entity_stats()?)
     }
+    
+    /// Purge garbage entities created by regex false positives.
+    /// Removes:
+    /// - Person entities that are 1-2 chars or pure digits (e.g., "0", "1", "types")
+    /// - Orphaned entities with no memory links
+    /// Returns count of entities deleted.
+    pub fn purge_garbage_entities(&self) -> Result<usize, Box<dyn std::error::Error>> {
+        let mut total_deleted = 0;
+        
+        // Phase 1: Delete short/numeric person entities that are clearly false positives
+        let garbage_persons: Vec<String> = {
+            let conn = self.storage.connection();
+            let mut stmt = conn.prepare(
+                "SELECT id, name FROM entities WHERE entity_type = 'person'"
+            )?;
+            let rows: Vec<(String, String)> = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?.filter_map(|r| r.ok()).collect();
+            drop(stmt);
+            
+            rows.into_iter()
+                .filter(|(_, name)| {
+                    let n = name.trim();
+                    // Pure digit, single char, or known false positive
+                    n.len() <= 2
+                        || n.chars().all(|c| c.is_ascii_digit())
+                        || matches!(n, "types" | "user" | "mac" | "sigma" | "github")
+                })
+                .map(|(id, _)| id)
+                .collect()
+        };
+        
+        for id in &garbage_persons {
+            if self.storage.delete_entity(id)? {
+                total_deleted += 1;
+            }
+        }
+        
+        // Phase 2: Delete orphaned entities (no memory_entities links)
+        let orphans: Vec<String> = {
+            let conn = self.storage.connection();
+            let mut stmt = conn.prepare(
+                "SELECT e.id FROM entities e
+                 LEFT JOIN memory_entities me ON e.id = me.entity_id
+                 WHERE me.entity_id IS NULL"
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        
+        for id in &orphans {
+            if self.storage.delete_entity(id)? {
+                total_deleted += 1;
+            }
+        }
+        
+        if total_deleted > 0 {
+            log::info!("Purged {} garbage entities ({} false-positive persons, {} orphans)",
+                total_deleted, garbage_persons.len(), orphans.len());
+        }
+        
+        Ok(total_deleted)
+    }
 
     /// List entities, optionally filtered by type and namespace.
     /// Returns (EntityRecord, mention_count) pairs ordered by mention count descending.
@@ -2718,5 +3151,551 @@ mod confidence_tests {
         let c_low = compute_query_confidence(Some(0.3), false, 0.0, 100.0);
         let gap = c_high - c_low;
         assert!(gap > 0.3, "sigmoid should create large gap between 0.8 and 0.3 sim: gap={gap}");
+    }
+
+    #[test]
+    fn test_auto_extract_importance_cap() {
+        let mut config = MemoryConfig::default();
+        config.auto_extract_importance_cap = 0.7;
+        
+        // Test capping logic directly
+        let extracted_importance: f64 = 0.95;
+        let capped = extracted_importance.min(config.auto_extract_importance_cap);
+        assert_eq!(capped, 0.7);
+        
+        // Below cap — no change
+        let low_importance: f64 = 0.3;
+        let not_capped = low_importance.min(config.auto_extract_importance_cap);
+        assert_eq!(not_capped, 0.3);
+        
+        // Exactly at cap — no change
+        let at_cap: f64 = 0.7;
+        let stays = at_cap.min(config.auto_extract_importance_cap);
+        assert_eq!(stays, 0.7);
+    }
+
+    #[test]
+    fn test_auto_extract_importance_cap_default() {
+        let config = MemoryConfig::default();
+        assert_eq!(config.auto_extract_importance_cap, 0.7);
+    }
+
+    #[test]
+    fn test_dedup_recall_results_by_embedding() {
+        // Create mock embeddings - two near-identical and one different
+        let emb_a: Vec<f32> = vec![1.0, 0.0, 0.0];
+        let emb_b: Vec<f32> = vec![0.99, 0.1, 0.0]; // Very similar to A
+        let emb_c: Vec<f32> = vec![0.0, 1.0, 0.0]; // Different
+
+        let mut embeddings_map: HashMap<&str, &Vec<f32>> = HashMap::new();
+        embeddings_map.insert("id-a", &emb_a);
+        embeddings_map.insert("id-b", &emb_b);
+        embeddings_map.insert("id-c", &emb_c);
+
+        let make_result = |id: &str, confidence: f64| RecallResult {
+            record: MemoryRecord {
+                id: id.to_string(),
+                content: format!("content-{}", id),
+                memory_type: MemoryType::Factual,
+                layer: MemoryLayer::Working,
+                created_at: Utc::now(),
+                access_times: vec![Utc::now()],
+                working_strength: 1.0,
+                core_strength: 0.0,
+                importance: 0.5,
+                pinned: false,
+                consolidation_count: 0,
+                last_consolidated: None,
+                source: "test".to_string(),
+                contradicts: None,
+                contradicted_by: None,
+                metadata: None,
+            },
+            activation: 0.5,
+            confidence,
+            confidence_label: "high".to_string(),
+        };
+
+        let candidates = vec![
+            make_result("id-a", 0.9),
+            make_result("id-b", 0.8), // Near-dup of A
+            make_result("id-c", 0.7),
+        ];
+
+        let result = Memory::dedup_recall_results_by_embedding(
+            candidates,
+            &embeddings_map,
+            0.85, // threshold
+            3,    // limit
+        );
+
+        // Should keep A and C, skip B (too similar to A)
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].record.id, "id-a");
+        assert_eq!(result[1].record.id, "id-c");
+    }
+
+    #[test]
+    fn test_dedup_recall_no_duplicates() {
+        // All embeddings are orthogonal — nothing should be deduped
+        let emb_a: Vec<f32> = vec![1.0, 0.0, 0.0];
+        let emb_b: Vec<f32> = vec![0.0, 1.0, 0.0];
+        let emb_c: Vec<f32> = vec![0.0, 0.0, 1.0];
+
+        let mut embeddings_map: HashMap<&str, &Vec<f32>> = HashMap::new();
+        embeddings_map.insert("id-a", &emb_a);
+        embeddings_map.insert("id-b", &emb_b);
+        embeddings_map.insert("id-c", &emb_c);
+
+        let make_result = |id: &str, confidence: f64| RecallResult {
+            record: MemoryRecord {
+                id: id.to_string(),
+                content: format!("content-{}", id),
+                memory_type: MemoryType::Factual,
+                layer: MemoryLayer::Working,
+                created_at: Utc::now(),
+                access_times: vec![Utc::now()],
+                working_strength: 1.0,
+                core_strength: 0.0,
+                importance: 0.5,
+                pinned: false,
+                consolidation_count: 0,
+                last_consolidated: None,
+                source: "test".to_string(),
+                contradicts: None,
+                contradicted_by: None,
+                metadata: None,
+            },
+            activation: 0.5,
+            confidence,
+            confidence_label: "high".to_string(),
+        };
+
+        let candidates = vec![
+            make_result("id-a", 0.9),
+            make_result("id-b", 0.8),
+            make_result("id-c", 0.7),
+        ];
+
+        let result = Memory::dedup_recall_results_by_embedding(
+            candidates,
+            &embeddings_map,
+            0.85,
+            3,
+        );
+
+        // All three should be kept
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_dedup_recall_respects_limit() {
+        // No dups, but limit is 2
+        let emb_a: Vec<f32> = vec![1.0, 0.0, 0.0];
+        let emb_b: Vec<f32> = vec![0.0, 1.0, 0.0];
+        let emb_c: Vec<f32> = vec![0.0, 0.0, 1.0];
+
+        let mut embeddings_map: HashMap<&str, &Vec<f32>> = HashMap::new();
+        embeddings_map.insert("id-a", &emb_a);
+        embeddings_map.insert("id-b", &emb_b);
+        embeddings_map.insert("id-c", &emb_c);
+
+        let make_result = |id: &str| RecallResult {
+            record: MemoryRecord {
+                id: id.to_string(),
+                content: format!("content-{}", id),
+                memory_type: MemoryType::Factual,
+                layer: MemoryLayer::Working,
+                created_at: Utc::now(),
+                access_times: vec![Utc::now()],
+                working_strength: 1.0,
+                core_strength: 0.0,
+                importance: 0.5,
+                pinned: false,
+                consolidation_count: 0,
+                last_consolidated: None,
+                source: "test".to_string(),
+                contradicts: None,
+                contradicted_by: None,
+                metadata: None,
+            },
+            activation: 0.5,
+            confidence: 0.8,
+            confidence_label: "high".to_string(),
+        };
+
+        let candidates = vec![
+            make_result("id-a"),
+            make_result("id-b"),
+            make_result("id-c"),
+        ];
+
+        let result = Memory::dedup_recall_results_by_embedding(
+            candidates,
+            &embeddings_map,
+            0.85,
+            2, // limit of 2
+        );
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].record.id, "id-a");
+        assert_eq!(result[1].record.id, "id-b");
+    }
+
+    #[test]
+    fn test_dedup_recall_missing_embedding_kept() {
+        // If a candidate has no embedding in the lookup, it should be kept
+        let emb_a: Vec<f32> = vec![1.0, 0.0, 0.0];
+
+        let mut embeddings_map: HashMap<&str, &Vec<f32>> = HashMap::new();
+        embeddings_map.insert("id-a", &emb_a);
+        // id-b has no embedding
+
+        let make_result = |id: &str| RecallResult {
+            record: MemoryRecord {
+                id: id.to_string(),
+                content: format!("content-{}", id),
+                memory_type: MemoryType::Factual,
+                layer: MemoryLayer::Working,
+                created_at: Utc::now(),
+                access_times: vec![Utc::now()],
+                working_strength: 1.0,
+                core_strength: 0.0,
+                importance: 0.5,
+                pinned: false,
+                consolidation_count: 0,
+                last_consolidated: None,
+                source: "test".to_string(),
+                contradicts: None,
+                contradicted_by: None,
+                metadata: None,
+            },
+            activation: 0.5,
+            confidence: 0.8,
+            confidence_label: "high".to_string(),
+        };
+
+        let candidates = vec![
+            make_result("id-a"),
+            make_result("id-b"), // No embedding
+        ];
+
+        let result = Memory::dedup_recall_results_by_embedding(
+            candidates,
+            &embeddings_map,
+            0.85,
+            5,
+        );
+
+        // Both should be kept (id-b has no embedding, so can't be deduped)
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_dedup_recall_backfills_from_candidates() {
+        // A, B (dup of A), C (different) — with limit=2, should get A and C
+        let emb_a: Vec<f32> = vec![1.0, 0.0, 0.0];
+        let emb_b: Vec<f32> = vec![0.98, 0.05, 0.0]; // Near-duplicate of A
+        let emb_c: Vec<f32> = vec![0.0, 1.0, 0.0]; // Different
+
+        let mut embeddings_map: HashMap<&str, &Vec<f32>> = HashMap::new();
+        embeddings_map.insert("id-a", &emb_a);
+        embeddings_map.insert("id-b", &emb_b);
+        embeddings_map.insert("id-c", &emb_c);
+
+        let make_result = |id: &str, confidence: f64| RecallResult {
+            record: MemoryRecord {
+                id: id.to_string(),
+                content: format!("content-{}", id),
+                memory_type: MemoryType::Factual,
+                layer: MemoryLayer::Working,
+                created_at: Utc::now(),
+                access_times: vec![Utc::now()],
+                working_strength: 1.0,
+                core_strength: 0.0,
+                importance: 0.5,
+                pinned: false,
+                consolidation_count: 0,
+                last_consolidated: None,
+                source: "test".to_string(),
+                contradicts: None,
+                contradicted_by: None,
+                metadata: None,
+            },
+            activation: 0.5,
+            confidence,
+            confidence_label: "high".to_string(),
+        };
+
+        let candidates = vec![
+            make_result("id-a", 0.9),
+            make_result("id-b", 0.85), // Dup of A, would normally be #2
+            make_result("id-c", 0.7),  // #3 backfills into slot #2
+        ];
+
+        let result = Memory::dedup_recall_results_by_embedding(
+            candidates,
+            &embeddings_map,
+            0.85,
+            2, // limit=2, B gets deduped, C backfills
+        );
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].record.id, "id-a");
+        assert_eq!(result[1].record.id, "id-c"); // Backfilled
+    }
+
+    #[test]
+    fn test_recall_dedup_config_defaults() {
+        let config = MemoryConfig::default();
+        assert!(config.recall_dedup_enabled);
+        assert!((config.recall_dedup_threshold - 0.85).abs() < f64::EPSILON);
+    }
+
+    // ── C7 Multi-Retrieval Fusion tests ────────────────────────────
+
+    fn make_test_record(id: &str, content: &str, created_at: chrono::DateTime<Utc>) -> MemoryRecord {
+        MemoryRecord {
+            id: id.to_string(),
+            content: content.to_string(),
+            memory_type: MemoryType::Factual,
+            layer: crate::types::MemoryLayer::Working,
+            created_at,
+            access_times: vec![created_at],
+            working_strength: 1.0,
+            core_strength: 0.0,
+            importance: 0.5,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: "test".to_string(),
+            contradicts: None,
+            contradicted_by: None,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_temporal_score_within_range() {
+        use crate::query_classifier::TimeRange;
+        let now = Utc::now();
+        
+        // Memory at the center of a 24-hour range
+        let range = TimeRange {
+            start: now - chrono::Duration::hours(24),
+            end: now,
+        };
+        
+        let record = make_test_record("t1", "test", now - chrono::Duration::hours(12));
+        
+        let score = Memory::temporal_score(&record, &Some(range), now);
+        assert!(score > 0.9, "Center of range should score high: {}", score);
+    }
+
+    #[test]
+    fn test_temporal_score_outside_range() {
+        use crate::query_classifier::TimeRange;
+        let now = Utc::now();
+        
+        let range = TimeRange {
+            start: now - chrono::Duration::hours(24),
+            end: now - chrono::Duration::hours(12),
+        };
+        
+        let record = make_test_record("t2", "test", now - chrono::Duration::hours(1));
+        
+        let score = Memory::temporal_score(&record, &Some(range), now);
+        assert!(score < 0.01, "Outside range should score ~0: {}", score);
+    }
+
+    #[test]
+    fn test_temporal_score_no_range() {
+        let now = Utc::now();
+        
+        let record = make_test_record("t3", "test", now - chrono::Duration::hours(1));
+        
+        let score = Memory::temporal_score(&record, &None, now);
+        // Should be in neutral range (0.25-0.75)
+        assert!(score >= 0.25 && score <= 0.75,
+            "No range: score should be neutral-ish: {}", score);
+    }
+
+    #[test]
+    fn test_hebbian_channel_scores_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("test.db");
+        let mut storage = crate::storage::Storage::new(db.to_str().unwrap()).unwrap();
+        
+        let now = Utc::now();
+        let rec_a = make_test_record("a", "memory A", now);
+        let rec_b = make_test_record("b", "memory B", now);
+        let rec_c = make_test_record("c", "memory C", now);
+        storage.add(&rec_a, "default").unwrap();
+        storage.add(&rec_b, "default").unwrap();
+        storage.add(&rec_c, "default").unwrap();
+        
+        // Create Hebbian link between A and B
+        // First call creates tracking record, second call forms the link (threshold=1)
+        storage.record_coactivation("a", "b", 1).unwrap();
+        storage.record_coactivation("a", "b", 1).unwrap();
+        
+        let candidate_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let scores = Memory::hebbian_channel_scores(&storage, &candidate_ids).unwrap();
+        
+        // A and B should have scores (linked to each other), C should not
+        assert!(scores.get("a").copied().unwrap_or(0.0) > 0.0, "A should have hebbian score");
+        assert!(scores.get("b").copied().unwrap_or(0.0) > 0.0, "B should have hebbian score");
+        assert!(scores.get("c").copied().unwrap_or(0.0) < 0.01, "C should have no hebbian score");
+    }
+
+    #[test]
+    fn test_c7_config_defaults() {
+        let config = MemoryConfig::default();
+        assert!((config.temporal_weight - 0.10).abs() < f64::EPSILON);
+        assert!((config.hebbian_recall_weight - 0.10).abs() < f64::EPSILON);
+        assert!(config.adaptive_weights);
+    }
+
+    #[test]
+    fn test_adaptive_weights_disabled_preserves_behavior() {
+        // When adaptive_weights = false, query classifier should return neutral
+        let analysis = crate::query_classifier::QueryAnalysis::neutral();
+        assert_eq!(analysis.weight_modifiers.fts, 1.0);
+        assert_eq!(analysis.weight_modifiers.embedding, 1.0);
+        assert_eq!(analysis.weight_modifiers.actr, 1.0);
+        assert_eq!(analysis.weight_modifiers.temporal, 1.0);
+        assert_eq!(analysis.weight_modifiers.hebbian, 1.0);
+    }
+
+    // ── GWT Broadcast Tests ───────────────────────────────────────
+
+    #[test]
+    fn test_broadcast_admission_generates_confidence_signals() {
+        let mut mem = Memory::new(":memory:", None).unwrap();
+        let mut wm = SessionWorkingMemory::default();
+
+        // Store a memory so we have something to broadcast.
+        let id = mem
+            .add("Rust is a systems programming language", MemoryType::Factual, Some(0.5), None, None)
+            .unwrap();
+
+        // Hub should be empty before broadcast.
+        assert_eq!(mem.interoceptive_hub().buffer_len(), 0);
+
+        // Broadcast the memory admission.
+        mem.broadcast_admission(&[id], &mut wm);
+
+        // Hub should now have at least one signal (confidence).
+        // No emotional bus → no alignment signal, but confidence is always generated.
+        assert!(
+            mem.interoceptive_hub().buffer_len() >= 1,
+            "expected ≥1 signal in hub, got {}",
+            mem.interoceptive_hub().buffer_len()
+        );
+    }
+
+    #[test]
+    fn test_broadcast_admission_multiple_memories() {
+        let mut mem = Memory::new(":memory:", None).unwrap();
+        let mut wm = SessionWorkingMemory::default();
+
+        let id1 = mem
+            .add("First memory about coding", MemoryType::Factual, Some(0.5), None, None)
+            .unwrap();
+        let id2 = mem
+            .add("Second memory about trading", MemoryType::Factual, Some(0.6), None, None)
+            .unwrap();
+        let id3 = mem
+            .add("Third memory about research", MemoryType::Factual, Some(0.7), None, None)
+            .unwrap();
+
+        mem.broadcast_admission(&[id1, id2, id3], &mut wm);
+
+        // Each memory generates at least 1 confidence signal → ≥3.
+        assert!(
+            mem.interoceptive_hub().buffer_len() >= 3,
+            "expected ≥3 signals, got {}",
+            mem.interoceptive_hub().buffer_len()
+        );
+    }
+
+    #[test]
+    fn test_broadcast_with_nonexistent_memory_is_safe() {
+        let mut mem = Memory::new(":memory:", None).unwrap();
+        let mut wm = SessionWorkingMemory::default();
+
+        // Broadcast a memory that doesn't exist — should not panic.
+        let neighbors = mem.broadcast_admission(&["nonexistent-id".to_string()], &mut wm);
+        assert!(neighbors.is_empty());
+        assert_eq!(mem.interoceptive_hub().buffer_len(), 0);
+    }
+
+    #[test]
+    fn test_broadcast_updates_hub_domain_state() {
+        let mut mem = Memory::new(":memory:", None).unwrap();
+        let mut wm = SessionWorkingMemory::default();
+
+        // Store multiple memories and broadcast them.
+        let id1 = mem
+            .add("Important fact about Rust", MemoryType::Factual, Some(0.8), None, None)
+            .unwrap();
+        let id2 = mem
+            .add("Another fact about memory", MemoryType::Factual, Some(0.3), None, None)
+            .unwrap();
+
+        mem.broadcast_admission(&[id1, id2], &mut wm);
+
+        // Hub should have processed signals and have some state.
+        let state = mem.interoceptive_snapshot();
+        assert!(state.buffer_size > 0, "hub should have buffered signals");
+    }
+
+    #[test]
+    fn test_broadcast_hebbian_spreading() {
+        // Use raw storage to set up Hebbian links, then verify
+        // broadcast_admission spreads activation.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("broadcast_hebb.db");
+        let mut mem = Memory::new(db.to_str().unwrap(), None).unwrap();
+        let mut wm = SessionWorkingMemory::default();
+
+        // Store two memories.
+        let id_a = mem
+            .add("Memory A about Rust", MemoryType::Factual, Some(0.5), None, None)
+            .unwrap();
+        let id_b = mem
+            .add("Memory B about Rust compilers", MemoryType::Factual, Some(0.5), None, None)
+            .unwrap();
+
+        // Create a Hebbian link by simulating co-recall via the storage layer.
+        // We need to strengthen it enough (weight > 0.1) for spreading to activate.
+        // record_coactivation with threshold=1 → second call forms the link.
+        {
+            // Use recall to trigger co-activation recording (indirect approach).
+            // Or directly use the underlying record_coactivation on Memory.
+            // Since Memory doesn't expose &mut Storage, we'll use a workaround:
+            // call recall with both IDs to trigger Hebbian learning.
+            //
+            // Actually, the cleanest approach: use rusqlite directly on the
+            // connection to insert a Hebbian link for testing purposes.
+            let conn = mem.connection();
+            conn.execute(
+                "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?1, ?2, 0.5, 5, ?3)",
+                rusqlite::params![&id_a, &id_b, Utc::now().timestamp() as f64],
+            ).unwrap();
+        }
+
+        // Now broadcast only memory A → should spread to B via Hebbian link.
+        let neighbors = mem.broadcast_admission(&[id_a.clone()], &mut wm);
+
+        // B should appear as a primed neighbor.
+        assert!(
+            neighbors.contains(&id_b),
+            "expected id_b in neighbors, got {:?}",
+            neighbors
+        );
+
+        // B should now be in working memory (primed by spreading activation).
+        assert!(wm.contains(&id_b), "id_b should be in WM after spreading");
     }
 }

@@ -251,6 +251,39 @@ impl BaselineTracker {
         
         Some(sorted[index])
     }
+
+    /// Convert the current state of a metric into an [`InteroceptiveSignal`].
+    ///
+    /// - `valence`: negated normalized z-score (deviation = negative feeling).
+    /// - `arousal`: absolute z-score divided by threshold, clamped to [0, 1].
+    ///
+    /// Returns `None` if the metric has no data.
+    pub fn to_signal(
+        &self,
+        metric: &str,
+        value: f64,
+        sigma_threshold: f64,
+    ) -> Option<crate::interoceptive::InteroceptiveSignal> {
+        use crate::interoceptive::{InteroceptiveSignal, SignalContext, SignalSource};
+
+        let baseline = self.get_baseline(metric);
+        if baseline.n == 0 || baseline.std == 0.0 {
+            return None;
+        }
+
+        let z = (value - baseline.mean) / baseline.std;
+        let valence = -(z / sigma_threshold).clamp(-1.0, 1.0);
+        let arousal = (z.abs() / sigma_threshold).clamp(0.0, 1.0);
+
+        Some(
+            InteroceptiveSignal::new(SignalSource::Anomaly, Some(metric.to_string()), valence, arousal)
+                .with_context(SignalContext::AnomalyDetected {
+                    metric: metric.to_string(),
+                    z_score: z,
+                    baseline_mean: baseline.mean,
+                }),
+        )
+    }
 }
 
 /// Anomaly detection result.
@@ -455,5 +488,59 @@ mod tests {
         let result = tracker.analyze("cpu", 200.0, 2.0, 10);
         assert!(result.is_anomaly);
         assert_eq!(result.direction, "high");
+    }
+
+    #[test]
+    fn test_to_signal_normal_value() {
+        let mut tracker = BaselineTracker::new(100);
+        for i in 0..50 {
+            tracker.update("latency", 100.0 + (i % 5) as f64);
+        }
+
+        let baseline = tracker.get_baseline("latency");
+        let sig = tracker.to_signal("latency", baseline.mean, 2.0).unwrap();
+
+        assert!(matches!(sig.source, crate::interoceptive::SignalSource::Anomaly));
+        assert_eq!(sig.domain.as_deref(), Some("latency"));
+        // Normal value → z ≈ 0 → valence ≈ 0, arousal ≈ 0
+        assert!(sig.valence.abs() < 0.1, "valence was {}", sig.valence);
+        assert!(sig.arousal < 0.1, "arousal was {}", sig.arousal);
+        // Should have AnomalyDetected context
+        assert!(matches!(
+            sig.context,
+            Some(crate::interoceptive::SignalContext::AnomalyDetected { .. })
+        ));
+    }
+
+    #[test]
+    fn test_to_signal_anomalous_value() {
+        let mut tracker = BaselineTracker::new(100);
+        for i in 0..50 {
+            tracker.update("cpu", 50.0 + (i % 3) as f64);
+        }
+
+        let baseline = tracker.get_baseline("cpu");
+        let extreme = baseline.mean + 3.0 * baseline.std;
+        let sig = tracker.to_signal("cpu", extreme, 2.0).unwrap();
+
+        // High z-score → negative valence (deviation = bad), high arousal
+        assert!(sig.valence < -0.5, "valence was {}", sig.valence);
+        assert!(sig.arousal > 0.5, "arousal was {}", sig.arousal);
+    }
+
+    #[test]
+    fn test_to_signal_no_data_returns_none() {
+        let tracker = BaselineTracker::new(100);
+        assert!(tracker.to_signal("unknown", 42.0, 2.0).is_none());
+    }
+
+    #[test]
+    fn test_to_signal_zero_std_returns_none() {
+        let mut tracker = BaselineTracker::new(100);
+        // All identical values → std = 0
+        for _ in 0..10 {
+            tracker.update("flat", 42.0);
+        }
+        assert!(tracker.to_signal("flat", 42.0, 2.0).is_none());
     }
 }

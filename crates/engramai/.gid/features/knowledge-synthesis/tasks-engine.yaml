@@ -1,0 +1,495 @@
+nodes:
+# Feature parent
+- id: iss-005-synthesis
+  title: "ISS-005: Knowledge Synthesis Engine"
+  node_type: feature
+  status: todo
+  tags: [iss-005, knowledge-synthesis]
+  description: "Complete implementation of the knowledge synthesis engine — cluster discovery, gate check, insight generation, provenance tracing. See design-1-engine.md."
+
+# Layer 0: Foundation types (no deps)
+# [FINDING-1 applied: synth-mod merged into synth-types]
+- id: synth-types
+  title: "Create synthesis types module + wire into lib.rs"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, foundation]
+  metadata:
+    estimated_loc: 360
+  description: |
+    Create src/synthesis/types.rs with all type definitions from design §2-§7:
+    - ClusterWeights, PairwiseSignals, SignalsSummary, ClusterSignal
+    - MemoryCluster, ClusterDiscoveryConfig, EmotionalModulationConfig
+    - GateDecision, AutoUpdateAction, GateConfig, GateResult, GateScores
+    - SynthesisRequest, SynthesisConfig, PromptTemplate, SynthesisOutput, InsightType
+    - ProvenanceRecord, ProvenanceChain, UndoSynthesis, RestoredSource
+    - IncrementalConfig
+    - SynthesisReport, SynthesisError enum (8 variants)
+    - SynthesisSettings (top-level config wrapping all sub-configs)
+    All types derive Clone, Debug, Serialize, Deserialize where appropriate.
+
+    Also create src/synthesis/mod.rs exposing submodules:
+      pub mod types; pub mod cluster; pub mod gate; pub mod insight;
+      pub mod provenance; pub mod engine;
+    Add `pub mod synthesis;` to lib.rs.
+
+    Files: src/synthesis/types.rs (new, ~350 lines), src/synthesis/mod.rs (new, ~10 lines), src/lib.rs (+1 line)
+    Acceptance: cargo check passes, all types from design are present, submodules declared.
+
+# Layer 1: Core components (depend on types)
+# [FINDING-3 applied: synth-cluster split into core + emotional]
+- id: synth-cluster-core
+  title: "Implement cluster discovery core (src/synthesis/cluster.rs)"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, GOAL-1]
+  metadata:
+    estimated_loc: 250
+  description: |
+    Implement core cluster discovery from design §2 (excluding §2.4 emotional modulation):
+    - compute_pairwise_signals(storage, candidates) → Vec<(id, id, PairwiseSignals)>
+      * Query hebbian_links for signal 1
+      * Query memory_entities for signal 2 (Jaccard overlap)
+      * Use find_nearest_embedding for signal 3
+      * Compute temporal proximity (exp decay with half-life) for signal 4
+    - compute_composite_score(signals, weights) → f64
+    - discover_clusters(storage, config) → Vec<MemoryCluster>
+      * Pre-filter candidates (§2.5): access_count > 0, not is_synthesis, importance >= min
+      * Build edge list where composite score >= threshold
+      * Connected components algorithm
+      * Split clusters > max_cluster_size (higher threshold recursion)
+      * Discard clusters < min_cluster_size
+      * Compute quality_score, centroid_id, signals_summary per cluster
+
+    ⚠️ Performance: naive all-pairs scoring is O(n²). Optimize: only score pairs
+    connected by ≥1 signal (Hebbian link exists OR shared entity). Build candidate
+    pairs from signal sources, not from full cross-product. Target: SC-4 requires
+    <60s for 10K memories. [FINDING-15]
+
+    Files: src/synthesis/cluster.rs (new, ~250 lines)
+    Acceptance: Unit tests pass for pairwise scoring, connected components, candidate filtering, cluster splitting.
+    Depends on: synth-types, entity indexing (B1) for entity overlap queries.
+
+- id: synth-cluster-emotional
+  title: "Implement emotional modulation for clusters"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, GOAL-1]
+  metadata:
+    estimated_loc: 80
+  description: |
+    Implement emotional modulation from design §2.4 (separate from core clustering):
+    - apply_emotional_modulation(clusters, config) → Vec<MemoryCluster>
+      * Boost scoring for emotional memories (EmotionalModulationConfig)
+      * Sort clusters by emotional salience then quality
+      * Flag clusters with emotional context for prompt inclusion
+    Uses EmotionalModulationConfig from synth-types.
+
+    Files: src/synthesis/cluster.rs (+80 lines, appended to core)
+    Acceptance: Unit tests cover emotional boost calculation, priority sorting, config off = no-op.
+
+- id: synth-gate
+  title: "Implement gate check (src/synthesis/gate.rs)"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, GOAL-3]
+  metadata:
+    estimated_loc: 250
+  description: |
+    Implement gate decision logic from design §3:
+    - check_gate(cluster, members, config, storage) → GateResult
+      * Rule 1: < min_cluster_size → SKIP
+      * Rule 2: all embeddings > 0.92 similarity → AUTO-UPDATE(MergeDuplicates)
+      * Rule 3: quality < gate_quality_threshold → SKIP
+      * Rule 4: min-size + low quality → DEFER
+      * Rule 5: ≥80% members already covered (query synthesis_provenance) → SKIP
+      * Rule 6: cluster unchanged since last attempt (compare cluster ID) → SKIP
+      * Rule 7: < 2 MemoryTypes → SKIP (except all-Factual or all-Episodic with high entity overlap)
+      * Rule 8: cost > threshold AND quality < premium → SKIP
+      * Rule 9: else → SYNTHESIZE
+    - estimate_cost(members) → f64 (token count / 4 * price_per_token)
+    - check_already_covered(storage, cluster) → bool
+    - check_cluster_growth(storage, cluster) → bool
+    - GateScores computation
+
+    Note: gate receives a MemoryCluster struct — it does NOT call clustering functions.
+    Only needs types, not cluster.rs. [FINDING-9]
+
+    Files: src/synthesis/gate.rs (new, ~250 lines)
+    Acceptance: Unit tests cover all 9 decision paths. Each rule tested independently.
+
+# [FINDING-2 applied: LLM provider interface defined]
+# [FINDING-8 applied: store_insight removed, storage happens in engine]
+- id: synth-insight
+  title: "Implement insight generation (src/synthesis/insight.rs)"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, GOAL-2]
+  metadata:
+    estimated_loc: 280
+  description: |
+    Implement LLM insight generation from design §4.
+
+    LLM Provider Interface [FINDING-2]:
+    Define a `SynthesisLlmProvider` trait:
+      pub trait SynthesisLlmProvider: Send + Sync {
+          fn generate(&self, prompt: &str, config: &SynthesisConfig) -> Result<String>;
+      }
+    This is NOT the same as MemoryExtractor (extractor does structured fact extraction,
+    not open-ended synthesis). DefaultSynthesisEngine holds Option<Box<dyn SynthesisLlmProvider>>.
+    When None, insight generation is skipped per §9 LLM Graceful Degradation.
+
+    Functions (pure logic — NO storage calls) [FINDING-8]:
+    - build_prompt(cluster, members, config) → String
+      * Select PromptTemplate based on dominant MemoryType
+      * Format memory list with emotional context if enabled
+      * Include JSON schema in prompt
+    - call_llm(prompt, provider, config) → Result<String>
+    - validate_output(output, cluster, members) → Result<SynthesisOutput>
+      * 7 validation checks from §4.3:
+        1. source_ids all in cluster members
+        2. confidence in 0.0-1.0
+        3. insight_text not empty, differs from sources
+        4. valid InsightType
+        5. length 50-500 chars
+        6. centroid similarity > 0.4
+        7. fail → log, don't store, don't demote
+    - compute_insight_importance(output, cluster) → f64
+
+    Note: store_insight() is NOT in this module. Storage happens in synth-engine's
+    transaction (insight + provenance + demotion = one atomic commit per GUARD-1).
+    This module only exposes pure functions: build_prompt, call_llm, validate_output,
+    compute_insight_importance.
+
+    Files: src/synthesis/insight.rs (new, ~280 lines)
+    Acceptance: Tests cover prompt construction per template, all 7 validation checks (pass+fail), importance calculation.
+
+# [FINDING-4 applied: clarified storage vs business logic boundary]
+# [FINDING-12 applied: provenance table migration explicit]
+- id: synth-provenance
+  title: "Implement provenance tracing (src/synthesis/provenance.rs + storage.rs)"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, GOAL-4]
+  metadata:
+    estimated_loc: 290
+  description: |
+    Implement provenance from design §5.
+
+    Storage layer (add to src/storage.rs) [FINDING-4, FINDING-12]:
+    All SQL lives in storage.rs, consistent with existing pattern.
+    - Add `CREATE TABLE IF NOT EXISTS synthesis_provenance (...)` to Storage::init()
+      or a migration function. Table schema from §5.1. Include indices on insight_id
+      and source_id for O(1) lookups (GOAL-4). Idempotent (CREATE IF NOT EXISTS). [FINDING-12]
+    - record_provenance(insight_id, source_ids, cluster_id, gate_scores, confidence) → Result<()>
+    - get_insight_sources(insight_id) → Vec<ProvenanceRecord>
+    - get_memory_insights(source_id) → Vec<ProvenanceRecord>
+    - get_provenance_chain(memory_id, max_depth) → ProvenanceChain
+
+    Business logic (src/synthesis/provenance.rs) [FINDING-4]:
+    Orchestration logic that calls multiple storage methods.
+    - undo_synthesis(storage, insight_id) → Result<UndoSynthesis>
+      * Look up provenance records (via storage method)
+      * Restore source importance from source_original_importance
+      * Delete insight MemoryRecord
+      * Delete provenance records
+      * All in one transaction (calls storage transactionally)
+    provenance.rs calls storage methods, NOT raw SQL.
+
+    Files: src/synthesis/provenance.rs (new, ~200 lines), src/storage.rs (+90 lines for table + CRUD)
+    Acceptance: Tests cover record/query/undo cycle. Transaction rollback tested. Table creation idempotent.
+
+# Layer 2: Engine integration (depends on all core components)
+# [FINDING-5 applied: stronger acceptance criteria]
+# [FINDING-8 applied: engine owns storage transaction]
+# [FINDING-11 applied: LLM graceful degradation explicit]
+# [FINDING-13 applied: GUARD-1 transaction semantics explicit]
+- id: synth-engine
+  title: "Implement SynthesisEngine trait (src/synthesis/engine.rs)"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, integration]
+  metadata:
+    estimated_loc: 300
+  description: |
+    Implement the SynthesisEngine trait from design §7:
+    - struct DefaultSynthesisEngine implementing SynthesisEngine trait
+    - Constructor takes Option<Box<dyn SynthesisLlmProvider>> [FINDING-2]
+    - synthesize() orchestrates the full pipeline:
+      1. discover_clusters()
+      2. apply_emotional_modulation()
+      3. Sort clusters by priority (emotional → size → temporal spread)
+      4. Budget enforcement: track llm_calls_remaining, cap at max_llm_calls_per_run
+      5. For each cluster (up to budget):
+         a. check_gate()
+         b. If SYNTHESIZE: generate_insight(), record_provenance(), demote_sources()
+         c. If AUTO-UPDATE: execute merge/strengthen action
+         d. If DEFER/SKIP: log in report
+      6. Build and return SynthesisReport
+
+    GUARD-1 Transaction Semantics [FINDING-13]:
+    Each insight creation is a single SQLite transaction:
+      BEGIN → insert insight MemoryRecord → insert provenance records →
+      update source importances (demotion) → COMMIT.
+    If any step fails, ROLLBACK — no partial state. This is GUARD-1's core invariant.
+    The engine owns storage calls for insight creation (NOT synth-insight module).
+
+    Source demotion: importance *= demotion_factor (inside same transaction).
+    Error handling: each cluster in try block, errors collected in report, no partial state.
+    max_insights_per_consolidation rate limit.
+
+    LLM Graceful Degradation [FINDING-11]:
+    When LLM provider is None:
+    - discover_clusters() + check_gate() still run normally
+    - synthesize() phase is skipped (not errored)
+    - SynthesisReport indicates 0 insights with reason "LlmUnavailable"
+    - Warning logged: "Synthesis LLM not configured, skipping insight generation"
+    This satisfies requirements §6.F.
+
+    Files: src/synthesis/engine.rs (new, ~300 lines)
+    Acceptance:
+    - cargo check passes with all components wired
+    - Inline #[cfg(test)] test: create DefaultSynthesisEngine with mock LLM,
+      feed 2 clusters (one SYNTHESIZE, one SKIP), verify report counts [FINDING-5]
+    - Inline test: engine with None LLM provider → report shows 0 insights, no error [FINDING-11]
+    - Inline test: transaction rollback on LLM failure → no partial state [FINDING-13]
+
+# [FINDING-6 applied: corrected GUARD-3 reference]
+- id: synth-consolidate
+  title: "Integrate synthesis into consolidate() call path"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, integration]
+  metadata:
+    estimated_loc: 70
+  description: |
+    Wire SynthesisEngine into the existing consolidate() in memory.rs:
+    - Add synthesis_settings field to MemoryConfig and MemorySystem
+    - In consolidate(): after existing Hebbian strengthening, if synthesis enabled:
+      * Create DefaultSynthesisEngine (pass LLM provider from Memory struct if available)
+      * Call synthesize()
+      * Return SynthesisReport as part of consolidation result
+    - Opt-in: synthesis only runs if config.synthesis_settings.enabled == true
+      (GUARD-3: Backward Compatibility — see master requirements.md, NOT engine requirements) [FINDING-6]
+    - Ensure provenance table is created in init_tables() (handled by synth-provenance, verify wiring)
+    Files: src/memory.rs (+50 lines), src/config.rs (+20 lines SynthesisSettings default)
+    Acceptance: consolidate() with synthesis disabled = no change. With enabled = runs synthesis.
+
+# Layer 3: Incremental operations
+# [FINDING-10 applied: added gate dependency]
+- id: synth-incremental
+  title: "Implement incremental operations (cluster updates on new memory)"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, incremental]
+  metadata:
+    estimated_loc: 130
+  description: |
+    Implement incremental cluster operations from design §6:
+    - score_against_existing_clusters(new_memory, existing_clusters, storage) → Option<cluster_id>
+      * Compute cluster-fit score for new memory against each cluster
+      * If fit >= threshold, assign to best cluster
+    - detect_staleness(cluster, old_cluster, config) → bool
+      * ≥50% member change OR quality_score delta > 0.2
+    - flag_stale_provenance(storage, cluster_id) → Result<()>
+      * Mark provenance records with stale flag
+    - Trigger gate re-evaluation on updated clusters [FINDING-10]:
+      When a cluster is updated (new member added or staleness detected),
+      call check_gate() to re-decide whether re-synthesis is needed.
+    - Update discover_clusters() to load existing clusters and handle incremental additions
+    Files: src/synthesis/cluster.rs (+100 lines), src/synthesis/provenance.rs (+30 lines)
+    Acceptance: Test new memory joins cluster, staleness detection triggers re-synthesis eligibility,
+    gate re-evaluation runs on updated cluster.
+
+# Layer 4: Tests
+# [FINDING-16 applied: renamed + clarified inline nature]
+# [FINDING-7 applied: explicit test count targets]
+- id: synth-module-tests
+  title: "Write unit tests for all synthesis components (inline #[cfg(test)])"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, tests]
+  metadata:
+    estimated_loc: 400
+  description: |
+    Add #[cfg(test)] mod tests sections to each existing synthesis source file.
+    This is NOT a separate test file — tests live inside the modules created by
+    synth-cluster-core, synth-gate, synth-insight, synth-provenance. [FINDING-16]
+
+    Test count targets [FINDING-7]:
+    - types.rs: serialization roundtrip, default values (~4 tests)
+    - cluster.rs: pairwise scoring (4 signal types), connected components,
+      candidate filtering (4 conditions), cluster splitting, discard (~12 tests)
+    - gate.rs: all 9 decision paths + 2 exception cases (Rule 7) + cost estimation
+      + already-covered + cluster-growth (~14 tests)
+    - insight.rs: prompt construction per template (3 types), all 7 validation checks
+      × (pass+fail), importance calculation (~18 tests)
+    - provenance.rs: record/query/undo, chain traversal depth 1 + depth 3,
+      transaction rollback (~6 tests)
+    Total floor: ~54 unit tests
+
+    Files: #[cfg(test)] sections in each src/synthesis/*.rs file
+    Acceptance: cargo test -- synthesis passes, ≥50 tests, all 9 gate paths + 7 validation checks covered.
+
+- id: synth-integration-tests
+  title: "Write integration tests for full synthesis pipeline"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, tests]
+  metadata:
+    estimated_loc: 300
+  description: |
+    End-to-end integration tests:
+    - Test full pipeline: add memories → consolidate with synthesis → verify insights created
+    - Test budget enforcement: set max_llm_calls=2, give 5 clusters → only 2 synthesized
+    - Test undo: synthesize → undo → verify sources restored, insight gone
+    - Test incremental: synthesize → add new memory → re-consolidate → verify cluster updated
+    - Test disabled: synthesis disabled → consolidate runs without synthesis
+      (GUARD-3: Backward Compatibility, master requirements.md)
+    - Test provenance queries: bidirectional lookup, chain traversal
+    - Test LLM unavailable: engine with None provider → clusters discovered, gate runs,
+      no insights, report indicates LlmUnavailable [FINDING-11]
+    Uses mock/test LLM provider that returns canned responses.
+    Files: tests/synthesis_integration_test.rs (new, ~300 lines)
+    Acceptance: All integration tests pass.
+
+# [FINDING-14 applied: documentation task added]
+- id: synth-docs
+  title: "Add documentation for synthesis public API"
+  status: todo
+  tags: [iss-005, knowledge-synthesis, docs]
+  metadata:
+    estimated_loc: 80
+  description: |
+    Add rustdoc comments to all public types and functions in src/synthesis/:
+    - SynthesisEngine trait: full usage example in doc comment
+    - SynthesisLlmProvider trait: how to implement a custom provider
+    - SynthesisSettings: all config knobs documented with defaults
+    - SynthesisReport: what each field means
+    Add a "Knowledge Synthesis" section to lib.rs module docs showing basic usage:
+    - Enable in config
+    - Run consolidate()
+    - Check report
+    Add doctest showing SynthesisSettings construction + defaults.
+    Files: src/synthesis/*.rs (doc comments), src/lib.rs (+20 lines module docs)
+    Acceptance: cargo doc --no-deps passes, no missing doc warnings for pub items.
+
+edges:
+# Foundation
+- from: synth-types
+  to: iss-005-synthesis
+  relation: subtask_of
+
+# Core components depend on types (synth-mod merged into synth-types) [FINDING-1]
+- from: synth-cluster-core
+  to: synth-types
+  relation: depends_on
+- from: synth-cluster-emotional
+  to: synth-cluster-core
+  relation: depends_on
+- from: synth-gate
+  to: synth-types
+  relation: depends_on
+# [FINDING-9 applied: removed synth-gate → synth-cluster dependency — gate only needs types]
+- from: synth-insight
+  to: synth-types
+  relation: depends_on
+- from: synth-provenance
+  to: synth-types
+  relation: depends_on
+
+# Engine depends on all core components
+- from: synth-engine
+  to: synth-cluster-core
+  relation: depends_on
+- from: synth-engine
+  to: synth-cluster-emotional
+  relation: depends_on
+- from: synth-engine
+  to: synth-gate
+  relation: depends_on
+- from: synth-engine
+  to: synth-insight
+  relation: depends_on
+- from: synth-engine
+  to: synth-provenance
+  relation: depends_on
+
+# Consolidation integration depends on engine
+- from: synth-consolidate
+  to: synth-engine
+  relation: depends_on
+
+# Incremental depends on cluster + provenance + gate [FINDING-10]
+- from: synth-incremental
+  to: synth-cluster-core
+  relation: depends_on
+- from: synth-incremental
+  to: synth-provenance
+  relation: depends_on
+- from: synth-incremental
+  to: synth-gate
+  relation: depends_on
+
+# Tests depend on implementation
+- from: synth-module-tests
+  to: synth-cluster-core
+  relation: depends_on
+- from: synth-module-tests
+  to: synth-cluster-emotional
+  relation: depends_on
+- from: synth-module-tests
+  to: synth-gate
+  relation: depends_on
+- from: synth-module-tests
+  to: synth-insight
+  relation: depends_on
+- from: synth-module-tests
+  to: synth-provenance
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-engine
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-consolidate
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-incremental
+  relation: depends_on
+
+# Docs depend on all implementation being done
+- from: synth-docs
+  to: synth-engine
+  relation: depends_on
+- from: synth-docs
+  to: synth-consolidate
+  relation: depends_on
+
+# All tasks are subtasks of the feature
+- from: synth-cluster-core
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-cluster-emotional
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-gate
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-insight
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-provenance
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-engine
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-consolidate
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-incremental
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-module-tests
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-integration-tests
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-docs
+  to: iss-005-synthesis
+  relation: subtask_of
+
+# Cross-feature dependency: cluster discovery needs entity indexing (B1)
+- from: synth-cluster-core
+  to: b1-entity-index
+  relation: depends_on

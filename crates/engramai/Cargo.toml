@@ -36,17 +36,25 @@ log = "0.4"
 rand = "0.8"
 regex = "1"
 
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
 # HTTP client for embeddings
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 
-jieba-rs = "0.8.1"
+# Logging implementation for CLI
+env_logger = "0.11"
 
 # Config directory detection
 dirs = "5"
+jieba-rs = "0.8.1"
 
 [dev-dependencies]
 tempfile = "3.13"
-env_logger = "0.11"
+
+[features]
+default = []
+kc = []  # Knowledge Compiler — topic compilation, maintenance, and platform
 
 [[example]]
 name = "basic_usage"
@@ -55,6 +63,10 @@ path = "examples/basic_usage.rs"
 [lib]
 name = "engramai"
 path = "src/lib.rs"
+
+[[bin]]
+name = "engram"
+path = "src/main.rs"
 
 [profile.release]
 opt-level = 3

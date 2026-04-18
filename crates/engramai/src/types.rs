@@ -246,6 +246,17 @@ pub struct LayerStats {
     pub avg_core: f64,
 }
 
+/// Outcome of merging a duplicate memory into an existing one.
+#[derive(Debug, Clone)]
+pub struct MergeOutcome {
+    /// The ID of the existing memory that was merged into
+    pub memory_id: String,
+    /// Whether the content was updated (new content was significantly longer)
+    pub content_updated: bool,
+    /// Total number of times this memory has been merged into
+    pub merge_count: i32,
+}
+
 /// A Hebbian link between memories from different namespaces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossLink {

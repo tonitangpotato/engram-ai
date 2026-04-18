@@ -240,6 +240,37 @@ pub fn calibrate_confidence(
     (0.4 * normalized_activation + 0.4 * reliability + 0.2 * salience).clamp(0.0, 1.0)
 }
 
+/// Convert a confidence score into an [`InteroceptiveSignal`].
+///
+/// - `valence`: confidence mapped to [-1, 1] (0.5 → 0, 1.0 → 1.0, 0.0 → -1.0).
+/// - `arousal`: elevated when confidence is very low (uncertainty = alerting).
+pub fn confidence_to_signal(
+    record: &MemoryRecord,
+    all_records: Option<&[MemoryRecord]>,
+    query: Option<&str>,
+) -> crate::interoceptive::InteroceptiveSignal {
+    use crate::interoceptive::{InteroceptiveSignal, SignalContext, SignalSource};
+
+    let score = confidence_score(record, all_records);
+    let valence = score * 2.0 - 1.0; // [0,1] → [-1,1]
+    let arousal = if score < 0.4 {
+        (1.0 - score) * 0.6 // low confidence → elevated arousal
+    } else {
+        0.1
+    };
+
+    let mut sig = InteroceptiveSignal::new(SignalSource::Confidence, None, valence, arousal);
+
+    if let Some(q) = query {
+        sig = sig.with_context(SignalContext::RecallConfidence {
+            query: q.to_string(),
+            score,
+        });
+    }
+
+    sig
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +417,36 @@ mod tests {
         assert!(high_conf > low_conf);
         assert!(high_conf <= 1.0);
         assert!(low_conf >= 0.0);
+    }
+
+    #[test]
+    fn test_confidence_to_signal_high_confidence() {
+        let record = make_record(MemoryType::Factual, 0.9, true, false, 1.0, 0.5);
+        let sig = confidence_to_signal(&record, None, Some("test query"));
+
+        assert!(matches!(sig.source, crate::interoceptive::SignalSource::Confidence));
+        assert!(sig.domain.is_none());
+        // High confidence → positive valence
+        assert!(sig.valence > 0.3, "valence was {}", sig.valence);
+        // High confidence → low arousal (no alarm)
+        assert!(sig.arousal < 0.2, "arousal was {}", sig.arousal);
+        assert!(matches!(
+            sig.context,
+            Some(crate::interoceptive::SignalContext::RecallConfidence { .. })
+        ));
+    }
+
+    #[test]
+    fn test_confidence_to_signal_low_confidence() {
+        // Contradicted, opinion, low importance → low confidence
+        let record = make_record(MemoryType::Opinion, 0.2, false, true, 0.1, 0.0);
+        let sig = confidence_to_signal(&record, None, None);
+
+        // Low confidence → negative valence
+        assert!(sig.valence < 0.0, "valence was {}", sig.valence);
+        // Low confidence → elevated arousal (uncertainty = alerting)
+        assert!(sig.arousal > 0.3, "arousal was {}", sig.arousal);
+        // No query → no context
+        assert!(sig.context.is_none());
     }
 }

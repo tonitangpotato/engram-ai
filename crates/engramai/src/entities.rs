@@ -124,10 +124,33 @@ impl EntityExtractor {
             ac_patterns.push(name.clone());
             known_index.push((EntityType::Technology, name.clone()));
         }
+        
+        // Built-in common technology names (always matched unless already in user config)
+        let builtin_technologies = [
+            "Rust", "Python", "TypeScript", "JavaScript", "Go", "Java", "C++",
+            "SQLite", "PostgreSQL", "Redis", "MongoDB",
+            "Supabase", "Docker", "Kubernetes", "Terraform",
+            "React", "Next.js", "Svelte", "Vue",
+            "Tokio", "Actix", "Axum", "Warp",
+            "PyTorch", "TensorFlow", "ONNX",
+            "WebSocket", "gRPC", "GraphQL", "REST",
+            "OAuth", "JWT", "WASM",
+        ];
+        let existing_lower: HashSet<String> = config.known_technologies
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+        for name in &builtin_technologies {
+            if !existing_lower.contains(&name.to_lowercase()) {
+                ac_patterns.push(name.to_string());
+                known_index.push((EntityType::Technology, name.to_string()));
+            }
+        }
 
-        // Build Aho-Corasick automaton (case-insensitive)
+        // Build Aho-Corasick automaton (case-insensitive, leftmost-longest matching)
         let known_matcher = AhoCorasick::builder()
             .ascii_case_insensitive(true)
+            .match_kind(aho_corasick::MatchKind::LeftmostLongest)
             .build(&ac_patterns)
             .expect("failed to build Aho-Corasick automaton");
 
@@ -152,7 +175,8 @@ impl EntityExtractor {
                 name_group: 1,
             },
             EntityPattern {
-                regex: Regex::new(r"(@\w+)")
+                // @mentions: require 3+ alpha chars, no pure-digit handles
+                regex: Regex::new(r"(@[a-zA-Z]\w{2,})")
                     .expect("invalid person regex"),
                 entity_type: EntityType::Person,
                 name_group: 1,
@@ -181,11 +205,29 @@ impl EntityExtractor {
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut results: Vec<ExtractedEntity> = Vec::new();
 
-        // Phase 1: Aho-Corasick scan for known entities
+        // Phase 1: Aho-Corasick scan for known entities (with word boundary check)
+        let content_bytes = content.as_bytes();
         for mat in self.known_matcher.find_iter(content) {
+            let start = mat.start();
+            let end = mat.end();
+            
+            // Word boundary: char before start and after end must be non-alphanumeric
+            // This prevents "Rust" matching inside "RustClaw"
+            let before_ok = start == 0 || {
+                let b = content_bytes[start - 1];
+                !b.is_ascii_alphanumeric() && b != b'_'
+            };
+            let after_ok = end >= content_bytes.len() || {
+                let b = content_bytes[end];
+                !b.is_ascii_alphanumeric() && b != b'_'
+            };
+            if !before_ok || !after_ok {
+                continue;
+            }
+            
             let idx = mat.pattern().as_usize();
             let (ref entity_type, ref canonical_name) = self.known_index[idx];
-            let matched_text = &content[mat.start()..mat.end()];
+            let matched_text = &content[start..end];
             let normalized = normalize_entity_name(matched_text, entity_type);
             let key = (normalized.clone(), entity_type.as_str().to_string());
 
@@ -553,5 +595,43 @@ mod tests {
             normalize_entity_name("GUARD-5", &EntityType::Concept),
             "guard-5"
         );
+    }
+    
+    #[test]
+    fn test_at_mention_rejects_short_and_numeric() {
+        let config = EntityConfig::default();
+        let extractor = EntityExtractor::new(&config);
+        
+        // Should NOT match: too short or pure digits
+        let entities = extractor.extract("@0 @1 @ab test");
+        let persons: Vec<&str> = entities.iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .map(|e| e.normalized.as_str())
+            .collect();
+        assert!(persons.is_empty(), "Short @mentions should not be extracted: {:?}", persons);
+        
+        // Should match: 3+ chars starting with alpha
+        let entities = extractor.extract("Thanks @alice and @bob123");
+        let persons: Vec<&str> = entities.iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .map(|e| e.normalized.as_str())
+            .collect();
+        assert!(persons.contains(&"alice"), "Valid @mention should be extracted");
+        assert!(persons.contains(&"bob123"), "Valid @mention should be extracted");
+    }
+    
+    #[test]
+    fn test_builtin_technologies() {
+        let config = EntityConfig::default();
+        let extractor = EntityExtractor::new(&config);
+        
+        let entities = extractor.extract("Building with Rust and PostgreSQL, deployed on Docker");
+        let techs: Vec<&str> = entities.iter()
+            .filter(|e| e.entity_type == EntityType::Technology)
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(techs.contains(&"Rust"), "Builtin tech 'Rust' should be extracted");
+        assert!(techs.contains(&"PostgreSQL"), "Builtin tech 'PostgreSQL' should be extracted");
+        assert!(techs.contains(&"Docker"), "Builtin tech 'Docker' should be extracted");
     }
 }

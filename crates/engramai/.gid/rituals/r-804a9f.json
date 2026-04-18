@@ -1,0 +1,101 @@
+{
+  "id": "r-804a9f",
+  "phase": "Done",
+  "task": "Implement Entity Indexing (B1) for engramai. Design at .gid/features/entity-indexing/design.md. 7 tasks in graph: entity-types → entity-storage → entity-add-raw → entity-recall → entity-backfill → entity-integration-tests, with entity-unit-tests parallel after entity-types. Creates src/entities.rs (~350 lines), modifies storage.rs (+120), memory.rs (+80), config.rs (+20), lib.rs (+2), main.rs (+40), adds tests (~250 lines). Total ~860 lines. Key deps: aho-corasick crate. Workspace: /Users/potato/clawd/projects/engram-ai-rust\nProject location: /Users/potato/clawd/projects/engram-ai-rust",
+  "target_root": "/Users/potato/clawd/projects/engram-ai-rust",
+  "project": {
+    "has_requirements": false,
+    "has_design": true,
+    "has_graph": true,
+    "has_source": true,
+    "has_tests": true,
+    "language": "rust",
+    "source_file_count": 23,
+    "verify_command": "cargo build && cargo test"
+  },
+  "strategy": "SingleLlm",
+  "verify_retries": 0,
+  "phase_retries": {},
+  "failed_phase": null,
+  "error_context": "triage: size=large, skip_design=true, skip_graph=false",
+  "review_target": "tasks",
+  "triage_size": "large",
+  "phase_tokens": {
+    "implement": 32262,
+    "triage": 637,
+    "graph": 23522,
+    "reviewing": 4592,
+    "planning": 295
+  },
+  "review_round": 0,
+  "transitions": [
+    {
+      "from": "Idle",
+      "to": "Initializing",
+      "event": "Idle → Initializing",
+      "timestamp": "2026-04-09T18:28:00.799333Z"
+    },
+    {
+      "from": "Initializing",
+      "to": "Triaging",
+      "event": "Initializing → Triaging",
+      "timestamp": "2026-04-09T18:28:00.801839Z"
+    },
+    {
+      "from": "Triaging",
+      "to": "Planning",
+      "event": "Triaging → Planning",
+      "timestamp": "2026-04-09T18:28:02.430354Z"
+    },
+    {
+      "from": "Planning",
+      "to": "Graphing",
+      "event": "Planning → Graphing",
+      "timestamp": "2026-04-09T18:28:05.809838Z"
+    },
+    {
+      "from": "Graphing",
+      "to": "Reviewing",
+      "event": "Graphing → Reviewing",
+      "timestamp": "2026-04-09T18:34:49.026047Z"
+    },
+    {
+      "from": "Reviewing",
+      "to": "WaitingApproval",
+      "event": "Reviewing → WaitingApproval",
+      "timestamp": "2026-04-09T18:35:57.688322Z"
+    },
+    {
+      "from": "WaitingApproval",
+      "to": "Reviewing",
+      "event": "WaitingApproval → Reviewing",
+      "timestamp": "2026-04-09T18:38:57.927149Z"
+    },
+    {
+      "from": "Reviewing",
+      "to": "WaitingApproval",
+      "event": "Reviewing → WaitingApproval",
+      "timestamp": "2026-04-09T18:40:10.721904Z"
+    },
+    {
+      "from": "WaitingApproval",
+      "to": "Implementing",
+      "event": "WaitingApproval → Implementing",
+      "timestamp": "2026-04-09T18:43:10.952241Z"
+    },
+    {
+      "from": "Implementing",
+      "to": "Verifying",
+      "event": "Implementing → Verifying",
+      "timestamp": "2026-04-09T18:51:02.389890Z"
+    },
+    {
+      "from": "Verifying",
+      "to": "Done",
+      "event": "Verifying → Done",
+      "timestamp": "2026-04-09T18:51:12.727793Z"
+    }
+  ],
+  "started_at": "2026-04-09T18:28:00.799068Z",
+  "updated_at": "2026-04-09T18:51:12.727793Z"
+}

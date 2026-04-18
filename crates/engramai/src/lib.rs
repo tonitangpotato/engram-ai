@@ -90,14 +90,17 @@
 
 pub mod anomaly;
 pub mod bus;
+pub mod compiler;
 pub mod confidence;
 pub mod entities;
 pub mod config;
 pub mod embeddings;
 pub mod extractor;
 pub mod hybrid_search;
+pub mod interoceptive;
 pub mod memory;
 pub mod models;
+pub mod query_classifier;
 pub mod session_wm;
 pub mod storage;
 pub mod synthesis;
@@ -111,7 +114,7 @@ pub use extractor::{MemoryExtractor, ExtractedFact, AnthropicExtractor, Anthropi
 pub use memory::{Memory, SleepReport, is_insight};
 pub use storage::EmbeddingStats;
 pub use storage::EntityRecord;
-pub use types::{AclEntry, CrossLink, HebbianLink, MemoryLayer, MemoryRecord, MemoryStats, MemoryType, Permission, RecallResult, RecallWithAssociationsResult};
+pub use types::{AclEntry, CrossLink, HebbianLink, MemoryLayer, MergeOutcome, MemoryRecord, MemoryStats, MemoryType, Permission, RecallResult, RecallWithAssociationsResult};
 
 // Re-export new modules
 pub use anomaly::{BaselineTracker, Baseline, AnomalyResult};

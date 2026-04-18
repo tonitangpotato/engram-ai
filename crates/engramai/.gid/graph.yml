@@ -1,0 +1,1476 @@
+project: null
+nodes:
+- id: phase-a
+  title: 'Phase A: 止血 — 堵住上游污染源'
+  status: done
+  description: RustClaw 侧过滤 + extractor 改进 + 存量清理。不改 engramai crate 核心逻辑。
+  tags:
+  - engram
+  - memory-quality
+  priority: 10
+- id: a1-hook-filter
+  title: 'A1: EngramStoreHook 加过滤 — 不存垃圾内容'
+  status: done
+  description: |
+    在 rustclaw/src/engram_hooks.rs 的 EngramStoreHook 加 content-level 过滤：
+    - HEARTBEAT_OK → 直接跳过
+    - NO_REPLY → 直接跳过
+    - 系统指令特征检测（"你是 RustClaw"、"Read SOUL.md"、tool call 格式等）→ 跳过
+    - Heartbeat 有实质内容的响应 → 保留让 extractor 正常处理
+    约 30 行改动。不需要 ritual。
+  tags:
+  - engram
+  - rustclaw
+  - filter
+  priority: 10
+  metadata:
+    file: rustclaw/src/engram_hooks.rs
+    project: rustclaw
+- id: a2-extractor-negatives
+  title: 'A2: Extractor prompt 加 negative examples'
+  status: done
+  description: |
+    在 engramai/src/extractor.rs 的 EXTRACTION_PROMPT 加 negative examples：
+    - 不提取系统指令（"你是 XX agent"、"Read SOUL.md"、"Follow AGENTS.md"）
+    - 不提取工具调用格式描述
+    - 不提取 agent 身份/角色描述
+    - 不提取模板化状态报告（"所有系统正常"、"无新 commit"）
+    约 20 行改动。不需要 ritual。
+  tags:
+  - engram
+  - engramai
+  - extractor
+  priority: 10
+  metadata:
+    file: engramai/src/extractor.rs
+    project: engramai
+- id: a3-sql-cleanup
+  title: 'A3: SQL 一次性清理 — 删存量重复 + 系统指令垃圾'
+  status: done
+  description: |
+    跑 SQL 脚本清理存量垃圾：
+    1. 删精确重复（105 条 content hash 相同）— 保留 access_count 最高的
+    2. 删系统指令垃圾（匹配 "你是 RustClaw"、"Read SOUL.md" 等 pattern）
+    3. 清理前先 backup DB
+    4. 清理后 PRAGMA integrity_check + 验证 recall 质量
+    必须先完成 A1+A2 堵住污染源，否则清理完又会写入新垃圾。
+  tags:
+  - engram
+  - cleanup
+  - one-time
+  priority: 15
+  metadata:
+    project: engramai
+- id: phase-b
+  title: 'Phase B: 提质 — engramai crate 核心改进'
+  status: done
+  description: 改 engramai crate 核心：entity 索引、dedup、confidence、recency。需要 ritual 流程。
+  tags:
+  - engram
+  - memory-quality
+  priority: 20
+- id: b1-entity-index
+  title: 'B1: Entity 索引实现 — extraction + storage + recall (ISS-009)'
+  status: done
+  description: |
+    ISS-009 最大改动，需要 ritual 流程。
+    1. Entity extraction on write — extractor 返回 entities（人名/项目名/概念/工具名）
+    2. Entity storage — 写入 entities + memory_entities + entity_relations 三张表
+    3. Entity-aware recall — 第 4 路检索：query→entity→related memories
+    4. Entity dedup — 同名 entity 合并（fuzzy match）
+    估计 500-800 行新代码，跨 extractor.rs、storage.rs、memory.rs、hybrid_search.rs
+
+    分解为 7 个子任务（见 entity-types → entity-integration-tests）
+  tags:
+  - engram
+  - engramai
+  - entity
+  - recall-quality
+  priority: 20
+  metadata:
+    iss: ISS-009
+    ritual: true
+    project: engramai
+- id: entity-types
+  title: 'B1.1: Entity types & config structs'
+  status: done
+  description: |
+    Create src/entities.rs with foundational types (~80 lines):
+    - EntityType enum (Project, Person, Technology, Concept, File, Url, Organization, Other)
+    - ExtractedEntity struct (name, normalized, entity_type)
+    - EntityRecord struct (DB representation)
+    - EntityConfig struct in config.rs (known_projects, known_people, known_technologies, enabled, recall_weight)
+    - normalize_entity_name() function
+    - Add aho-corasick dependency to Cargo.toml
+    - Add pub mod entities; to lib.rs
+
+    Files: src/entities.rs (new), src/config.rs (+20 lines), Cargo.toml (+1 dep), lib.rs (+2 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - types
+  priority: 20
+  metadata:
+    files:
+    - src/entities.rs
+    - src/config.rs
+    - Cargo.toml
+    - src/lib.rs
+    iss: ISS-009
+    project: engramai
+- id: entity-unit-tests
+  title: 'B1.2: EntityExtractor unit tests'
+  status: done
+  description: |
+    Write unit tests for entity extraction (~100 lines):
+    - Test known entity extraction (Aho-Corasick path)
+    - Test regex patterns (ISS-XXX, file paths, URLs, @mentions)
+    - Test normalization (case, trailing slashes, @-prefix stripping)
+    - Test dedup within same content
+    - Test empty/no-entity content
+
+    Files: src/entities.rs (#[cfg(test)] mod tests)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - tests
+  priority: 20
+  metadata:
+    iss: ISS-009
+    files:
+    - src/entities.rs
+    project: engramai
+- id: entity-storage
+  title: 'B1.3: Storage entity CRUD methods'
+  status: done
+  description: |
+    Add entity methods to Storage (~120 lines in storage.rs):
+    - upsert_entity() — deterministic ID generation (sha256), INSERT OR REPLACE
+    - link_memory_entity() — memory_entities junction table
+    - upsert_entity_relation() — entity_relations with co-occurrence counter
+    - find_entities() — exact name match lookup
+    - get_entity_memories() — get memory IDs for entity
+    - get_related_entities() — 1-hop relations
+    - get_entity() — fetch by ID
+    - count_entities() — namespace stats
+
+    Files: src/storage.rs (+120 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - storage
+  priority: 20
+  metadata:
+    iss: ISS-009
+    project: engramai
+    files:
+    - src/storage.rs
+- id: entity-add-raw
+  title: 'B1.4: Integrate entity extraction into add_raw()'
+  status: done
+  description: |
+    Hook entity extraction into memory write path (~80 lines):
+    - Initialize EntityExtractor in MemorySystem::new()
+    - In add_raw(), after embedding storage:
+      * Extract entities from content
+      * Upsert each entity
+      * Link memory to entities
+      * Build co-occurrence relations (capped at 10 entities to avoid O(n²))
+    - Add entity_config field to MemoryConfig
+    - Add entity_extractor field to MemorySystem
+
+    Files: src/memory.rs (+80 lines), src/config.rs (EntityConfig integration)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - write-path
+  priority: 20
+  metadata:
+    iss: ISS-009
+    project: engramai
+    files:
+    - src/memory.rs
+    - src/config.rs
+- id: entity-recall
+  title: 'B1.5: Entity-aware recall channel'
+  status: done
+  description: |
+    Add entity recall as 4th hybrid search channel (~150 lines):
+    - entity_recall() function in entities.rs:
+      * Extract entities from query
+      * Find matching entities in DB (exact name match)
+      * Get memory IDs for entities + related entities (1-hop)
+      * Score memories by entity relevance (primary entity match = 1.0, related = 0.5, multi-entity boost)
+    - Integrate into recall_from_namespace() in memory.rs
+    - Add entity channel weight to hybrid search scoring (default 0.15)
+
+    Files: src/entities.rs (+150 lines), src/memory.rs (+20 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - recall
+  priority: 20
+  metadata:
+    iss: ISS-009
+    files:
+    - src/entities.rs
+    - src/memory.rs
+    project: engramai
+- id: entity-backfill
+  title: 'B1.6: Backfill CLI command for existing memories'
+  status: done
+  description: |
+    Add backfill_entities() to process existing memories (~40 lines in main.rs):
+    - New CLI subcommand: engram backfill-entities [--namespace NS]
+    - backfill_entities(&memory_system, namespace: Option<&str>):
+      * Get all memories in namespace
+      * For each memory: extract entities, upsert, link, build relations
+      * Progress logging every 100 memories
+      * Stats: total processed, entities created, links created
+    - Idempotent — safe to re-run
+
+    Files: src/main.rs (+40 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - cli
+  priority: 20
+  metadata:
+    files:
+    - src/main.rs
+    project: engramai
+    iss: ISS-009
+- id: entity-integration-tests
+  title: 'B1.7: Entity indexing integration tests'
+  status: done
+  description: |
+    End-to-end tests for entity indexing (~150 lines):
+    - Test entity extraction + storage in add_raw()
+    - Test entity-aware recall finds memories via entity match
+    - Test co-occurrence relations are built correctly
+    - Test backfill on existing memories
+    - Test entity dedup (same normalized name → same ID)
+    - Test recall boost for multi-entity match
+    - Test namespace isolation for entities
+
+    Files: tests/entity_integration_test.rs (new, ~150 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - tests
+  priority: 20
+  metadata:
+    project: engramai
+    iss: ISS-009
+    files:
+    - tests/entity_integration_test.rs
+- id: b2-dedup
+  title: 'B2: Dedup on write — embedding similarity + merge (ISS-003)'
+  status: done
+  description: |-
+    ISS-003 升级完成。merge_memory_into() 从简单的 importance=MAX + access_log 升级为智能合并：
+    1. Content evolution — 新内容 >30% 更长时替换旧内容
+    2. Merge history — metadata.merge_history 记录每次合并（FIFO, cap 10）
+    3. Merge count — metadata.merge_count 累计合并次数
+    4. MergeOutcome 返回类型，调用方可根据结果做进一步处理
+    5. 5 个新测试 + 所有旧测试更新到新签名
+    324 tests pass, commit 5d50753
+  tags:
+  - engram
+  - engramai
+  - dedup
+  priority: 25
+  metadata:
+    project: engramai
+    iss: ISS-003
+- id: b3-confidence
+  title: 'B3: Confidence score — 多信号融合 recall confidence (ISS-007)'
+  status: done
+  description: |
+    ISS-007。confidence.rs 已有框架，需要：
+    1. 从 hybrid search 多路分数融合 confidence（embedding sim + FTS score + ACT-R activation + entity match）
+    2. 归一化到 0.0-1.0
+    3. recall 返回每个结果的 confidence
+    4. RustClaw auto-recall hook 按阈值过滤低 confidence 结果
+    约 100 行改动
+  tags:
+  - engram
+  - engramai
+  - confidence
+  priority: 30
+  metadata:
+    project: engramai
+    iss: ISS-007
+- id: b4-recency
+  title: 'B4: Recency 调参 — ACT-R decay analysis + tuning (ISS-002)'
+  status: done
+  description: |
+    ISS-002。需要先量化当前 ACT-R 分布：
+    1. 分析当前 decay parameter d 值及其效果
+    2. 对比新旧记忆的 activation 分布
+    3. 调整 d 值让 recency 权重更高
+    4. 或在 scoring 中加 recency bonus factor
+    约 20 行代码 + 分析工作
+  tags:
+  - engram
+  - engramai
+  - recency
+  priority: 35
+  metadata:
+    iss: ISS-002
+    project: engramai
+- id: iss-005-synthesis
+  title: 'ISS-005: Knowledge Synthesis Engine'
+  status: done
+  description: Complete implementation of the knowledge synthesis engine — cluster discovery, gate check, insight generation, provenance tracing. See design-1-engine.md.
+  tags:
+  - iss-005
+  - knowledge-synthesis
+- id: synth-types
+  title: Create synthesis types module (src/synthesis/types.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - foundation
+- id: synth-mod
+  title: Create src/synthesis/mod.rs and wire into lib.rs
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - foundation
+- id: synth-cluster
+  title: Implement cluster discovery (src/synthesis/cluster.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - GOAL-1
+- id: synth-gate
+  title: Implement gate check (src/synthesis/gate.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - GOAL-3
+- id: synth-insight
+  title: Implement insight generation (src/synthesis/insight.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - GOAL-2
+- id: synth-provenance
+  title: Implement provenance tracing (src/synthesis/provenance.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - GOAL-4
+- id: synth-engine
+  title: Implement SynthesisEngine trait (src/synthesis/engine.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - integration
+- id: synth-consolidate
+  title: Integrate synthesis into consolidate() call path
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - integration
+- id: synth-incremental
+  title: Implement incremental operations (cluster updates on new memory)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - incremental
+- id: synth-unit-tests
+  title: Write unit tests for all synthesis components
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - tests
+- id: synth-integration-tests
+  title: Write integration tests for full synthesis pipeline
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - tests
+- id: kc
+  title: Knowledge Compiler
+  status: done
+  description: KC 产品层：把碎片记忆编译成结构化知识库。P0 在 engram-ai-rust 内作为 src/compiler/ 模块实现。
+  tags:
+  - kc
+  - product
+  - p0
+  type: component
+- id: kc-compilation
+  title: 'KC: Topic Compilation & Feedback'
+  status: done
+  description: 'Topic discovery → compilation → incremental recompilation → merge/split → feedback loop. Design: .gid/features/knowledge-compiler/compilation/design.md'
+  tags:
+  - kc
+  - compilation
+  - p0
+  type: feature
+- id: kc-maintenance
+  title: 'KC: Knowledge Maintenance, Access & Privacy'
+  status: done
+  description: 'Knowledge decay, conflict detection, health reporting, export/import, CLI/API access, privacy. Design: .gid/features/knowledge-compiler/maintenance/design.md'
+  tags:
+  - kc
+  - maintenance
+  - p0
+  type: feature
+- id: kc-platform
+  title: 'KC: Platform Setup, LLM Config, Import & Intake'
+  status: done
+  description: 'Setup wizard, LLM config, import pipeline, intake integration. Design: .gid/features/knowledge-compiler/platform/design.md'
+  tags:
+  - kc
+  - platform
+  - p0
+  type: feature
+- id: kc-topic-discovery
+  title: Topic Discovery (clustering + LLM labeling)
+  status: done
+  description: §3.1 TopicDiscovery — discover topic candidates from memory clusters via 4-signal clustering + LLM labeling. Reuses synthesis::cluster. GOAL-comp.1, GOAL-comp.2
+  tags:
+  - kc
+  - compilation
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-comp.1
+    design_ref: compilation/design.md §3.1
+    file: src/compiler/discovery.rs
+- id: kc-compilation-pipeline
+  title: Compilation Pipeline (compile + provenance + failure handling)
+  status: done
+  description: §3.2 CompilationPipeline — compile topic pages from candidates with provenance tracking. compile_new, recompile_full, recompile_partial. Citation parsing + ProvenanceRecord. GOAL-comp.1 (page generation), GOAL-comp.3 (provenance), GOAL-comp.10 (failure handling)
+  tags:
+  - kc
+  - compilation
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    file: src/compiler/pipeline.rs
+    design_ref: compilation/design.md §3.2, §3.5
+    goals: GOAL-comp.2, GOAL-comp.3, GOAL-comp.6
+- id: kc-incremental-trigger
+  title: Incremental Trigger (change detection + recompile decision)
+  status: done
+  description: §3.3 IncrementalTrigger — detect when recompilation needed, decide skip/partial/full. ChangeSet diffing + content hash dedup. GOAL-comp.3 (incremental), GOAL-comp.10 (cost awareness)
+  tags:
+  - kc
+  - compilation
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    design_ref: compilation/design.md §3.3
+    file: src/compiler/trigger.rs
+    goals: GOAL-comp.4, GOAL-comp.5
+- id: kc-topic-lifecycle
+  title: Topic Lifecycle (merge + split)
+  status: done
+  description: §3.4 TopicLifecycle — merge overlapping topics, split divergent ones. Overlap detection, re-clustering, provenance preservation. GOAL-comp.4, GOAL-comp.5
+  tags:
+  - kc
+  - compilation
+  - p1
+  priority: 50
+  type: task
+  metadata:
+    design_ref: compilation/design.md §3.4
+    file: src/compiler/lifecycle.rs
+    goals: GOAL-comp.4, GOAL-comp.5
+- id: kc-feedback-processor
+  title: 'KC Feedback: Point Feedback + Dry Run (src/compiler/feedback.rs)'
+  status: done
+  description: §3.5 FeedbackProcessor — record user feedback, build prompt context for recompilation, trigger recompile on corrections. GOAL-comp.7 (manual edit), GOAL-comp.8 (point feedback)
+  tags:
+  - knowledge-compiler
+  - p1
+  - compilation
+  priority: 30
+  type: task
+  metadata:
+    file: src/compiler/feedback.rs
+    design_ref: compilation/design.md §3.5
+    goals: GOAL-comp.8, GOAL-comp.9
+- id: kc-quality-scorer
+  title: Quality Scorer (coherence + coverage + freshness)
+  status: done
+  description: §3.6 QualityScorer — multi-dimensional quality assessment (coherence, coverage, freshness). Heuristic scoring, suggestions gen. GOAL-comp.9 (dry run preview uses quality info), GOAL-comp.10
+  tags:
+  - kc
+  - compilation
+  - p1
+  priority: 50
+  type: task
+  metadata:
+    goals: GOAL-comp.10
+    design_ref: compilation/design.md §3.6
+    file: src/compiler/quality.rs
+- id: kc-decay-engine
+  title: Decay Engine (time + access decay)
+  status: done
+  description: §2.1 DecayEngine — time-based + access-based decay with configurable half-lives. evaluate_topic, evaluate_all, apply_decay. GOAL-maint.1
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-maint.1
+    design_ref: maintenance/design.md §2.1
+    file: src/compiler/decay.rs
+- id: kc-conflict-detector
+  title: Conflict Detector (contradictions + duplicates)
+  status: done
+  description: '§2.2 ConflictDetector — contradiction detection + near-duplicate detection. Two-phase: candidate selection (embedding/overlap) → LLM check. GOAL-maint.2, GOAL-maint.4'
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-maint.2, GOAL-maint.4
+    file: src/compiler/conflict.rs
+    design_ref: maintenance/design.md §2.2
+- id: kc-health-auditor
+  title: Health Auditor (link integrity + health reports)
+  status: done
+  description: §2.3 HealthAuditor — broken link detection + repair, health reports with per-topic scores. GOAL-maint.3, GOAL-maint.5, GOAL-maint.5b
+  tags:
+  - kc
+  - maintenance
+  - p1
+  priority: 30
+  type: task
+  metadata:
+    file: src/compiler/health.rs
+    goals: GOAL-maint.3, GOAL-maint.5, GOAL-maint.5b
+    design_ref: maintenance/design.md §2.3
+- id: kc-export-engine
+  title: Export Engine (JSON/Markdown/SQLite + privacy filter)
+  status: done
+  description: §2.4 ExportEngine — export to JSON/Markdown/SQLite, import with dedup. Privacy enforcement on export. GOAL-maint.6 (knowledge-aware recall), GOAL-maint.7 (markdown export)
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-maint.6, GOAL-maint.7
+    design_ref: maintenance/design.md §2.4
+    file: src/compiler/export.rs
+- id: kc-cli
+  title: CLI Interface (knowledge subcommands)
+  status: done
+  description: '§2.5 CLI Interface — engram knowledge subcommands: query, inspect, export, import, health, decay, conflicts, audit, privacy. GOAL-maint.8'
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    design_ref: maintenance/design.md §2.5
+    file: src/compiler/cli.rs
+    goals: GOAL-maint.8
+- id: kc-api
+  title: Programmatic API (MaintenanceApi)
+  status: done
+  description: §2.6 MaintenanceApi — Rust API mirroring all CLI capabilities. Query, maintenance ops, export/import, privacy. GOAL-maint.9
+  tags:
+  - kc
+  - maintenance
+  - p1
+  priority: 50
+  type: task
+  metadata:
+    design_ref: maintenance/design.md §2.6
+    goals: GOAL-maint.9
+    file: src/compiler/api.rs
+- id: kc-privacy-guard
+  title: Privacy Guard (levels + redaction + audit log)
+  status: done
+  description: §2.7 PrivacyGuard — privacy levels (public/sensitive/private), redaction pipeline, audit logging. GOAL-maint.10, GOAL-maint.11
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    file: src/compiler/privacy.rs
+    design_ref: maintenance/design.md §2.7
+    goals: GOAL-maint.10, GOAL-maint.11
+- id: kc-maintenance-lock
+  title: Maintenance Lock (multi-process safety)
+  status: done
+  description: §3 MaintenanceLock — file-based leader election for multi-process safety. Stale lock recovery. GOAL-maint.12
+  tags:
+  - kc
+  - maintenance
+  - p1
+  priority: 30
+  type: task
+  metadata:
+    goals: GOAL-maint.12
+    file: src/compiler/lock.rs
+    design_ref: maintenance/design.md §3
+- id: kc-llm-provider
+  title: LLM Provider (multi-provider + model router + token budget)
+  status: done
+  description: §2.1 LlmProvider trait + OpenAI/Anthropic/Local impls + ModelRouter (task-based model selection) + token budget enforcement. GOAL-plat.1, GOAL-plat.2, GOAL-plat.3
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 5
+  type: task
+  metadata:
+    design_ref: platform/design.md §2.1
+    goals: GOAL-plat.1, GOAL-plat.2, GOAL-plat.3
+    file: src/compiler/llm.rs
+- id: kc-config
+  title: Configuration Management (zero-config + TOML + resolution)
+  status: done
+  description: §2.2 ConfigManagement — zero-config defaults, TOML config file, 4-layer resolution (CLI > env > project > user > default). GOAL-plat.2 (config file), GOAL-plat.7 (zero-config), GOAL-plat.8 (progressive disclosure)
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 5
+  type: task
+  metadata:
+    file: src/compiler/config.rs
+    goals: GOAL-plat.2, GOAL-plat.7, GOAL-plat.8
+    design_ref: platform/design.md §2.2
+- id: kc-embedding-pipeline
+  title: Embedding Pipeline (auto-download + cache + model mgmt)
+  status: done
+  description: §2.3 EmbeddingPipeline — auto-download models, model management (list/remove/switch), per-memory embedding cache with model tagging. GOAL-plat.4, GOAL-plat.5, GOAL-plat.6
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 5
+  type: task
+  metadata:
+    file: src/compiler/embedding.rs
+    goals: GOAL-plat.4, GOAL-plat.5, GOAL-plat.6
+    design_ref: platform/design.md §2.3
+- id: kc-import
+  title: Import Pipeline (Markdown + Obsidian + URL + dedup)
+  status: done
+  description: §2.4 Import/Export — Markdown/Logseq/Obsidian/JSON importers + duplicate handling (content hash + near-dupe embedding). GOAL-plat.8, GOAL-plat.9, GOAL-plat.10, GOAL-plat.11
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-plat.8, GOAL-plat.9, GOAL-plat.10, GOAL-plat.11
+    file: src/compiler/import.rs
+    design_ref: platform/design.md §2.4
+- id: kc-intake
+  title: Intake Pipeline (URL extraction + auto-import)
+  status: done
+  description: §2.5 IntakePipeline — URL content extraction (Jina/yt-dlp/GitHub), auto-import via import pipeline. GOAL-plat.12, GOAL-plat.13
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    design_ref: platform/design.md §2.5
+    goals: GOAL-plat.12, GOAL-plat.13
+    file: src/compiler/intake.rs
+- id: kc-degradation
+  title: Graceful Degradation (capability levels + fallback chain)
+  status: done
+  description: §2.6 GracefulDegradation — CapabilityLevel detection (Minimal/Embeddings/Full), FallbackProvider chain, actionable error messages. GOAL-plat.3, GOAL-plat.14, GOAL-plat.15, GOAL-plat.16
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    design_ref: platform/design.md §2.6
+    file: src/compiler/degradation.rs
+    goals: GOAL-plat.3, GOAL-plat.14, GOAL-plat.15, GOAL-plat.16
+- id: kc-types
+  title: KC Shared Types (TopicPage, CompilationRecord, etc.)
+  status: done
+  description: 'Shared KC types from architecture doc §4: TopicPage, TopicId, CompilationRecord, SourceMemoryRef, KcConfig, RecompileStrategy, FeedbackEntry, FeedbackKind, HealthReport, TopicStatus, plus feature-local types from compilation §2.1 (TopicCandidate, ChangeSet, TriggerDecision, LifecycleOp, TopicFeedback, QualityReport)'
+  tags:
+  - kc
+  - foundation
+  - p0
+  priority: 1
+  type: task
+  metadata:
+    file: src/compiler/types.rs
+- id: kc-storage
+  title: KC Storage Schema (SQLite tables + migrations)
+  status: done
+  description: 'SQLite storage for KC — topic_pages + compilation_records + compilation_sources tables. Must expose KnowledgeStore trait with: create_topic_page(), update_topic_page(), get_topic_page(), list_topic_pages(), delete_topic_page(), save_compilation_record(), get_compilation_record(), get_pages_by_status(), update_activity_score(), mark_archived(), get_stale_pages(). All downstream modules (decay, conflict, health, export, etc.) depend on this trait interface.'
+  tags:
+  - kc
+  - foundation
+  - p0
+  priority: 1
+  type: task
+  metadata:
+    file: src/compiler/storage.rs
+- id: kc-mod
+  title: KC Module Scaffold (mod.rs + feature flag)
+  status: done
+  description: src/compiler/mod.rs — module declaration, re-exports, compiler module entry point. Feature flag gating (kc feature flag).
+  tags:
+  - kc
+  - foundation
+  - p0
+  priority: 1
+  type: task
+  metadata:
+    file: src/compiler/mod.rs
+- id: kc-manual-edit
+  title: 'KC Manual Edit: Topic Page Direct Editing (src/compiler/feedback.rs)'
+  status: done
+  description: Implement manual edit capability for topic pages — user can directly edit compiled page content, edits persist across recompilation cycles. GOAL-comp.7 (P0). Shares feedback.rs with kc-feedback-processor but this is the P0 portion.
+  tags:
+  - knowledge-compiler
+  - p0
+  - compilation
+  priority: 8
+  metadata:
+    design_ref: compilation/design.md §3.5
+    file: src/compiler/feedback.rs
+    goals: GOAL-comp.7
+- id: kc-unit-tests
+  title: KC Unit Tests (per-module)
+  status: done
+  description: 'Unit tests for each KC module: types serialization, storage CRUD, topic discovery clustering, compilation pipeline stages, decay scoring, conflict detection, export formatting. Each module gets its own test submodule. Target: >80% coverage on P0 modules.'
+  tags:
+  - knowledge-compiler
+  - p0
+  - testing
+  priority: 9
+  metadata:
+    file: src/compiler/tests/
+    goals: GUARD-2 (correctness)
+- id: kc-integration-tests
+  title: KC Integration Tests (end-to-end flows)
+  status: done
+  description: 'End-to-end integration tests: (1) memories → compile → topic pages with provenance, (2) incremental recompilation on memory change, (3) CLI compile + list + export round-trip, (4) Markdown import → compile → export → compare, (5) decay + archive lifecycle. Uses temp DB, no LLM mock needed (use deterministic test provider).'
+  tags:
+  - knowledge-compiler
+  - p0
+  - testing
+  priority: 10
+  metadata:
+    file: tests/knowledge_compiler.rs
+    goals: GUARD-2 (correctness)
+- id: feat-rumination
+  title: L4 Rumination (自主思考) — synthesis-only 定时触发
+  status: done
+  description: engramai::Memory::ruminate() + RustClaw 定时器。Synthesis pipeline 独立于 consolidation 运行，不衰减记忆强度。
+  tags:
+  - engram
+  - L4
+  - rumination
+  - synthesis
+  type: feature
+- id: feat-interoceptive
+  title: L3 Interoceptive Hub (脑岛整合层)
+  status: todo
+  description: '给 engram 装"脑岛"——把 5 个分散的信号源 (anomaly, accumulator, feedback, confidence, alignment) 整合成统一的内感受系统。三层架构：Signal Layer → Integration Layer → Regulation Layer。设计文档: INTEROCEPTIVE-LAYER.md'
+  tags:
+  - interoceptive
+  - L3
+  - neuroscience
+  priority: 10
+  type: feature
+- id: intero-types
+  title: 'Phase 1: 统一信号类型 (InteroceptiveSignal + types)'
+  status: done
+  description: |-
+    定义 InteroceptiveSignal 统一信号格式 + SignalSource enum + SignalContext。所有信号源的公共输出接口。包含：
+    - InteroceptiveSignal struct (source, domain, valence, arousal, timestamp, context)
+    - SignalSource enum (Anomaly, Feedback, Alignment, Confidence, Accumulator)
+    - SignalContext enum (触发信号的上下文)
+    - InteroceptiveState struct (domain_states, global_arousal, somatic_cache, signal_buffer)
+    - DomainState struct (valence_trend, anomaly_level, action_success_rate, alignment_score, confidence)
+    - RegulationAction enum (SoulUpdateSuggestion, RetrievalAdjustment, BehaviorShift, Alert)
+    - SomaticMarker struct
+
+    文件: src/interoceptive/types.rs (~120 行)
+    设计参考: INTEROCEPTIVE-LAYER.md §5.2
+  tags:
+  - interoceptive
+  - phase-1
+  priority: 20
+- id: intero-mod
+  title: 'Phase 1: 模块脚手架 (mod.rs + lib.rs)'
+  status: done
+  description: |-
+    创建 src/interoceptive/mod.rs，导出 types + hub 模块。在 lib.rs 加 pub mod interoceptive。
+
+    文件: src/interoceptive/mod.rs (新), lib.rs (+1 行)
+  tags:
+  - interoceptive
+  - phase-1
+  priority: 20
+- id: intero-signal-adapters
+  title: 'Phase 1: 信号适配器 (5 个模块 → InteroceptiveSignal)'
+  status: done
+  description: |-
+    给现有 5 个信号源模块各加一个方法输出 InteroceptiveSignal 格式，不改变原有行为：
+
+    1. anomaly.rs — BaselineTracker::to_signal() → InteroceptiveSignal (source=Anomaly, valence=-z_score_normalized, arousal=abs(z_score)/threshold)
+    2. bus/accumulator.rs — EmotionalAccumulator::to_signal(domain) → InteroceptiveSignal (source=Accumulator, valence=trend_valence)
+    3. bus/feedback.rs — BehaviorFeedback::to_signal(action) → InteroceptiveSignal (source=Feedback, valence=success_rate*2-1)
+    4. confidence.rs — ConfidenceScorer::to_signal() → InteroceptiveSignal (source=Confidence, valence=combined_confidence*2-1)
+    5. bus/alignment.rs — AlignmentScorer::to_signal() → InteroceptiveSignal (source=Alignment, valence=alignment_score*2-1)
+
+    每个约 15-20 行。纯 additive，不改现有行为。
+    设计参考: INTEROCEPTIVE-LAYER.md §6.1-6.5
+  tags:
+  - interoceptive
+  - phase-1
+  priority: 30
+- id: intero-hub
+  title: 'Phase 2: InteroceptiveHub 核心 (信号整合 + 状态聚合)'
+  status: done
+  description: |-
+    InteroceptiveHub 核心实现 (~300-400 行)：
+
+    核心职责：
+    - 接收 InteroceptiveSignal，维护 signal_buffer (VecDeque, 滑动窗口)
+    - 维护 domain_states: HashMap<String, DomainState>，每次信号更新对应 domain 的状态
+    - 计算 global_arousal (所有 domain arousal 的加权平均)
+    - Somatic marker 缓存: 情境 hash → 历史情感记录 (Damasio 直觉)
+    - current_state() → InteroceptiveState 快照
+    - process_signal(signal) → Option<RegulationAction>
+    - tick() — 被定时调用，从所有信号源拉取最新信号，更新状态
+
+    关键设计约束：
+    - O(1) 或 O(log n)，不能成为瓶颈
+    - signal_buffer 上限 1000，超出 FIFO 淘汰
+    - somatic_cache LRU 淘汰
+
+    文件: src/interoceptive/hub.rs (~400 行)
+    设计参考: INTEROCEPTIVE-LAYER.md §5.1-5.2
+  tags:
+  - interoceptive
+  - phase-2
+  priority: 30
+- id: intero-memory-api
+  title: 'Phase 2: Memory API (interoceptive_snapshot + tick)'
+  status: done
+  description: |-
+    在 Memory 上加 interoceptive_snapshot() 方法：
+
+    1. Memory struct 新增 interoceptive_hub: Option<InteroceptiveHub> 字段
+    2. Memory::new() 初始化 hub (读取现有模块状态)
+    3. Memory::interoceptive_snapshot() → InteroceptiveState
+    4. Memory::interoceptive_tick() — 拉取所有信号源，更新 hub 状态
+    5. Memory::interoceptive_regulate() → Vec<RegulationAction> — 获取调节建议
+
+    关键：hub 拿到的信号源引用来自 Memory 已有的 emotional_bus (accumulator, feedback, alignment) + anomaly_tracker + confidence_scorer。
+
+    文件: src/memory.rs (+60 行)
+    设计参考: INTEROCEPTIVE-LAYER.md §10
+  tags:
+  - interoceptive
+  - phase-2
+  priority: 40
+- id: intero-regulation
+  title: 'Phase 4: 调节层 (RegulationAction 生成规则)'
+  status: done
+  description: |-
+    基于 InteroceptiveState 生成 RegulationAction 的逻辑：
+
+    规则引擎 (不用 LLM)：
+    1. 情感趋势持续负向 (valence < -0.3 持续 5+ 信号) → SoulUpdateSuggestion
+    2. confidence 持续低 (< 0.4 持续 3+ 信号) → RetrievalAdjustment { expand_search: true }
+    3. 某 action 成功率 < 0.3 → BehaviorShift { action, recommendation }
+    4. 多个 domain 同时 anomaly_level > 2.0 → Alert { severity: High }
+    5. alignment < 0.3 持续 → SoulUpdateSuggestion
+
+    Regulation 的输出只是建议，不自动执行。由调用方（RustClaw hooks）决定是否采纳。
+
+    文件: src/interoceptive/regulation.rs (~150 行)
+    设计参考: INTEROCEPTIVE-LAYER.md §5.2 Layer 3
+  tags:
+  - interoceptive
+  - phase-4
+  priority: 50
+- id: intero-broadcast
+  title: 'Phase 3: 广播机制 (SessionWorkingMemory → Hub)'
+  status: done
+  description: |-
+    SessionWorkingMemory 加入广播机制 (GWT 实现)：
+
+    - admit_with_broadcast() — 记忆进入工作记忆时广播到 hub
+    - hub.process_admission(memory_id) — 触发情感着色 + 对齐检查 + 异常检测
+    - Spreading activation via Hebbian neighbors (如果 hebbian network 可用)
+
+    注意：这是对 session_wm.rs 的改造，需要小心不破坏现有 admit/evict 逻辑。
+
+    文件: src/session_wm.rs (+50 行)
+    设计参考: INTEROCEPTIVE-LAYER.md §5.3
+  tags:
+  - interoceptive
+  - phase-3
+  priority: 50
+- id: intero-rustclaw-integration
+  title: 'Phase 5: RustClaw 集成 (hooks + tick + 闭环)'
+  status: done
+  description: |-
+    RustClaw 侧集成：
+
+    1. EngramRecallHook (BeforeInbound) — recall 时同时调用 hub.current_state()，内感受状态注入 system prompt
+    2. EngramStoreHook (BeforeOutbound) — 存储后调用 hub.process()，信号层各自检测 + 整合层更新
+    3. 后台 tick — 定时 (每 5 分钟或每次 heartbeat) 调用 memory.interoceptive_tick()
+    4. RegulationAction 处理 — 调节层输出发到 Telegram 或写入日志
+
+    文件: rustclaw/src/engram_hooks.rs (+40 行), 可能新增 interoceptive 相关 hook
+    设计参考: INTEROCEPTIVE-LAYER.md §10.1-10.5
+  tags:
+  - interoceptive
+  - phase-5
+  - rustclaw
+  priority: 60
+- id: intero-tests
+  title: 'Phase 5: 测试 (单元 + 集成)'
+  status: done
+  description: |-
+    端到端测试 + 单元测试：
+
+    单元测试 (~150 行):
+    - InteroceptiveSignal 构建 + 序列化
+    - DomainState 更新逻辑
+    - Hub signal_buffer FIFO 淘汰
+    - Somatic marker 缓存 LRU
+    - RegulationAction 规则触发 (每条规则至少 1 个 test case)
+    - 各 adapter 的 to_signal() 输出验证
+
+    集成测试 (~100 行):
+    - 完整信号流: anomaly 信号 → hub → 状态更新 → regulation action
+    - 多 domain 交叉: coding + trading 同时产生信号
+    - 滑动窗口趋势检测
+    - Memory.interoceptive_snapshot() 端到端
+
+    文件: src/interoceptive/types.rs (#[cfg(test)]), src/interoceptive/hub.rs (#[cfg(test)]), tests/interoceptive_test.rs (新)
+  tags:
+  - interoceptive
+  - phase-5
+  - testing
+  priority: 60
+edges:
+- from: a1-hook-filter
+  to: phase-a
+  relation: subtask_of
+- from: a2-extractor-negatives
+  to: phase-a
+  relation: subtask_of
+- from: a3-sql-cleanup
+  to: phase-a
+  relation: subtask_of
+- from: b1-entity-index
+  to: phase-b
+  relation: subtask_of
+- from: b2-dedup
+  to: phase-b
+  relation: subtask_of
+- from: b3-confidence
+  to: phase-b
+  relation: subtask_of
+- from: b4-recency
+  to: phase-b
+  relation: subtask_of
+- from: a3-sql-cleanup
+  to: a1-hook-filter
+  relation: depends_on
+- from: a3-sql-cleanup
+  to: a2-extractor-negatives
+  relation: depends_on
+- from: phase-b
+  to: phase-a
+  relation: depends_on
+- from: b1-entity-index
+  to: a3-sql-cleanup
+  relation: depends_on
+- from: b2-dedup
+  to: a3-sql-cleanup
+  relation: depends_on
+- from: b3-confidence
+  to: b1-entity-index
+  relation: depends_on
+- from: b4-recency
+  to: b3-confidence
+  relation: depends_on
+- from: entity-types
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-unit-tests
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-storage
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-add-raw
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-recall
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-backfill
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-integration-tests
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-storage
+  to: entity-types
+  relation: depends_on
+- from: entity-unit-tests
+  to: entity-types
+  relation: depends_on
+- from: entity-add-raw
+  to: entity-storage
+  relation: depends_on
+- from: entity-recall
+  to: entity-storage
+  relation: depends_on
+- from: entity-backfill
+  to: entity-add-raw
+  relation: depends_on
+- from: entity-backfill
+  to: entity-recall
+  relation: depends_on
+- from: entity-integration-tests
+  to: entity-backfill
+  relation: depends_on
+- from: synth-types
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-mod
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-cluster
+  to: synth-types
+  relation: depends_on
+- from: synth-cluster
+  to: synth-mod
+  relation: depends_on
+- from: synth-gate
+  to: synth-types
+  relation: depends_on
+- from: synth-gate
+  to: synth-mod
+  relation: depends_on
+- from: synth-gate
+  to: synth-cluster
+  relation: depends_on
+- from: synth-insight
+  to: synth-types
+  relation: depends_on
+- from: synth-insight
+  to: synth-mod
+  relation: depends_on
+- from: synth-provenance
+  to: synth-types
+  relation: depends_on
+- from: synth-provenance
+  to: synth-mod
+  relation: depends_on
+- from: synth-engine
+  to: synth-cluster
+  relation: depends_on
+- from: synth-engine
+  to: synth-gate
+  relation: depends_on
+- from: synth-engine
+  to: synth-insight
+  relation: depends_on
+- from: synth-engine
+  to: synth-provenance
+  relation: depends_on
+- from: synth-consolidate
+  to: synth-engine
+  relation: depends_on
+- from: synth-incremental
+  to: synth-cluster
+  relation: depends_on
+- from: synth-incremental
+  to: synth-provenance
+  relation: depends_on
+- from: synth-unit-tests
+  to: synth-cluster
+  relation: depends_on
+- from: synth-unit-tests
+  to: synth-gate
+  relation: depends_on
+- from: synth-unit-tests
+  to: synth-insight
+  relation: depends_on
+- from: synth-unit-tests
+  to: synth-provenance
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-engine
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-consolidate
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-incremental
+  relation: depends_on
+- from: synth-cluster
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-gate
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-insight
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-provenance
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-engine
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-consolidate
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-incremental
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-unit-tests
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-integration-tests
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-cluster
+  to: b1-entity-index
+  relation: depends_on
+- from: kc-compilation
+  to: kc
+  relation: subtask_of
+- from: kc-maintenance
+  to: kc
+  relation: subtask_of
+- from: kc-platform
+  to: kc
+  relation: subtask_of
+- from: kc-topic-discovery
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-compilation-pipeline
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-incremental-trigger
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-topic-lifecycle
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-feedback-processor
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-quality-scorer
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-decay-engine
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-conflict-detector
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-health-auditor
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-export-engine
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-cli
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-api
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-privacy-guard
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-maintenance-lock
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-llm-provider
+  to: kc-platform
+  relation: subtask_of
+- from: kc-config
+  to: kc-platform
+  relation: subtask_of
+- from: kc-embedding-pipeline
+  to: kc-platform
+  relation: subtask_of
+- from: kc-import
+  to: kc-platform
+  relation: subtask_of
+- from: kc-intake
+  to: kc-platform
+  relation: subtask_of
+- from: kc-degradation
+  to: kc-platform
+  relation: subtask_of
+- from: kc-types
+  to: kc
+  relation: subtask_of
+- from: kc-storage
+  to: kc
+  relation: subtask_of
+- from: kc-mod
+  to: kc
+  relation: subtask_of
+- from: kc-storage
+  to: kc-types
+  relation: depends_on
+- from: kc-storage
+  to: kc-mod
+  relation: depends_on
+- from: kc-config
+  to: kc-types
+  relation: depends_on
+- from: kc-llm-provider
+  to: kc-config
+  relation: depends_on
+- from: kc-embedding-pipeline
+  to: kc-config
+  relation: depends_on
+- from: kc-degradation
+  to: kc-llm-provider
+  relation: depends_on
+- from: kc-degradation
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-topic-discovery
+  to: kc-storage
+  relation: depends_on
+- from: kc-topic-discovery
+  to: kc-llm-provider
+  relation: depends_on
+- from: kc-compilation-pipeline
+  to: kc-topic-discovery
+  relation: depends_on
+- from: kc-compilation-pipeline
+  to: kc-llm-provider
+  relation: depends_on
+- from: kc-incremental-trigger
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-incremental-trigger
+  to: kc-storage
+  relation: depends_on
+- from: kc-topic-lifecycle
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-feedback-processor
+  to: kc-storage
+  relation: depends_on
+- from: kc-feedback-processor
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-quality-scorer
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-quality-scorer
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-decay-engine
+  to: kc-storage
+  relation: depends_on
+- from: kc-conflict-detector
+  to: kc-storage
+  relation: depends_on
+- from: kc-conflict-detector
+  to: kc-llm-provider
+  relation: depends_on
+- from: kc-conflict-detector
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-health-auditor
+  to: kc-decay-engine
+  relation: depends_on
+- from: kc-health-auditor
+  to: kc-conflict-detector
+  relation: depends_on
+- from: kc-export-engine
+  to: kc-storage
+  relation: depends_on
+- from: kc-export-engine
+  to: kc-privacy-guard
+  relation: depends_on
+- from: kc-privacy-guard
+  to: kc-storage
+  relation: depends_on
+- from: kc-cli
+  to: kc-decay-engine
+  relation: depends_on
+- from: kc-cli
+  to: kc-conflict-detector
+  relation: depends_on
+- from: kc-cli
+  to: kc-export-engine
+  relation: depends_on
+- from: kc-cli
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-api
+  to: kc-cli
+  relation: depends_on
+- from: kc-import
+  to: kc-storage
+  relation: depends_on
+- from: kc-import
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-intake
+  to: kc-import
+  relation: depends_on
+- from: kc-maintenance-lock
+  to: kc-types
+  relation: depends_on
+- from: kc-manual-edit
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-types
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-storage
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-topic-discovery
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-decay-engine
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-conflict-detector
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-export-engine
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-manual-edit
+  relation: depends_on
+- from: kc-integration-tests
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-integration-tests
+  to: kc-cli
+  relation: depends_on
+- from: kc-integration-tests
+  to: kc-import
+  relation: depends_on
+- from: intero-signal-adapters
+  to: intero-types
+  relation: depends_on
+- from: intero-signal-adapters
+  to: intero-mod
+  relation: depends_on
+- from: intero-hub
+  to: intero-signal-adapters
+  relation: depends_on
+- from: intero-memory-api
+  to: intero-hub
+  relation: depends_on
+- from: intero-regulation
+  to: intero-hub
+  relation: depends_on
+- from: intero-broadcast
+  to: intero-hub
+  relation: depends_on
+- from: intero-rustclaw-integration
+  to: intero-memory-api
+  relation: depends_on
+- from: intero-rustclaw-integration
+  to: intero-regulation
+  relation: depends_on
+- from: intero-tests
+  to: intero-hub
+  relation: depends_on
+- from: intero-tests
+  to: intero-regulation
+  relation: depends_on
+- from: intero-tests
+  to: intero-signal-adapters
+  relation: depends_on
+- from: intero-tests
+  to: intero-memory-api
+  relation: depends_on
+- from: intero-types
+  to: feat-interoceptive
+  relation: subtask_of
+- from: intero-mod
+  to: feat-interoceptive
+  relation: subtask_of
+- from: intero-signal-adapters
+  to: feat-interoceptive
+  relation: subtask_of
+- from: intero-hub
+  to: feat-interoceptive
+  relation: subtask_of
+- from: intero-memory-api
+  to: feat-interoceptive
+  relation: subtask_of
+- from: intero-regulation
+  to: feat-interoceptive
+  relation: subtask_of
+- from: intero-broadcast
+  to: feat-interoceptive
+  relation: subtask_of
+- from: intero-rustclaw-integration
+  to: feat-interoceptive
+  relation: subtask_of
+- from: intero-tests
+  to: feat-interoceptive
+  relation: subtask_of

@@ -176,7 +176,7 @@ fn test_merge_memory_into_updates_importance() {
     storage.add(&record, "default").unwrap();
 
     // Merge with higher importance
-    storage.merge_memory_into("mem1", 0.8).unwrap();
+    storage.merge_memory_into("mem1", "Important fact", 0.8, 0.98).unwrap();
 
     // Check importance was updated to max(0.5, 0.8)
     let importance: f64 = storage.connection().query_row(
@@ -197,7 +197,7 @@ fn test_merge_memory_into_keeps_lower_importance() {
     storage.add(&record, "default").unwrap();
 
     // Merge with lower importance → should keep 0.9
-    storage.merge_memory_into("mem1", 0.3).unwrap();
+    storage.merge_memory_into("mem1", "Important fact", 0.3, 0.96).unwrap();
 
     let importance: f64 = storage.connection().query_row(
         "SELECT importance FROM memories WHERE id = ?",
@@ -224,7 +224,7 @@ fn test_merge_memory_into_adds_access() {
     ).unwrap();
 
     // Merge
-    storage.merge_memory_into("mem1", 0.5).unwrap();
+    storage.merge_memory_into("mem1", "Some content", 0.5, 0.97).unwrap();
 
     // Count after
     let count_after: i64 = storage.connection().query_row(
@@ -315,7 +315,7 @@ fn test_dedup_exact_duplicate_via_storage() {
     assert!(sim > 0.99);
 
     // Merge instead of creating new
-    storage.merge_memory_into("mem1", 0.8).unwrap();
+    storage.merge_memory_into("mem1", "Rust is fast and safe", 0.8, 0.99).unwrap();
 
     // Verify: still only 1 memory, but importance is now 0.8
     let count: i64 = storage.connection().query_row(
@@ -391,21 +391,21 @@ fn test_dedup_merge_importance_max() {
     storage.add(&record, "default").unwrap();
 
     // Merge with importance 0.8 → should become 0.8
-    storage.merge_memory_into("mem1", 0.8).unwrap();
+    storage.merge_memory_into("mem1", "test content", 0.8, 0.98).unwrap();
     let imp: f64 = storage.connection().query_row(
         "SELECT importance FROM memories WHERE id = ?", params!["mem1"], |row| row.get(0),
     ).unwrap();
     assert!((imp - 0.8).abs() < 0.001);
 
     // Merge again with importance 0.3 → should stay 0.8
-    storage.merge_memory_into("mem1", 0.3).unwrap();
+    storage.merge_memory_into("mem1", "test content", 0.3, 0.97).unwrap();
     let imp: f64 = storage.connection().query_row(
         "SELECT importance FROM memories WHERE id = ?", params!["mem1"], |row| row.get(0),
     ).unwrap();
     assert!((imp - 0.8).abs() < 0.001);
 
     // Merge with importance 0.95 → should become 0.95
-    storage.merge_memory_into("mem1", 0.95).unwrap();
+    storage.merge_memory_into("mem1", "test content", 0.95, 0.96).unwrap();
     let imp: f64 = storage.connection().query_row(
         "SELECT importance FROM memories WHERE id = ?", params!["mem1"], |row| row.get(0),
     ).unwrap();
@@ -428,9 +428,9 @@ fn test_dedup_merge_accumulates_accesses() {
     assert_eq!(count, 1);
 
     // Merge 3 times
-    storage.merge_memory_into("mem1", 0.5).unwrap();
-    storage.merge_memory_into("mem1", 0.5).unwrap();
-    storage.merge_memory_into("mem1", 0.5).unwrap();
+    storage.merge_memory_into("mem1", "test content", 0.5, 0.97).unwrap();
+    storage.merge_memory_into("mem1", "test content", 0.5, 0.97).unwrap();
+    storage.merge_memory_into("mem1", "test content", 0.5, 0.97).unwrap();
 
     let count: i64 = storage.connection().query_row(
         "SELECT COUNT(*) FROM access_log WHERE memory_id = ?", params!["mem1"], |row| row.get(0),
@@ -476,4 +476,140 @@ fn test_config_dedup_serde() {
     let config4: MemoryConfig = serde_json::from_str(&json3).unwrap();
     assert!(!config4.dedup_enabled);
     assert!((config4.dedup_threshold - 0.90).abs() < 0.001);
+}
+
+// === Smart Merge tests ===
+
+#[test]
+fn test_merge_content_update_when_longer() {
+    // Original content is short, new content is 50% longer → content should be updated
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let mut storage = Storage::new(&db_path).unwrap();
+
+    let record = make_record("mem1", "short content", 0.5);
+    storage.add(&record, "default").unwrap();
+
+    // New content is much longer (>30% longer)
+    let long_content = "short content with a lot of additional detail and information that makes it significantly longer than the original";
+    let outcome = storage.merge_memory_into("mem1", long_content, 0.6, 0.97).unwrap();
+
+    assert!(outcome.content_updated, "Content should be updated when new is >30% longer");
+    assert_eq!(outcome.merge_count, 1);
+
+    // Verify the content was actually updated in DB
+    let stored_content: String = storage.connection().query_row(
+        "SELECT content FROM memories WHERE id = ?",
+        params!["mem1"],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(stored_content, long_content);
+}
+
+#[test]
+fn test_merge_content_kept_when_similar_length() {
+    // New content is similar length → original content kept
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let mut storage = Storage::new(&db_path).unwrap();
+
+    let original = "Rust is a systems programming language";
+    let record = make_record("mem1", original, 0.5);
+    storage.add(&record, "default").unwrap();
+
+    // New content is about the same length (not >30% longer)
+    let new_content = "Rust is a safe systems programming lang";
+    let outcome = storage.merge_memory_into("mem1", new_content, 0.6, 0.96).unwrap();
+
+    assert!(!outcome.content_updated, "Content should NOT be updated when similar length");
+
+    // Verify original content is preserved
+    let stored_content: String = storage.connection().query_row(
+        "SELECT content FROM memories WHERE id = ?",
+        params!["mem1"],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(stored_content, original);
+}
+
+#[test]
+fn test_merge_history_recorded_in_metadata() {
+    // After merge, check metadata has merge_history array
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let mut storage = Storage::new(&db_path).unwrap();
+
+    let record = make_record("mem1", "some content", 0.5);
+    storage.add(&record, "default").unwrap();
+
+    storage.merge_memory_into("mem1", "some content", 0.7, 0.98).unwrap();
+
+    let metadata_str: String = storage.connection().query_row(
+        "SELECT metadata FROM memories WHERE id = ?",
+        params!["mem1"],
+        |row| row.get(0),
+    ).unwrap();
+
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
+    let history = metadata["merge_history"].as_array().unwrap();
+    assert_eq!(history.len(), 1);
+
+    let entry = &history[0];
+    assert!(entry["ts"].as_u64().unwrap() > 0);
+    assert!((entry["sim"].as_f64().unwrap() - 0.98).abs() < 0.01);
+    assert_eq!(entry["content_updated"].as_bool().unwrap(), false);
+    assert!(entry["prev_content_len"].as_u64().is_some());
+    assert!(entry["new_content_len"].as_u64().is_some());
+}
+
+#[test]
+fn test_merge_history_capped_at_10() {
+    // Merge 12 times, check only last 10 entries in merge_history
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let mut storage = Storage::new(&db_path).unwrap();
+
+    let record = make_record("mem1", "some content", 0.5);
+    storage.add(&record, "default").unwrap();
+
+    for i in 0..12 {
+        storage.merge_memory_into("mem1", "some content", 0.5, 0.96 + (i as f32) * 0.001).unwrap();
+    }
+
+    let metadata_str: String = storage.connection().query_row(
+        "SELECT metadata FROM memories WHERE id = ?",
+        params!["mem1"],
+        |row| row.get(0),
+    ).unwrap();
+
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
+    let history = metadata["merge_history"].as_array().unwrap();
+    assert_eq!(history.len(), 10, "merge_history should be capped at 10 entries, got {}", history.len());
+
+    // merge_count should still be 12
+    assert_eq!(metadata["merge_count"].as_i64().unwrap(), 12);
+}
+
+#[test]
+fn test_merge_count_increments() {
+    // Merge 3 times, check merge_count is 3
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let mut storage = Storage::new(&db_path).unwrap();
+
+    let record = make_record("mem1", "test content", 0.5);
+    storage.add(&record, "default").unwrap();
+
+    for _ in 0..3 {
+        storage.merge_memory_into("mem1", "test content", 0.5, 0.97).unwrap();
+    }
+
+    let metadata_str: String = storage.connection().query_row(
+        "SELECT metadata FROM memories WHERE id = ?",
+        params!["mem1"],
+        |row| row.get(0),
+    ).unwrap();
+
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
+    assert_eq!(metadata["merge_count"].as_i64().unwrap(), 3, "merge_count should be 3 after 3 merges");
 }
