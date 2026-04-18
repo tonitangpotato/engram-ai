@@ -1,28 +1,30 @@
+<div align="center">
+
 # Engram — Neuroscience-Grounded Memory for AI Agents
 
 [![crates.io](https://img.shields.io/crates/v/engramai.svg)](https://crates.io/crates/engramai)
 [![docs.rs](https://docs.rs/engramai/badge.svg)](https://docs.rs/engramai)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
+**[中文](README-zh.md) | English**
+
+<br>
+
+<img src="docs/brain-overlay-en.png" alt="Engram Brain-Inspired Memory Architecture" width="720">
+
+<br>
+
+*18,000+ lines of Rust · 309 tests · Zero unsafe*
+
+</div>
+
+---
+
 Engram is a **memory system for AI agents** built on cognitive science models — not vector similarity. It implements the mechanisms that make biological memory work: activation decay (ACT-R), forgetting curves (Ebbinghaus), associative strengthening (Hebbian/STDP), sleep consolidation, and automatic insight synthesis from memory clusters.
 
-The result: an agent that *remembers* — where frequently-used knowledge stays accessible, unused memories naturally fade, related concepts strengthen each other, and patterns across experiences surface as insights. All in a single SQLite file, pure Rust, zero external dependencies.
+The result: an agent that *remembers* — where frequently-used knowledge stays accessible, unused memories naturally fade, related concepts strengthen each other, and patterns across experiences surface as insights.
 
-18,000+ lines of Rust · 309 tests · Zero unsafe
-
-```
-            ·  ˚  ✦  .    ·  ˚
-         ·    ENGRAM MEMORY    ✦
-       ˚   ╭─────────────────╮  ·
-     ✦    ╱  ✦ strong memory   ╲   ˚
-    ·    │  ··· ← recalled ← ···│    ·
-        │  · · · fading · · · · ·│
-       │  ░░░░░ forgotten ░░░░░░░│
-      ╰──────────────────────────╯
-        ↑ recall       ↑ store
-        │ strengthens  │ decays
-        ╰──── ACT-R ───╯
-```
+All in a single SQLite file, pure Rust, zero external dependencies.
 
 ---
 
@@ -30,85 +32,60 @@ The result: an agent that *remembers* — where frequently-used knowledge stays 
 
 Engram isn't "inspired by" neuroscience — it implements specific, published models. Each mechanism maps directly to a biological counterpart:
 
-```
-┌──────────────────────────┐         ┌────────────────────────────────┐
-│      🧠 THE BRAIN        │         │       ⚙️ ENGRAM                │
-├──────────────────────────┤         ├────────────────────────────────┤
-│                          │         │                                │
-│ Prefrontal cortex        │ ──────▶ │ ACT-R activation model         │
-│ "What's relevant now?"   │         │ frequency × recency scoring    │
-│                          │         │                                │
-│ Hippocampal decay        │ ──────▶ │ Ebbinghaus forgetting curves   │
-│ "Use it or lose it"      │         │ exponential decay + spaced rep │
-│                          │         │                                │
-│ Synaptic plasticity      │ ──────▶ │ Hebbian learning               │
-│ "Fire together, wire     │         │ co-recall builds bidirectional │
-│  together"               │         │ associative links              │
-│                          │         │                                │
-│ Spike-timing dependent   │ ──────▶ │ STDP temporal ordering         │
-│ plasticity               │         │ A before B → A causes B?       │
-│ "Order encodes causality"│         │ directional link strengthening │
-│                          │         │                                │
-│ Sleep consolidation      │ ──────▶ │ Dual-trace consolidation       │
-│ Hippocampus → Neocortex  │         │ "sleep" cycle: replay strong   │
-│ "Replay to remember"     │         │ memories, decay weak ones      │
-│                          │         │                                │
-│ Synaptic homeostasis     │ ──────▶ │ Homeostatic scaling            │
-│ (Turrigiano 2008)        │         │ bounded link strength,         │
-│ "Keep the network stable"│         │ adaptive thresholds            │
-│                          │         │                                │
-│ Emotional tagging        │ ──────▶ │ Emotional bus                  │
-│ Amygdala modulation      │         │ per-domain valence tracking,   │
-│ "Feelings color memory"  │         │ drive alignment scoring        │
-│                          │         │                                │
-│ Insight / "Aha!" moments │ ──────▶ │ Synthesis engine               │
-│ Default mode network     │         │ cluster → gate → generate →    │
-│ "Connections emerge"     │         │ provenance-tracked insights    │
-└──────────────────────────┘         └────────────────────────────────┘
-```
+| 🧠 The Brain | ⚙️ Engram |
+|---|---|
+| **Prefrontal cortex** — "What's relevant now?" | **ACT-R activation model** — frequency × recency scoring |
+| **Hippocampal decay** — "Use it or lose it" | **Ebbinghaus forgetting curves** — exponential decay + spaced rep |
+| **Synaptic plasticity** — "Fire together, wire together" | **Hebbian learning** — co-recall builds bidirectional associative links |
+| **Spike-timing dependent plasticity** — "Order encodes causality" | **STDP temporal ordering** — A before B → directional link strengthening |
+| **Sleep consolidation** — Hippocampus → Neocortex | **Dual-trace consolidation** — "sleep" cycle: replay strong, decay weak |
+| **Synaptic homeostasis** (Turrigiano 2008) | **Homeostatic scaling** — bounded link strength, adaptive thresholds |
+| **Emotional tagging** — Amygdala modulation | **Emotional bus** — per-domain valence tracking, drive alignment scoring |
+| **Insight / "Aha!" moments** — Default mode network | **Synthesis engine** — cluster → gate → generate → provenance-tracked insights |
+| **Interoception** — Body-state awareness | **Interoceptive hub** — allostatic load, energy tracking, regulation signals |
 
 ---
 
 ## The Life of a Memory
 
 ```
-                        ┌──────────┐
-                        │  Input   │    "Rust 1.75 added async traits"
-                        └────┬─────┘
-                             │
-                    ┌────────▼────────┐
-                    │  Store & Index  │    embed + FTS5 + entity extract
-                    └────────┬────────┘    + type classify (factual)
-                             │
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-     ┌────────────┐  ┌────────────┐  ┌────────────┐
-     │  Activate  │  │   Forget   │  │   Link     │
-     │  (ACT-R)   │  │(Ebbinghaus)│  │ (Hebbian)  │
-     │            │  │            │  │            │
-     │ recalled   │  │ not used   │  │ co-recalled│
-     │ 3x today → │  │ for weeks →│  │ with "Rust │
-     │ activation │  │ activation │  │ async" →   │
-     │ ▲▲▲        │  │ ▽▽▽        │  │ link ▲▲    │
-     └──────┬─────┘  └──────┬─────┘  └──────┬─────┘
-            │               │               │
-            └───────────────┼───────────────┘
-                            │
-                   ┌────────▼────────┐
-                   │  Consolidation  │    "sleep" cycle
-                   │  (dual-trace)   │    strong → long-term ✓
-                   │                 │    weak → decay further ✗
-                   └────────┬────────┘
-                            │
+┌──────────┐
+│  Input   │  "Rust 1.75 added async traits"
+└────┬─────┘
+     │
+┌────────▼────────┐
+│  Store & Index   │  embed + FTS5 + entity extract
+└────────┬────────┘   + type classify (factual)
+         │
+  ┌──────────────┼──────────────┐
+  ▼              ▼              ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐
+│  Activate  │ │   Forget   │ │    Link    │
+│  (ACT-R)   │ │(Ebbinghaus)│ │ (Hebbian)  │
+│            │ │            │ │            │
+│ recalled   │ │  not used  │ │ co-recalled│
+│ 3x today → │ │ for weeks →│ │ with "Rust │
+│ activation │ │ activation │ │  async" →  │
+│     ▲▲▲    │ │     ▽▽▽    │ │  link ▲▲   │
+└──────┬─────┘ └──────┬─────┘ └──────┬─────┘
+       │              │              │
+       └───────────────┼───────────────┘
+                       │
+              ┌────────▼────────┐
+              │ Consolidation   │  "sleep" cycle
+              │  (dual-trace)   │  strong → long-term ✓
+              │                 │  weak → decay further ✗
+              └────────┬────────┘
+                       │
               ┌─────────────┼─────────────┐
               ▼                           ▼
-     ┌────────────────┐          ┌────────────────┐
-     │  Long-term     │          │  Synthesize    │
-     │  Memory        │          │                │
-     │  survives      │          │  cluster with  │
-     │  indefinitely  │          │  related →     │
-     └────────────────┘          │  "Aha!" insight│
-                                 └────────────────┘
+    ┌────────────────┐          ┌────────────────┐
+    │   Long-term    │          │   Synthesize   │
+    │    Memory      │          │                │
+    │   survives     │          │  cluster with  │
+    │  indefinitely  │          │  related →     │
+    └────────────────┘          │ "Aha!" insight │
+                                └────────────────┘
 ```
 
 ---
@@ -137,7 +114,8 @@ use engramai::{Memory, MemoryType};
 let mut mem = Memory::new("./agent.db", None)?;
 
 // 2. Store
-mem.add("Rust 1.75 introduced async fn in traits", MemoryType::Factual, Some(0.8), None, None)?;
+mem.add("Rust 1.75 introduced async fn in traits",
+        MemoryType::Factual, Some(0.8), None, None)?;
 
 // 3. Recall (hybrid: FTS + vector + ACT-R activation)
 let results = mem.recall("async traits in Rust", 5, None, None)?;
@@ -146,7 +124,7 @@ let results = mem.recall("async traits in Rust", 5, None, None)?;
 That's it. No Docker, no Redis, no API keys. Just a `.db` file.
 
 <details>
-<summary><b>📚 More examples — LLM extraction, emotional bus, synthesis engine</b></summary>
+<summary>📚 More examples — LLM extraction, emotional bus, synthesis engine</summary>
 
 ### With LLM Extraction
 
@@ -158,15 +136,11 @@ let mut mem = Memory::new("./agent.db", None)?;
 // Use local Ollama for extraction
 mem.set_extractor(Box::new(OllamaExtractor::new("llama3.2:3b")));
 
-// Or Anthropic Claude
-// mem.set_extractor(Box::new(AnthropicExtractor::new("sk-ant-...", false)));
-
 // Raw text → automatically extracted as structured facts
 mem.add(
     "We decided to use PostgreSQL for the main DB and Redis for caching. \
      The team agreed this is non-negotiable.",
-    MemoryType::Factual,
-    None, None, None,
+    MemoryType::Factual, None, None, None,
 )?;
 ```
 
@@ -185,7 +159,7 @@ bus.record_emotion("coding", -0.3, "CI broke again")?;
 let trends = bus.get_trends()?;
 
 // Drive alignment — scores how well content aligns with agent's goals
-let drives = vec![Drive { text: "帮 potato 实现财务自由".into(), weight: 1.0 }];
+let drives = vec![Drive { text: "Help user achieve financial freedom".into(), weight: 1.0 }];
 let identity = Identity { drives, ..Default::default() };
 let score = bus.score_alignment(&identity, "revenue increased 20%")?;
 ```
@@ -202,8 +176,8 @@ let report = mem.synthesize(&settings)?;
 
 for insight in &report.insights {
     println!("Insight: {}", insight.content);
-    println!("From {} memories, confidence: {:.2}", 
-        insight.provenance.source_count, insight.importance);
+    println!("From {} memories, confidence: {:.2}",
+             insight.provenance.source_count, insight.importance);
 }
 
 // Undo a synthesis if the insight was wrong
@@ -215,15 +189,15 @@ mem.undo_synthesis(insight_id)?;
 ---
 
 <details>
-<summary><b>🧠 Implementation Details — Cognitive Science Modules</b></summary>
+<summary>🧠 Implementation Details — Cognitive Science Modules</summary>
 
 ### 🔍 Hybrid Search
 
 Three signals fused with configurable weights:
 
 ```
-Final Score = w_fts × FTS5_score + w_vec × cosine_sim + w_actr × activation
-              (15%)                  (60%)                (25%)
+Final Score = w_fts × FTS5_score  +  w_vec × cosine_sim  +  w_actr × activation
+              (15%)                  (60%)                   (25%)
 ```
 
 - **FTS5**: BM25 ranking + jieba-rs CJK tokenization — Chinese, Japanese, Korean work out of the box
@@ -233,7 +207,6 @@ Final Score = w_fts × FTS5_score + w_vec × cosine_sim + w_actr × activation
 ### 🎯 Confidence Scoring
 
 Two-dimensional: "how relevant?" and "how reliable?" are different questions:
-
 - **Retrieval Salience**: Search score + activation + recency
 - **Content Reliability**: Access count + corroboration + consistency
 - **Labels**: `high` / `medium` / `low` / `uncertain`
@@ -242,7 +215,7 @@ Two-dimensional: "how relevant?" and "how reliable?" are different questions:
 
 ```
 Memories → Cluster Discovery → Gate Check → LLM Insight → Provenance → Store
-              (4-signal)       (quality)    (templated)    (auditable)
+           (4-signal)          (quality)    (templated)    (auditable)
 ```
 
 1. **Clustering** — 4 signals: Hebbian weight, entity Jaccard, embedding cosine, temporal proximity
@@ -257,6 +230,12 @@ Memories → Cluster Discovery → Gate Check → LLM Insight → Provenance →
 - **Behavior Feedback** — Action success/failure rate tracking
 - **Subscriptions** — Cross-agent notification on high-importance memories
 
+### 🧬 Interoceptive Hub
+
+- **Allostatic Load** — Tracks cognitive resource expenditure, error rates, fatigue signals
+- **Energy Budget** — Resource monitoring with regulation signals (rest, consolidate, alert)
+- **Body-State Awareness** — Internal state feeds back into memory consolidation and recall priority
+
 ### ⚖️ Synaptic Homeostasis
 
 - **Forgetting as feature** — Ebbinghaus decay = garbage collection
@@ -270,7 +249,7 @@ Memories → Cluster Discovery → Gate Check → LLM Insight → Provenance →
 
 ## How Engram Compares
 
-|  | **Engram** | **Mem0** | **Zep** | **Letta** |
+| | **Engram** | **Mem0** | **Zep** | **Letta** |
 |--|-----------|---------|--------|----------|
 | **Core approach** | Cognitive science models | Vector + graph | Vector + knowledge graph | LLM OS / stateful agents |
 | **Forgetting** | ✅ Ebbinghaus curves | ❌ | ❌ | ❌ |
@@ -279,6 +258,7 @@ Memories → Cluster Discovery → Gate Check → LLM Insight → Provenance →
 | **Consolidation** | ✅ Dual-trace | ❌ | ❌ | ❌ |
 | **Insight synthesis** | ✅ Cluster → gate → prove | ❌ | ❌ | ❌ |
 | **Emotional tracking** | ✅ Per-domain | ❌ | ❌ | ❌ |
+| **Interoception** | ✅ Allostatic load | ❌ | ❌ | ❌ |
 | **Search** | FTS5 + vector + ACT-R | Vector + graph | Vector + MMR | Vector |
 | **Embeddings required?** | Optional | Required | Required | Required |
 | **Infrastructure** | SQLite only | Redis/Postgres + API | Postgres + API | Postgres + API |
@@ -289,37 +269,37 @@ Memories → Cluster Discovery → Gate Check → LLM Insight → Provenance →
 ## 🏗️ Architecture
 
 ```
-                    ┌─────────────────────┐
-                    │    Agent / LLM      │
-                    └─────────┬───────────┘
-                              │
-               ┌──────────────┼──────────────┐
-               ▼              ▼              ▼
-        ┌───────────┐  ┌───────────┐  ┌───────────┐
-        │  Memory   │  │ Emotional │  │  Session   │
-        │  (core)   │  │    Bus    │  │ Working M. │
-        └─────┬─────┘  └─────┬─────┘  └───────────┘
-              │               │
-     ┌────────┴────────┐      │
-     ▼                 ▼      ▼
-┌──────────┐   ┌───────────────────┐
-│  Hybrid  │   │ Synthesis Engine  │
-│  Search  │   │  cluster → gate   │
-│FTS+Vec+AR│   │  → insight → log  │
-└────┬─────┘   └───────────────────┘
+┌─────────────────────┐
+│   Agent / LLM       │
+└─────────┬───────────┘
+          │
+  ┌───────────┼───────────┐
+  ▼           ▼           ▼
+┌───────────┐ ┌───────────┐ ┌───────────┐
+│  Memory   │ │ Emotional │ │  Session  │
+│  (core)   │ │   Bus     │ │ Working M.│
+└─────┬─────┘ └─────┬─────┘ └───────────┘
+      │             │
+┌─────┴─────┐       │
+▼           ▼       ▼
+┌──────────┐ ┌───────────────────┐
+│  Hybrid  │ │ Synthesis Engine  │
+│  Search  │ │ cluster → gate    │
+│FTS+Vec+AR│ │ → insight → log   │
+└────┬─────┘ └───────────────────┘
      │
 ┌────┴───────────────────────────┐
-▼         ▼          ▼           ▼
+▼        ▼        ▼        ▼
 ┌──────┐ ┌────────┐ ┌────────┐ ┌────────┐
-│ACT-R │ │Ebbing- │ │Hebbian │ │Embed-  │
-│decay │ │haus    │ │+ STDP  │ │dings   │
+│ACT-R │ │Ebbing- │ │Hebbian │ │Interoc.│
+│decay │ │haus    │ │+ STDP  │ │Hub     │
 └──────┘ └────────┘ └────────┘ └────────┘
-                  │
-                  ▼
-            ┌──────────┐
-            │  SQLite   │
-            │(WAL mode) │
-            └──────────┘
+                    │
+                    ▼
+              ┌──────────┐
+              │  SQLite   │
+              │(WAL mode) │
+              └──────────┘
 ```
 
 ---
@@ -338,20 +318,18 @@ Memories → Cluster Discovery → Gate Check → LLM Insight → Provenance →
 
 ---
 
-## Configuration
-
 <details>
-<summary><b>Agent presets, embedding providers, search tuning</b></summary>
+<summary>⚙️ Configuration — Agent presets, embedding providers, search tuning</summary>
 
 ### Agent Presets
 
 ```rust
 use engramai::MemoryConfig;
 
-let config = MemoryConfig::chatbot();            // Slow decay, high replay
-let config = MemoryConfig::task_agent();          // Fast decay, low replay  
-let config = MemoryConfig::personal_assistant();  // Very slow core decay
-let config = MemoryConfig::researcher();          // Minimal forgetting
+let config = MemoryConfig::chatbot();             // Slow decay, high replay
+let config = MemoryConfig::task_agent();           // Fast decay, low replay
+let config = MemoryConfig::personal_assistant();   // Very slow core decay
+let config = MemoryConfig::researcher();           // Minimal forgetting
 ```
 
 ### Embedding Configuration
@@ -385,7 +363,7 @@ let config = EmbeddingConfig {
 use engramai::HybridSearchOpts;
 
 let opts = HybridSearchOpts {
-    fts_weight: 0.15,       // Full-text search contribution
+    fts_weight: 0.15,        // Full-text search contribution
     embedding_weight: 0.60,  // Vector similarity contribution
     activation_weight: 0.25, // ACT-R activation contribution
     ..Default::default()
@@ -396,10 +374,8 @@ let opts = HybridSearchOpts {
 
 ---
 
-## Multi-Agent Architecture
-
 <details>
-<summary><b>Shared memory, namespaces, cross-agent subscriptions</b></summary>
+<summary>🤝 Multi-Agent Architecture — Shared memory, namespaces, cross-agent subscriptions</summary>
 
 ### Shared Memory with Namespaces
 
@@ -407,12 +383,12 @@ let opts = HybridSearchOpts {
 // Agent 1: coder
 let mut coder_mem = Memory::new("./shared.db", Some("coder"))?;
 
-// Agent 2: researcher  
+// Agent 2: researcher
 let mut research_mem = Memory::new("./shared.db", Some("researcher"))?;
 
 // CEO agent subscribes to all namespaces
 let subs = SubscriptionManager::new(&conn);
-subs.subscribe("ceo", "coder", 0.7)?;    // Only importance >= 0.7
+subs.subscribe("ceo", "coder", 0.7)?;       // Only importance ≥ 0.7
 subs.subscribe("ceo", "researcher", 0.5)?;
 
 // Check for new high-importance memories from other agents
@@ -435,32 +411,36 @@ let sub_mem = parent_mem.for_subagent_with_memory("task-worker")?;
 
 ```
 src/
-├── lib.rs             # Public API surface
-├── memory.rs          # Core Memory struct — store, recall, consolidate
+├── lib.rs                # Public API surface
+├── memory.rs             # Core Memory struct — store, recall, consolidate
 ├── models/
-│   ├── actr.rs        # ACT-R activation (Anderson 1993)
-│   ├── ebbinghaus.rs  # Forgetting curves (Ebbinghaus 1885)
-│   ├── hebbian.rs     # Associative learning (Hebb 1949)
-│   └── stdp.rs        # Temporal ordering (Markram 1997)
-├── hybrid_search.rs   # 3-signal search fusion (FTS5 + vector + ACT-R)
-├── confidence.rs      # Two-dimensional confidence scoring
-├── anomaly.rs         # Z-score sliding-window anomaly detection
-├── session_wm.rs      # Working memory (Miller's Law, ~7 items)
-├── entities.rs        # Rule-based entity extraction (Aho-Corasick)
-├── extractor.rs       # LLM-based structured fact extraction
+│   ├── actr.rs           # ACT-R activation (Anderson 1993)
+│   ├── ebbinghaus.rs     # Forgetting curves (Ebbinghaus 1885)
+│   ├── hebbian.rs        # Associative learning (Hebb 1949)
+│   └── stdp.rs           # Temporal ordering (Markram 1997)
+├── hybrid_search.rs      # 3-signal search fusion (FTS5 + vector + ACT-R)
+├── confidence.rs         # Two-dimensional confidence scoring
+├── anomaly.rs            # Z-score sliding-window anomaly detection
+├── session_wm.rs         # Working memory (Miller's Law, ~7 items)
+├── entities.rs           # Rule-based entity extraction (Aho-Corasick)
+├── extractor.rs          # LLM-based structured fact extraction
+├── interoceptive/
+│   ├── types.rs          # Allostatic load, energy budget, body-state types
+│   ├── hub.rs            # Interoceptive hub — regulation signals
+│   └── regulation.rs     # Adaptive regulation strategies
 ├── synthesis/
-│   ├── engine.rs      # Orchestration: cluster → gate → insight → provenance
-│   ├── cluster.rs     # 4-signal memory clustering
-│   ├── gate.rs        # Quality gate for synthesis candidates
-│   ├── insight.rs     # LLM prompt construction + output parsing
-│   ├── provenance.rs  # Audit trail for synthesized insights
-│   └── types.rs       # Synthesis type definitions
+│   ├── engine.rs         # Orchestration: cluster → gate → insight → provenance
+│   ├── cluster.rs        # 4-signal memory clustering
+│   ├── gate.rs           # Quality gate for synthesis candidates
+│   ├── insight.rs        # LLM prompt construction + output parsing
+│   ├── provenance.rs     # Audit trail for synthesized insights
+│   └── types.rs          # Synthesis type definitions
 └── bus/
-    ├── mod.rs         # EmotionalBus core (SOUL integration)
-    ├── mod_io.rs      # Drive/Identity types, I/O
-    ├── alignment.rs   # Drive alignment scoring (cross-language)
-    ├── accumulator.rs # Emotional valence tracking per domain
-    ├── feedback.rs    # Action success/failure rate tracking
+    ├── mod.rs            # EmotionalBus core (SOUL integration)
+    ├── mod_io.rs         # Drive/Identity types, I/O
+    ├── alignment.rs      # Drive alignment scoring (cross-language)
+    ├── accumulator.rs    # Emotional valence tracking per domain
+    ├── feedback.rs       # Action success/failure rate tracking
     └── subscriptions.rs  # Cross-agent notification system
 ```
 
@@ -488,10 +468,10 @@ AGPL-3.0-or-later. See [LICENSE](LICENSE) for details.
 
 ```bibtex
 @software{engramai,
-  title = {Engram: Neuroscience-Grounded Memory for AI Agents},
+  title  = {Engram: Neuroscience-Grounded Memory for AI Agents},
   author = {Toni Tang},
-  year = {2026},
-  url = {https://github.com/tonitangpotato/engram-ai},
-  note = {Rust. ACT-R, Hebbian learning, Ebbinghaus forgetting, cognitive synthesis.}
+  year   = {2026},
+  url    = {https://github.com/tonitangpotato/engram-ai},
+  note   = {Rust. ACT-R, Hebbian learning, Ebbinghaus forgetting, cognitive synthesis.}
 }
 ```
