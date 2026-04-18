@@ -1,0 +1,383 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1650" font-family="'SF Pro Display', 'Inter', -apple-system, sans-serif">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0a0a0f"/>
+      <stop offset="100%" stop-color="#0f1018"/>
+    </linearGradient>
+    <linearGradient id="brainGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ff6b9d" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#c44dff" stop-opacity="0.08"/>
+    </linearGradient>
+    <linearGradient id="codeGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4dc9f6" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.08"/>
+    </linearGradient>
+    <linearGradient id="flowGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="50%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="arrowGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ff6b9d" stop-opacity="0.6"/>
+      <stop offset="50%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#4dc9f6" stop-opacity="0.6"/>
+    </linearGradient>
+
+    <!-- Glow filters -->
+    <filter id="glowPink" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="glowBlue" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="glowAmber" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="softShadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+
+    <!-- Arrow marker -->
+    <marker id="arrowRight" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#a855f7" opacity="0.7"/>
+    </marker>
+    <marker id="arrowDown" markerWidth="7" markerHeight="10" refX="3.5" refY="9" orient="auto">
+      <polygon points="0 0, 7 0, 3.5 10" fill="#f59e0b" opacity="0.6"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="1600" fill="url(#bgGrad)"/>
+
+  <!-- Title -->
+  <text x="600" y="55" text-anchor="middle" fill="#e2e8f0" font-size="28" font-weight="700" letter-spacing="1">engram × Brain</text>
+  <text x="600" y="82" text-anchor="middle" fill="#94a3b8" font-size="14" letter-spacing="3">ARCHITECTURE MAPPING</text>
+  <line x1="480" y1="95" x2="720" y2="95" stroke="#a855f7" stroke-width="1" opacity="0.4"/>
+
+  <!-- Column Headers -->
+  <text x="210" y="135" text-anchor="middle" fill="#ff6b9d" font-size="18" font-weight="600">🧠 Brain Region</text>
+  <text x="600" y="135" text-anchor="middle" fill="#f59e0b" font-size="18" font-weight="600">Data Flow</text>
+  <text x="990" y="135" text-anchor="middle" fill="#4dc9f6" font-size="18" font-weight="600">⚙️ engram Module</text>
+
+  <!-- Vertical flow spine -->
+  <line x1="600" y1="155" x2="600" y2="1440" stroke="url(#flowGrad)" stroke-width="2" stroke-dasharray="8,4" opacity="0.3"/>
+
+  <!-- ═══════════════ PHASE 1: INPUT ═══════════════ -->
+  <text x="600" y="175" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="4" opacity="0.8">▼ INPUT</text>
+
+  <!-- Row 1: Sensory Input → Entity Recognition -->
+  <g transform="translate(0, 190)">
+    <!-- Brain side -->
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">颞叶联合皮层</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Temporal Association Cortex</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">概念/实体分类识别</text>
+
+    <!-- Arrow -->
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <!-- Flow label -->
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">text → Aho-Corasick automata</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">→ Project / Person / Tech / Concept</text>
+
+    <!-- Code side -->
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">entities.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">EntityExtractor</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">Aho-Corasick + regex 实体抽取</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Flow arrow down -->
+  <line x1="600" y1="270" x2="600" y2="295" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrowDown)" opacity="0.5"/>
+
+  <!-- ═══════════════ PHASE 2: ENCODE ═══════════════ -->
+  <text x="600" y="315" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="4" opacity="0.8">▼ ENCODE</text>
+
+  <!-- Row 2: Hippocampus → working_strength -->
+  <g transform="translate(0, 330)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">海马体</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Hippocampus</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">短期记忆临时存储，快速衰减 μ₁=0.15/d</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">new memory → working_strength = 1.0</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">fast write, fast decay</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">consolidation.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">decay_working()</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">Murre &amp; Chessa 双轨模型 — 工作记忆轨</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Row 3: Amygdala → Emotional tagging -->
+  <g transform="translate(0, 415)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">杏仁核</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Amygdala</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">情绪处理中枢，valence 追踪</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">memory → emotional valence (-1~+1)</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">per-domain sliding average</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">bus/accumulator.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">EmotionalAccumulator</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">record_emotion(), get_trends()</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Row 4: OFC → Value alignment -->
+  <g transform="translate(0, 500)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">眶额皮层</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Orbitofrontal Cortex (OFC)</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">价值评估 — SOUL drive 对齐</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">content → drive alignment score</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">embedding + keyword 双通道, boost 1.5×</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">bus/alignment.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">score_alignment_hybrid()</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">DriveEmbeddings 跨语言对齐</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Flow arrow down -->
+  <line x1="600" y1="580" x2="600" y2="605" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrowDown)" opacity="0.5"/>
+
+  <!-- ═══════════════ PHASE 3: STORE & CONSOLIDATE ═══════════════ -->
+  <text x="600" y="625" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="4" opacity="0.8">▼ CONSOLIDATE</text>
+
+  <!-- Row 5: Hippocampus→Neocortex pathway -->
+  <g transform="translate(0, 640)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">海马 → 新皮层通路</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Hippocampal-Neocortical Transfer</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">睡眠中的记忆巩固过程</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">core += transfer_rate × working</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">working↓ core↑ (slow, μ₂=0.005/d)</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">consolidation.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">consolidate() + decay_core()</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">新皮层轨 — 永久存储，极慢衰减</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Row 6: Synaptic Homeostasis -->
+  <g transform="translate(0, 725)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">突触稳态机制</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Synaptic Homeostasis (Tononi)</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">睡眠时突触权重统一降低</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">all strengths × downscale_factor</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">default 0.95, prevents unbounded growth</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">memory.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">downscale(factor)</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">全局权重缩放，防膨胀</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Flow arrow down -->
+  <line x1="600" y1="805" x2="600" y2="830" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrowDown)" opacity="0.5"/>
+
+  <!-- ═══════════════ PHASE 4: RETRIEVE ═══════════════ -->
+  <text x="600" y="850" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="4" opacity="0.8">▼ RETRIEVE</text>
+
+  <!-- Row 7: Thalamus → ACT-R gate -->
+  <g transform="translate(0, 865)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">丘脑</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Thalamus</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">信息门控中枢 — 检索过滤</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">ACT-R activation + hybrid search</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">FTS + vector, Jaccard 自适应调权</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">actr.rs + hybrid_search.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">base_level_activation()</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">adaptive_hybrid_search(), Jaccard overlap</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Row 8: Synapses → Hebbian -->
+  <g transform="translate(0, 950)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">突触</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Synapses (Hebbian Plasticity)</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">共同激活→连接增强 (Hebb 1949)</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">co-recall → weight × (1 + lr)</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">spreading activation on recall</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">models/hebbian.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">reinforce()</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">"Neurons that fire together wire together"</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Row 8.5: Locus Coeruleus → Anomaly -->
+  <g transform="translate(0, 1035)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">蓝斑核</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Locus Coeruleus</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">惊讶/警觉反应，注意力聚焦</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">sliding window → z-score</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">anomaly triggers attention focus</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">anomaly.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">is_anomaly(), z_score()</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">σ 阈值异常检测</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Flow arrow down -->
+  <line x1="600" y1="1115" x2="600" y2="1140" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrowDown)" opacity="0.5"/>
+
+  <!-- ═══════════════ PHASE 5: MODULATE ═══════════════ -->
+  <text x="600" y="1160" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="4" opacity="0.8">▼ MODULATE</text>
+
+  <!-- Row 9: VTA → Dopamine reward -->
+  <g transform="translate(0, 1175)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">腹侧被盖区 VTA</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Ventral Tegmental Area (Dopamine)</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">奖惩信号，正负不对称调节</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">+feedback → additive boost</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">-feedback → multiplicative suppress</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">memory.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">reward(feedback)</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">detect_feedback_polarity() → ±调节</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Row 10: Basal Ganglia → Behavior feedback -->
+  <g transform="translate(0, 1260)">
+    <rect x="50" y="0" width="320" height="70" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">基底节</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Basal Ganglia</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">习惯学习，行为选择强化</text>
+
+    <line x1="375" y1="35" x2="455" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="12" width="270" height="46" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="32" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">action success/fail → reinforce/suppress</text>
+    <text x="600" y="48" text-anchor="middle" fill="#94a3b8" font-size="10">trends → SOUL.md update suggestions</text>
+
+    <rect x="830" y="0" width="320" height="70" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">bus/feedback.rs</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">BehaviorFeedback + SoulUpdate</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">行为追踪 → SOUL 更新建议</text>
+
+    <line x1="745" y1="35" x2="825" y2="35" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Flow arrow down -->
+  <line x1="600" y1="1340" x2="600" y2="1365" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrowDown)" opacity="0.5"/>
+
+  <!-- ═══════════════ PHASE 6: SYNTHESIZE ═══════════════ -->
+  <text x="600" y="1385" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700" letter-spacing="4" opacity="0.8">▼ SYNTHESIZE</text>
+
+  <!-- Row 11: Prefrontal Cortex → Synthesis -->
+  <g transform="translate(0, 1400)">
+    <rect x="50" y="0" width="320" height="85" rx="10" fill="url(#brainGrad)" stroke="#ff6b9d" stroke-width="1.5" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="70" y="25" fill="#ff6b9d" font-size="13" font-weight="700">前额叶皮层</text>
+    <text x="70" y="42" fill="#94a3b8" font-size="11">Prefrontal Cortex</text>
+    <text x="70" y="58" fill="#cbd5e1" font-size="10">高级认知：聚类→门控→洞察→来源追踪</text>
+    <text x="70" y="73" fill="#cbd5e1" font-size="10">+ 工作记忆 (session_wm, Miller's 7±2)</text>
+
+    <line x1="375" y1="42" x2="455" y2="42" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+
+    <rect x="465" y="8" width="270" height="70" rx="6" fill="#1e1b2e" stroke="#f59e0b" stroke-width="0.5" opacity="0.8"/>
+    <text x="600" y="28" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">cluster → gate → insight</text>
+    <text x="600" y="44" text-anchor="middle" fill="#94a3b8" font-size="10">→ provenance + source demotion</text>
+    <text x="600" y="60" text-anchor="middle" fill="#94a3b8" font-size="10">new high-order memory ♻️ → loop back</text>
+
+    <rect x="830" y="0" width="320" height="85" rx="10" fill="url(#codeGrad)" stroke="#4dc9f6" stroke-width="1.5" opacity="0.9" filter="url(#softShadow)"/>
+    <text x="850" y="25" fill="#4dc9f6" font-size="13" font-weight="700">synthesis/</text>
+    <text x="850" y="42" fill="#94a3b8" font-size="11">engine → cluster → gate → insight</text>
+    <text x="850" y="58" fill="#cbd5e1" font-size="10">→ provenance + demotion_factor</text>
+    <text x="850" y="73" fill="#cbd5e1" font-size="10">session_wm.rs (capacity=7, decay=5min)</text>
+
+    <line x1="745" y1="42" x2="825" y2="42" stroke="url(#arrowGrad)" stroke-width="1.5" marker-end="url(#arrowRight)"/>
+  </g>
+
+  <!-- Loop-back arrow -->
+  <path d="M 600 1495 Q 600 1530 540 1530 Q 200 1530 200 1500 Q 200 1470 200 175 Q 200 155 250 155"
+        fill="none" stroke="#a855f7" stroke-width="1.5" stroke-dasharray="6,3" opacity="0.4" marker-end="url(#arrowRight)"/>
+  <text x="170" y="850" text-anchor="middle" fill="#a855f7" font-size="10" opacity="0.5" transform="rotate(-90, 170, 850)">♻️ insight becomes new memory → loop</text>
+
+  <!-- Cross-cutting: Ebbinghaus & ACC & Afferent (bottom annotations) -->
+  <g transform="translate(0, 1520)">
+    <rect x="50" y="0" width="355" height="40" rx="8" fill="#1a1625" stroke="#94a3b8" stroke-width="0.5" opacity="0.6"/>
+    <text x="70" y="16" fill="#94a3b8" font-size="10" font-weight="600">📊 Ebbinghaus (ebbinghaus.rs)</text>
+    <text x="70" y="32" fill="#64748b" font-size="9">跨区域 — R = e^(-t/S), spacing effect</text>
+
+    <rect x="420" y="0" width="355" height="40" rx="8" fill="#1a1625" stroke="#94a3b8" stroke-width="0.5" opacity="0.6"/>
+    <text x="440" y="16" fill="#94a3b8" font-size="10" font-weight="600">🔍 前扣带回 ACC (confidence.rs)</text>
+    <text x="440" y="32" fill="#64748b" font-size="9">元认知 — reliability × salience</text>
+
+    <rect x="790" y="0" width="360" height="40" rx="8" fill="#1a1625" stroke="#94a3b8" stroke-width="0.5" opacity="0.6"/>
+    <text x="810" y="16" fill="#94a3b8" font-size="10" font-weight="600">📡 传入通路 (bus/subscriptions.rs)</text>
+    <text x="810" y="32" fill="#64748b" font-size="9">跨个体通信 — namespace 订阅 + 阈值通知</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="600" y="1630" text-anchor="middle" fill="#475569" font-size="10">engram — neuroscience-grounded memory for AI agents</text>
+</svg>

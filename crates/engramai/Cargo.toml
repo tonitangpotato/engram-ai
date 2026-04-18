@@ -1,0 +1,62 @@
+[package]
+name = "engramai"
+version = "0.2.2"
+edition = "2021"
+rust-version = "1.75"
+description = "Neuroscience-grounded memory system for AI agents. ACT-R activation, Hebbian learning, Ebbinghaus forgetting, cognitive consolidation."
+authors = ["Toni Tang <tonitangpotato@gmail.com>"]
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/tonitangpotato/engram-ai"
+keywords = ["ai", "memory", "cognitive-science", "agent", "neuroscience"]
+categories = ["science", "database", "algorithms"]
+
+[dependencies]
+# Core database
+rusqlite = { version = "0.32", features = ["bundled", "uuid"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# UUID generation
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "2.0"
+aho-corasick = "1"
+anyhow = "1.0"
+
+# Logging
+log = "0.4"
+
+# Random for interleaved replay
+rand = "0.8"
+regex = "1"
+
+# HTTP client for embeddings
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+
+jieba-rs = "0.8.1"
+
+# Config directory detection
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3.13"
+env_logger = "0.11"
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+
+[lib]
+name = "engramai"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

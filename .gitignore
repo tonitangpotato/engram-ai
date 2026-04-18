@@ -1,13 +1,8 @@
-__pycache__/
-*.pyc
+target/
+Cargo.lock
 *.db
-*.egg-info/
-dist/
-build/
-.eggs/
-*.egg
-# .gid/
-
-# Benchmark outputs
-benchmarks/locomo_predictions.json
-MemoryAgentBench/
+*.db-journal
+*.db-shm
+*.db-wal
+.DS_Store
+.DS_Store

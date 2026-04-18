@@ -1,0 +1,18 @@
+[package]
+name = "engram-cli"
+version = "0.2.2"
+edition = "2021"
+
+[dependencies]
+engramai = { path = "../engramai" }
+clap = { version = "4.5", features = ["derive", "env"] }
+env_logger = "0.11"
+dirs = "5"
+anyhow = "1.0"
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+
+[[bin]]
+name = "engram"
+path = "src/main.rs"
