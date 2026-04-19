@@ -143,12 +143,12 @@ impl FeedbackStore for SqliteFeedbackStore {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub struct FeedbackProcessor {
-    config: KcConfig,
+    _config: KcConfig,
 }
 
 impl FeedbackProcessor {
     pub fn new(config: KcConfig) -> Self {
-        Self { config }
+        Self { _config: config }
     }
 
     /// Record feedback for a topic. Converts `TopicFeedback` → `FeedbackEntry`

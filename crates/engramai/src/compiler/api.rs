@@ -9,7 +9,7 @@ use super::compilation::{MemorySnapshot, QualityScorer};
 use super::conflict::ConflictDetector;
 use super::decay::{self, DecayEngine};
 use super::discovery::TopicDiscovery;
-use super::export::{self, ExportEngine, ExportOutput};
+use super::export::{self, ExportEngine};
 use super::health::{self, HealthAuditor};
 use super::import::{ImportPipeline, JsonImporter, MarkdownImporter};
 use super::llm::LlmProvider;
@@ -696,6 +696,7 @@ fn simple_hash_embedding(content: &str, dims: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::export::ExportOutput;
     use crate::compiler::storage::SqliteKnowledgeStore;
     use chrono::Utc;
 

@@ -102,12 +102,12 @@ impl ChangeDetector {
 
 /// Decides whether a topic needs recompilation based on detected changes.
 pub struct TriggerEvaluator<'a> {
-    config: &'a KcConfig,
+    _config: &'a KcConfig,
 }
 
 impl<'a> TriggerEvaluator<'a> {
     pub fn new(config: &'a KcConfig) -> Self {
-        Self { config }
+        Self { _config: config }
     }
 
     /// Evaluate whether a topic should be recompiled given current memories,
@@ -176,12 +176,12 @@ impl<'a> TriggerEvaluator<'a> {
 
 /// Evaluates the quality of a compiled topic page.
 pub struct QualityScorer<'a> {
-    config: &'a KcConfig,
+    _config: &'a KcConfig,
 }
 
 impl<'a> QualityScorer<'a> {
     pub fn new(config: &'a KcConfig) -> Self {
-        Self { config }
+        Self { _config: config }
     }
 
     /// Produce a quality report for a topic page given its source memories and feedback.

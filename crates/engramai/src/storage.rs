@@ -1099,6 +1099,53 @@ impl Storage {
         rows.collect()
     }
 
+    /// Load ALL Hebbian links as a bidirectional adjacency map.
+    /// Single SQL query replaces N per-ID queries.
+    /// Returns HashMap where each memory_id maps to its [(neighbor_id, strength)] pairs.
+    pub fn get_all_hebbian_links_bulk(&self) -> Result<std::collections::HashMap<String, Vec<(String, f64)>>, rusqlite::Error> {
+        use std::collections::HashMap;
+        let mut stmt = self.conn.prepare(
+            "SELECT source_id, target_id, strength FROM hebbian_links WHERE strength > 0"
+        )?;
+        let mut map: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (source, target, strength) = row?;
+            // Bidirectional: add both directions (matching get_hebbian_links_weighted behavior)
+            map.entry(source.clone()).or_default().push((target.clone(), strength));
+            map.entry(target).or_default().push((source, strength));
+        }
+        Ok(map)
+    }
+
+    /// Load ALL memory-entity associations.
+    /// Single SQL query replaces N per-ID queries.
+    /// Returns HashMap where each memory_id maps to its [entity_id] list.
+    pub fn get_all_memory_entities_bulk(&self) -> Result<std::collections::HashMap<String, Vec<String>>, rusqlite::Error> {
+        use std::collections::HashMap;
+        let mut stmt = self.conn.prepare(
+            "SELECT memory_id, entity_id FROM memory_entities"
+        )?;
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+            ))
+        })?;
+        for row in rows {
+            let (memory_id, entity_id) = row?;
+            map.entry(memory_id).or_default().push(entity_id);
+        }
+        Ok(map)
+    }
+
     /// Record co-activation for Hebbian learning.
     pub fn record_coactivation(
         &mut self,
@@ -2665,5 +2712,147 @@ impl Storage {
             confidence: row.get(7)?,
             source_original_importance: row.get(8)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Helper: create a minimal MemoryRecord for testing.
+    fn test_record(id: &str) -> crate::types::MemoryRecord {
+        crate::types::MemoryRecord {
+            id: id.to_string(),
+            content: format!("test content {}", id),
+            memory_type: crate::types::MemoryType::Factual,
+            layer: crate::types::MemoryLayer::Working,
+            created_at: Utc::now(),
+            access_times: vec![Utc::now()],
+            working_strength: 1.0,
+            core_strength: 0.0,
+            importance: 0.5,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: String::new(),
+            contradicts: None,
+            contradicted_by: None,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_bulk_hebbian_empty_table() {
+        let storage = Storage::new(":memory:").unwrap();
+        let result = storage.get_all_hebbian_links_bulk().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_bulk_entities_empty_table() {
+        let storage = Storage::new(":memory:").unwrap();
+        let result = storage.get_all_memory_entities_bulk().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_bulk_hebbian_matches_per_id() {
+        let mut storage = Storage::new(":memory:").unwrap();
+
+        // Insert 3 memories
+        for id in &["m1", "m2", "m3"] {
+            storage.add(&test_record(id), "default").unwrap();
+        }
+
+        // Create Hebbian links: m1-m2, m2-m3
+        // record_coactivation: 1st call creates tracking row (strength=0), 2nd call forms link (strength=1.0)
+        storage.record_coactivation("m1", "m2", 1).unwrap();
+        storage.record_coactivation("m1", "m2", 1).unwrap(); // forms link
+        storage.record_coactivation("m2", "m3", 1).unwrap();
+        storage.record_coactivation("m2", "m3", 1).unwrap(); // forms link
+
+        // Get per-ID results
+        let per_id_m1 = storage.get_hebbian_links_weighted("m1").unwrap();
+        let per_id_m2 = storage.get_hebbian_links_weighted("m2").unwrap();
+        let per_id_m3 = storage.get_hebbian_links_weighted("m3").unwrap();
+
+        // Get bulk result
+        let bulk = storage.get_all_hebbian_links_bulk().unwrap();
+
+        // Compare: bulk should contain at least the same neighbors for each ID
+        fn to_set(links: &[(String, f64)]) -> std::collections::HashSet<String> {
+            links.iter().map(|(id, _)| id.clone()).collect()
+        }
+
+        let bulk_m1 = bulk.get("m1").cloned().unwrap_or_default();
+        let bulk_m2 = bulk.get("m2").cloned().unwrap_or_default();
+        let bulk_m3 = bulk.get("m3").cloned().unwrap_or_default();
+
+        assert_eq!(to_set(&per_id_m1), to_set(&bulk_m1), "m1 neighbors mismatch");
+        assert_eq!(to_set(&per_id_m2), to_set(&bulk_m2), "m2 neighbors mismatch");
+        assert_eq!(to_set(&per_id_m3), to_set(&bulk_m3), "m3 neighbors mismatch");
+    }
+
+    #[test]
+    fn test_bulk_hebbian_bidirectional() {
+        let mut storage = Storage::new(":memory:").unwrap();
+
+        for id in &["a", "b"] {
+            storage.add(&test_record(id), "default").unwrap();
+        }
+        // 1st call creates tracking row, 2nd call forms the link
+        storage.record_coactivation("a", "b", 1).unwrap();
+        storage.record_coactivation("a", "b", 1).unwrap();
+
+        let bulk = storage.get_all_hebbian_links_bulk().unwrap();
+
+        // a should list b, and b should list a
+        let a_neighbors: Vec<&str> = bulk.get("a").unwrap().iter().map(|(id, _)| id.as_str()).collect();
+        let b_neighbors: Vec<&str> = bulk.get("b").unwrap().iter().map(|(id, _)| id.as_str()).collect();
+
+        assert!(a_neighbors.contains(&"b"), "a should have b as neighbor");
+        assert!(b_neighbors.contains(&"a"), "b should have a as neighbor");
+    }
+
+    #[test]
+    fn test_bulk_entities_matches_per_id() {
+        let storage = Storage::new(":memory:").unwrap();
+
+        // Insert memories
+        let mut storage_mut = storage;
+        for id in &["m1", "m2", "m3"] {
+            storage_mut.add(&test_record(id), "default").unwrap();
+        }
+
+        // Create entities and link them
+        let e1 = storage_mut.upsert_entity("Rust", "tech", "default", None).unwrap();
+        let e2 = storage_mut.upsert_entity("Python", "tech", "default", None).unwrap();
+        storage_mut.link_memory_entity("m1", &e1, "mention").unwrap();
+        storage_mut.link_memory_entity("m1", &e2, "mention").unwrap();
+        storage_mut.link_memory_entity("m2", &e1, "mention").unwrap();
+        // m3 has no entities
+
+        // Per-ID
+        let per_m1 = storage_mut.get_entity_ids_for_memory("m1").unwrap();
+        let per_m2 = storage_mut.get_entity_ids_for_memory("m2").unwrap();
+        let per_m3 = storage_mut.get_entity_ids_for_memory("m3").unwrap();
+
+        // Bulk
+        let bulk = storage_mut.get_all_memory_entities_bulk().unwrap();
+
+        let bulk_m1 = bulk.get("m1").cloned().unwrap_or_default();
+        let bulk_m2 = bulk.get("m2").cloned().unwrap_or_default();
+        let bulk_m3 = bulk.get("m3").cloned().unwrap_or_default();
+
+        let mut per_m1_sorted = per_m1.clone(); per_m1_sorted.sort();
+        let mut bulk_m1_sorted = bulk_m1.clone(); bulk_m1_sorted.sort();
+        assert_eq!(per_m1_sorted, bulk_m1_sorted, "m1 entities mismatch");
+
+        let mut per_m2_sorted = per_m2.clone(); per_m2_sorted.sort();
+        let mut bulk_m2_sorted = bulk_m2.clone(); bulk_m2_sorted.sort();
+        assert_eq!(per_m2_sorted, bulk_m2_sorted, "m2 entities mismatch");
+
+        assert_eq!(per_m3, bulk_m3, "m3 should have no entities");
     }
 }

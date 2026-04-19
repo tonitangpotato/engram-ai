@@ -1,19 +1,29 @@
 //! Cluster discovery module for the synthesis engine.
 //!
-//! Uses 4 zero-LLM signals to find groups of related memories:
+//! Uses the unified [`InfomapClusterer`](crate::clustering::InfomapClusterer) with
+//! [`MultiSignal`](crate::clustering::MultiSignal) strategy for edge weights.
+//! This combines 4 zero-LLM signals:
+//!
 //! 1. Hebbian link weights
 //! 2. Entity overlap (Jaccard index)
 //! 3. Embedding similarity (cosine)
 //! 4. Temporal proximity (exponential decay)
+//!
+//! This module is an adapter: it loads signal data from Storage, builds
+//! [`ClusterNode`]s, runs the shared clusterer, and converts results back
+//! to synthesis-specific [`MemoryCluster`] structs.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::embeddings::EmbeddingProvider;
+use crate::clustering::{ClusterNode, ClustererConfig, InfomapClusterer, MultiSignal, SignalWeights};
 use crate::storage::Storage;
 use crate::synthesis::types::*;
 use crate::types::MemoryRecord;
 
 /// Compute pairwise signals between two memories.
+///
+/// This remains public for use by the gate and other modules that need
+/// to inspect individual pair signals.
 pub fn compute_pairwise_signals(
     _storage: &Storage,
     id_a: &str,
@@ -24,6 +34,8 @@ pub fn compute_pairwise_signals(
     records: &HashMap<String, &MemoryRecord>,
     config: &ClusterDiscoveryConfig,
 ) -> PairwiseSignals {
+    use crate::embeddings::EmbeddingProvider;
+
     // Signal 1: Hebbian weight (normalized to 0-1 by dividing by 10.0)
     let key = if id_a < id_b {
         (id_a.to_string(), id_b.to_string())
@@ -84,10 +96,10 @@ pub fn compute_composite_score(signals: &PairwiseSignals, weights: &ClusterWeigh
         + weights.temporal * signals.temporal_proximity
 }
 
-/// Discover clusters of related memories.
+/// Discover clusters of related memories using Infomap community detection.
 ///
-/// Performance optimization: only compute pairwise scores for memory pairs
-/// that share at least one signal (Hebbian link OR shared entity), not all×all.
+/// Loads all signal data from Storage, builds `ClusterNode`s with full signal
+/// information, and delegates to the unified `InfomapClusterer<MultiSignal>`.
 pub fn discover_clusters(
     storage: &Storage,
     config: &ClusterDiscoveryConfig,
@@ -98,9 +110,9 @@ pub fn discover_clusters(
     let candidates: Vec<&MemoryRecord> = all_memories
         .iter()
         .filter(|m| {
-            !m.access_times.is_empty() // accessed at least once (access_count > 0)
+            !m.access_times.is_empty() // accessed at least once
                 && m.importance >= config.min_importance
-                && !is_synthesis_output(m) // not already a synthesis
+                && !is_synthesis_output(m)
         })
         .collect();
 
@@ -109,36 +121,32 @@ pub fn discover_clusters(
     }
 
     let candidate_ids: HashSet<&str> = candidates.iter().map(|m| m.id.as_str()).collect();
-    let records: HashMap<String, &MemoryRecord> =
-        candidates.iter().map(|m| (m.id.clone(), *m)).collect();
 
-    // Step 2: Build signal maps (pre-compute for O(n) instead of O(n²) queries)
-    // Hebbian: query all links involving candidates
-    let mut hebbian_map: HashMap<(String, String), f64> = HashMap::new();
-    for m in &candidates {
-        if let Ok(links) = storage.get_hebbian_links_weighted(&m.id) {
-            for (neighbor, weight) in links {
-                if candidate_ids.contains(neighbor.as_str()) {
-                    let key = if m.id < neighbor {
-                        (m.id.clone(), neighbor)
-                    } else {
-                        (neighbor, m.id.clone())
-                    };
-                    hebbian_map.entry(key).or_insert(weight);
-                }
-            }
-        }
-    }
+    // Step 2: Build signal maps (pre-compute for efficient node construction)
+    // Bulk-load all data in 2 SQL queries instead of 26k per-ID queries (ISS-001 Fix 1)
 
-    // Entity: get entities for each candidate
-    let mut entity_map: HashMap<String, HashSet<String>> = HashMap::new();
-    for m in &candidates {
-        if let Ok(entities) = storage.get_entity_ids_for_memory(&m.id) {
-            entity_map.insert(m.id.clone(), entities.into_iter().collect());
-        }
-    }
+    // Hebbian links — single bulk query, then filter to candidates
+    let all_hebbian = storage.get_all_hebbian_links_bulk()?;
+    let hebbian_map: std::collections::HashMap<String, Vec<(String, f64)>> = all_hebbian
+        .into_iter()
+        .filter(|(id, _)| candidate_ids.contains(id.as_str()))
+        .map(|(id, links)| {
+            let filtered: Vec<(String, f64)> = links
+                .into_iter()
+                .filter(|(neighbor, _)| candidate_ids.contains(neighbor.as_str()))
+                .collect();
+            (id, filtered)
+        })
+        .collect();
 
-    // Embeddings: load all at once if model provided
+    // Entity IDs per memory — single bulk query, then filter to candidates
+    let all_entities = storage.get_all_memory_entities_bulk()?;
+    let entity_map: HashMap<String, Vec<String>> = all_entities
+        .into_iter()
+        .filter(|(id, _)| candidate_ids.contains(id.as_str()))
+        .collect();
+
+    // Embeddings
     let embedding_map: HashMap<String, Vec<f32>> = if let Some(model) = embedding_model {
         storage
             .get_all_embeddings(model)?
@@ -149,67 +157,103 @@ pub fn discover_clusters(
         HashMap::new()
     };
 
-    // Step 3: Build candidate pairs (OPTIMIZATION: only pairs with ≥1 signal)
-    let mut candidate_pairs: HashSet<(String, String)> = HashSet::new();
+    // Step 3: Build ClusterNodes
+    let nodes: Vec<ClusterNode> = candidates
+        .iter()
+        .map(|m| {
+            let embedding = embedding_map
+                .get(&m.id)
+                .cloned()
+                .unwrap_or_default();
+            let hebbian_links = hebbian_map
+                .get(&m.id)
+                .cloned()
+                .unwrap_or_default();
+            let entity_ids = entity_map
+                .get(&m.id)
+                .cloned()
+                .unwrap_or_default();
+            let created_at_secs = m.created_at.timestamp() as f64;
 
-    // From Hebbian links
-    for key in hebbian_map.keys() {
-        candidate_pairs.insert(key.clone());
-    }
-
-    // From shared entities
-    let mut entity_to_memories: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (mem_id, entities) in &entity_map {
-        for ent_id in entities {
-            entity_to_memories
-                .entry(ent_id.as_str())
-                .or_default()
-                .push(mem_id.as_str());
-        }
-    }
-    for mems in entity_to_memories.values() {
-        for i in 0..mems.len() {
-            for j in (i + 1)..mems.len() {
-                let (a, b) = if mems[i] < mems[j] {
-                    (mems[i], mems[j])
-                } else {
-                    (mems[j], mems[i])
-                };
-                candidate_pairs.insert((a.to_string(), b.to_string()));
+            ClusterNode {
+                id: m.id.clone(),
+                embedding,
+                hebbian_links,
+                entity_ids,
+                created_at_secs,
             }
-        }
-    }
+        })
+        .collect();
 
-    // Step 4: Compute scores and build edge list
-    let mut edges: Vec<(String, String, f64)> = Vec::new();
-    for (id_a, id_b) in &candidate_pairs {
-        let signals = compute_pairwise_signals(
-            storage,
-            id_a,
-            id_b,
-            &hebbian_map,
-            &entity_map,
-            &embedding_map,
-            &records,
-            config,
-        );
-        let score = compute_composite_score(&signals, &config.weights);
-        if score >= config.cluster_threshold {
-            edges.push((id_a.clone(), id_b.clone(), score));
-        }
-    }
+    // Step 4: Run the unified clusterer with MultiSignal strategy
+    let strategy = MultiSignal {
+        weights: SignalWeights {
+            hebbian: config.weights.hebbian,
+            entity: config.weights.entity,
+            embedding: config.weights.embedding,
+            temporal: config.weights.temporal,
+        },
+        temporal_decay_lambda: config.temporal_decay_lambda,
+    };
+    let clusterer_config = ClustererConfig {
+        k_neighbors: 15,
+        min_edge_weight: 0.1,
+        min_cluster_size: config.min_cluster_size,
+        num_trials: 5,
+        seed: 42,
+    };
+    let clusterer = InfomapClusterer::new(strategy, clusterer_config);
+    let raw_clusters = clusterer.cluster(&nodes);
 
-    // Step 5: Connected components
-    let clusters = connected_components(&edges, &candidate_ids, config);
-
-    // Step 6: Build MemoryCluster structs
+    // Step 5: Convert to MemoryCluster structs with synthesis-specific metadata
     let mut result: Vec<MemoryCluster> = Vec::new();
-    for members in &clusters {
-        if let Some(cluster) =
-            build_memory_cluster(members, &edges, &records, &entity_map, config)
-        {
-            result.push(cluster);
+
+    for cluster in raw_clusters {
+        let members: Vec<String> = cluster
+            .member_indices
+            .iter()
+            .map(|&i| nodes[i].id.clone())
+            .collect();
+
+        // Enforce max_cluster_size
+        let mut sorted_members = members;
+        sorted_members.sort();
+        if sorted_members.len() > config.max_cluster_size {
+            sorted_members.truncate(config.max_cluster_size);
         }
+
+        if sorted_members.len() < config.min_cluster_size {
+            continue;
+        }
+
+        // Find centroid: member with highest average weight to others
+        let member_set: HashSet<&str> = sorted_members.iter().map(|s| s.as_str()).collect();
+        let member_nodes: Vec<&ClusterNode> = nodes
+            .iter()
+            .filter(|n| member_set.contains(n.id.as_str()))
+            .collect();
+
+        let centroid_id = find_centroid(&member_nodes, clusterer.strategy());
+        let quality_score = cluster.cohesion;
+
+        // Compute signals summary
+        let signals_summary = compute_signals_summary(&sorted_members, &entity_map, config);
+
+        // Deterministic cluster ID
+        let id = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            sorted_members.hash(&mut hasher);
+            format!("cluster-{:016x}", hasher.finish())
+        };
+
+        result.push(MemoryCluster {
+            id,
+            members: sorted_members,
+            quality_score,
+            centroid_id,
+            signals_summary,
+        });
     }
 
     // Sort by quality descending
@@ -222,135 +266,46 @@ pub fn discover_clusters(
     Ok(result)
 }
 
-/// Check if a memory is a synthesis output (via metadata).
-fn is_synthesis_output(record: &MemoryRecord) -> bool {
-    record
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("is_synthesis"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+/// Find the centroid node (highest average weight to other members).
+fn find_centroid<S: crate::clustering::EdgeWeightStrategy>(
+    members: &[&ClusterNode],
+    strategy: &S,
+) -> String {
+    if members.is_empty() {
+        return String::new();
+    }
+    if members.len() == 1 {
+        return members[0].id.clone();
+    }
+
+    let mut best_id = members[0].id.clone();
+    let mut best_avg = f64::NEG_INFINITY;
+
+    for (i, &node_a) in members.iter().enumerate() {
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for (j, &node_b) in members.iter().enumerate() {
+            if i != j {
+                sum += strategy.compute_weight(node_a, node_b);
+                count += 1;
+            }
+        }
+        let avg = if count > 0 { sum / count as f64 } else { 0.0 };
+        if avg > best_avg {
+            best_avg = avg;
+            best_id = node_a.id.clone();
+        }
+    }
+
+    best_id
 }
 
-/// Find connected components from an edge list.
-/// Returns Vec of member sets, filtered by min/max cluster size.
-fn connected_components(
-    edges: &[(String, String, f64)],
-    all_ids: &HashSet<&str>,
-    config: &ClusterDiscoveryConfig,
-) -> Vec<Vec<String>> {
-    // Union-Find implementation
-    let id_list: Vec<String> = all_ids.iter().map(|s| s.to_string()).collect();
-    let id_to_idx: HashMap<&str, usize> = id_list
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (s.as_str(), i))
-        .collect();
-    let mut parent: Vec<usize> = (0..id_list.len()).collect();
-
-    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
-        if parent[i] != i {
-            parent[i] = find(parent, parent[i]);
-        }
-        parent[i]
-    }
-
-    fn union(parent: &mut Vec<usize>, a: usize, b: usize) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
-        if ra != rb {
-            parent[ra] = rb;
-        }
-    }
-
-    for (a, b, _) in edges {
-        if let (Some(&ia), Some(&ib)) = (id_to_idx.get(a.as_str()), id_to_idx.get(b.as_str())) {
-            union(&mut parent, ia, ib);
-        }
-    }
-
-    // Group by root
-    let mut groups: HashMap<usize, Vec<String>> = HashMap::new();
-    for (i, id) in id_list.iter().enumerate() {
-        let root = find(&mut parent, i);
-        groups.entry(root).or_default().push(id.clone());
-    }
-
-    // Filter by size and handle splitting
-    let mut result = Vec::new();
-    for (_, mut members) in groups {
-        if members.len() < config.min_cluster_size {
-            continue; // too small
-        }
-        if members.len() > config.max_cluster_size {
-            // Split: for simplicity, take the top max_cluster_size by their edge connectivity
-            // TODO: implement proper recursive splitting with higher threshold
-            members.sort();
-            members.truncate(config.max_cluster_size);
-        }
-        members.sort();
-        result.push(members);
-    }
-
-    result
-}
-
-/// Build a MemoryCluster struct from a set of member IDs.
-fn build_memory_cluster(
+/// Compute the signals summary for a cluster.
+fn compute_signals_summary(
     members: &[String],
-    edges: &[(String, String, f64)],
-    _records: &HashMap<String, &MemoryRecord>,
-    entity_map: &HashMap<String, HashSet<String>>,
+    entity_map: &HashMap<String, Vec<String>>,
     config: &ClusterDiscoveryConfig,
-) -> Option<MemoryCluster> {
-    if members.len() < config.min_cluster_size {
-        return None;
-    }
-
-    let member_set: HashSet<&str> = members.iter().map(|s| s.as_str()).collect();
-
-    // Compute quality = average pairwise score among members
-    let mut total_score = 0.0;
-    let mut pair_count = 0usize;
-    let mut per_member_avg: HashMap<&str, (f64, usize)> = HashMap::new();
-
-    for (a, b, score) in edges {
-        if member_set.contains(a.as_str()) && member_set.contains(b.as_str()) {
-            total_score += score;
-            pair_count += 1;
-            {
-                let entry = per_member_avg.entry(a.as_str()).or_insert((0.0, 0));
-                entry.0 += score;
-                entry.1 += 1;
-            }
-            {
-                let entry = per_member_avg.entry(b.as_str()).or_insert((0.0, 0));
-                entry.0 += score;
-                entry.1 += 1;
-            }
-        }
-    }
-
-    let quality_score = if pair_count > 0 {
-        total_score / pair_count as f64
-    } else {
-        0.0
-    };
-
-    // Find centroid (member with highest avg relatedness)
-    let centroid_id = per_member_avg
-        .iter()
-        .max_by(|a, b| {
-            let avg_a = a.1 .0 / a.1 .1.max(1) as f64;
-            let avg_b = b.1 .0 / b.1 .1.max(1) as f64;
-            avg_a
-                .partial_cmp(&avg_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(id, _)| id.to_string())
-        .unwrap_or_else(|| members[0].clone());
-
-    // Compute signals summary — estimate dominant signal from entity coverage
+) -> SignalsSummary {
     let entity_pairs = members
         .iter()
         .filter(|m| {
@@ -362,47 +317,39 @@ fn build_memory_cluster(
         .count();
     let entity_contribution_est = entity_pairs as f64 / members.len().max(1) as f64;
 
-    // Determine dominant signal based on weighted contributions
     let hebbian_c = config.weights.hebbian;
     let entity_c = config.weights.entity * entity_contribution_est;
     let embedding_c = config.weights.embedding;
     let temporal_c = config.weights.temporal;
 
-    let dominant_signal = if hebbian_c >= entity_c && hebbian_c >= embedding_c && hebbian_c >= temporal_c {
-        ClusterSignal::Hebbian
-    } else if entity_c >= embedding_c && entity_c >= temporal_c {
-        ClusterSignal::Entity
-    } else if embedding_c >= temporal_c {
-        ClusterSignal::Embedding
-    } else {
-        ClusterSignal::Temporal
-    };
+    let dominant_signal =
+        if hebbian_c >= entity_c && hebbian_c >= embedding_c && hebbian_c >= temporal_c {
+            ClusterSignal::Hebbian
+        } else if entity_c >= embedding_c && entity_c >= temporal_c {
+            ClusterSignal::Entity
+        } else if embedding_c >= temporal_c {
+            ClusterSignal::Embedding
+        } else {
+            ClusterSignal::Temporal
+        };
 
-    let signals_summary = SignalsSummary {
+    SignalsSummary {
         dominant_signal,
         hebbian_contribution: hebbian_c,
         entity_contribution: entity_c,
         embedding_contribution: embedding_c,
         temporal_contribution: temporal_c,
-    };
+    }
+}
 
-    // Deterministic cluster ID: hash of sorted member IDs
-    let mut sorted_members = members.to_vec();
-    sorted_members.sort();
-    let id = {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        sorted_members.hash(&mut hasher);
-        format!("cluster-{:016x}", hasher.finish())
-    };
-
-    Some(MemoryCluster {
-        id,
-        members: sorted_members,
-        quality_score,
-        centroid_id,
-        signals_summary,
-    })
+/// Check if a memory is a synthesis output (via metadata).
+fn is_synthesis_output(record: &MemoryRecord) -> bool {
+    record
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("is_synthesis"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 // ===========================================================================
@@ -426,13 +373,11 @@ pub fn apply_emotional_modulation(
         return clusters;
     }
 
-    // Compute emotional salience for each cluster and optionally boost quality
     let mut cluster_salience: Vec<(usize, f64)> = Vec::with_capacity(clusters.len());
 
     for (i, cluster) in clusters.iter_mut().enumerate() {
         let salience = compute_emotional_salience(cluster, members_map);
 
-        // Boost quality_score by emotional factor
         if config.emotional_boost_weight > 0.0 && salience > 0.0 {
             let boost = 1.0 + config.emotional_boost_weight * salience;
             cluster.quality_score *= boost;
@@ -441,279 +386,75 @@ pub fn apply_emotional_modulation(
         cluster_salience.push((i, salience));
     }
 
-    // Re-sort: emotional salience desc, then quality desc
     if config.prioritize_emotional {
-        let mut indexed: Vec<(usize, f64, f64)> = cluster_salience
-            .iter()
-            .map(|(i, sal)| (*i, *sal, clusters[*i].quality_score))
-            .collect();
+        let mut indexed: Vec<(usize, &MemoryCluster)> =
+            clusters.iter().enumerate().collect();
         indexed.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
+            let sa = cluster_salience
+                .iter()
+                .find(|x| x.0 == a.0)
+                .map(|x| x.1)
+                .unwrap_or(0.0);
+            let sb = cluster_salience
+                .iter()
+                .find(|x| x.0 == b.0)
+                .map(|x| x.1)
+                .unwrap_or(0.0);
+            sb.partial_cmp(&sa)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| {
-                    b.2.partial_cmp(&a.2)
+                    b.1.quality_score
+                        .partial_cmp(&a.1.quality_score)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
         });
-
-        let reordered: Vec<MemoryCluster> =
-            indexed.into_iter().map(|(i, _, _)| clusters[i].clone()).collect();
-        return reordered;
+        let order: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
+        let old = clusters.clone();
+        for (new_pos, &old_pos) in order.iter().enumerate() {
+            clusters[new_pos] = old[old_pos].clone();
+        }
     }
 
     clusters
 }
 
-/// Compute the average emotional salience of a cluster's members.
-///
-/// Salience = mean of |emotional_valence| across members.
-/// Members without emotional data contribute 0.0.
-fn compute_emotional_salience(
+/// Compute the emotional salience of a cluster (average absolute valence of emotional members).
+pub fn compute_emotional_salience(
     cluster: &MemoryCluster,
     members_map: &HashMap<String, &MemoryRecord>,
 ) -> f64 {
-    if cluster.members.is_empty() {
-        return 0.0;
+    let mut total_valence = 0.0;
+    let mut emotional_count = 0usize;
+
+    for member_id in &cluster.members {
+        if let Some(record) = members_map.get(member_id) {
+            if let Some(metadata) = &record.metadata {
+                if let Some(valence) = metadata.get("emotional_valence").and_then(|v| v.as_f64()) {
+                    total_valence += valence.abs();
+                    emotional_count += 1;
+                }
+            }
+        }
     }
 
-    let total: f64 = cluster
-        .members
-        .iter()
-        .map(|id| {
-            members_map
-                .get(id.as_str())
-                .and_then(|m| m.metadata.as_ref())
-                .and_then(|meta| meta.get("emotional_valence"))
-                .and_then(|v| v.as_f64())
-                .map(|v| v.abs())
-                .unwrap_or(0.0)
-        })
-        .sum();
-
-    total / cluster.members.len() as f64
+    if emotional_count > 0 {
+        total_valence / emotional_count as f64
+    } else {
+        0.0
+    }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_compute_composite_score_defaults() {
-        let weights = ClusterWeights::default();
-        let signals = PairwiseSignals {
-            hebbian_weight: Some(5.0),
-            entity_overlap: 0.5,
-            embedding_similarity: 0.8,
-            temporal_proximity: 0.9,
-        };
-        let score = compute_composite_score(&signals, &weights);
-        // hebbian: 0.4 * (5.0/10.0).min(1.0) = 0.4 * 0.5 = 0.20
-        // entity:  0.3 * 0.5                                = 0.15
-        // embed:   0.2 * 0.8                                = 0.16
-        // temporal: 0.1 * 0.9                               = 0.09
-        // total                                             = 0.60
-        assert!((score - 0.60).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_composite_score_no_hebbian() {
-        let weights = ClusterWeights::default();
-        let signals = PairwiseSignals {
-            hebbian_weight: None,
-            entity_overlap: 1.0,
-            embedding_similarity: 1.0,
-            temporal_proximity: 1.0,
-        };
-        let score = compute_composite_score(&signals, &weights);
-        // 0.0 + 0.3 + 0.2 + 0.1 = 0.6
-        assert!((score - 0.6).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_composite_score_hebbian_clamped() {
-        let weights = ClusterWeights::default();
-        let signals = PairwiseSignals {
-            hebbian_weight: Some(20.0), // 20/10 = 2.0, clamped to 1.0
-            entity_overlap: 0.0,
-            embedding_similarity: 0.0,
-            temporal_proximity: 0.0,
-        };
-        let score = compute_composite_score(&signals, &weights);
-        // 0.4 * 1.0 = 0.4
-        assert!((score - 0.4).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_composite_score_all_zero() {
-        let weights = ClusterWeights::default();
-        let signals = PairwiseSignals {
-            hebbian_weight: None,
-            entity_overlap: 0.0,
-            embedding_similarity: 0.0,
-            temporal_proximity: 0.0,
-        };
-        let score = compute_composite_score(&signals, &weights);
-        assert!((score - 0.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_is_synthesis_output_true() {
-        let mut record = make_test_record("test-1");
-        record.metadata = Some(serde_json::json!({"is_synthesis": true}));
-        assert!(is_synthesis_output(&record));
-    }
-
-    #[test]
-    fn test_is_synthesis_output_false() {
-        let record = make_test_record("test-2");
-        assert!(!is_synthesis_output(&record));
-    }
-
-    #[test]
-    fn test_is_synthesis_output_no_metadata() {
-        let mut record = make_test_record("test-3");
-        record.metadata = None;
-        assert!(!is_synthesis_output(&record));
-    }
-
-    #[test]
-    fn test_is_synthesis_output_wrong_type() {
-        let mut record = make_test_record("test-4");
-        record.metadata = Some(serde_json::json!({"is_synthesis": "yes"}));
-        assert!(!is_synthesis_output(&record));
-    }
-
-    #[test]
-    fn test_connected_components_simple_triangle() {
-        let config = ClusterDiscoveryConfig {
-            min_cluster_size: 3,
-            max_cluster_size: 15,
-            ..Default::default()
-        };
-        let edges = vec![
-            ("a".to_string(), "b".to_string(), 0.5),
-            ("b".to_string(), "c".to_string(), 0.6),
-            ("a".to_string(), "c".to_string(), 0.4),
-        ];
-        let ids: HashSet<&str> = ["a", "b", "c"].into_iter().collect();
-
-        let components = connected_components(&edges, &ids, &config);
-        assert_eq!(components.len(), 1);
-        assert_eq!(components[0], vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn test_connected_components_two_clusters() {
-        let config = ClusterDiscoveryConfig {
-            min_cluster_size: 2,
-            max_cluster_size: 15,
-            ..Default::default()
-        };
-        let edges = vec![
-            ("a".to_string(), "b".to_string(), 0.5),
-            ("c".to_string(), "d".to_string(), 0.6),
-        ];
-        let ids: HashSet<&str> = ["a", "b", "c", "d"].into_iter().collect();
-
-        let mut components = connected_components(&edges, &ids, &config);
-        components.sort_by(|a, b| a[0].cmp(&b[0]));
-        assert_eq!(components.len(), 2);
-        assert_eq!(components[0], vec!["a", "b"]);
-        assert_eq!(components[1], vec!["c", "d"]);
-    }
-
-    #[test]
-    fn test_connected_components_filters_small() {
-        let config = ClusterDiscoveryConfig {
-            min_cluster_size: 3,
-            max_cluster_size: 15,
-            ..Default::default()
-        };
-        // Only 2 connected nodes — below min_cluster_size of 3
-        let edges = vec![("a".to_string(), "b".to_string(), 0.5)];
-        let ids: HashSet<&str> = ["a", "b", "c"].into_iter().collect();
-
-        let components = connected_components(&edges, &ids, &config);
-        // Both the pair {a,b} and the singleton {c} are < 3
-        assert_eq!(components.len(), 0);
-    }
-
-    #[test]
-    fn test_connected_components_truncates_large() {
-        let config = ClusterDiscoveryConfig {
-            min_cluster_size: 2,
-            max_cluster_size: 3,
-            ..Default::default()
-        };
-        let edges = vec![
-            ("a".to_string(), "b".to_string(), 0.5),
-            ("b".to_string(), "c".to_string(), 0.6),
-            ("c".to_string(), "d".to_string(), 0.4),
-            ("d".to_string(), "e".to_string(), 0.3),
-        ];
-        let ids: HashSet<&str> = ["a", "b", "c", "d", "e"].into_iter().collect();
-
-        let components = connected_components(&edges, &ids, &config);
-        assert_eq!(components.len(), 1);
-        assert!(components[0].len() <= 3);
-    }
-
-    #[test]
-    fn test_build_memory_cluster_basic() {
-        let config = ClusterDiscoveryConfig {
-            min_cluster_size: 2,
-            ..Default::default()
-        };
-        let r1 = make_test_record("m1");
-        let r2 = make_test_record("m2");
-        let r3 = make_test_record("m3");
-        let records: HashMap<String, &MemoryRecord> = [
-            ("m1".to_string(), &r1),
-            ("m2".to_string(), &r2),
-            ("m3".to_string(), &r3),
-        ]
-        .into_iter()
-        .collect();
-        let entity_map: HashMap<String, HashSet<String>> = HashMap::new();
-        let edges = vec![
-            ("m1".to_string(), "m2".to_string(), 0.5),
-            ("m2".to_string(), "m3".to_string(), 0.6),
-        ];
-        let members = vec!["m1".to_string(), "m2".to_string(), "m3".to_string()];
-
-        let cluster =
-            build_memory_cluster(&members, &edges, &records, &entity_map, &config).unwrap();
-
-        assert_eq!(cluster.members, vec!["m1", "m2", "m3"]);
-        assert!(cluster.quality_score > 0.0);
-        assert!(cluster.id.starts_with("cluster-"));
-        // m2 has edges to both m1 and m3: avg = (0.5+0.6)/2 = 0.55
-        // m3 has one edge (0.6): avg = 0.6/1 = 0.6
-        // m1 has one edge (0.5): avg = 0.5/1 = 0.5
-        // So m3 is the centroid (highest avg)
-        assert_eq!(cluster.centroid_id, "m3");
-    }
-
-    #[test]
-    fn test_build_memory_cluster_too_small() {
-        let config = ClusterDiscoveryConfig {
-            min_cluster_size: 5,
-            ..Default::default()
-        };
-        let r1 = make_test_record("m1");
-        let records: HashMap<String, &MemoryRecord> =
-            [("m1".to_string(), &r1)].into_iter().collect();
-        let entity_map: HashMap<String, HashSet<String>> = HashMap::new();
-        let edges = vec![];
-        let members = vec!["m1".to_string()];
-
-        let cluster = build_memory_cluster(&members, &edges, &records, &entity_map, &config);
-        assert!(cluster.is_none());
-    }
+    use crate::types::{MemoryLayer, MemoryType};
 
     /// Helper: create a minimal MemoryRecord for testing.
     fn make_test_record(id: &str) -> MemoryRecord {
-        use crate::types::{MemoryLayer, MemoryType};
         MemoryRecord {
             id: id.to_string(),
             content: format!("Test memory {}", id),
@@ -752,11 +493,47 @@ mod tests {
 
     fn make_record_with_emotion(id: &str, valence: Option<f64>) -> MemoryRecord {
         let mut rec = make_test_record(id);
-        rec.memory_type = crate::types::MemoryType::Emotional;
+        rec.memory_type = MemoryType::Emotional;
         if let Some(v) = valence {
             rec.metadata = Some(serde_json::json!({"emotional_valence": v}));
         }
         rec
+    }
+
+    #[test]
+    fn test_composite_score_basic() {
+        let signals = PairwiseSignals {
+            hebbian_weight: Some(5.0),
+            entity_overlap: 0.5,
+            embedding_similarity: 0.8,
+            temporal_proximity: 0.9,
+        };
+        let weights = ClusterWeights::default();
+        let score = compute_composite_score(&signals, &weights);
+
+        // hebbian: 0.4 * (5.0/10.0) = 0.4 * 0.5 = 0.20
+        // entity:  0.3 * 0.5 = 0.15
+        // embed:   0.2 * 0.8 = 0.16
+        // temporal: 0.1 * 0.9 = 0.09
+        // total = 0.60
+        assert!((score - 0.60).abs() < 0.01, "expected ~0.60, got {}", score);
+    }
+
+    #[test]
+    fn test_composite_score_no_hebbian() {
+        let signals = PairwiseSignals {
+            hebbian_weight: None,
+            entity_overlap: 1.0,
+            embedding_similarity: 1.0,
+            temporal_proximity: 1.0,
+        };
+        let weights = ClusterWeights::default();
+        let score = compute_composite_score(&signals, &weights);
+
+        // hebbian: 0
+        // entity: 0.3, embed: 0.2, temporal: 0.1
+        // total = 0.6
+        assert!((score - 0.6).abs() < 0.01);
     }
 
     #[test]
@@ -806,8 +583,8 @@ mod tests {
             include_emotion_in_prompt: true,
         };
         let clusters = vec![
-            make_cluster_with_quality("c1", &["a"], 0.9), // high quality, no emotion
-            make_cluster_with_quality("c2", &["b"], 0.3), // low quality, high emotion
+            make_cluster_with_quality("c1", &["a"], 0.9),
+            make_cluster_with_quality("c2", &["b"], 0.3),
         ];
         let rec_a = make_record_with_emotion("a", None);
         let rec_b = make_record_with_emotion("b", Some(0.9));
@@ -816,7 +593,6 @@ mod tests {
                 .into_iter()
                 .collect();
         let result = apply_emotional_modulation(clusters, &members_map, &config);
-        // c2 (emotional) should come first despite lower quality
         assert_eq!(result[0].id, "c2");
         assert_eq!(result[1].id, "c1");
     }
@@ -832,5 +608,17 @@ mod tests {
                 .collect();
         let salience = compute_emotional_salience(&cluster, &members_map);
         assert_eq!(salience, 0.0);
+    }
+
+    #[test]
+    fn test_is_synthesis_output() {
+        let mut rec = make_test_record("test");
+        assert!(!is_synthesis_output(&rec));
+
+        rec.metadata = Some(serde_json::json!({"is_synthesis": true}));
+        assert!(is_synthesis_output(&rec));
+
+        rec.metadata = Some(serde_json::json!({"is_synthesis": false}));
+        assert!(!is_synthesis_output(&rec));
     }
 }

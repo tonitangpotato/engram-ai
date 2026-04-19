@@ -90,6 +90,7 @@
 
 pub mod anomaly;
 pub mod bus;
+pub mod clustering;
 pub mod compiler;
 pub mod confidence;
 pub mod entities;
