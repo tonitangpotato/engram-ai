@@ -3,12 +3,12 @@
 //! Run: cargo run --example kc_e2e_real --features kc -- /path/to/engram-memory.db
 
 use std::path::Path;
-use chrono::{DateTime, Utc, NaiveDateTime};
+use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
 use engramai::compiler::{
     SqliteKnowledgeStore, KnowledgeStore,
-    TopicId, TopicStatus, KcConfig,
+    TopicStatus, KcConfig,
 };
 use engramai::compiler::api::MaintenanceApi;
 use engramai::compiler::compilation::MemorySnapshot;
@@ -298,20 +298,6 @@ fn main() {
 fn epoch_to_datetime(epoch: f64) -> DateTime<Utc> {
     DateTime::from_timestamp(epoch as i64, ((epoch.fract()) * 1_000_000_000.0) as u32)
         .unwrap_or_else(|| Utc::now())
-}
-
-fn parse_datetime(s: &str) -> DateTime<Utc> {
-    // Try RFC3339 first, then common SQLite formats
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return dt.with_timezone(&Utc);
-    }
-    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return dt.and_utc();
-    }
-    if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-        return dt.and_utc();
-    }
-    Utc::now() // fallback
 }
 
 fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
