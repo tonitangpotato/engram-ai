@@ -49,12 +49,14 @@ env_logger = "0.11"
 dirs = "5"
 jieba-rs = "0.8.1"
 
+# Community detection (used by unified clustering engine)
+infomap-rs = { version = "0.1.0", path = "../../../infomap-rs" }
+
 [dev-dependencies]
 tempfile = "3.13"
 
 [features]
 default = []
-kc = []  # Knowledge Compiler — topic compilation, maintenance, and platform
 
 [[example]]
 name = "basic_usage"
@@ -67,8 +69,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "engram"
 path = "src/main.rs"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
