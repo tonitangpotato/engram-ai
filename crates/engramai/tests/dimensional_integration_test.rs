@@ -46,7 +46,11 @@ fn test_type_weights_stored_and_read_back() {
 
     let first = &results[0];
     let meta = first.record.metadata.as_ref().expect("should have metadata");
-    let tw = meta.get("type_weights").expect("should have type_weights in metadata");
+    // v2 layout: caller-supplied metadata lives under `user.*`
+    let tw = meta
+        .get("user")
+        .and_then(|u| u.get("type_weights"))
+        .expect("should have user.type_weights in metadata");
     assert_eq!(tw.get("causal").and_then(|v: &serde_json::Value| v.as_f64()), Some(0.9));
     assert_eq!(tw.get("factual").and_then(|v: &serde_json::Value| v.as_f64()), Some(0.5));
 
@@ -217,19 +221,28 @@ fn test_mixed_old_and_new_memories() {
     let results = mem.recall("engram search capabilities", 5, None, None).unwrap();
     assert!(results.len() >= 2, "Should recall both old and new memories, got {}", results.len());
 
-    let mut has_old = false;
-    let mut has_new = false;
+    // Both memories should be recallable. Post-ISS-019 Step 7a, even
+    // memories written without caller-supplied `type_weights` get
+    // engram-inferred weights in `metadata.engram.dimensions.type_weights`,
+    // so we can no longer detect "old style" by `TypeWeights::default()`.
+    // The test's real intent is "both memories coexist and are
+    // recallable" — verify that directly.
+    let mut has_fts_only = false;   // first memory: no caller tw
+    let mut has_hybrid = false;     // second memory: explicit tw with factual=0.8
     for r in &results {
-        let tw = TypeWeights::from_metadata(&r.record.metadata);
-        if tw.factual == 1.0 && tw.causal == 1.0 {
-            has_old = true; // default = all 1.0 = old memory
+        if r.record.content.contains("FTS5 for full-text search") {
+            has_fts_only = true;
         }
-        if (tw.factual - 0.8).abs() < 0.01 {
-            has_new = true; // explicit type_weights = new memory
+        if r.record.content.contains("hybrid search") {
+            let tw = TypeWeights::from_metadata(&r.record.metadata);
+            // Explicit user-supplied type_weights should round-trip.
+            if (tw.factual - 0.8).abs() < 0.01 {
+                has_hybrid = true;
+            }
         }
     }
-    assert!(has_old, "Should have recalled old-style memory");
-    assert!(has_new, "Should have recalled new-style memory");
+    assert!(has_fts_only, "Should have recalled memory without caller type_weights");
+    assert!(has_hybrid, "Should have recalled new-style memory with explicit type_weights");
 
     println!("✅ mixed old+new memories coexist correctly");
 }

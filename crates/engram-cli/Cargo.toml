@@ -1,15 +1,23 @@
 [package]
 name = "engram-cli"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
+rust-version = "1.75"
+description = "CLI for Engram — neuroscience-grounded memory system for AI agents."
+authors = ["Toni Tang <tonitangpotato@gmail.com>"]
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/tonitangpotato/engram-ai"
 
 [dependencies]
 engramai = { path = "../engramai" }
+
+# CLI
 clap = { version = "4.5", features = ["derive", "env"] }
 env_logger = "0.11"
 dirs = "5"
 anyhow = "1.0"
 serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 

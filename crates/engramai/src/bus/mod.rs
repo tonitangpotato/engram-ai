@@ -38,7 +38,7 @@ pub struct SoulUpdate {
     pub action: String,
     /// Suggested content
     pub content: String,
-    /// The empathy trend that triggered this suggestion
+    /// The emotional trend that triggered this suggestion
     pub trend: EmpathyTrend,
 }
 
@@ -53,11 +53,7 @@ pub struct HeartbeatUpdate {
     pub stats: ActionStats,
 }
 
-/// The Empathy Bus — senses user emotional state from interactions.
-///
-/// This is NOT the agent's own emotions. It observes the *user's* emotional
-/// signals (sentiment in messages) and tracks trends per domain.
-/// Think "mirror neurons" / social cognition, not limbic system.
+/// The Empathy Bus — main interface for empathy feedback loops.
 pub struct EmpathyBus {
     workspace_dir: PathBuf,
     drives: Vec<Drive>,
@@ -133,9 +129,9 @@ impl EmpathyBus {
         &self.drives
     }
     
-    /// Process an interaction with emotional content.
+    /// Process an interaction with empathic content.
     ///
-    /// This is the main entry point for the emotional feedback loop.
+    /// This is the main entry point for the empathy feedback loop.
     /// Call this when storing a memory with emotional significance.
     ///
     /// # Arguments
@@ -212,7 +208,7 @@ impl EmpathyBus {
         Ok(())
     }
     
-    /// Get empathy trends (observed user emotional patterns).
+    /// Get empathy trends.
     pub fn get_trends(&self, conn: &Connection) -> Result<Vec<EmpathyTrend>, Box<dyn std::error::Error>> {
         let acc = EmpathyAccumulator::new(conn)?;
         Ok(acc.get_all_trends()?)
@@ -442,6 +438,8 @@ helpfulness: Assist the user effectively
     fn test_suggest_soul_updates() {
         let (tmpdir, conn) = setup_workspace();
         let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
+        
+        // Record many negative interactions
         for _ in 0..15 {
             bus.process_interaction(&conn, "bad experience", -0.8, "debugging").unwrap();
         }
@@ -455,6 +453,8 @@ helpfulness: Assist the user effectively
     fn test_suggest_heartbeat_updates() {
         let (tmpdir, conn) = setup_workspace();
         let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
+        
+        // Log many failed attempts
         for _ in 0..15 {
             bus.log_behavior(&conn, "useless_check", false).unwrap();
         }

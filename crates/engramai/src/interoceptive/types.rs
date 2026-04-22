@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 /// Which internal monitoring subsystem produced this signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SignalSource {
+    // ── Engram-internal sources ──────────────────────────────────────
     /// Anomaly/baseline tracker — z-score deviations from expected patterns.
     Anomaly,
     /// Emotional accumulator — running valence trends per domain.
@@ -29,6 +30,18 @@ pub enum SignalSource {
     Confidence,
     /// Drive alignment — how well current activity aligns with core drives.
     Alignment,
+
+    // ── Runtime-sourced signals (from host agent) ────────────────────
+    /// Token budget consumption and rate pressure.
+    OperationalLoad,
+    /// Loop depth, retries, tool failure patterns.
+    ExecutionStress,
+    /// Task completion rate, response latency, session coherence.
+    CognitiveFlow,
+    /// Memory utilization, disk I/O, queue depth.
+    ResourcePressure,
+    /// Voice/audio emotion detected from speech (wav2vec2 SER).
+    VoiceEmotion,
 }
 
 impl std::fmt::Display for SignalSource {
@@ -39,6 +52,11 @@ impl std::fmt::Display for SignalSource {
             Self::Feedback => write!(f, "feedback"),
             Self::Confidence => write!(f, "confidence"),
             Self::Alignment => write!(f, "alignment"),
+            Self::OperationalLoad => write!(f, "operational_load"),
+            Self::ExecutionStress => write!(f, "execution_stress"),
+            Self::CognitiveFlow => write!(f, "cognitive_flow"),
+            Self::ResourcePressure => write!(f, "resource_pressure"),
+            Self::VoiceEmotion => write!(f, "voice_emotion"),
         }
     }
 }
@@ -60,7 +78,7 @@ pub struct InteroceptiveSignal {
 
     /// Affective valence: -1.0 (very negative) to +1.0 (very positive).
     /// Anomaly: negative = deviation from baseline.
-    /// Accumulator: direct emotional valence.
+    /// Accumulator: direct empathy valence.
     /// Feedback: success_rate mapped to [-1, 1].
     /// Confidence: confidence mapped to [-1, 1].
     /// Alignment: alignment score mapped to [-1, 1].
@@ -144,6 +162,48 @@ pub enum SignalContext {
     DriveAlignment {
         content_snippet: String,
         alignment_score: f64,
+    },
+
+    // ── Runtime signal contexts ──────────────────────────────────────
+
+    /// Token budget pressure from host agent.
+    TokenPressure {
+        budget_used_pct: f64,
+        tokens_per_second: f64,
+        budget_runway_secs: f64,
+    },
+
+    /// Execution stress from agentic loop.
+    LoopStress {
+        loop_depth: u32,
+        retry_count: u32,
+        tool_failure_rate: f64,
+        consecutive_failures: u32,
+    },
+
+    /// Cognitive flow from task execution.
+    TaskFlow {
+        task_completion_rate: f64,
+        response_latency_ms: u64,
+        session_duration_secs: u64,
+    },
+
+    /// Resource pressure from system metrics.
+    SystemPressure {
+        disk_free_gb: f64,
+        queue_depth: u32,
+    },
+
+    /// Voice emotion detected from audio (speech emotion recognition).
+    VoiceEmotion {
+        /// Detected primary emotion label (e.g., "angry", "happy", "sad").
+        primary_emotion: String,
+        /// Confidence score for the primary emotion [0.0, 1.0].
+        confidence: f64,
+        /// All emotion scores (label → probability).
+        all_scores: HashMap<String, f64>,
+        /// Speaker identifier (e.g., Telegram user ID).
+        speaker_id: Option<String>,
     },
 }
 
@@ -229,6 +289,22 @@ impl DomainState {
             SignalSource::Accumulator => {
                 // Accumulator directly contributes to valence_trend (already done above).
             }
+            // Runtime signal sources: all contribute to valence_trend (already done above).
+            // Their specific metrics are carried in SignalContext and affect arousal via the
+            // hub's global_arousal computation. No separate per-domain field needed — the
+            // valence and arousal on the signal itself encode the semantic meaning.
+            SignalSource::OperationalLoad
+            | SignalSource::ExecutionStress
+            | SignalSource::CognitiveFlow
+            | SignalSource::ResourcePressure
+            | SignalSource::VoiceEmotion => {
+                // Valence already updated above. These runtime sources also contribute
+                // to anomaly_level when arousal is high (indicates abnormal operating state).
+                if signal.arousal > 0.5 {
+                    self.anomaly_level =
+                        alpha * signal.arousal * 2.0 + (1.0 - alpha) * self.anomaly_level;
+                }
+            }
         }
 
         self.signal_count += 1;
@@ -247,7 +323,7 @@ pub struct SomaticMarker {
     /// Hash of the situation / context that triggered this marker.
     pub situation_hash: u64,
 
-    /// The average emotional valence associated with this situation.
+    /// The average empathy valence associated with this situation.
     pub valence: f64,
 
     /// How many times this situation has been encountered.
@@ -388,6 +464,61 @@ pub enum RegulationAction {
         message: String,
         domains: Vec<String>,
     },
+
+    /// Suggest updating IDENTITY.md based on stable behavioral patterns.
+    /// Unlike SoulUpdateSuggestion (triggered by negative trends),
+    /// this is triggered by stable positive or distinctive patterns
+    /// that reflect the agent's evolved capabilities/traits.
+    IdentityEvolutionSuggestion {
+        /// The aspect of identity that evolved (e.g., "capability", "trait", "pattern")
+        aspect: IdentityAspect,
+        /// Description of the observed evolution
+        observation: String,
+        /// Domains where the pattern was observed
+        domains: Vec<String>,
+        /// Confidence in this observation (0.0-1.0)
+        confidence: f64,
+        /// Suggested text for IDENTITY.md
+        suggestion: String,
+    },
+
+    /// Suggest adjusting heartbeat frequency based on system state.
+    ///
+    /// When anomalies/stress are elevated across domains → increase frequency
+    /// (shorter intervals) for closer monitoring. When system is stable →
+    /// decrease frequency (longer intervals) to save resources.
+    HeartbeatFrequencyAdjustment {
+        /// Direction of the adjustment.
+        direction: HeartbeatAdjustDirection,
+        /// Multiplier for current interval (e.g., 0.5 = halve interval, 2.0 = double).
+        interval_multiplier: f64,
+        /// Human-readable reason for the adjustment.
+        reason: String,
+        /// Which domains contributed to this decision.
+        domains: Vec<String>,
+    },
+}
+
+/// Direction of heartbeat frequency adjustment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HeartbeatAdjustDirection {
+    /// Increase frequency (shorter interval) — more anomalies need closer monitoring.
+    Increase,
+    /// Decrease frequency (longer interval) — system is stable, save resources.
+    Decrease,
+}
+
+/// What aspect of identity evolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdentityAspect {
+    /// A new capability or skill emerged (e.g., "strong at Rust debugging")
+    Capability,
+    /// A behavioral pattern stabilized (e.g., "prefers sub-agents for small tasks")
+    BehavioralPattern,
+    /// A personality trait shifted (e.g., "more direct communicator")
+    PersonalityTrait,
+    /// A domain specialization appeared (e.g., "coding domain expert")
+    DomainSpecialization,
 }
 
 /// Alert severity levels.
@@ -404,6 +535,172 @@ impl std::fmt::Display for AlertSeverity {
             Self::Low => write!(f, "low"),
             Self::Medium => write!(f, "medium"),
             Self::High => write!(f, "high"),
+        }
+    }
+}
+
+// ── Adaptive Baseline ─────────────────────────────────────────────────
+
+/// Rolling statistics for a single metric, using Welford's online algorithm.
+///
+/// Tracks mean and variance incrementally (O(1) per update, no stored history).
+/// Used by the regulation layer to compute σ-deviations adaptively rather
+/// than relying on hardcoded thresholds.
+///
+/// Cold-start behavior: `is_calibrated()` returns false until `min_samples`
+/// observations have been recorded, signaling the caller to use conservative
+/// fallback thresholds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaptiveBaseline {
+    /// Running count of observations.
+    pub count: u64,
+    /// Running mean (Welford's M).
+    pub mean: f64,
+    /// Running sum of squared deviations from mean (Welford's S).
+    /// Variance = m2 / (count - 1).
+    m2: f64,
+    /// Minimum observations before the baseline is considered calibrated.
+    pub min_samples: u64,
+    /// Exponential decay factor for gradual drift adaptation.
+    /// 0.0 = pure Welford (no decay), >0 = recent samples weighted more.
+    /// Recommended: 0.0 for short histories, 0.01-0.05 for long-running.
+    pub decay: f64,
+}
+
+impl AdaptiveBaseline {
+    /// Create a new baseline requiring `min_samples` before calibration.
+    pub fn new(min_samples: u64) -> Self {
+        Self {
+            count: 0,
+            mean: 0.0,
+            m2: 0.0,
+            min_samples,
+            decay: 0.0,
+        }
+    }
+
+    /// Create with exponential decay for adapting to drift.
+    pub fn with_decay(min_samples: u64, decay: f64) -> Self {
+        Self {
+            count: 0,
+            mean: 0.0,
+            m2: 0.0,
+            min_samples,
+            decay: decay.clamp(0.0, 0.5),
+        }
+    }
+
+    /// Record a new observation.
+    pub fn observe(&mut self, value: f64) {
+        self.count += 1;
+
+        if self.decay > 0.0 && self.count > 1 {
+            // Exponentially-weighted Welford: blend in new observation
+            // with a decay that reduces influence of old observations.
+            let alpha = self.decay;
+            let delta = value - self.mean;
+            self.mean += alpha * delta;
+            let delta2 = value - self.mean;
+            self.m2 = (1.0 - alpha) * (self.m2 + alpha * delta * delta2);
+        } else {
+            // Standard Welford's online algorithm.
+            let delta = value - self.mean;
+            self.mean += delta / self.count as f64;
+            let delta2 = value - self.mean;
+            self.m2 += delta * delta2;
+        }
+    }
+
+    /// Whether enough samples have been collected for reliable statistics.
+    pub fn is_calibrated(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Population variance (biased, but stable with small N).
+    pub fn variance(&self) -> f64 {
+        if self.count < 2 {
+            return 0.0;
+        }
+        if self.decay > 0.0 {
+            self.m2.max(0.0)
+        } else {
+            (self.m2 / self.count as f64).max(0.0)
+        }
+    }
+
+    /// Standard deviation.
+    pub fn stddev(&self) -> f64 {
+        self.variance().sqrt()
+    }
+
+    /// Compute how many σ the given value deviates from the mean.
+    ///
+    /// Returns `None` if not yet calibrated or stddev is effectively zero
+    /// (all observations identical → any deviation is infinitely surprising,
+    /// but we can't meaningfully quantify it).
+    pub fn sigma_deviation(&self, value: f64) -> Option<f64> {
+        if !self.is_calibrated() {
+            return None;
+        }
+        let sd = self.stddev();
+        if sd < 1e-10 {
+            // All observations nearly identical — if value matches, 0σ; otherwise, flag it.
+            if (value - self.mean).abs() < 1e-10 {
+                return Some(0.0);
+            }
+            // Large deviation from zero-variance baseline → cap at 5σ to avoid infinity.
+            return Some(5.0);
+        }
+        Some((value - self.mean).abs() / sd)
+    }
+
+    /// Classify the deviation of a value into a severity level.
+    pub fn deviation_level(&self, value: f64) -> DeviationLevel {
+        match self.sigma_deviation(value) {
+            None => DeviationLevel::Uncalibrated,
+            Some(sigma) if sigma < 1.5 => DeviationLevel::Normal,
+            Some(sigma) if sigma < 2.5 => DeviationLevel::Elevated,
+            Some(sigma) if sigma < 3.5 => DeviationLevel::High,
+            Some(_) => DeviationLevel::Extreme,
+        }
+    }
+}
+
+/// How far a signal deviates from its adaptive baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeviationLevel {
+    /// Not enough data yet — use conservative fallback.
+    Uncalibrated,
+    /// Within 1.5σ — normal operating range.
+    Normal,
+    /// 1.5–2.5σ — worth noting, no action needed.
+    Elevated,
+    /// 2.5–3.5σ — should trigger a response.
+    High,
+    /// >3.5σ — definitely abnormal, immediate action.
+    Extreme,
+}
+
+impl DeviationLevel {
+    /// Whether this level warrants a regulation action.
+    pub fn is_actionable(&self) -> bool {
+        matches!(self, Self::High | Self::Extreme)
+    }
+
+    /// Whether this level is at least elevated.
+    pub fn is_elevated(&self) -> bool {
+        matches!(self, Self::Elevated | Self::High | Self::Extreme)
+    }
+}
+
+impl std::fmt::Display for DeviationLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uncalibrated => write!(f, "uncalibrated"),
+            Self::Normal => write!(f, "normal"),
+            Self::Elevated => write!(f, "elevated"),
+            Self::High => write!(f, "high"),
+            Self::Extreme => write!(f, "extreme"),
         }
     }
 }
@@ -546,5 +843,110 @@ mod tests {
         assert!(prompt.contains("coding"));
         assert!(prompt.contains("positive"));
         assert!(!prompt.contains("arousal")); // 0.3 < 0.5 threshold
+    }
+
+    // ── AdaptiveBaseline tests ────────────────────────────────────────
+
+    #[test]
+    fn baseline_uncalibrated_before_min_samples() {
+        let mut bl = AdaptiveBaseline::new(5);
+        bl.observe(1.0);
+        bl.observe(2.0);
+        bl.observe(3.0);
+        assert!(!bl.is_calibrated());
+        assert_eq!(bl.sigma_deviation(5.0), None);
+        assert_eq!(bl.deviation_level(5.0), DeviationLevel::Uncalibrated);
+    }
+
+    #[test]
+    fn baseline_calibrates_at_min_samples() {
+        let mut bl = AdaptiveBaseline::new(5);
+        for v in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            bl.observe(v);
+        }
+        assert!(bl.is_calibrated());
+        assert_eq!(bl.count, 5);
+        assert!((bl.mean - 3.0).abs() < 0.01);
+        // stddev of [1,2,3,4,5] population = sqrt(2) ≈ 1.414
+        assert!((bl.stddev() - std::f64::consts::SQRT_2).abs() < 0.01);
+    }
+
+    #[test]
+    fn baseline_sigma_deviation_correct() {
+        let mut bl = AdaptiveBaseline::new(5);
+        for v in [10.0, 10.0, 10.0, 10.0, 10.0, 12.0, 8.0, 10.0, 10.0, 10.0] {
+            bl.observe(v);
+        }
+        // Mean ≈ 10.0, low stddev
+        let _sd = bl.stddev();
+        let dev = bl.sigma_deviation(10.0).unwrap();
+        assert!(dev < 0.5, "at-mean deviation should be near 0, got {}", dev);
+
+        // A value far from mean should have high σ
+        let dev_far = bl.sigma_deviation(15.0).unwrap();
+        assert!(dev_far > 2.0, "5 units from mean should be >2σ, got {}", dev_far);
+    }
+
+    #[test]
+    fn baseline_deviation_levels() {
+        let mut bl = AdaptiveBaseline::new(3);
+        // Create baseline with mean=0, stddev=1 (approximately)
+        for v in [-1.0, 0.0, 1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 0.0] {
+            bl.observe(v);
+        }
+        let sd = bl.stddev();
+
+        // Within 1.5σ → Normal
+        assert_eq!(bl.deviation_level(bl.mean), DeviationLevel::Normal);
+
+        // 2σ → Elevated
+        assert_eq!(bl.deviation_level(bl.mean + 2.0 * sd), DeviationLevel::Elevated);
+
+        // 3σ → High
+        assert_eq!(bl.deviation_level(bl.mean + 3.0 * sd), DeviationLevel::High);
+
+        // 4σ → Extreme
+        assert_eq!(bl.deviation_level(bl.mean + 4.0 * sd), DeviationLevel::Extreme);
+    }
+
+    #[test]
+    fn baseline_zero_variance_handling() {
+        let mut bl = AdaptiveBaseline::new(3);
+        for _ in 0..5 {
+            bl.observe(42.0);
+        }
+        // All identical → stddev ≈ 0
+        assert!(bl.stddev() < 1e-10);
+        // Same value → 0σ
+        assert_eq!(bl.sigma_deviation(42.0), Some(0.0));
+        // Different value → capped at 5σ
+        assert_eq!(bl.sigma_deviation(43.0), Some(5.0));
+    }
+
+    #[test]
+    fn baseline_with_decay_adapts() {
+        let mut bl = AdaptiveBaseline::with_decay(3, 0.1);
+        // Establish baseline around 10.0
+        for _ in 0..10 {
+            bl.observe(10.0);
+        }
+        let mean_before = bl.mean;
+
+        // Shift to 20.0 — with decay, mean should drift faster
+        for _ in 0..20 {
+            bl.observe(20.0);
+        }
+        // Mean should have moved significantly toward 20
+        assert!(bl.mean > mean_before + 3.0,
+            "mean should drift toward 20 with decay, got {}", bl.mean);
+    }
+
+    #[test]
+    fn deviation_level_actionable() {
+        assert!(!DeviationLevel::Uncalibrated.is_actionable());
+        assert!(!DeviationLevel::Normal.is_actionable());
+        assert!(!DeviationLevel::Elevated.is_actionable());
+        assert!(DeviationLevel::High.is_actionable());
+        assert!(DeviationLevel::Extreme.is_actionable());
     }
 }

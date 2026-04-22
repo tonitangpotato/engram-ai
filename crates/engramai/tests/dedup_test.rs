@@ -28,6 +28,7 @@ fn make_record(id: &str, content: &str, importance: f64) -> MemoryRecord {
         source: "test".to_string(),
         contradicts: None,
         contradicted_by: None,
+        superseded_by: None,
         metadata: None,
     }
 }
@@ -551,7 +552,7 @@ fn test_merge_history_recorded_in_metadata() {
     ).unwrap();
 
     let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
-    let history = metadata["merge_history"].as_array().unwrap();
+    let history = metadata["engram"]["merge_history"].as_array().unwrap();
     assert_eq!(history.len(), 1);
 
     let entry = &history[0];
@@ -583,11 +584,11 @@ fn test_merge_history_capped_at_10() {
     ).unwrap();
 
     let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
-    let history = metadata["merge_history"].as_array().unwrap();
+    let history = metadata["engram"]["merge_history"].as_array().unwrap();
     assert_eq!(history.len(), 10, "merge_history should be capped at 10 entries, got {}", history.len());
 
     // merge_count should still be 12
-    assert_eq!(metadata["merge_count"].as_i64().unwrap(), 12);
+    assert_eq!(metadata["engram"]["merge_count"].as_i64().unwrap(), 12);
 }
 
 #[test]
@@ -611,5 +612,5 @@ fn test_merge_count_increments() {
     ).unwrap();
 
     let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
-    assert_eq!(metadata["merge_count"].as_i64().unwrap(), 3, "merge_count should be 3 after 3 merges");
+    assert_eq!(metadata["engram"]["merge_count"].as_i64().unwrap(), 3, "merge_count should be 3 after 3 merges");
 }

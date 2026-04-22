@@ -301,6 +301,7 @@ mod tests {
             source: "test".to_string(),
             contradicts: None,
             contradicted_by: if contradicted { Some("other".to_string()) } else { None },
+            superseded_by: None,
             metadata: None,
         }
     }

@@ -1,6 +1,6 @@
-//! Empathy Accumulator — Track observed user emotional valence trends per domain.
+//! Empathy Accumulator — Track empathy valence trends per domain.
 //!
-//! Monitors user emotional patterns over time and flags domains that need SOUL updates.
+//! Monitors emotional patterns over time and flags domains that need SOUL updates.
 
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -26,7 +26,7 @@ pub const NEGATIVE_THRESHOLD: f64 = -0.5;
 /// Minimum event count before suggesting SOUL updates.
 pub const MIN_EVENTS_FOR_SUGGESTION: i32 = 10;
 
-/// Observed user emotional trend for a domain.
+/// Empathy trend for a domain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmpathyTrend {
     /// Domain name (e.g., "coding", "communication", "research")
@@ -62,7 +62,7 @@ impl EmpathyTrend {
     }
 }
 
-/// Empathy accumulator that tracks observed user valence trends per domain.
+/// Emotional accumulator that tracks valence trends per domain.
 pub struct EmpathyAccumulator<'a> {
     conn: &'a Connection,
 }
@@ -95,7 +95,7 @@ impl<'a> EmpathyAccumulator<'a> {
     /// Valence should be in range -1.0 (very negative) to 1.0 (very positive).
     pub fn record_emotion(&self, domain: &str, valence: f64) -> Result<(), rusqlite::Error> {
         // Clamp valence to valid range
-        let valence = valence.max(-1.0).min(1.0);
+        let valence = valence.clamp(-1.0, 1.0);
         
         // Try to get existing trend
         let existing: Option<(f64, i32)> = self.conn
@@ -148,7 +148,7 @@ impl<'a> EmpathyAccumulator<'a> {
             .optional()
     }
     
-    /// Get all emotional trends.
+    /// Get all empathy trends.
     pub fn get_all_trends(&self) -> Result<Vec<EmpathyTrend>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT domain, valence, count, last_updated FROM emotional_trends ORDER BY count DESC"

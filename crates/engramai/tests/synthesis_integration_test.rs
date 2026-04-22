@@ -179,6 +179,7 @@ fn test_is_insight_helper() {
         last_consolidated: None,
         contradicts: None,
         contradicted_by: None,
+        superseded_by: None,
     };
     assert!(!is_insight(&regular));
 

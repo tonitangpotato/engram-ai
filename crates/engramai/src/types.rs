@@ -192,9 +192,14 @@ pub struct MemoryRecord {
     /// Source identifier
     pub source: String,
     
-    /// Contradiction links
+    /// Contradiction links (legacy, penalty-based)
     pub contradicts: Option<String>,
     pub contradicted_by: Option<String>,
+    
+    /// Supersession link (filter-based).
+    /// If set, this memory is excluded from all recall results.
+    /// Contains the ID of the memory that replaced this one.
+    pub superseded_by: Option<String>,
     
     /// Optional structured metadata (JSON)
     pub metadata: Option<serde_json::Value>,
@@ -302,4 +307,50 @@ pub struct RecallWithAssociationsResult {
     pub memories: Vec<RecallResult>,
     /// Cross-namespace associations found
     pub cross_links: Vec<CrossLink>,
+}
+
+/// Error type for supersession operations.
+#[derive(Debug, thiserror::Error)]
+pub enum SupersessionError {
+    /// Memory ID not found in storage.
+    #[error("Memory not found: {0}")]
+    NotFound(String),
+
+    /// Cannot supersede a memory with itself.
+    #[error("Cannot supersede a memory with itself: {0}")]
+    SelfSupersession(String),
+
+    /// Cross-namespace supersession not allowed at the storage layer.
+    #[error("Cross-namespace supersession not allowed: {old_ns} → {new_ns}")]
+    CrossNamespace { old_ns: String, new_ns: String },
+
+    /// Bulk supersession failed — some IDs are invalid.
+    #[error("Bulk supersession failed — invalid IDs: {0:?}")]
+    InvalidIds(Vec<String>),
+
+    /// Database error.
+    #[error("Database error: {0}")]
+    Db(#[from] rusqlite::Error),
+}
+
+/// Info about a superseded memory for observability listing.
+#[derive(Debug, Clone)]
+pub struct SupersessionInfo {
+    /// The superseded memory record.
+    pub superseded: MemoryRecord,
+    /// The ID of the memory that replaced this one.
+    pub superseded_by_id: String,
+    /// The final non-superseded memory in the chain (None if cycle detected).
+    pub chain_head: Option<String>,
+}
+
+/// Result of a bulk correction operation.
+#[derive(Debug, Clone)]
+pub struct BulkCorrectionResult {
+    /// ID of the newly created correction memory.
+    pub new_id: String,
+    /// How many memories were superseded.
+    pub superseded_count: usize,
+    /// IDs of all superseded memories.
+    pub superseded_ids: Vec<String>,
 }

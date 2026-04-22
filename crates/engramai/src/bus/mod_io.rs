@@ -141,11 +141,11 @@ pub fn parse_heartbeat(content: &str) -> Vec<HeartbeatTask> {
         let trimmed = line.trim();
         
         // Parse checkbox items
-        if trimmed.starts_with("- [") {
-            if let Some(bracket_end) = trimmed[3..].find(']') {
-                let checkbox_content = &trimmed[3..3 + bracket_end];
+        if let Some(stripped) = trimmed.strip_prefix("- [") {
+            if let Some(bracket_end) = stripped.find(']') {
+                let checkbox_content = &stripped[..bracket_end];
                 let completed = checkbox_content.eq_ignore_ascii_case("x");
-                let description = trimmed[4 + bracket_end..].trim().to_string();
+                let description = stripped[bracket_end + 1..].trim().to_string();
                 
                 if !description.is_empty() {
                     tasks.push(HeartbeatTask {
@@ -300,9 +300,9 @@ pub fn update_heartbeat_task<P: AsRef<Path>>(
     
     for line in &mut lines {
         let trimmed = line.trim();
-        if trimmed.starts_with("- [") {
-            if let Some(bracket_end) = trimmed[3..].find(']') {
-                let desc = trimmed[4 + bracket_end..].trim();
+        if let Some(stripped) = trimmed.strip_prefix("- [") {
+            if let Some(bracket_end) = stripped.find(']') {
+                let desc = stripped[bracket_end + 1..].trim();
                 if desc.eq_ignore_ascii_case(task_description) {
                     // Preserve indentation
                     let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();

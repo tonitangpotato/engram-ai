@@ -281,6 +281,12 @@ impl KcConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that mutate process-wide environment variables.
+    /// `set_var`/`remove_var` are not thread-safe; concurrent tests that touch
+    /// env vars can corrupt each other.  Locking this mutex prevents that.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_default_config() {
@@ -299,6 +305,8 @@ mod tests {
 
     #[test]
     fn test_merge_from_env() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
         // Save any existing values to avoid parallel-test env pollution
         let saved: Vec<(&str, Option<String>)> = vec![
             "ENGRAM_LLM_PROVIDER",
@@ -449,6 +457,8 @@ intake.deduplicate = false
 
     #[test]
     fn test_merge_from_env_invalid_number() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
         let saved = std::env::var("ENGRAM_MIN_CLUSTER_SIZE").ok();
         std::env::set_var("ENGRAM_MIN_CLUSTER_SIZE", "abc");
         let mut cfg = KcConfig::default();

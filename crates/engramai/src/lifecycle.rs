@@ -314,7 +314,11 @@ mod tests {
             .query_row("SELECT metadata FROM memories WHERE id = ?",
                        rusqlite::params![id], |row| row.get(0)).unwrap();
         let meta: serde_json::Value = serde_json::from_str(meta_str.as_deref().unwrap()).unwrap();
-        let history = meta.get("merge_history").unwrap().as_array().unwrap();
+        let history = meta
+            .get("engram")
+            .and_then(|e| e.get("merge_history"))
+            .and_then(|h| h.as_array())
+            .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0]["source_id"], "donor-123");
         assert_eq!(history[0]["content_updated"], true);

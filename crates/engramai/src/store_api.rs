@@ -176,6 +176,32 @@ pub enum RawStoreOutcome {
 }
 
 // ---------------------------------------------------------------------
+// Retry / quarantine management
+// ---------------------------------------------------------------------
+
+/// Summary of a `Memory::retry_quarantined` pass.
+///
+/// Per design §4 — retry is an **explicit** caller-driven operation,
+/// not inline with `store_raw`. This report is the only thing the
+/// caller gets back; it is self-describing and safe to log.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RetryReport {
+    /// Number of quarantine rows processed (attempts += 1 for each).
+    pub attempted: usize,
+    /// Rows whose retry succeeded: content moved into `memories`.
+    /// Element is the new memory id in the main table (first outcome
+    /// when the extractor produced multi-fact output).
+    pub recovered: Vec<MemoryId>,
+    /// Rows that failed again this pass. `(quarantine_id, error)`.
+    /// Attempts counter is incremented; the row stays in quarantine.
+    pub still_failing: Vec<(QuarantineId, String)>,
+    /// Rows whose `attempts` just crossed `max_attempts` and were
+    /// flipped to `permanently_rejected = 1`. Kept for forensic
+    /// review; never deleted automatically.
+    pub permanently_rejected: Vec<QuarantineId>,
+}
+
+// ---------------------------------------------------------------------
 // StoreError — programmer error hierarchy
 // ---------------------------------------------------------------------
 

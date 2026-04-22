@@ -38,7 +38,7 @@ impl Default for QueryOpts {
 }
 
 /// A single query result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct QueryResult {
     pub topic_id: TopicId,
     pub title: String,
@@ -587,7 +587,7 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
     /// 3. Returns created pages
     pub fn compile_all<L: LlmProvider>(
         &self,
-        _llm: Option<&L>,
+        llm: Option<&L>,
         memories: &[MemorySnapshot],
     ) -> Result<Vec<TopicPage>, KcError> {
         // Build embeddings list — TopicDiscovery expects (id, embedding) pairs.
@@ -609,7 +609,14 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
         let mem_map: std::collections::HashMap<&str, &MemorySnapshot> =
             memories.iter().map(|m| (m.id.as_str(), m)).collect();
 
+        // Build (memory_id, content) pairs for LLM labeling
+        let memory_contents: Vec<(String, String)> = memories
+            .iter()
+            .map(|m| (m.id.clone(), m.content.clone()))
+            .collect();
+
         let mut pages = Vec::new();
+        let mut topic_counter: u64 = 0;
 
         for candidate in &candidates {
             // Gather the memories for this candidate
@@ -623,17 +630,28 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
                 continue;
             }
 
-            // Use compile_without_llm for simplicity (no LLM needed here).
-            let title = candidate
-                .suggested_title
-                .clone()
-                .unwrap_or_else(|| format!("Topic ({})", candidate.memories.len()));
+            // Use LLM labeling if available, otherwise fall back to generic title
+            let title = if let Some(llm_provider) = llm {
+                match discovery.label_cluster(candidate, &memory_contents, llm_provider) {
+                    Ok(label) => label,
+                    Err(_) => candidate
+                        .suggested_title
+                        .clone()
+                        .unwrap_or_else(|| format!("Topic ({})", candidate.memories.len())),
+                }
+            } else {
+                candidate
+                    .suggested_title
+                    .clone()
+                    .unwrap_or_else(|| format!("Topic ({})", candidate.memories.len()))
+            };
 
             let content =
                 super::compilation::compile_without_llm(&title, &candidate_memories);
 
             let now = chrono::Utc::now();
-            let topic_id = TopicId(format!("topic-{}", now.timestamp_millis()));
+            let topic_id = TopicId(format!("topic-{}-{}", now.timestamp_millis(), topic_counter));
+            topic_counter += 1;
 
             let page = TopicPage {
                 id: topic_id.clone(),
@@ -661,6 +679,149 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
 
             // Persist
             self.store.create_topic_page(&page)?;
+
+            // Populate kc_compilation_sources for decay/health tracking
+            let source_refs: Vec<SourceMemoryRef> = candidate_memories.iter().map(|m| SourceMemoryRef {
+                memory_id: m.id.clone(),
+                relevance_score: m.importance,
+                added_at: now,
+            }).collect();
+            self.store.save_source_refs(&topic_id, &source_refs)?;
+
+            let record = CompilationRecord {
+                topic_id: topic_id.clone(),
+                compiled_at: now,
+                source_count: candidate_memories.len(),
+                duration_ms: 0,
+                quality_score: report.overall,
+                recompile_reason: Some("initial compilation via API".to_string()),
+            };
+            self.store.save_compilation_record(&record)?;
+
+            pages.push(page);
+        }
+
+        Ok(pages)
+    }
+
+    /// Recompile all topics from scratch: purges existing topics, then runs compile_all.
+    ///
+    /// This avoids the "old + new topic overlap" conflict explosion that happens
+    /// when compile_all appends new topics without removing stale ones.
+    pub fn recompile_all<L: LlmProvider>(
+        &self,
+        llm: Option<&L>,
+        memories: &[MemorySnapshot],
+    ) -> Result<(usize, Vec<TopicPage>), KcError> {
+        let purged = self.store.purge_all()?;
+        let pages = self.compile_all(llm, memories)?;
+        Ok((purged, pages))
+    }
+
+    /// Dynamic-dispatch version of `recompile_all` for use with `Box<dyn LlmProvider>`.
+    pub fn recompile_all_dyn(
+        &self,
+        llm: Option<&dyn LlmProvider>,
+        memories: &[MemorySnapshot],
+    ) -> Result<(usize, Vec<TopicPage>), KcError> {
+        let purged = self.store.purge_all()?;
+        let pages = self.compile_all_dyn(llm, memories)?;
+        Ok((purged, pages))
+    }
+
+    /// Dynamic-dispatch version of `compile_all` for use with `Box<dyn LlmProvider>`.
+    pub fn compile_all_dyn(
+        &self,
+        llm: Option<&dyn LlmProvider>,
+        memories: &[MemorySnapshot],
+    ) -> Result<Vec<TopicPage>, KcError> {
+        let memory_embeddings: Vec<(String, Vec<f32>)> = memories
+            .iter()
+            .map(|m| {
+                let embedding = m.embedding.clone()
+                    .unwrap_or_else(|| simple_hash_embedding(&m.content, 64));
+                (m.id.clone(), embedding)
+            })
+            .collect();
+
+        let discovery = TopicDiscovery::new(self.config.min_cluster_size);
+        let candidates = discovery.discover(&memory_embeddings);
+
+        let mem_map: std::collections::HashMap<&str, &MemorySnapshot> =
+            memories.iter().map(|m| (m.id.as_str(), m)).collect();
+
+        let memory_contents: Vec<(String, String)> = memories
+            .iter()
+            .map(|m| (m.id.clone(), m.content.clone()))
+            .collect();
+
+        let mut pages = Vec::new();
+        let mut topic_counter: u64 = 0;
+
+        for candidate in &candidates {
+            let candidate_memories: Vec<MemorySnapshot> = candidate
+                .memories
+                .iter()
+                .filter_map(|id| mem_map.get(id.as_str()).map(|m| (*m).clone()))
+                .collect();
+
+            if candidate_memories.is_empty() {
+                continue;
+            }
+
+            let title = if let Some(llm_provider) = llm {
+                match discovery.label_cluster(candidate, &memory_contents, llm_provider) {
+                    Ok(label) => label,
+                    Err(_) => candidate
+                        .suggested_title
+                        .clone()
+                        .unwrap_or_else(|| format!("Topic ({})", candidate.memories.len())),
+                }
+            } else {
+                candidate
+                    .suggested_title
+                    .clone()
+                    .unwrap_or_else(|| format!("Topic ({})", candidate.memories.len()))
+            };
+
+            let content =
+                super::compilation::compile_without_llm(&title, &candidate_memories);
+
+            let now = chrono::Utc::now();
+            let topic_id = TopicId(format!("topic-{}-{}", now.timestamp_millis(), topic_counter));
+            topic_counter += 1;
+
+            let page = TopicPage {
+                id: topic_id.clone(),
+                title,
+                summary: super::compilation::extract_summary(&content),
+                content,
+                sections: Vec::new(),
+                status: TopicStatus::Active,
+                version: 1,
+                metadata: TopicMetadata {
+                    created_at: now,
+                    updated_at: now,
+                    compilation_count: 1,
+                    source_memory_ids: candidate_memories.iter().map(|m| m.id.clone()).collect(),
+                    tags: super::compilation::aggregate_tags(&candidate_memories),
+                    quality_score: None,
+                },
+            };
+
+            let scorer = QualityScorer::new(&self.config);
+            let report = scorer.score(&page, &candidate_memories, &[]);
+            let mut page = page;
+            page.metadata.quality_score = Some(report.overall);
+
+            self.store.create_topic_page(&page)?;
+
+            let source_refs: Vec<SourceMemoryRef> = candidate_memories.iter().map(|m| SourceMemoryRef {
+                memory_id: m.id.clone(),
+                relevance_score: m.importance,
+                added_at: now,
+            }).collect();
+            self.store.save_source_refs(&topic_id, &source_refs)?;
 
             let record = CompilationRecord {
                 topic_id: topic_id.clone(),

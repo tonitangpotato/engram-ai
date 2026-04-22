@@ -110,7 +110,7 @@ impl<'a> SubscriptionManager<'a> {
         namespace: &str,
         min_importance: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let clamped = min_importance.max(0.0).min(1.0);
+        let clamped = min_importance.clamp(0.0, 1.0);
         
         self.conn.execute(
             r#"
@@ -194,10 +194,8 @@ impl<'a> SubscriptionManager<'a> {
                     })
                 })?;
                 
-                for row in rows {
-                    if let Ok(notif) = row {
-                        notifications.push(notif);
-                    }
+                for notif in rows.flatten() {
+                    notifications.push(notif);
                 }
             } else {
                 let mut stmt = self.conn.prepare(
@@ -218,10 +216,8 @@ impl<'a> SubscriptionManager<'a> {
                     })
                 })?;
                 
-                for row in rows {
-                    if let Ok(notif) = row {
-                        notifications.push(notif);
-                    }
+                for notif in rows.flatten() {
+                    notifications.push(notif);
                 }
             }
         } else {
@@ -248,10 +244,8 @@ impl<'a> SubscriptionManager<'a> {
                     }
                 )?;
                 
-                for row in rows {
-                    if let Ok(notif) = row {
-                        notifications.push(notif);
-                    }
+                for notif in rows.flatten() {
+                    notifications.push(notif);
                 }
             } else {
                 let mut stmt = self.conn.prepare(
@@ -275,10 +269,8 @@ impl<'a> SubscriptionManager<'a> {
                     }
                 )?;
                 
-                for row in rows {
-                    if let Ok(notif) = row {
-                        notifications.push(notif);
-                    }
+                for notif in rows.flatten() {
+                    notifications.push(notif);
                 }
             }
         }

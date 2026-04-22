@@ -24,3 +24,4 @@ pub mod regulation;
 
 pub use types::*;
 pub use hub::InteroceptiveHub;
+pub use regulation::evaluate_with_hub;

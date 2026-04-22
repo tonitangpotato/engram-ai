@@ -1,4 +1,3 @@
-#![cfg(feature = "kc")]
 
 //! End-to-end integration tests for the Knowledge Compiler (KC).
 //!
@@ -67,6 +66,11 @@ fn make_memory(id: &str, content: &str) -> MemorySnapshot {
         updated_at: Utc::now(),
         tags: vec![],
         embedding: None,
+        // ISS-020 P0.2: dimensional fields default to None for legacy test fixtures.
+        dimensions: None,
+        type_weights: None,
+        confidence: None,
+        valence: None,
     }
 }
 

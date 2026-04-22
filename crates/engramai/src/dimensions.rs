@@ -336,6 +336,170 @@ impl Dimensions {
 // See design §5.1 and §5.3 of ISS-019.
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// Dimensions::from_legacy_metadata — parse v1 stored JSON back into
+// a typed Dimensions value.
+//
+// This is the read-path counterpart of `memory::build_legacy_metadata`
+// (the v1 layout written by `store_enriched`). Full v2 layout + the
+// LegacyClassification dispatch land in Step 7 (iss-019-s7-v2-metadata);
+// Step 5 only needs a reader robust enough to round-trip rows that
+// engram itself wrote. Missing fields degrade to `Dimensions::minimal`
+// semantics, never fail.
+// ---------------------------------------------------------------------
+
+impl Dimensions {
+    /// Parse a stored metadata JSON blob (v1 layout written by
+    /// `build_legacy_metadata`) back into a `Dimensions`.
+    ///
+    /// `core_fact` comes from the caller (the row's `content` column —
+    /// not duplicated in the JSON blob today).
+    ///
+    /// Best-effort: every field is optional; missing or malformed
+    /// fields fall back to `Dimensions::minimal` defaults. Fails **only**
+    /// when `core_fact` itself is empty/whitespace-only.
+    ///
+    /// Scope note (Step 5): accepts both the v1 layout
+    /// (`metadata.dimensions.*` + top-level `type_weights`) and raw
+    /// legacy rows where narrative fields sit at the top level. Full
+    /// `LegacyClassification` dispatch + backfill enqueue arrive in
+    /// Step 7.
+    /// Parse a stored metadata JSON blob, trying the v2 namespaced layout
+    /// (`engram.dimensions.*`) first and falling back to the v1 flat layout
+    /// (handled by `from_legacy_metadata`).
+    ///
+    /// `core_fact` is always taken from the row's `content` column (the
+    /// authoritative source per design §6); any `core_fact` embedded in
+    /// the JSON is overridden.
+    ///
+    /// New code should prefer this method over `from_legacy_metadata`;
+    /// the latter is retained for tests that want to exercise the
+    /// v1-only path directly.
+    pub fn from_stored_metadata(
+        metadata: &serde_json::Value,
+        core_fact: &str,
+    ) -> Result<Self, EmptyCoreFactError> {
+        // v2 path: metadata.engram.dimensions present?
+        //
+        // We synthesize a "virtual v1 metadata" shape from the v2 layout
+        // so `from_legacy_metadata` can do the field-by-field lenient
+        // parse (same defaults, same Domain/Confidence loose-string
+        // handling). This is simpler than duplicating the parser and
+        // keeps v1/v2 on one canonical read path.
+        if let Some(engram) = metadata.get("engram") {
+            if let Some(dims_val) = engram.get("dimensions") {
+                // Build `{ "dimensions": <dims_val>, "type_weights": <tw> }`
+                // where type_weights is lifted out of dims_val if present
+                // (matches v1 where type_weights lives at the top level).
+                let mut dims_clone = dims_val.clone();
+                let tw = dims_clone
+                    .as_object_mut()
+                    .and_then(|o| o.remove("type_weights"));
+
+                let mut synth = serde_json::Map::new();
+                synth.insert("dimensions".into(), dims_clone);
+                if let Some(tw_val) = tw {
+                    synth.insert("type_weights".into(), tw_val);
+                }
+                let synth_val = serde_json::Value::Object(synth);
+                return Self::from_legacy_metadata(&synth_val, core_fact);
+            }
+        }
+        // v1 fallback
+        Self::from_legacy_metadata(metadata, core_fact)
+    }
+
+    pub fn from_legacy_metadata(
+        metadata: &serde_json::Value,
+        core_fact: &str,
+    ) -> Result<Self, EmptyCoreFactError> {
+        let core = NonEmptyString::new(core_fact)?;
+
+        // Helper closures — read from `metadata.dimensions.<key>`
+        // first, then fall back to `metadata.<key>` (raw v1).
+        let dims_obj = metadata.get("dimensions").and_then(|v| v.as_object());
+        let top_obj = metadata.as_object();
+
+        let get_string = |key: &str| -> Option<String> {
+            dims_obj
+                .and_then(|o| o.get(key))
+                .or_else(|| top_obj.and_then(|o| o.get(key)))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+        };
+
+        let participants = get_string("participants");
+        let temporal = get_string("temporal").map(|s| {
+            crate::enriched::parse_temporal_mark(&s)
+        });
+        let location = get_string("location");
+        let context = get_string("context");
+        let causation = get_string("causation");
+        let outcome = get_string("outcome");
+        let method = get_string("method");
+        let relations = get_string("relations");
+        let sentiment = get_string("sentiment");
+        let stance = get_string("stance");
+
+        // Scalars — fall back to defaults on missing/malformed.
+        let valence_raw = dims_obj
+            .and_then(|o| o.get("valence"))
+            .or_else(|| top_obj.and_then(|o| o.get("valence")))
+            .and_then(|v| v.as_f64());
+        let valence = valence_raw.map(Valence::new).unwrap_or(Valence::ZERO);
+
+        let domain = get_string("domain")
+            .map(|s| Domain::from_loose_str(&s))
+            .unwrap_or_default();
+
+        let confidence = get_string("confidence")
+            .map(|s| Confidence::from_loose_str(&s))
+            .unwrap_or_default();
+
+        // Tags: array of strings. Missing / malformed → empty set.
+        let mut tags: BTreeSet<String> = BTreeSet::new();
+        let tags_val = dims_obj
+            .and_then(|o| o.get("tags"))
+            .or_else(|| top_obj.and_then(|o| o.get("tags")));
+        if let Some(serde_json::Value::Array(arr)) = tags_val {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    let t = s.trim();
+                    if !t.is_empty() {
+                        tags.insert(t.to_string());
+                    }
+                }
+            }
+        }
+
+        // type_weights lives at the top level, not inside `dimensions`.
+        let type_weights = top_obj
+            .and_then(|o| o.get("type_weights"))
+            .and_then(|tw| serde_json::from_value::<TypeWeights>(tw.clone()).ok())
+            .unwrap_or_default();
+
+        Ok(Self {
+            core_fact: core,
+            participants,
+            temporal,
+            location,
+            context,
+            causation,
+            outcome,
+            method,
+            relations,
+            sentiment,
+            stance,
+            valence,
+            domain,
+            confidence,
+            tags,
+            type_weights,
+        })
+    }
+}
+
 impl Dimensions {
     /// Union two dimensional signatures.
     ///
@@ -1098,5 +1262,101 @@ mod tests {
         a.valence = Valence::new(0.4);
         let merged = a.clone().union(a.clone(), MergeWeights::EQUAL);
         assert_eq!(merged, a);
+    }
+
+    // -- Dimensions::from_legacy_metadata --
+
+    #[test]
+    fn from_legacy_metadata_parses_v1_shape() {
+        let meta = serde_json::json!({
+            "dimensions": {
+                "participants": "alice, bob",
+                "temporal": "2026-04-22",
+                "location": "lab",
+                "causation": "kickoff",
+                "valence": 0.3,
+                "domain": "coding",
+                "confidence": "likely",
+                "tags": ["rust", "merge"],
+            },
+            "type_weights": {
+                "factual": 0.9,
+                "episodic": 0.1,
+                "procedural": 0.1,
+                "relational": 0.1,
+                "emotional": 0.1,
+                "opinion": 0.1,
+                "causal": 0.1,
+            },
+            "merge_count": 2,
+        });
+
+        let d = Dimensions::from_legacy_metadata(&meta, "hello world").unwrap();
+        assert_eq!(d.core_fact.as_str(), "hello world");
+        assert_eq!(d.participants.as_deref(), Some("alice, bob"));
+        assert_eq!(d.location.as_deref(), Some("lab"));
+        assert_eq!(d.causation.as_deref(), Some("kickoff"));
+        assert_eq!(d.domain, Domain::Coding);
+        assert_eq!(d.confidence, Confidence::Likely);
+        assert!((d.valence.get() - 0.3).abs() < 1e-9);
+        assert!(d.tags.contains("rust"));
+        assert!(d.tags.contains("merge"));
+    }
+
+    #[test]
+    fn from_legacy_metadata_handles_missing_fields() {
+        // Completely empty metadata — should degrade to minimal defaults.
+        let meta = serde_json::json!({});
+        let d = Dimensions::from_legacy_metadata(&meta, "core").unwrap();
+        assert_eq!(d.core_fact.as_str(), "core");
+        assert!(d.participants.is_none());
+        assert_eq!(d.domain, Domain::General);
+        assert_eq!(d.confidence, Confidence::Uncertain);
+        assert!(d.tags.is_empty());
+        assert_eq!(d.valence.get(), 0.0);
+    }
+
+    #[test]
+    fn from_legacy_metadata_rejects_empty_core_fact() {
+        let meta = serde_json::json!({});
+        let err = Dimensions::from_legacy_metadata(&meta, "  \t\n").unwrap_err();
+        let _ = err; // EmptyCoreFactError; we just need it to be Err
+    }
+
+    #[test]
+    fn from_legacy_metadata_round_trips_via_to_legacy_metadata() {
+        // Build a dimensions, serialize via EnrichedMemory::to_legacy_metadata
+        // (which now emits the v2 layout), then parse back via the
+        // dual-path reader `from_stored_metadata` and assert fields match.
+        use crate::enriched::EnrichedMemory;
+        use crate::dimensions::Importance;
+
+        let mut d = Dimensions::minimal("a round-trip fact").unwrap();
+        d.participants = Some("alice, bob".to_string());
+        d.location = Some("lab".to_string());
+        d.causation = Some("we shipped it".to_string());
+        d.domain = Domain::Research;
+        d.confidence = Confidence::Confident;
+        d.valence = Valence::new(-0.2);
+        d.tags.insert("iss-019".to_string());
+        d.tags.insert("merge".to_string());
+
+        let em = EnrichedMemory::from_dimensions(
+            d.clone(),
+            Importance::new(0.7),
+            None,
+            None,
+            serde_json::Value::Null,
+        );
+        let meta = em.to_legacy_metadata();
+        let parsed = Dimensions::from_stored_metadata(&meta, "a round-trip fact").unwrap();
+
+        assert_eq!(parsed.participants, d.participants);
+        assert_eq!(parsed.location, d.location);
+        assert_eq!(parsed.causation, d.causation);
+        assert_eq!(parsed.domain, d.domain);
+        assert_eq!(parsed.confidence, d.confidence);
+        assert!((parsed.valence.get() - d.valence.get()).abs() < 1e-9);
+        assert_eq!(parsed.tags, d.tags);
     }
 }

@@ -59,8 +59,7 @@ impl TopicLifecycle {
             let (ref page, ref mems) = topics[i];
             if mems.len() > self.config.max_topic_points {
                 // Suggest split into ceil(len / max_topic_points) sub-topics
-                let num_splits = (mems.len() + self.config.max_topic_points - 1)
-                    / self.config.max_topic_points;
+                let num_splits = mems.len().div_ceil(self.config.max_topic_points);
                 let sub_titles: Vec<String> = (1..=num_splits)
                     .map(|n| format!("{} (Part {})", page.title, n))
                     .collect();
@@ -161,7 +160,7 @@ impl TopicLifecycle {
         }
 
         let now = chrono::Utc::now();
-        let chunk_size = (source_memories.len() + sub_titles.len() - 1) / sub_titles.len();
+        let chunk_size = source_memories.len().div_ceil(sub_titles.len());
         let mut new_pages = Vec::new();
 
         for (i, title) in sub_titles.iter().enumerate() {

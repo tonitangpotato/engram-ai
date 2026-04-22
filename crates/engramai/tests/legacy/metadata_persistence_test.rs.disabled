@@ -1,0 +1,219 @@
+//! Reproducer for the metadata persistence bug.
+//!
+//! Symptom: locomo benchmark passes `--meta dia_id=D1:3 --meta speaker=Caroline ...`
+//! on every store, but in conv-26.db only 9/569 memories have ANY metadata,
+//! and those 9 only have `merge_history` — no dia_id, speaker, session_date, etc.
+//!
+//! This means the new memory's metadata is dropped on dedup merge, AND
+//! possibly on first write when the extractor path is used.
+
+use engramai::{Memory, MemoryConfig};
+use engramai::types::MemoryType;
+use engramai::extractor::{MemoryExtractor, ExtractedFact};
+use std::error::Error;
+use tempfile::tempdir;
+
+/// Mock extractor that returns a fixed list of facts, simulating LLM output.
+struct MockExtractor {
+    facts: Vec<ExtractedFact>,
+}
+
+impl MemoryExtractor for MockExtractor {
+    fn extract(&self, _text: &str) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
+        Ok(self.facts.clone())
+    }
+}
+
+#[test]
+fn test_metadata_persists_on_first_write_no_extractor() {
+    // Baseline: no extractor, no dedup. Metadata MUST round-trip.
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let mut config = MemoryConfig::default();
+    config.dedup_enabled = false;
+    let mut mem = Memory::new(db_path.to_str().unwrap(), Some(config)).unwrap();
+
+    let meta = serde_json::json!({
+        "dia_id": "D1:3",
+        "speaker": "Caroline",
+        "session_date": "2024-01-15 10:00",
+        "turn_index": 3,
+        "session_num": 1,
+    });
+
+    let id = mem.add(
+        "Caroline said something interesting",
+        MemoryType::Factual,
+        Some(0.5),
+        Some("test_source"),
+        Some(meta.clone()),
+    ).unwrap();
+
+    assert!(!id.is_empty(), "should have an ID");
+
+    // Read back from storage directly
+    let stored_meta: Option<String> = mem.connection().query_row(
+        "SELECT metadata FROM memories WHERE id = ?",
+        rusqlite::params![id],
+        |row| row.get(0),
+    ).unwrap();
+
+    assert!(stored_meta.is_some(), "metadata should have been written");
+    let stored_json: serde_json::Value = serde_json::from_str(&stored_meta.unwrap()).unwrap();
+    assert_eq!(stored_json["dia_id"], "D1:3");
+    assert_eq!(stored_json["speaker"], "Caroline");
+    assert_eq!(stored_json["turn_index"], 3);
+}
+
+#[test]
+fn test_metadata_persists_on_dedup_merge() {
+    // The BUG: when a new store triggers dedup merge into an existing memory,
+    // the NEW metadata (different dia_id, different turn) is DROPPED.
+    // Only merge_history / merge_count gets written.
+    //
+    // This test uses the storage-level merge_memory_into directly, since
+    // that's the function that handles merges.
+
+    use engramai::storage::Storage;
+    use engramai::types::{MemoryRecord, MemoryLayer};
+    use rusqlite::params;
+
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let mut storage = Storage::new(&db_path).unwrap();
+
+    // Store first memory with dia_id=D1:3
+    let initial_meta = serde_json::json!({
+        "dia_id": "D1:3",
+        "speaker": "Caroline",
+        "turn_index": 3,
+    });
+    let record1 = MemoryRecord {
+        id: "mem1".to_string(),
+        content: "Caroline is a counselor".to_string(),
+        memory_type: MemoryType::Factual,
+        layer: MemoryLayer::Working,
+        created_at: chrono::Utc::now(),
+        access_times: vec![chrono::Utc::now()],
+        working_strength: 1.0,
+        core_strength: 0.0,
+        importance: 0.5,
+        pinned: false,
+        consolidation_count: 0,
+        last_consolidated: None,
+        source: "session_1".to_string(),
+        contradicts: None,
+        contradicted_by: None,
+        metadata: Some(initial_meta),
+    };
+    storage.add(&record1, "default").unwrap();
+
+    // Now simulate a dedup-merge: a NEW memory with dia_id=D1:47
+    // wants to merge into mem1. We expect the merge to either:
+    //   (a) preserve the new dia_id somewhere (ideally as a history array), OR
+    //   (b) keep the original dia_id.
+    // The bug would be: first dia_id is lost and replaced with only merge_history.
+    storage.merge_memory_into(
+        "mem1",
+        "Caroline is a counselor",
+        0.6,
+        0.98,
+    ).unwrap();
+
+    // Re-read
+    let stored_meta: String = storage.connection().query_row(
+        "SELECT metadata FROM memories WHERE id = 'mem1'",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    let stored_json: serde_json::Value = serde_json::from_str(&stored_meta).unwrap();
+
+    // The ORIGINAL metadata should still be there
+    assert_eq!(
+        stored_json.get("dia_id"),
+        Some(&serde_json::json!("D1:3")),
+        "Original dia_id should be preserved after merge. Full metadata: {}",
+        stored_json,
+    );
+    assert_eq!(
+        stored_json.get("speaker"),
+        Some(&serde_json::json!("Caroline")),
+        "Original speaker should be preserved after merge. Full metadata: {}",
+        stored_json,
+    );
+
+    // Verify: we also cannot pass NEW metadata through merge_memory_into at all —
+    // its signature doesn't accept it. This is the root of the bug.
+}
+
+#[test]
+fn test_metadata_persists_with_extractor() {
+    // This is the ACTUAL benchmark path: an LLM extractor is configured,
+    // content gets decomposed into facts, metadata is supposed to propagate
+    // to each extracted fact record.
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let mut config = MemoryConfig::default();
+    config.dedup_enabled = false; // isolate from dedup logic for this test
+    let mut mem = Memory::new(db_path.to_str().unwrap(), Some(config)).unwrap();
+
+    // Install a mock extractor that returns 2 facts
+    let extractor = MockExtractor {
+        facts: vec![
+            ExtractedFact {
+                content: "Caroline is a counselor".to_string(),
+                memory_type: "factual".to_string(),
+                importance: 0.5,
+                confidence: "confident".to_string(),
+            },
+            ExtractedFact {
+                content: "Caroline feels happy".to_string(),
+                memory_type: "emotional".to_string(),
+                importance: 0.4,
+                confidence: "likely".to_string(),
+            },
+        ],
+    };
+    mem.set_extractor(Box::new(extractor));
+
+    let meta = serde_json::json!({
+        "dia_id": "D1:3",
+        "speaker": "Caroline",
+        "session_date": "2024-01-15 10:00",
+        "turn_index": 3,
+    });
+
+    let id = mem.add(
+        "Caroline said: I am a counselor and feel happy today",
+        MemoryType::Factual,
+        Some(0.5),
+        Some("session_1"),
+        Some(meta.clone()),
+    ).unwrap();
+
+    assert!(!id.is_empty(), "should return an ID");
+
+    // Query all memories — both extracted facts should have metadata
+    let mut stmt = mem.connection()
+        .prepare("SELECT id, content, metadata FROM memories ORDER BY content")
+        .unwrap();
+    let rows: Vec<(String, String, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    assert_eq!(rows.len(), 2, "should have 2 extracted memories");
+    for (id, content, metadata) in &rows {
+        assert!(
+            metadata.is_some(),
+            "Memory {} '{}' has NO metadata — bug confirmed. metadata: {:?}",
+            id, content, metadata,
+        );
+        let m: serde_json::Value = serde_json::from_str(metadata.as_ref().unwrap()).unwrap();
+        assert_eq!(m["dia_id"], "D1:3", "dia_id should be propagated to extracted fact {}", id);
+        assert_eq!(m["speaker"], "Caroline");
+    }
+}

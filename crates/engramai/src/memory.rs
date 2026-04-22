@@ -1,7 +1,7 @@
 //! Main Memory API — simplified interface to Engram's cognitive models.
 
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::Write;
 use uuid::Uuid;
@@ -17,6 +17,7 @@ use crate::bus::{SubscriptionManager, Subscription, Notification};
 use crate::models::hebbian::{MemoryWithNamespace, record_cross_namespace_coactivation};
 use crate::session_wm::{SessionWorkingMemory, SessionRecallResult};
 use crate::synthesis::types::SynthesisEngine;
+use crate::lifecycle::{DecayReport, ForgetReport, LifecycleError, ReconcileCandidate, ReconcileReport, PhaseReport};
 use crate::types::{AclEntry, CrossLink, HebbianLink, LayerStats, MemoryLayer, MemoryRecord, MemoryStats, MemoryType, Permission, RecallResult, RecallWithAssociationsResult, TypeStats};
 
 /// Report from a unified sleep cycle (consolidation + synthesis).
@@ -26,6 +27,16 @@ pub struct SleepReport {
     pub consolidation_ok: bool,
     /// Synthesis report (None if synthesis not enabled or failed non-fatally).
     pub synthesis: Option<crate::synthesis::types::SynthesisReport>,
+    /// Per-phase timing reports.
+    pub phases: Vec<crate::lifecycle::PhaseReport>,
+    /// Decay check report (if run).
+    pub decay: Option<crate::lifecycle::DecayReport>,
+    /// Forget report (if run).
+    pub forget: Option<crate::lifecycle::ForgetReport>,
+    /// Rebalance repair report (if run).
+    pub rebalance: Option<crate::lifecycle::RebalanceReport>,
+    /// Total sleep cycle duration in milliseconds.
+    pub duration_ms: u64,
 }
 
 /// Check if a memory record is a synthesis insight.
@@ -38,6 +49,18 @@ pub fn is_insight(record: &MemoryRecord) -> bool {
         .unwrap_or(false)
 }
 
+/// Placeholder sink used only long enough for `Memory::new*`
+/// constructors to return a value. Immediately replaced by
+/// `install_default_counting_sink` before the `Memory` escapes the
+/// constructor. Exists because Rust's partial-move rules make it
+/// awkward to construct an `Arc<dyn EventSink>` and a concrete
+/// `Arc<CountingSink>` that share storage *inside* a struct literal;
+/// doing it in two steps (placeholder → real) keeps every
+/// constructor readable.
+fn default_event_sink_placeholder() -> crate::write_stats::SharedSink {
+    std::sync::Arc::new(crate::write_stats::NoopSink)
+}
+
 /// Main interface to the Engram memory system.
 ///
 /// Wraps the neuroscience math models behind a clean API.
@@ -48,7 +71,7 @@ pub struct Memory {
     created_at: chrono::DateTime<Utc>,
     /// Agent ID for this memory instance (used for ACL checks)
     agent_id: Option<String>,
-    /// Optional Emotional Bus for drive alignment and emotional tracking
+    /// Optional Empathy Bus for drive alignment and emotional tracking
     empathy_bus: Option<EmpathyBus>,
     /// Embedding provider for semantic similarity (optional - falls back to FTS if unavailable)
     embedding: Option<EmbeddingProvider>,
@@ -81,15 +104,104 @@ pub struct Memory {
     /// Haiku-based intent classifier for Level 2 query-intent classification.
     /// Initialized via `auto_configure_intent_classifier()` when enabled in config.
     intent_classifier: Option<crate::query_classifier::HaikuIntentClassifier>,
+    /// Write-path telemetry sink (ISS-019 Step 8). Default is a
+    /// `CountingSink` so every instance gets structured counters
+    /// for free. Callers that want a different sink (metrics
+    /// exporter, capturing test sink) install it via
+    /// [`Memory::set_event_sink`]. Held as `Arc<dyn EventSink>` so
+    /// tests can keep a reference to the same sink after handing it
+    /// to `Memory`.
+    event_sink: crate::write_stats::SharedSink,
+    /// Hot-path handle to the default `CountingSink`, if that's what
+    /// we're holding. `write_stats()` uses it to snapshot without a
+    /// downcast. `None` means the caller installed a custom sink
+    /// and `write_stats()` returns `None` — callers with custom
+    /// sinks read counters via their own handle.
+    counting_sink: Option<std::sync::Arc<crate::write_stats::CountingSink>>,
 }
 
 impl Memory {
+    // -----------------------------------------------------------------
+    // ISS-019 Step 8: write-path telemetry wiring
+    // -----------------------------------------------------------------
+
+    /// Install a fresh `CountingSink` into both `event_sink` (as
+    /// `dyn EventSink`) and `counting_sink` (concrete handle).
+    ///
+    /// Called immediately after every constructor so `write_stats()`
+    /// works out of the box. The two fields share one `Arc` — the
+    /// concrete handle is just a clone, so `snapshot()` on it sees
+    /// every event the trait object records.
+    fn install_default_counting_sink(&mut self) {
+        let counting = std::sync::Arc::new(crate::write_stats::CountingSink::new());
+        self.event_sink = counting.clone() as crate::write_stats::SharedSink;
+        self.counting_sink = Some(counting);
+    }
+
+    /// Install a custom [`EventSink`]. Disables the default
+    /// `CountingSink` fast path — `write_stats()` returns `None`
+    /// from now on, since the caller owns their own counters.
+    ///
+    /// Use cases:
+    /// - Tests that want to capture the full event stream.
+    /// - Production that wires events to Prometheus / OTel exporters.
+    pub fn set_event_sink(&mut self, sink: crate::write_stats::SharedSink) {
+        self.event_sink = sink;
+        self.counting_sink = None;
+    }
+
+    /// Restore the default `CountingSink`. Any events recorded by
+    /// the previously-installed sink are lost (this is intentional —
+    /// mixing event streams would be a correctness trap).
+    pub fn install_default_write_stats(&mut self) {
+        self.install_default_counting_sink();
+    }
+
+    /// Snapshot the current write-path counters.
+    ///
+    /// Returns `None` if the caller has installed a custom sink via
+    /// [`Memory::set_event_sink`]. In that case, the caller owns
+    /// their own handle and reads counters from there.
+    ///
+    /// Otherwise returns a fresh [`WriteStats`] reflecting every
+    /// event recorded through `store_raw` since the last
+    /// [`Memory::reset_write_stats`] (or since construction).
+    pub fn write_stats(&self) -> Option<crate::write_stats::WriteStats> {
+        self.counting_sink.as_ref().map(|s| s.snapshot())
+    }
+
+    /// Zero the default `CountingSink` counters. No effect if a
+    /// custom sink is installed (returns `false`); the caller is
+    /// expected to reset their own sink. Returns `true` when the
+    /// default sink was reset.
+    ///
+    /// Used by rebuild-pilot code to bracket a batch with a clean
+    /// window; used by tests to isolate scenarios.
+    pub fn reset_write_stats(&mut self) -> bool {
+        match self.counting_sink.as_ref() {
+            Some(s) => {
+                s.reset();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Emit a [`StoreEvent`] through the installed sink. Internal
+    /// helper so `store_raw` call sites stay concise. Never panics
+    /// even if the sink's `record` is ill-behaved — the trait bound
+    /// forbids panic but we don't rely on it.
+    #[inline]
+    fn emit_store_event(&self, event: crate::write_stats::StoreEvent) {
+        self.event_sink.record(event);
+    }
+
     /// Initialize Engram memory system.
     ///
     /// # Arguments
     ///
     /// * `path` - Path to SQLite database file. Created if it doesn't exist.
-    ///           Use `:memory:` for in-memory (non-persistent) operation.
+    ///   Use `:memory:` for in-memory (non-persistent) operation.
     /// * `config` - MemoryConfig with tunable parameters. None = literature defaults.
     ///
     /// If Ollama is available, embeddings will be used for semantic search.
@@ -131,7 +243,14 @@ impl Memory {
             dedup_write_count: 0,
             metacognition: None,
             intent_classifier: None,
+            event_sink: default_event_sink_placeholder(),
+            counting_sink: None,
         };
+        // Install the default CountingSink, sharing one Arc between
+        // the trait-object slot and the fast-path `counting_sink`
+        // handle. See `Memory::set_event_sink` for the custom-sink
+        // alternative.
+        mem.install_default_counting_sink();
         
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
@@ -190,7 +309,14 @@ impl Memory {
             dedup_write_count: 0,
             metacognition: None,
             intent_classifier: None,
+            event_sink: default_event_sink_placeholder(),
+            counting_sink: None,
         };
+        // Install the default CountingSink, sharing one Arc between
+        // the trait-object slot and the fast-path `counting_sink`
+        // handle. See `Memory::set_event_sink` for the custom-sink
+        // alternative.
+        mem.install_default_counting_sink();
         
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
@@ -247,7 +373,14 @@ impl Memory {
             dedup_write_count: 0,
             metacognition: None,
             intent_classifier: None,
+            event_sink: default_event_sink_placeholder(),
+            counting_sink: None,
         };
+        // Install the default CountingSink, sharing one Arc between
+        // the trait-object slot and the fast-path `counting_sink`
+        // handle. See `Memory::set_event_sink` for the custom-sink
+        // alternative.
+        mem.install_default_counting_sink();
         
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
@@ -256,10 +389,10 @@ impl Memory {
         Ok(mem)
     }
     
-    /// Create a Memory instance with an Emotional Bus attached.
+    /// Create a Memory instance with an Empathy Bus attached.
     ///
-    /// The Emotional Bus connects memory to workspace files (SOUL.md, HEARTBEAT.md)
-    /// for drive alignment and emotional feedback loops.
+    /// The Empathy Bus connects memory to workspace files (SOUL.md, HEARTBEAT.md)
+    /// for drive alignment and empathy feedback loops.
     ///
     /// # Arguments
     ///
@@ -309,7 +442,14 @@ impl Memory {
             dedup_write_count: 0,
             metacognition: None,
             intent_classifier: None,
+            event_sink: default_event_sink_placeholder(),
+            counting_sink: None,
         };
+        // Install the default CountingSink, sharing one Arc between
+        // the trait-object slot and the fast-path `counting_sink`
+        // handle. See `Memory::set_event_sink` for the custom-sink
+        // alternative.
+        mem.install_default_counting_sink();
         
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
@@ -325,6 +465,49 @@ impl Memory {
         config: Option<MemoryConfig>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::with_empathy_bus(path, workspace_dir, config)
+    }
+
+    /// Initialize the meta-cognition tracker if enabled in config.
+    fn init_metacognition_if_enabled(&mut self) {
+        if self.config.metacognition_enabled && self.metacognition.is_none() {
+            match crate::metacognition::MetaCognitionTracker::new(self.storage.conn()) {
+                Ok(mut tracker) => {
+                    if let Err(e) = tracker.load_history(self.storage.conn()) {
+                        log::warn!("Failed to load metacognition history: {}", e);
+                    }
+                    self.metacognition = Some(tracker);
+                }
+                Err(e) => {
+                    log::warn!("Failed to initialize metacognition tracker: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Get a meta-cognition report with current metrics.
+    ///
+    /// Returns None if metacognition is not enabled.
+    pub fn metacognition_report(&self) -> Option<crate::metacognition::MetaCognitionReport> {
+        self.metacognition.as_ref().map(|t| t.report())
+    }
+
+    /// Get parameter adjustment suggestions based on observed patterns.
+    ///
+    /// Returns None if metacognition is not enabled.
+    pub fn parameter_suggestions(&self) -> Option<Vec<crate::metacognition::ParameterSuggestion>> {
+        self.metacognition.as_ref().map(|t| t.parameter_suggestions(&self.config))
+    }
+
+    /// Submit external feedback for the most recent recall.
+    ///
+    /// `score`: 0.0 (useless) to 1.0 (perfect). Returns Ok(true) if feedback
+    /// was attached, Ok(false) if no pending recall event, None if metacognition disabled.
+    pub fn feedback_recall(&mut self, score: f64) -> Option<Result<bool, Box<dyn std::error::Error>>> {
+        if let Some(ref mut tracker) = self.metacognition {
+            Some(tracker.feedback_event(self.storage.conn(), score))
+        } else {
+            None
+        }
     }
     
     /// Get a reference to the Empathy Bus, if attached.
@@ -365,6 +548,20 @@ impl Memory {
         self.interoceptive_hub.current_state()
     }
 
+    // ── Extraction Emotion Cache ───────────────────────────────────────
+
+    /// Take the emotion data from the most recent LLM extraction.
+    ///
+    /// Returns `None` if no extraction has occurred since the last call.
+    /// This is one-shot: calling it clears the cache.
+    ///
+    /// Each entry is `(valence, domain)` — one per extracted fact.
+    /// A single user message may produce multiple facts with different
+    /// valences and domains.
+    pub fn take_last_emotions(&self) -> Option<Vec<(f64, String)>> {
+        self.last_extraction_emotions.lock().unwrap().take()
+    }
+
     /// Run an interoceptive tick: pull signals from all attached subsystems
     /// and feed them into the hub.
     ///
@@ -380,7 +577,7 @@ impl Memory {
         // Pull from DB-backed subsystems via the storage connection.
         let conn = self.storage.connection();
 
-        // Accumulator: pull all emotional trends.
+        // Accumulator: pull all empathy trends.
         if let Ok(acc) = EmpathyAccumulator::new(conn) {
             if let Ok(trends) = acc.get_all_trends() {
                 for trend in &trends {
@@ -411,6 +608,15 @@ impl Memory {
             log::debug!("Interoceptive tick: processing {} signals", signals.len());
             self.interoceptive_hub.process_batch(signals);
         }
+    }
+
+    /// Feed an external interoceptive signal directly into the hub.
+    ///
+    /// Used by host agents (e.g., RustClaw) to inject runtime-sourced
+    /// signals (OperationalLoad, ExecutionStress, CognitiveFlow, ResourcePressure)
+    /// that originate outside of engram's own monitoring subsystems.
+    pub fn feed_interoceptive_signal(&mut self, signal: crate::interoceptive::InteroceptiveSignal) {
+        self.interoceptive_hub.process_signal(signal);
     }
 
     /// Broadcast memory admission to the interoceptive hub (GWT global workspace).
@@ -494,11 +700,485 @@ impl Memory {
         neighbor_ids
     }
     
+    /// Get the last add result (Created or Merged).
+    pub fn last_add_result(&self) -> Option<&crate::lifecycle::AddResult> {
+        self.last_add_result.as_ref()
+    }
+
     /// Get a reference to the underlying storage connection.
     pub fn connection(&self) -> &rusqlite::Connection {
         self.storage.connection()
     }
-    
+
+    /// Get a reference to the underlying Storage.
+    pub fn storage(&self) -> &Storage {
+        &self.storage
+    }
+
+    /// Get a mutable reference to the underlying Storage.
+    pub fn storage_mut(&mut self) -> &mut Storage {
+        &mut self.storage
+    }
+
+    /// Access recent recalls ring buffer (for testing/inspection).
+    pub fn recent_recalls(&self) -> &VecDeque<(String, std::time::Instant)> {
+        &self.recent_recalls
+    }
+
+    /// Mutable access to recent recalls (for testing).
+    pub fn recent_recalls_mut(&mut self) -> &mut VecDeque<(String, std::time::Instant)> {
+        &mut self.recent_recalls
+    }
+
+    /// Scan namespace for duplicate pairs above similarity threshold.
+    /// Returns candidates sorted by combined score (0.7 * embedding_sim + 0.3 * entity_jaccard).
+    pub fn reconcile(
+        &self,
+        namespace: &str,
+        max_scan: Option<usize>,
+    ) -> Result<Vec<ReconcileCandidate>, LifecycleError> {
+        let max_scan = max_scan.unwrap_or(1000);
+        let model_id = self.config.embedding.model_id();
+
+        // Load embeddings (bounded)
+        let embeddings = self.storage.get_embeddings_in_namespace(
+            Some(namespace), &model_id,
+        ).map_err(LifecycleError::Storage)?;
+
+        // Bound by max_scan
+        let embeddings: Vec<_> = embeddings.into_iter().take(max_scan).collect();
+
+        let mut candidates: Vec<ReconcileCandidate> = Vec::new();
+        let mut seen_pairs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+
+        for (id_a, emb_a) in &embeddings {
+            let matches = self.storage.find_all_above_threshold(
+                emb_a, &model_id, Some(namespace), 0.85,
+            ).map_err(LifecycleError::Storage)?;
+
+            for (id_b, score) in matches {
+                if id_a == &id_b { continue; }
+                let pair = if id_a < &id_b {
+                    (id_a.clone(), id_b.clone())
+                } else {
+                    (id_b.clone(), id_a.clone())
+                };
+                if seen_pairs.contains(&pair) { continue; }
+                seen_pairs.insert(pair);
+
+                let entities_a = self.storage.get_entities_for_memory(id_a)
+                    .map_err(LifecycleError::Storage)?;
+                let entities_b = self.storage.get_entities_for_memory(&id_b)
+                    .map_err(LifecycleError::Storage)?;
+                let jaccard = jaccard_similarity_strings(&entities_a, &entities_b);
+
+                let preview_a = self.storage.get_memory_content_preview(id_a, 100)
+                    .map_err(LifecycleError::Storage)?;
+                let preview_b = self.storage.get_memory_content_preview(&id_b, 100)
+                    .map_err(LifecycleError::Storage)?;
+
+                candidates.push(ReconcileCandidate {
+                    id_a: id_a.clone(),
+                    id_b,
+                    similarity: score,
+                    entity_overlap: jaccard,
+                    content_preview_a: preview_a,
+                    content_preview_b: preview_b,
+                });
+            }
+        }
+
+        // Sort by combined score: 0.7 * similarity + 0.3 * entity_overlap
+        candidates.sort_by(|a, b| {
+            let score_a = 0.7 * a.similarity as f64 + 0.3 * a.entity_overlap;
+            let score_b = 0.7 * b.similarity as f64 + 0.3 * b.entity_overlap;
+            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(candidates)
+    }
+
+    /// Apply reconcile merges. If dry_run=true, just counts.
+    pub fn reconcile_apply(
+        &mut self,
+        candidates: &[ReconcileCandidate],
+        dry_run: bool,
+    ) -> Result<ReconcileReport, LifecycleError> {
+        let mut report = ReconcileReport {
+            scanned: candidates.len(),
+            candidates_found: candidates.len(),
+            merges_applied: 0,
+            dry_run,
+        };
+
+        if dry_run { return Ok(report); }
+
+        let mut merged_away: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for candidate in candidates {
+            if merged_away.contains(&candidate.id_a) || merged_away.contains(&candidate.id_b) {
+                continue;
+            }
+
+            // Keep the older memory, merge newer into it
+            let (keep_id, donor_id) = {
+                let a = self.storage.get(&candidate.id_a).map_err(LifecycleError::Storage)?;
+                let b = self.storage.get(&candidate.id_b).map_err(LifecycleError::Storage)?;
+                match (a, b) {
+                    (Some(a), Some(b)) => {
+                        if a.created_at <= b.created_at {
+                            (candidate.id_a.clone(), candidate.id_b.clone())
+                        } else {
+                            (candidate.id_b.clone(), candidate.id_a.clone())
+                        }
+                    }
+                    _ => continue, // one already gone
+                }
+            };
+
+            // Get donor content for merge
+            let donor_content = self.storage.get_memory_content_preview(&donor_id, 10000)
+                .map_err(LifecycleError::Storage)?;
+
+            // ISS-019 Step 5.5: route through merge_enriched_into.
+            // Lifecycle merge has no extractor-produced dimensions for
+            // the donor side (we only hold its stored content). Build
+            // a minimal EnrichedMemory — Dimensions::minimal populates
+            // core_fact from content, scalars fall to defaults, and
+            // Dimensions::union will preserve whatever the existing
+            // (keep) side already has without loss.
+            let donor_em = crate::enriched::EnrichedMemory::minimal(
+                &donor_content,
+                crate::dimensions::Importance::new(0.0),
+                None,
+                None,
+            )
+            .map_err(|e| LifecycleError::Storage(rusqlite::Error::InvalidColumnType(
+                0,
+                format!("EnrichedMemory::minimal failed in lifecycle merge: {}", e),
+                rusqlite::types::Type::Text,
+            )))?;
+            self.storage
+                .merge_enriched_into(&keep_id, &donor_em, candidate.similarity)
+                .map_err(LifecycleError::Storage)?;
+
+            // Merge Hebbian links
+            let _ = self.storage.merge_hebbian_links(&donor_id, &keep_id);
+
+            // Record provenance
+            let _ = self.storage.append_merge_provenance(
+                &keep_id, &donor_id, candidate.similarity, false,
+            );
+
+            // Delete donor
+            self.storage.hard_delete_cascade(&donor_id)
+                .map_err(LifecycleError::Storage)?;
+
+            merged_away.insert(donor_id);
+            report.merges_applied += 1;
+        }
+
+        Ok(report)
+    }
+
+    // === Lifecycle: Decay Detection + Safe Forget (FEAT-003 C5+C6) ===
+
+    /// Check memories for decay using Ebbinghaus model and flag weak ones.
+    /// Called during sleep_cycle's forget phase.
+    pub fn check_decay_and_flag(
+        &mut self,
+        namespace: Option<&str>,
+    ) -> Result<DecayReport, LifecycleError> {
+        use crate::models::ebbinghaus;
+
+        let memories = self.storage.all_in_namespace(namespace)
+            .map_err(LifecycleError::Storage)?;
+        let now = Utc::now();
+        let mut report = DecayReport::default();
+
+        for record in &memories {
+            if record.pinned {
+                continue;
+            }
+            let effective = ebbinghaus::effective_strength(record, now);
+            if effective < 0.1 {
+                report.below_threshold += 1;
+                // Only auto-flag if rarely accessed (< 2 accesses)
+                if record.access_times.len() < 2 {
+                    self.storage.soft_delete(&record.id)
+                        .map_err(LifecycleError::Storage)?;
+                    report.flagged_for_forget += 1;
+                    log::debug!(
+                        "memory {} flagged for forget via Ebbinghaus decay (effective_strength={}, access_count={})",
+                        record.id,
+                        effective,
+                        record.access_times.len(),
+                    );
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Targeted forget: soft or hard delete a specific memory.
+    pub fn forget_targeted(
+        &mut self,
+        memory_id: &str,
+        soft: bool,
+    ) -> Result<(), LifecycleError> {
+        if soft {
+            self.storage.soft_delete(memory_id)
+                .map_err(LifecycleError::Storage)?;
+            log::info!("soft-deleted memory {}", memory_id);
+        } else {
+            self.storage.hard_delete_cascade(memory_id)
+                .map_err(LifecycleError::Storage)?;
+            log::info!("hard-deleted memory {} with cascade", memory_id);
+        }
+        Ok(())
+    }
+
+    /// Bulk forget: soft-delete weak memories, hard-delete old soft-deleted ones.
+    pub fn forget_bulk(&mut self) -> Result<ForgetReport, LifecycleError> {
+        let mut report = ForgetReport::default();
+        let now = Utc::now();
+
+        // Phase A: soft-delete weak memories (that aren't already soft-deleted)
+        let all = self.storage.all_in_namespace(None)  // active memories only
+            .map_err(LifecycleError::Storage)?;
+        report.scanned = all.len();
+
+        for record in &all {
+            if record.pinned { continue; }
+            let effective = crate::models::ebbinghaus::effective_strength(record, now);
+            if effective < self.config.forget_threshold {
+                self.storage.soft_delete(&record.id)
+                    .map_err(LifecycleError::Storage)?;
+                report.soft_deleted += 1;
+            }
+        }
+
+        // Phase B: hard-delete memories that were soft-deleted > 30 days ago
+        let deleted = self.storage.list_deleted(Some("*"))
+            .map_err(LifecycleError::Storage)?;
+        for record in &deleted {
+            // Parse deleted_at from DB column
+            if let Some(deleted_at_str) = self.storage.get_deleted_at(&record.id)
+                .map_err(LifecycleError::Storage)?
+            {
+                if let Ok(deleted_at) = chrono::DateTime::parse_from_rfc3339(&deleted_at_str) {
+                    let days_deleted = (now - deleted_at.with_timezone(&Utc)).num_days();
+                    if days_deleted > 30 {
+                        self.storage.hard_delete_cascade(&record.id)
+                            .map_err(LifecycleError::Storage)?;
+                        report.hard_deleted += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Health check: inspect memory system integrity.
+    pub fn health(&self) -> Result<crate::lifecycle::HealthReport, LifecycleError> {
+        use crate::lifecycle::HealthReport;
+
+        let total = self.storage.count_memories_in_namespace(None)
+            .map_err(LifecycleError::Storage)?;
+        let namespaces = self.storage.list_namespaces()
+            .map_err(LifecycleError::Storage)?;
+        let mut per_ns = std::collections::HashMap::new();
+        for ns in &namespaces {
+            let count = self.storage.count_memories_in_namespace(Some(ns))
+                .map_err(LifecycleError::Storage)?;
+            per_ns.insert(ns.clone(), count);
+        }
+        let orphans = self.storage.count_orphan_memories()
+            .map_err(LifecycleError::Storage)?;
+        let dangling = self.storage.count_dangling_hebbian()
+            .map_err(LifecycleError::Storage)?;
+        let soft_del = self.storage.count_soft_deleted()
+            .map_err(LifecycleError::Storage)?;
+
+        // Count memories below decay threshold
+        let all = self.storage.all_in_namespace(None).map_err(LifecycleError::Storage)?;
+        let now = Utc::now();
+        let below = all.iter()
+            .filter(|r| crate::models::ebbinghaus::effective_strength(r, now) < 0.1)
+            .count();
+
+        let stale = self.storage.count_stale_clusters()
+            .map_err(LifecycleError::Storage)?;
+
+        Ok(HealthReport {
+            total_memories: total,
+            per_namespace: per_ns,
+            below_threshold: below,
+            orphan_memories: orphans,
+            stale_clusters: stale,
+            dangling_hebbian_links: dangling,
+            soft_deleted: soft_del,
+        })
+    }
+
+    /// Rebalance: repair integrity issues.
+    pub fn rebalance(&mut self) -> Result<crate::lifecycle::RebalanceReport, LifecycleError> {
+        self.rebalance_internal()
+    }
+
+    fn rebalance_internal(&mut self) -> Result<crate::lifecycle::RebalanceReport, LifecycleError> {
+        let mut report = crate::lifecycle::RebalanceReport::default();
+
+        // 1. Remove orphaned access_log entries
+        report.access_log_cleaned = self.storage.cleanup_orphaned_access_log()
+            .map_err(LifecycleError::Storage)?;
+
+        // 2. Repair dangling Hebbian links
+        report.hebbian_repaired = self.storage.cleanup_dangling_hebbian()
+            .map_err(LifecycleError::Storage)?;
+
+        // 3. Cleanup entity_links for deleted memories
+        report.entity_links_cleaned = self.storage.cleanup_orphaned_entity_links()
+            .map_err(LifecycleError::Storage)?;
+
+        // Note: embedding rebuilding requires EmbeddingProvider which is optional.
+        // Skip for now — embeddings are rebuilt on next recall if missing.
+
+        report.repairs = report.access_log_cleaned
+            + report.hebbian_repaired
+            + report.entity_links_cleaned;
+
+        Ok(report)
+    }
+
+    // ── Supersession: High-Level API (Step 5) ──────────────────────────
+
+    /// Correct a single memory: create a replacement and supersede the old one.
+    ///
+    /// This is the recommended way to fix wrong memories. It:
+    /// 1. Fetches the old memory to inherit type/importance/namespace
+    /// 2. Stores the new content as a fresh memory
+    /// 3. Marks the old memory as superseded by the new one
+    ///
+    /// Returns the new memory's ID.
+    pub fn correct(
+        &mut self,
+        old_id: &str,
+        new_content: &str,
+        importance_override: Option<f64>,
+        memory_type_override: Option<MemoryType>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        // 1. Fetch old memory
+        let old = self.storage.get(old_id)?
+            .ok_or_else(|| format!("Memory not found: {}", old_id))?;
+
+        // 2. Determine type and importance
+        let memory_type = memory_type_override.unwrap_or(old.memory_type);
+        let importance = importance_override.unwrap_or_else(|| old.importance.max(0.5));
+
+        // 3. Get namespace of old memory
+        let namespace = self.storage.get_namespace(old_id)?;
+        let ns_ref = namespace.as_deref();
+
+        // 4. Store the new memory in the same namespace
+        #[allow(deprecated)]
+        let new_id = self.add_to_namespace(
+            new_content,
+            memory_type,
+            Some(importance),
+            Some("correction"),
+            None,
+            ns_ref,
+        )?;
+
+        // 5. Supersede old → new
+        self.storage.supersede(old_id, &new_id)
+            .map_err(|e| format!("Supersession failed after storing new memory: {}", e))?;
+
+        log::info!("Corrected memory {} → {} in namespace {:?}", old_id, new_id, ns_ref);
+        Ok(new_id)
+    }
+
+    /// Correct multiple memories matching a query: find them, create a replacement,
+    /// and supersede all matches.
+    ///
+    /// The confirmation step (showing matches before applying) is handled at the
+    /// CLI layer, not here. This method is unconditional.
+    ///
+    /// Returns a `BulkCorrectionResult` with the new ID and all superseded IDs.
+    pub fn correct_bulk(
+        &mut self,
+        query: &str,
+        new_content: &str,
+        namespace: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::types::BulkCorrectionResult, Box<dyn std::error::Error>> {
+        // 1. Find matching memories via recall
+        let matches = self.recall_from_namespace(query, limit, None, None, namespace)?;
+        if matches.is_empty() {
+            return Err("No matching memories found for correction".into());
+        }
+
+        // 2. Determine memory type from the highest-scored match
+        let best_match = &matches[0];
+        let memory_type = best_match.record.memory_type;
+
+        // 3. Store the new correction memory
+        #[allow(deprecated)]
+        let new_id = self.add_to_namespace(
+            new_content,
+            memory_type,
+            Some(0.7), // Corrections get moderate-high importance
+            Some("bulk_correction"),
+            None,
+            namespace,
+        )?;
+
+        // 4. Supersede all matching memories
+        let ids: Vec<String> = matches.iter().map(|r| r.record.id.clone()).collect();
+        let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let count = self.storage.supersede_bulk(&id_refs, &new_id)
+            .map_err(|e| format!("Bulk supersession failed: {}", e))?;
+
+        log::info!("Bulk corrected {} memories → {} (query: '{}')", count, new_id, query);
+
+        Ok(crate::types::BulkCorrectionResult {
+            new_id,
+            superseded_count: count,
+            superseded_ids: ids,
+        })
+    }
+
+    /// List all superseded memories (observability).
+    ///
+    /// Returns superseded records with their replacement ID and chain head.
+    pub fn list_superseded(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Vec<crate::types::SupersessionInfo>, Box<dyn std::error::Error>> {
+        let pairs = self.storage.list_superseded(namespace)?;
+        let mut results = Vec::with_capacity(pairs.len());
+        for (record, replacement_id) in pairs {
+            let chain_head = self.storage.resolve_chain_head(&replacement_id)?;
+            results.push(crate::types::SupersessionInfo {
+                superseded: record,
+                superseded_by_id: replacement_id,
+                chain_head,
+            });
+        }
+        Ok(results)
+    }
+
+    /// Undo a supersession, restoring a memory to active recall.
+    pub fn unsupersede(&mut self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.storage.unsupersede(id)
+            .map_err(|e| format!("Unsupersede failed: {}", e))?;
+        log::info!("Restored memory {} to active recall", id);
+        Ok(())
+    }
+
     /// Set the agent ID for this memory instance.
     /// 
     /// This is used for ACL checks when storing and recalling memories.
@@ -540,6 +1220,11 @@ impl Memory {
     /// but skips LLM insight generation (graceful degradation).
     pub fn set_synthesis_llm_provider(&mut self, provider: Box<dyn crate::synthesis::types::SynthesisLlmProvider>) {
         self.synthesis_llm_provider = Some(provider);
+    }
+
+    /// Set the LLM triple extractor for knowledge graph enrichment during consolidation.
+    pub fn set_triple_extractor(&mut self, extractor: Box<dyn crate::triple_extractor::TripleExtractor>) {
+        self.triple_extractor = Some(extractor);
     }
     
     /// Remove the memory extractor (revert to storing raw content).
@@ -716,6 +1401,10 @@ impl Memory {
     /// * `importance` - 0-1 importance score (None = auto from type)
     /// * `source` - Source identifier (e.g., filename, conversation ID)
     /// * `metadata` - Optional structured metadata (e.g., for causal memories)
+    #[deprecated(
+        since = "0.2.3",
+        note = "Use `store_raw` (for text + extractor dispatch) or `store_enriched` (for pre-validated EnrichedMemory). This shim will be removed in v0.4."
+    )]
     pub fn add(
         &mut self,
         content: &str,
@@ -724,10 +1413,24 @@ impl Memory {
         source: Option<&str>,
         metadata: Option<serde_json::Value>,
     ) -> Result<String, Box<dyn std::error::Error>> {
+        #[allow(deprecated)]
         self.add_to_namespace(content, memory_type, importance, source, metadata, None)
     }
     
     /// Store a new memory in a specific namespace. Returns memory ID.
+    ///
+    /// **Deprecated (ISS-019 Step 4.5):** use [`Memory::store_raw`] for
+    /// the new typed write path. This method is now a thin shim that
+    /// forwards to `store_raw`, preserving the return-type contract
+    /// (a single `String` memory id) and the explicit-`memory_type`
+    /// hint semantics through `StorageMeta::memory_type_hint`.
+    ///
+    /// Semantics preserved:
+    /// - Extractor path: first fact's id is returned (warn log if N > 1).
+    /// - Empty-facts path: returns a sentinel id `"skipped:<hash>"` and
+    ///   a structured warn log, matching the previous empty-string
+    ///   return (relaxed to a traceable sentinel).
+    /// - Extractor failure: surfaces as `Err(StoreError::Quarantined)`.
     ///
     /// If an extractor is configured, the content is first passed through
     /// the LLM to extract structured facts. Each extracted fact is stored
@@ -742,6 +1445,10 @@ impl Memory {
     /// * `source` - Source identifier (e.g., filename, conversation ID)
     /// * `metadata` - Optional structured metadata (e.g., for causal memories)
     /// * `namespace` - Namespace to store in (None = "default")
+    #[deprecated(
+        since = "0.2.3",
+        note = "Use `store_raw` (for text + extractor dispatch) or `store_enriched` (for pre-validated EnrichedMemory). This shim will be removed in v0.4."
+    )]
     pub fn add_to_namespace(
         &mut self,
         content: &str,
@@ -751,108 +1458,68 @@ impl Memory {
         metadata: Option<serde_json::Value>,
         namespace: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        // If extractor is configured, try to extract facts first
-        if let Some(ref extractor) = self.extractor {
-            match extractor.extract(content) {
-                Ok(facts) if !facts.is_empty() => {
-                    log::info!("Extracted {} facts from content ({}...)", facts.len(),
-                        content.chars().take(40).collect::<String>());
-                    let mut last_id = String::new();
-                    for fact in &facts {
-                        log::info!("  → (imp={:.1}, val={:.2}, dom={}) {}", 
-                            fact.importance, fact.valence, fact.domain,
-                            fact.core_fact.chars().take(80).collect::<String>());
-                    }
-                    for fact in facts {
-                        // Infer type weights from dimensional fields
-                        let type_weights = crate::type_weights::infer_type_weights(&fact);
-                        let fact_type = type_weights.primary_type();
-                        
-                        // Cap auto-extracted importance to prevent noise from dominating recall
-                        let capped_importance = fact.importance.min(self.config.auto_extract_importance_cap);
-                        if fact.importance > self.config.auto_extract_importance_cap {
-                            log::debug!("  ↓ importance capped: {:.2} → {:.2}", fact.importance, capped_importance);
-                        }
-                        let fact_importance = Some(capped_importance);
+        use crate::store_api::{RawStoreOutcome, StorageMeta, StoreError, StoreOutcome};
 
-                        // Build dimensional metadata
-                        let mut dim_metadata = serde_json::Map::new();
-                        
-                        // Dimensional fields
-                        let mut dimensions = serde_json::Map::new();
-                        if let Some(ref v) = fact.participants { dimensions.insert("participants".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.temporal { dimensions.insert("temporal".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.location { dimensions.insert("location".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.context { dimensions.insert("context".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.causation { dimensions.insert("causation".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.outcome { dimensions.insert("outcome".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.method { dimensions.insert("method".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.relations { dimensions.insert("relations".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.sentiment { dimensions.insert("sentiment".into(), serde_json::Value::String(v.clone())); }
-                        if let Some(ref v) = fact.stance { dimensions.insert("stance".into(), serde_json::Value::String(v.clone())); }
-                        // ISS-020 P0.0: persist always-present fields that were previously dropped.
-                        // `valence` (f64) and `confidence` (string) are required fields on ExtractedFact
-                        // but were missing from the persisted dimensions object — KC could not read them.
-                        // `domain` is also always-present; persisting it here unblocks KC conflict detection
-                        // (P0.5 needs same-domain matching) and future clustering pre-filter (P1.1).
-                        dimensions.insert("valence".into(), serde_json::json!(fact.valence));
-                        dimensions.insert("confidence".into(), serde_json::Value::String(fact.confidence.clone()));
-                        dimensions.insert("domain".into(), serde_json::Value::String(fact.domain.clone()));
-                        if !dimensions.is_empty() {
-                            dim_metadata.insert("dimensions".into(), serde_json::Value::Object(dimensions));
-                        }
-                        
-                        // Type weights
-                        dim_metadata.insert("type_weights".into(), type_weights.to_json());
-                        
-                        // NOTE: source_text deliberately NOT stored here.
-                        // Preserving raw input is a caller concern (e.g., benchmark adapters
-                        // that need dia_id markers for evidence tracking). Storing it in every
-                        // memory doubles storage footprint and violates engram's separation
-                        // between cognitive facts (content) and source material.
-                        // Callers needing raw text should maintain their own cache or pass it
-                        // via the `metadata` parameter.
-                        
-                        // Merge with caller-provided metadata (caller's keys take priority)
-                        let fact_metadata = if let Some(ref caller_meta) = metadata {
-                            if let Some(caller_obj) = caller_meta.as_object() {
-                                for (k, v) in caller_obj {
-                                    dim_metadata.insert(k.clone(), v.clone());
-                                }
-                            }
-                            Some(serde_json::Value::Object(dim_metadata))
-                        } else {
-                            Some(serde_json::Value::Object(dim_metadata))
-                        };
-                        
-                        // Store each extracted fact separately
-                        last_id = self.add_raw(
-                            &fact.core_fact,
-                            fact_type,
-                            fact_importance,
-                            source,
-                            fact_metadata,
-                            namespace,
-                        )?;
-                    }
-                    return Ok(last_id);
+        let meta = StorageMeta {
+            importance_hint: importance,
+            source: source.map(str::to_string),
+            namespace: namespace.map(str::to_string),
+            user_metadata: metadata.unwrap_or(serde_json::Value::Null),
+            memory_type_hint: Some(memory_type),
+        };
+
+        let outcome = self.store_raw(content, meta).map_err(|e| match e {
+            StoreError::Quarantined { id, reason } => {
+                // Legacy callers had no quarantine concept — surface as Err
+                // so silent success does not hide the new behavior.
+                Box::<dyn std::error::Error>::from(format!(
+                    "content quarantined: {reason:?} (id={})",
+                    id.as_str()
+                ))
+            }
+            other => Box::<dyn std::error::Error>::from(other.to_string()),
+        })?;
+
+        match outcome {
+            RawStoreOutcome::Stored(outcomes) => {
+                if outcomes.len() > 1 {
+                    log::warn!(
+                        "add_to_namespace shim: extractor produced {} facts; returning first id (legacy signature carries a single id)",
+                        outcomes.len()
+                    );
                 }
-                Ok(_) => {
-                    // No facts extracted - nothing worth storing
-                    log::info!("Extractor: nothing worth storing in: {}...", 
-                        content.chars().take(50).collect::<String>());
-                    return Ok(String::new());
-                }
-                Err(e) => {
-                    // Extractor failed - fall back to storing raw text
-                    log::warn!("Extractor failed, storing raw: {}", e);
-                    // Fall through to raw storage below
-                }
+                let id = outcomes
+                    .first()
+                    .map(|o| match o {
+                        StoreOutcome::Inserted { id } => id.clone(),
+                        StoreOutcome::Merged { id, .. } => id.clone(),
+                    })
+                    .unwrap_or_default();
+                Ok(id)
+            }
+            RawStoreOutcome::Skipped { content_hash, reason } => {
+                // ISS-019 Step 8: demoted to debug!. The shim's
+                // caller sees "skipped:<hash>" in the return value,
+                // and `Memory::write_stats()` already captures the
+                // skip reason structurally.
+                log::debug!(
+                    "add_to_namespace shim: content skipped ({:?}) — returning sentinel id",
+                    reason
+                );
+                Ok(format!("skipped:{}", content_hash.as_str()))
+            }
+            RawStoreOutcome::Quarantined { id, reason } => {
+                // Shouldn't reach this branch because the map_err above
+                // converts Quarantined StoreError into an Err, and the
+                // Quarantined outcome variant is only produced via the
+                // Ok path. Keep a safety net.
+                Err(format!(
+                    "content quarantined: {reason:?} (id={})",
+                    id.as_str()
+                )
+                .into())
             }
         }
-        
-        // No extractor or extractor failed - store raw (backward compatible)
-        self.add_raw(content, memory_type, importance, source, metadata, namespace)
     }
     
     /// Parse a memory type string into MemoryType enum.
@@ -895,7 +1562,7 @@ impl Memory {
         let id = format!("{}", Uuid::new_v4())[..8].to_string();
         let base_importance = importance.unwrap_or_else(|| memory_type.default_importance());
         
-        // Apply drive alignment boost if Emotional Bus is attached
+        // Apply drive alignment boost if Empathy Bus is attached
         let importance = if let Some(ref bus) = self.empathy_bus {
             let boost = bus.align_importance(content);
             (base_importance * boost).min(1.0) // Cap at 1.0
@@ -917,36 +1584,98 @@ impl Memory {
             None
         };
 
-        // Step 2: Dedup check — if we have an embedding, check for near-duplicates
+        // Step 2: Dedup check — entity Jaccard + embedding similarity
         if self.config.dedup_enabled {
+            // Phase A: entity Jaccard pre-check (if entities are available)
+            if self.config.entity_config.enabled {
+                let entities = self.entity_extractor.extract(content);
+                let entity_names: Vec<String> = entities.iter()
+                    .map(|e| e.normalized.clone())
+                    .collect();
+                
+                if !entity_names.is_empty() {
+                    if let Ok(Some((candidate_id, _jaccard))) = 
+                        self.storage.find_entity_overlap(&entity_names, ns, 0.5) 
+                    {
+                        // Entity overlap found — confirm with embedding similarity
+                        if let Some(ref embedding) = pre_embedding {
+                            // Check similarity specifically against the candidate
+                            if let Ok(Some(candidate_emb)) = self.storage.get_embedding_for_memory(&candidate_id) {
+                                let sim = crate::embeddings::EmbeddingProvider::cosine_similarity(embedding, &candidate_emb);
+                                if sim as f64 >= self.config.dedup_threshold {
+                                    log::info!(
+                                        "Dedup (entity+embedding): merging into {} (jaccard={:.3}, sim={:.4})",
+                                        candidate_id, _jaccard, sim
+                                    );
+                                    // ISS-019 Step 5.5: minimal EnrichedMemory
+                                    // — extractor-less add_raw path has no
+                                    // typed dimensions to merge. The keep
+                                    // side's dimensions are preserved by
+                                    // Dimensions::union (monotone).
+                                    let incoming_em = crate::enriched::EnrichedMemory::minimal(
+                                        content,
+                                        crate::dimensions::Importance::new(importance),
+                                        source.map(str::to_string),
+                                        Some(ns.to_string()),
+                                    )
+                                    .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("EnrichedMemory::minimal failed in dedup entity path: {}", e))) })?;
+                                    let outcome = self.storage.merge_enriched_into(
+                                        &candidate_id, &incoming_em, sim,
+                                    )?;
+                                    if outcome.content_updated {
+                                        log::info!(
+                                            "Dedup: content updated for {} (merge_count={})",
+                                            candidate_id, outcome.merge_count,
+                                        );
+                                    }
+                                    // Update entity links for the merged memory
+                                    for entity in &entities {
+                                        if let Ok(eid) = self.storage.upsert_entity(
+                                            &entity.normalized, entity.entity_type.as_str(), ns, None,
+                                        ) {
+                                            let _ = self.storage.link_memory_entity(&candidate_id, &eid, "mention");
+                                        }
+                                    }
+                                    self.last_add_result = Some(crate::lifecycle::AddResult::Merged { 
+                                        into: candidate_id.clone(), similarity: sim 
+                                    });
+                                    self.dedup_merge_count += 1;
+                                    return Ok(candidate_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Phase B: embedding-only dedup (existing logic, catches cases without entities)
             if let Some(ref embedding) = pre_embedding {
                 let model_id = self.config.embedding.model_id();
                 if let Ok(Some((existing_id, similarity))) = self.storage.find_nearest_embedding(
-                    embedding,
-                    &model_id,
-                    Some(ns),
-                    self.config.dedup_threshold,
+                    embedding, &model_id, Some(ns), self.config.dedup_threshold,
                 ) {
-                    // Found a near-duplicate — merge instead of creating new
                     log::info!(
                         "Dedup: merging into existing memory {} (similarity: {:.4})",
                         existing_id, similarity
                     );
-                    let outcome = self.storage.merge_memory_into(
-                        &existing_id,
+                    // ISS-019 Step 5.5: same minimal-EnrichedMemory
+                    // construction as the entity-phase merge above.
+                    let incoming_em = crate::enriched::EnrichedMemory::minimal(
                         content,
-                        importance,
-                        similarity,
+                        crate::dimensions::Importance::new(importance),
+                        source.map(str::to_string),
+                        Some(ns.to_string()),
+                    )
+                    .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("EnrichedMemory::minimal failed in dedup embedding path: {}", e))) })?;
+                    let outcome = self.storage.merge_enriched_into(
+                        &existing_id, &incoming_em, similarity,
                     )?;
                     if outcome.content_updated {
                         log::info!(
                             "Dedup: content updated for {} (merge_count={})",
-                            existing_id,
-                            outcome.merge_count,
+                            existing_id, outcome.merge_count,
                         );
                     }
-                    
-                    // Also update entity links for the existing memory
                     if self.config.entity_config.enabled {
                         let entities = self.entity_extractor.extract(content);
                         for entity in &entities {
@@ -957,7 +1686,10 @@ impl Memory {
                             }
                         }
                     }
-                    
+                    self.last_add_result = Some(crate::lifecycle::AddResult::Merged { 
+                        into: existing_id.clone(), similarity 
+                    });
+                    self.dedup_merge_count += 1;
                     return Ok(existing_id);
                 }
             }
@@ -980,12 +1712,21 @@ impl Memory {
             source: source.unwrap_or("").to_string(),
             contradicts: None,
             contradicted_by: None,
+            superseded_by: None,
             metadata,
         };
 
         self.storage.add(&record, ns)?;
+        self.last_add_result = Some(crate::lifecycle::AddResult::Created { id: id.clone() });
+        self.dedup_write_count += 1;
         
         // Step 4: Store pre-computed embedding (avoid double-embed)
+        // Keep a reference for Step 6 (association discovery) before consuming
+        let embedding_for_assoc: Option<Vec<f32>> = if self.config.association.enabled {
+            pre_embedding.clone()
+        } else {
+            None
+        };
         if let Some(embedding) = pre_embedding {
             self.storage.store_embedding(
                 &id,
@@ -1034,14 +1775,79 @@ impl Memory {
                 }
             }
         }
+
+        // Step 6: Association discovery (multi-signal Hebbian)
+        if self.config.association.enabled {
+            let start = std::time::Instant::now();
+
+            // Collect entity names for signal computation
+            let entity_names: Vec<String> = if self.config.entity_config.enabled {
+                self.entity_extractor.extract(content)
+                    .into_iter()
+                    .map(|e| e.normalized)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            // created_at as f64 timestamp (same format as storage)
+            let created_at_f64 = record.created_at.timestamp() as f64
+                + record.created_at.timestamp_subsec_nanos() as f64 / 1_000_000_000.0;
+
+            let selector = crate::association::CandidateSelector::new(&self.storage);
+            match selector.select_candidates(
+                &id,
+                created_at_f64,
+                &entity_names,
+                embedding_for_assoc.as_deref(),
+                &self.config.association,
+            ) {
+                Ok(candidates) if !candidates.is_empty() => {
+                    let former = crate::association::LinkFormer::new(&self.storage);
+                    match former.discover_associations(
+                        &id,
+                        candidates,
+                        &entity_names,
+                        embedding_for_assoc.as_deref(),
+                        created_at_f64,
+                        &self.config.association,
+                        ns,
+                    ) {
+                        Ok(n) => {
+                            if n > 0 {
+                                log::debug!(
+                                    "Association discovery: created {} links for memory {}",
+                                    n, &id
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Association discovery failed: {}", e);
+                        }
+                    }
+                }
+                Ok(_) => {} // No candidates found
+                Err(e) => {
+                    log::warn!("Association candidate selection failed: {}", e);
+                }
+            }
+
+            let elapsed = start.elapsed();
+            if elapsed > std::time::Duration::from_millis(100) {
+                log::warn!(
+                    "Association discovery took {:?} — consider tuning candidate_limit",
+                    elapsed
+                );
+            }
+        }
         
         Ok(id)
     }
     
     /// Store a new memory with emotional tracking.
     ///
-    /// This method both stores the memory and records the emotional valence
-    /// in the Emotional Bus for trend tracking. Requires an Emotional Bus
+    /// This method both stores the memory and records the empathy valence
+    /// in the Empathy Bus for trend tracking. Requires an Empathy Bus
     /// to be attached.
     ///
     /// # Arguments
@@ -1054,6 +1860,11 @@ impl Memory {
     /// * `namespace` - Namespace to store in
     /// * `emotion` - Emotional valence (-1.0 to 1.0)
     /// * `domain` - Domain for emotional tracking
+    #[allow(clippy::too_many_arguments)]
+    #[deprecated(
+        since = "0.2.3",
+        note = "Use `store_raw` (or `store_enriched`) + `record_emotion` (or bus.process_interaction). This shim will be removed in v0.4."
+    )]
     pub fn add_with_emotion(
         &mut self,
         content: &str,
@@ -1065,14 +1876,17 @@ impl Memory {
         emotion: f64,
         domain: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        // Store the memory (with importance boost from alignment)
+        // Store via the typed write path (the shim forwards to store_raw,
+        // which gives us dedup + entity + association discovery identical
+        // to the pre-ISS-019 behavior).
+        #[allow(deprecated)]
         let id = self.add_to_namespace(content, memory_type, importance, source, metadata, namespace)?;
-        
-        // Record emotion if bus is attached
+
+        // Record emotion if bus is attached — unchanged.
         if let Some(ref bus) = self.empathy_bus {
             bus.process_interaction(self.storage.connection(), content, emotion, domain)?;
         }
-        
+
         Ok(id)
     }
 
@@ -1164,12 +1978,25 @@ impl Memory {
         meta: crate::store_api::StorageMeta,
     ) -> Result<crate::store_api::RawStoreOutcome, crate::store_api::StoreError> {
         use crate::store_api::{ContentHash, QuarantineId, QuarantineReason, RawStoreOutcome, SkipReason};
+        use crate::write_stats::{duration_to_ms, StoreEvent};
+
+        // ISS-019 Step 8: wall-clock timer for the whole call. Every
+        // return point emits exactly one `StoreEvent` carrying this
+        // elapsed time. The timer lives in the call frame — no
+        // allocation, Instant is a plain u64 under the hood.
+        let t0 = std::time::Instant::now();
 
         let trimmed = content.trim();
         if trimmed.is_empty() {
+            let content_hash = ContentHash::new(short_hash(content));
+            self.emit_store_event(StoreEvent::Skipped {
+                content_hash: content_hash.clone(),
+                reason: SkipReason::TooShort,
+                ms_elapsed: duration_to_ms(t0.elapsed()),
+            });
             return Ok(RawStoreOutcome::Skipped {
                 reason: SkipReason::TooShort,
-                content_hash: ContentHash::new(short_hash(content)),
+                content_hash,
             });
         }
 
@@ -1177,13 +2004,23 @@ impl Memory {
         if let Some(ref extractor) = self.extractor {
             match extractor.extract(content) {
                 Ok(facts) if facts.is_empty() => {
-                    log::info!(
+                    // ISS-019 Step 8: demoted from info! — the
+                    // structured `Skipped{NoFactsExtracted}` event is
+                    // now the primary signal; the text log is only
+                    // useful when tailing the process.
+                    log::debug!(
                         "store_raw: extractor returned nothing for content ({}...)",
                         content.chars().take(50).collect::<String>()
                     );
+                    let content_hash = ContentHash::new(short_hash(content));
+                    self.emit_store_event(StoreEvent::Skipped {
+                        content_hash: content_hash.clone(),
+                        reason: SkipReason::NoFactsExtracted,
+                        ms_elapsed: duration_to_ms(t0.elapsed()),
+                    });
                     return Ok(RawStoreOutcome::Skipped {
                         reason: SkipReason::NoFactsExtracted,
-                        content_hash: ContentHash::new(short_hash(content)),
+                        content_hash,
                     });
                 }
                 Ok(facts) => {
@@ -1237,11 +2074,32 @@ impl Memory {
                     }
 
                     if any_valid {
+                        // ISS-019 Step 8: Stored event carries the
+                        // batch size (fact_count) and merge count so
+                        // `WriteStats.merged_count` tracks dedup rate
+                        // without parsing outcome vectors.
+                        let first_id = outcomes
+                            .first()
+                            .map(|o| o.id().clone())
+                            .unwrap_or_default();
+                        let merged_count = outcomes
+                            .iter()
+                            .filter(|o| matches!(
+                                o,
+                                crate::store_api::StoreOutcome::Merged { .. }
+                            ))
+                            .count();
+                        self.emit_store_event(StoreEvent::Stored {
+                            id: first_id,
+                            fact_count: outcomes.len(),
+                            merged_count,
+                            ms_elapsed: duration_to_ms(t0.elapsed()),
+                        });
                         return Ok(RawStoreOutcome::Stored(outcomes));
                     }
 
                     // Extractor produced facts but every one failed validation.
-                    let qid = QuarantineId::new(format!("q-{}", short_hash(content)));
+                    let qid_str = format!("q-{}", short_hash(content));
                     let reason = QuarantineReason::AllFactsInvalid(
                         first_err.unwrap_or_else(|| "no valid facts".to_string()),
                     );
@@ -1250,15 +2108,39 @@ impl Memory {
                         content.chars().take(50).collect::<String>(),
                         reason
                     );
-                    return Ok(RawStoreOutcome::Quarantined { id: qid, reason });
+                    // ISS-019 Step 6: persist quarantine row.
+                    let persisted_id = self.persist_quarantine_row(
+                        &qid_str, content, &reason, &meta,
+                    ).map_err(crate::store_api::StoreError::DbError)?;
+                    let qid = QuarantineId::new(persisted_id);
+                    self.emit_store_event(StoreEvent::Quarantined {
+                        id: qid.clone(),
+                        reason: reason.clone(),
+                        ms_elapsed: duration_to_ms(t0.elapsed()),
+                    });
+                    return Ok(RawStoreOutcome::Quarantined {
+                        id: qid,
+                        reason,
+                    });
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
                     log::warn!("store_raw: extractor error: {}", err_msg);
-                    let qid = QuarantineId::new(format!("q-{}", short_hash(content)));
+                    let qid_str = format!("q-{}", short_hash(content));
+                    let reason = QuarantineReason::ExtractorError(err_msg);
+                    // ISS-019 Step 6: persist quarantine row.
+                    let persisted_id = self.persist_quarantine_row(
+                        &qid_str, content, &reason, &meta,
+                    ).map_err(crate::store_api::StoreError::DbError)?;
+                    let qid = QuarantineId::new(persisted_id);
+                    self.emit_store_event(StoreEvent::Quarantined {
+                        id: qid.clone(),
+                        reason: reason.clone(),
+                        ms_elapsed: duration_to_ms(t0.elapsed()),
+                    });
                     return Ok(RawStoreOutcome::Quarantined {
                         id: qid,
-                        reason: QuarantineReason::ExtractorError(err_msg),
+                        reason,
                     });
                 }
             }
@@ -1278,7 +2160,7 @@ impl Memory {
                 crate::dimensions::Importance::new(base)
             });
 
-        let em = crate::enriched::EnrichedMemory::minimal(
+        let mut em = crate::enriched::EnrichedMemory::minimal(
             content,
             importance_val,
             meta.source.clone(),
@@ -1286,13 +2168,503 @@ impl Memory {
         )
         .map_err(|e| crate::store_api::StoreError::InvalidInput(e.to_string()))?;
 
-        let em = crate::enriched::EnrichedMemory {
-            user_metadata: meta.user_metadata.clone(),
-            ..em
-        };
+        // If the caller supplied an explicit MemoryType hint (legacy
+        // `add()` contract), bias type_weights so `primary_type()`
+        // returns the hinted variant. Without this the minimal path
+        // would always degrade to `MemoryType::Factual` (default of a
+        // tie-break), regressing behavior tests rely on.
+        if let Some(mt) = meta.memory_type_hint {
+            em.dimensions.type_weights = type_weights_favoring(mt);
+        }
+
+        em.user_metadata = meta.user_metadata.clone();
 
         let outcome = self.store_enriched(em)?;
+        // ISS-019 Step 8: minimal path always produces exactly one
+        // outcome (see `Ok(RawStoreOutcome::Stored(vec![outcome]))`
+        // below) so fact_count = 1.
+        let merged_count = match &outcome {
+            crate::store_api::StoreOutcome::Merged { .. } => 1,
+            crate::store_api::StoreOutcome::Inserted { .. } => 0,
+        };
+        self.emit_store_event(StoreEvent::Stored {
+            id: outcome.id().clone(),
+            fact_count: 1,
+            merged_count,
+            ms_elapsed: duration_to_ms(t0.elapsed()),
+        });
         Ok(RawStoreOutcome::Stored(vec![outcome]))
+    }
+
+    // ---- ISS-019 Step 6: quarantine persistence + retry ------------------
+
+    /// Max retry attempts before a quarantine row is marked
+    /// `permanently_rejected`. Design §4: "After max_attempts = 5
+    /// (configurable), the record is marked permanently_rejected".
+    pub const QUARANTINE_MAX_ATTEMPTS: u32 = 5;
+
+    /// Default TTL for purging permanently-rejected quarantine rows (30 days).
+    /// Design §10 R2. Purge is explicit — never automatic.
+    pub const QUARANTINE_PURGE_TTL_SECS: i64 = 30 * 24 * 3600;
+
+    /// Persist a quarantine row via the storage layer.
+    ///
+    /// Extracts the reason tag/detail pair from `QuarantineReason`'s
+    /// serde representation (kept in sync with `store_api.rs`) and
+    /// threads caller-supplied `StorageMeta` fields through so a
+    /// later retry can reconstruct the full write context.
+    fn persist_quarantine_row(
+        &self,
+        id: &str,
+        content: &str,
+        reason: &crate::store_api::QuarantineReason,
+        meta: &crate::store_api::StorageMeta,
+    ) -> Result<String, rusqlite::Error> {
+        use crate::store_api::QuarantineReason as QR;
+        let (kind, detail): (&str, Option<String>) = match reason {
+            QR::ExtractorTimeout          => ("extractor_timeout", None),
+            QR::ExtractorError(s)         => ("extractor_error", Some(s.clone())),
+            QR::ExtractorPanic            => ("extractor_panic", None),
+            QR::AllFactsInvalid(s)        => ("all_facts_invalid", Some(s.clone())),
+            QR::PipelineError(s)          => ("pipeline_error", Some(s.clone())),
+        };
+        let content_hash = short_hash(content);
+        let memory_type_hint = meta
+            .memory_type_hint
+            .map(|mt| mt.to_string());
+        let user_meta_json = if meta.user_metadata.is_null() {
+            None
+        } else {
+            Some(meta.user_metadata.to_string())
+        };
+
+        self.storage.insert_quarantine_row(
+            id,
+            content,
+            &content_hash,
+            kind,
+            detail.as_deref(),
+            meta.source.as_deref(),
+            meta.namespace.as_deref(),
+            meta.importance_hint,
+            memory_type_hint.as_deref(),
+            user_meta_json.as_deref(),
+        )
+    }
+
+    /// Retry quarantined rows.
+    ///
+    /// Fetches up to `max_items` live (non-rejected) quarantine rows
+    /// ordered by `received_at ASC` (oldest first — fairness) and
+    /// re-runs `store_raw` on each one using the preserved
+    /// `StorageMeta`. Three outcomes per row:
+    ///
+    /// - `Stored`: extractor succeeded this time. The quarantine row
+    ///   is deleted; the new memory id(s) are collected in
+    ///   `RetryReport::recovered`. Multi-fact outcomes use the first
+    ///   outcome's id (same convention as the legacy shim).
+    /// - `Quarantined`: extractor failed again. Attempts counter is
+    ///   bumped; if it crosses `QUARANTINE_MAX_ATTEMPTS` the row is
+    ///   flipped to `permanently_rejected = 1` and appears in
+    ///   `RetryReport::permanently_rejected`. Otherwise it appears
+    ///   in `RetryReport::still_failing` and is eligible for the
+    ///   next retry pass.
+    /// - `Skipped`: extractor returned zero facts. The content is
+    ///   not memory-worthy, so we treat it as a resolution — delete
+    ///   the quarantine row. (Rationale: if a previous failure was
+    ///   a transient outage and the extractor now cleanly decides
+    ///   "nothing to extract here", the row is no longer useful.)
+    ///   Counted as `recovered` with an empty id list is not
+    ///   meaningful — we count it under `recovered` with a synthetic
+    ///   "skipped:<hash>" marker so the caller can distinguish from
+    ///   memory-promotion. TODO: a dedicated `Resolved` bucket would
+    ///   be cleaner; deferred to Step 8 alongside WriteStats.
+    ///
+    /// Preserves the "store_raw latency-bounded" property: retry is
+    /// a separate operation, owned by the caller. Callers who want
+    /// background retries run this on a schedule.
+    pub fn retry_quarantined(
+        &mut self,
+        max_items: usize,
+    ) -> Result<crate::store_api::RetryReport, crate::store_api::StoreError> {
+        use crate::store_api::{RawStoreOutcome, RetryReport, StorageMeta, StoreError, QuarantineId};
+
+        let rows = self.storage
+            .list_quarantine_for_retry_batch(max_items)
+            .map_err(StoreError::DbError)?;
+
+        let mut report = RetryReport::default();
+        report.attempted = rows.len();
+
+        for row in rows {
+            // Reconstruct StorageMeta from the preserved hints.
+            let memory_type_hint = row.memory_type_hint
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<crate::types::MemoryType>(
+                    &format!("\"{}\"", s)
+                ).ok());
+            let user_metadata = match row.user_metadata.as_deref() {
+                Some(s) => serde_json::from_str::<serde_json::Value>(s)
+                    .unwrap_or(serde_json::Value::Null),
+                None => serde_json::Value::Null,
+            };
+            let meta = StorageMeta {
+                importance_hint: row.importance_hint,
+                source: row.source.clone(),
+                namespace: row.namespace.clone(),
+                user_metadata,
+                memory_type_hint,
+            };
+
+            // Re-run store_raw on the preserved content.
+            let retry_outcome = self.store_raw(&row.content, meta);
+
+            match retry_outcome {
+                Ok(RawStoreOutcome::Stored(outcomes)) => {
+                    // Promoted — delete quarantine row.
+                    let _ = self.storage.delete_quarantine_row(&row.id);
+                    if let Some(first) = outcomes.first() {
+                        report.recovered.push(first.id().clone());
+                    }
+                }
+                Ok(RawStoreOutcome::Skipped { .. }) => {
+                    // Extractor now cleanly decided "not memory-worthy".
+                    // Remove from quarantine — it's resolved.
+                    let _ = self.storage.delete_quarantine_row(&row.id);
+                    // Record as recovered with a synthetic marker so
+                    // callers can distinguish in logs. No main-table
+                    // id exists, so we use a `skipped:<hash>` form.
+                    report.recovered.push(format!("skipped:{}", row.content_hash));
+                }
+                Ok(RawStoreOutcome::Quarantined { reason, .. }) => {
+                    // Another failure — increment attempts and, if
+                    // we've crossed the threshold, flip to permanently
+                    // rejected. Note: store_raw INSERTed a new row
+                    // via its own path (dedup matched on content_hash
+                    // so the row we're looking at has already been
+                    // updated or deduplicated — either way, we update
+                    // our current row's attempts for bookkeeping).
+                    let err_msg = format!("{:?}", reason);
+                    let _ = self.storage.record_quarantine_attempt(
+                        &row.id, Some(&err_msg),
+                    );
+                    let new_attempts = row.attempts + 1;
+                    if new_attempts >= Self::QUARANTINE_MAX_ATTEMPTS {
+                        let _ = self.storage
+                            .mark_quarantine_permanently_rejected(&row.id);
+                        report.permanently_rejected
+                            .push(QuarantineId::new(row.id.clone()));
+                    } else {
+                        report.still_failing
+                            .push((QuarantineId::new(row.id.clone()), err_msg));
+                    }
+                }
+                Err(e) => {
+                    // Programmer-level error during retry. Bump
+                    // attempts with the error message; do not mark
+                    // rejected (the error is not about the content).
+                    let err_msg = e.to_string();
+                    let _ = self.storage.record_quarantine_attempt(
+                        &row.id, Some(&err_msg),
+                    );
+                    report.still_failing
+                        .push((QuarantineId::new(row.id.clone()), err_msg));
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Purge permanently-rejected quarantine rows older than
+    /// `ttl_seconds`. Never deletes live rows. Returns count of
+    /// rows removed. Pass `None` to use the default 30-day TTL.
+    pub fn purge_rejected_quarantine(
+        &self,
+        ttl_seconds: Option<i64>,
+    ) -> Result<usize, crate::store_api::StoreError> {
+        let ttl = ttl_seconds.unwrap_or(Self::QUARANTINE_PURGE_TTL_SECS);
+        self.storage
+            .purge_rejected_quarantine(ttl)
+            .map_err(crate::store_api::StoreError::DbError)
+    }
+
+    /// Count live (non-rejected) quarantine rows. For stats / tests.
+    pub fn count_quarantine(&self) -> Result<usize, crate::store_api::StoreError> {
+        self.storage
+            .count_quarantine_live()
+            .map_err(crate::store_api::StoreError::DbError)
+    }
+
+    // ---- ISS-019 Step 7b: dimensional backfill ---------------------------
+
+    /// Max retry attempts before a backfill_queue row is marked
+    /// `permanently_rejected`. Mirrors the quarantine policy.
+    pub const BACKFILL_MAX_ATTEMPTS: u32 = 5;
+
+    /// Scan the `memories` table for v1 (flat) metadata rows and enqueue
+    /// those that would benefit from re-extraction into `backfill_queue`.
+    ///
+    /// Pure read-side operation on `memories`; writes only to
+    /// `backfill_queue`. Never rewrites a memory's metadata here — that
+    /// is the job of `backfill_dimensions`, which runs the extractor.
+    ///
+    /// This is an **explicit** operation, never triggered as a read-path
+    /// side effect (design §6: "No eager migration"). Callers (rebuild
+    /// pilot, CLI, scheduled job) invoke it on demand.
+    ///
+    /// Returns a [`ScanReport`] summarising what was found. Progress is
+    /// cursor-driven via `page_size`; each call scans at most
+    /// `max_rows` memories and returns, letting callers budget their
+    /// time explicitly.
+    pub fn scan_and_enqueue_backfill(
+        &mut self,
+        max_rows: usize,
+    ) -> Result<crate::migration_types::ScanReport, crate::store_api::StoreError> {
+        use crate::migration_types::{
+            classify_stored_metadata, BackfillReason, LegacyClassification, ScanReport,
+        };
+        use crate::store_api::StoreError;
+
+        const PAGE_SIZE: usize = 200;
+        let mut report = ScanReport::default();
+        let mut after_id: Option<String> = None;
+        let mut budget = max_rows;
+
+        while budget > 0 {
+            let page_size = budget.min(PAGE_SIZE);
+            let rows = self
+                .storage
+                .list_v1_candidates_page(after_id.as_deref(), page_size)
+                .map_err(StoreError::DbError)?;
+            if rows.is_empty() {
+                break;
+            }
+
+            for (id, content, metadata_str) in &rows {
+                report.scanned += 1;
+                let metadata_val = match metadata_str.as_deref() {
+                    Some(s) => serde_json::from_str::<serde_json::Value>(s)
+                        .unwrap_or(serde_json::Value::Null),
+                    None => serde_json::Value::Null,
+                };
+                match classify_stored_metadata(&metadata_val, content.len()) {
+                    None => {
+                        // Already v2 (the LIKE filter missed it — possible
+                        // if metadata is a non-object value). No-op.
+                        report.already_v2 += 1;
+                    }
+                    Some(LegacyClassification::HasExtractorData) => {
+                        // Lossless upgrade possible on next write; not
+                        // a backfill candidate (extractor doesn't need
+                        // to re-run). Skip.
+                        report.has_extractor_data += 1;
+                    }
+                    Some(LegacyClassification::LowDimLegacy { reason }) => {
+                        let reason_kind = match reason {
+                            BackfillReason::MissingCoreDimensions => "missing_core_dimensions",
+                            BackfillReason::DimensionsEmpty => "dimensions_empty",
+                            BackfillReason::PartialDimensionsLongContent => {
+                                "partial_dimensions_long_content"
+                            }
+                        };
+                        self.storage
+                            .enqueue_backfill(id, reason_kind, None)
+                            .map_err(StoreError::DbError)?;
+                        report.enqueued += 1;
+                    }
+                    Some(LegacyClassification::UnparseableLegacy { error }) => {
+                        // Short content / non-object metadata — not
+                        // worth re-extracting. Skip, record for stats.
+                        log::debug!(
+                            "scan_and_enqueue_backfill: skipping id={} ({})",
+                            id, error
+                        );
+                        report.unparseable += 1;
+                    }
+                }
+            }
+
+            // Advance cursor to last id seen.
+            after_id = rows.last().map(|(id, _, _)| id.clone());
+            budget = budget.saturating_sub(rows.len());
+        }
+
+        Ok(report)
+    }
+
+    /// Drain up to `max_items` rows from `backfill_queue` and re-run
+    /// the extractor on each, merging new dimensions into the existing
+    /// `memories` row.
+    ///
+    /// Requires an extractor to be configured. Without one, returns a
+    /// report with `attempted = 0` (nothing to do — backfill is about
+    /// recovering dimensional signal, which requires an extractor).
+    ///
+    /// Per row:
+    /// - Load existing `MemoryRecord` via `Storage::get`.
+    /// - If the row is no longer v1 (already rewritten by another
+    ///   write), delete the queue row and record as `unchanged`.
+    /// - Otherwise run the extractor on the row's content. For each
+    ///   extracted fact, construct an `EnrichedMemory` and merge into
+    ///   the existing id via `Storage::merge_enriched_into` (similarity
+    ///   1.0 since we know it's the same content).
+    /// - On success → delete queue row, increment `upgraded`.
+    /// - On extractor failure → `record_backfill_attempt`; if attempts
+    ///   cross `BACKFILL_MAX_ATTEMPTS` flip to `permanently_rejected`.
+    pub fn backfill_dimensions(
+        &mut self,
+        max_items: usize,
+    ) -> Result<crate::migration_types::BackfillReport, crate::store_api::StoreError> {
+        use crate::migration_types::{classify_stored_metadata, BackfillReport};
+        use crate::store_api::StoreError;
+
+        let mut report = BackfillReport::default();
+        if self.extractor.is_none() {
+            // Nothing to do — re-extraction requires an extractor.
+            return Ok(report);
+        }
+
+        let rows = self
+            .storage
+            .list_backfill_batch(max_items)
+            .map_err(StoreError::DbError)?;
+        report.attempted = rows.len() as u64;
+
+        for row in rows {
+            // Load the memory row.
+            let record = match self
+                .storage
+                .get(&row.memory_id)
+                .map_err(StoreError::DbError)?
+            {
+                Some(r) => r,
+                None => {
+                    // Memory deleted/superseded — drop queue entry.
+                    let _ = self.storage.delete_backfill_row(&row.memory_id);
+                    report.unchanged += 1;
+                    continue;
+                }
+            };
+
+            // If the row has already been rewritten to v2, nothing to do.
+            let metadata_val = record
+                .metadata
+                .clone()
+                .unwrap_or(serde_json::Value::Null);
+            if classify_stored_metadata(&metadata_val, record.content.len()).is_none() {
+                let _ = self.storage.delete_backfill_row(&row.memory_id);
+                report.unchanged += 1;
+                continue;
+            }
+
+            // Re-run extractor. (Safe unwrap — guarded by the None-check
+            // at the top of the function.)
+            let extractor = self.extractor.as_ref().unwrap();
+            let facts_result = extractor.extract(&record.content);
+
+            match facts_result {
+                Ok(facts) if facts.is_empty() => {
+                    // Extractor now says "nothing to extract". Keep row
+                    // in memories as-is (minimal dimensions) but
+                    // consider the backfill resolved — removing the
+                    // queue entry prevents endless re-attempts.
+                    let _ = self.storage.delete_backfill_row(&row.memory_id);
+                    report.unchanged += 1;
+                }
+                Ok(facts) => {
+                    let cap = self.config.auto_extract_importance_cap;
+                    let mut merged_any = false;
+                    let mut first_err: Option<String> = None;
+
+                    for fact in facts {
+                        let capped = fact.importance.min(cap);
+                        let mut fact_adj = fact;
+                        fact_adj.importance = capped;
+
+                        let source_opt = if record.source.is_empty() {
+                            None
+                        } else {
+                            Some(record.source.clone())
+                        };
+                        // namespace not present on MemoryRecord — preserved
+                        // by the existing row and by merge_enriched_into.
+                        match crate::enriched::EnrichedMemory::from_extracted(
+                            fact_adj,
+                            source_opt,
+                            None,
+                            serde_json::Value::Null, // preserve user metadata via merge
+                        ) {
+                            Ok(em) => {
+                                match self.storage.merge_enriched_into(
+                                    &row.memory_id,
+                                    &em,
+                                    1.0,
+                                ) {
+                                    Ok(_) => {
+                                        merged_any = true;
+                                    }
+                                    Err(e) => {
+                                        if first_err.is_none() {
+                                            first_err = Some(e.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if first_err.is_none() {
+                                    first_err = Some(e.to_string());
+                                }
+                            }
+                        }
+                    }
+
+                    if merged_any {
+                        let _ = self.storage.delete_backfill_row(&row.memory_id);
+                        report.upgraded += 1;
+                    } else {
+                        let msg = first_err.unwrap_or_else(|| "no valid facts".into());
+                        self.bump_backfill_attempts_or_reject(&row, &msg, &mut report)?;
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    self.bump_backfill_attempts_or_reject(&row, &msg, &mut report)?;
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    fn bump_backfill_attempts_or_reject(
+        &self,
+        row: &crate::storage::BackfillRow,
+        err: &str,
+        report: &mut crate::migration_types::BackfillReport,
+    ) -> Result<(), crate::store_api::StoreError> {
+        use crate::store_api::StoreError;
+
+        self.storage
+            .record_backfill_attempt(&row.memory_id, Some(err))
+            .map_err(StoreError::DbError)?;
+        let new_attempts = row.attempts + 1;
+        if new_attempts >= Self::BACKFILL_MAX_ATTEMPTS {
+            self.storage
+                .mark_backfill_permanently_rejected(&row.memory_id)
+                .map_err(StoreError::DbError)?;
+            report.permanently_rejected += 1;
+        } else {
+            report.failed += 1;
+        }
+        Ok(())
+    }
+
+    /// Count live (non-rejected) backfill-queue rows.
+    pub fn count_backfill(&self) -> Result<usize, crate::store_api::StoreError> {
+        self.storage
+            .count_backfill_live()
+            .map_err(crate::store_api::StoreError::DbError)
     }
 
 
@@ -1345,6 +2717,7 @@ impl Memory {
         namespace: Option<&str>,
     ) -> Result<Vec<RecallResult>, Box<dyn std::error::Error>> {
         let now = Utc::now();
+        let recall_start = std::time::Instant::now();
         let context = context.unwrap_or_default();
         let min_conf = min_confidence.unwrap_or(0.0);
         let ns = namespace.unwrap_or("default");
@@ -1425,6 +2798,9 @@ impl Memory {
                 }
             }
             
+            // Defense-in-depth: filter out any superseded memories that slipped through SQL filter
+            candidates.retain(|r| r.superseded_by.is_none());
+            
             // Hebbian channel (6th channel): score candidates by Hebbian connectivity
             let candidate_ids: Vec<String> = candidates.iter().map(|r| r.id.clone()).collect();
             let hebbian_scores = if self.config.hebbian_enabled {
@@ -1437,6 +2813,10 @@ impl Memory {
             } else {
                 0.0
             };
+            
+            // Somatic channel (7th) — emotional memory bias
+            let somatic_scores = self.somatic_scores(query, &candidates);
+            let raw_somatic_weight = self.config.somatic_weight;
             
             // Base weights (from config)
             let raw_fts_weight = self.config.fts_weight;
@@ -1453,10 +2833,11 @@ impl Memory {
             let adj_entity = raw_entity_weight * query_analysis.weight_modifiers.entity;
             let adj_temporal = raw_temporal_weight * query_analysis.weight_modifiers.temporal;
             let adj_hebbian = raw_hebbian_weight * query_analysis.weight_modifiers.hebbian;
+            let adj_somatic = raw_somatic_weight * query_analysis.weight_modifiers.somatic;
             
             // Runtime normalization — always divide by sum
-            let total_weight = adj_fts + adj_emb + adj_actr + adj_entity + adj_temporal + adj_hebbian;
-            let (fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight) = if total_weight > 0.0 {
+            let total_weight = adj_fts + adj_emb + adj_actr + adj_entity + adj_temporal + adj_hebbian + adj_somatic;
+            let (fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight, som_weight) = if total_weight > 0.0 {
                 (
                     adj_fts / total_weight,
                     adj_emb / total_weight,
@@ -1464,15 +2845,16 @@ impl Memory {
                     adj_entity / total_weight,
                     adj_temporal / total_weight,
                     adj_hebbian / total_weight,
+                    adj_somatic / total_weight,
                 )
             } else {
-                let n = 1.0 / 6.0;
-                (n, n, n, n, n, n)
+                let n = 1.0 / 7.0;
+                (n, n, n, n, n, n, n)
             };
             
             log::debug!(
-                "C7 recall weights: fts={:.3} emb={:.3} actr={:.3} entity={:.3} temporal={:.3} hebbian={:.3} (query_type={:?})",
-                fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight,
+                "C7 recall weights: fts={:.3} emb={:.3} actr={:.3} entity={:.3} temporal={:.3} hebbian={:.3} somatic={:.3} (query_type={:?})",
+                fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight, som_weight,
                 query_analysis.query_type,
             );
             
@@ -1516,13 +2898,17 @@ impl Memory {
                     // Hebbian channel (6th) — graph connectivity
                     let hebbian_score = hebbian_scores.get(&record.id).copied().unwrap_or(0.0);
                     
-                    // Combined: 6-channel fusion
+                    // Somatic channel (7th) — emotional memory bias (Damasio)
+                    let somatic_score = somatic_scores.get(&record.id).copied().unwrap_or(0.0);
+                    
+                    // Combined: 7-channel fusion
                     let combined_score = (fts_weight * fts_score)
                         + (emb_weight * embedding_score as f64)
                         + (actr_weight * activation_normalized)
                         + (ent_weight * entity_score)
                         + (temp_weight * temporal_score)
-                        + (hebb_weight * hebbian_score);
+                        + (hebb_weight * hebbian_score)
+                        + (som_weight * somatic_score);
                     
                     // Type-affinity modulation: weighted max over type_weights × affinity.
                     // For old memories (no type_weights in metadata), TypeWeights::default() (all 1.0)
@@ -1612,10 +2998,46 @@ impl Memory {
                 )?;
             }
 
+            // Cross-recall co-occurrence detection (C8 / GOAL-17)
+            // Track which memories are recalled across separate queries.
+            // If two memories are recalled within 30 seconds (across different queries),
+            // record their co-activation to strengthen Hebbian links.
+            {
+                let now_instant = std::time::Instant::now();
+                for result in &results {
+                    // Check against previously recalled memories within 30s window
+                    for (prev_id, prev_time) in &self.recent_recalls {
+                        if prev_id == &result.record.id { continue; }
+                        if now_instant.duration_since(*prev_time) <= std::time::Duration::from_secs(30) {
+                            // Within 30s window → record co-activation
+                            let _ = self.storage.record_coactivation_ns(
+                                prev_id,
+                                &result.record.id,
+                                self.config.hebbian_threshold,
+                                ns,
+                            );
+                        }
+                    }
+                    // Add this result to the ring buffer
+                    self.recent_recalls.push_back((result.record.id.clone(), now_instant));
+                    if self.recent_recalls.len() > 50 {
+                        self.recent_recalls.pop_front();
+                    }
+                }
+            }
+
+            // Update somatic markers with emotional feedback from recall results
+            self.update_somatic_after_recall(query, &results);
+
+            // Meta-cognition: record this recall event
+            self.record_metacognition_recall(query, &results, recall_start, true);
+
             Ok(results)
         } else {
             // No embedding provider, use FTS fallback
-            self.recall_fts(query, limit, &context, min_conf, ns, now)
+            let results = self.recall_fts(query, limit, &context, min_conf, ns, now)?;
+            self.record_metacognition_recall(query, &results, recall_start, false);
+            Ok(results)
         }
     }
 
@@ -1634,10 +3056,46 @@ impl Memory {
         limit: usize,
         namespace: Option<&str>,
     ) -> Result<Vec<MemoryRecord>, Box<dyn std::error::Error>> {
-        let records = self.storage.fetch_recent(limit, namespace)?;
+        let mut records = self.storage.fetch_recent(limit, namespace)?;
+        // Defense-in-depth: filter out any superseded memories that slipped through SQL filter
+        records.retain(|r| r.superseded_by.is_none());
         Ok(records)
     }
     
+    /// Record a recall event to the meta-cognition tracker (if enabled).
+    fn record_metacognition_recall(
+        &mut self,
+        query: &str,
+        results: &[RecallResult],
+        start: std::time::Instant,
+        used_embedding: bool,
+    ) {
+        if let Some(ref mut tracker) = self.metacognition {
+            let mean_conf = if results.is_empty() {
+                0.0
+            } else {
+                results.iter().map(|r| r.confidence).sum::<f64>() / results.len() as f64
+            };
+            let max_conf = results
+                .iter()
+                .map(|r| r.confidence)
+                .fold(0.0_f64, f64::max);
+            let event = crate::metacognition::RecallEvent {
+                timestamp: chrono::Utc::now().timestamp(),
+                query: query.to_string(),
+                result_count: results.len(),
+                mean_confidence: mean_conf,
+                max_confidence: max_conf,
+                latency_ms: start.elapsed().as_millis() as u64,
+                used_embedding,
+                feedback_score: None,
+            };
+            if let Err(e) = tracker.record_recall(self.storage.conn(), event) {
+                log::warn!("Metacognition recall record failed: {}", e);
+            }
+        }
+    }
+
     /// Entity-based recall: extract entities from query, look up matching entities,
     /// return memory→score mapping (0.0-1.0 normalized).
     ///
@@ -1728,6 +3186,104 @@ impl Memory {
         }
     }
     
+    /// Somatic marker channel scoring (7th channel — Damasio's somatic marker hypothesis).
+    ///
+    /// For each candidate memory, computes how much the current situation's emotional
+    /// "gut feeling" should bias its recall ranking. The somatic marker for the query
+    /// situation provides an intensity signal: strongly emotional situations (positive
+    /// or negative) boost emotionally relevant memories.
+    ///
+    /// Score composition:
+    /// - Base = abs(marker_valence) — emotional intensity of the situation
+    /// - Emotional type memories get full intensity
+    /// - High-importance memories (≥0.7) get 70% intensity
+    /// - Other memories get 30% intensity (faint background signal)
+    /// - Encounter count adds confidence: min(encounter_count / 5, 1.0) scaling
+    ///
+    /// Returns scores normalized to 0.0-1.0 for each candidate.
+    fn somatic_scores(
+        &mut self,
+        query: &str,
+        candidates: &[MemoryRecord],
+    ) -> HashMap<String, f64> {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+        
+        // Hash the query to create a situation identifier
+        let mut hasher = DefaultHasher::new();
+        query.hash(&mut hasher);
+        let situation_hash = hasher.finish();
+        
+        // Look up or create the somatic marker for this query situation.
+        // We use 0.0 as current valence for new situations — neutral until
+        // emotional memories are actually recalled and processed.
+        let marker = self.interoceptive_hub.somatic_lookup(situation_hash, 0.0);
+        let marker_intensity = marker.valence.abs();
+        let encounter_confidence = (marker.encounter_count as f64 / 5.0).min(1.0);
+        
+        // If the marker has no emotional charge (new situation with 0 valence),
+        // return empty scores — somatic channel is silent for novel situations.
+        if marker_intensity < 0.01 {
+            return HashMap::new();
+        }
+        
+        let mut scores = HashMap::new();
+        
+        for record in candidates {
+            // Determine emotional relevance of this memory
+            let emotional_relevance = match record.memory_type {
+                crate::types::MemoryType::Emotional => 1.0,  // Full somatic boost
+                _ if record.importance >= 0.7 => 0.7,        // High-importance: notable
+                _ => 0.3,                                      // Faint background signal
+            };
+            
+            // Somatic score: intensity × relevance × confidence
+            let score = marker_intensity * emotional_relevance * encounter_confidence;
+            scores.insert(record.id.clone(), score.min(1.0));
+        }
+        
+        scores
+    }
+    
+    /// Update somatic markers after recall completes.
+    ///
+    /// When emotional memories are successfully recalled, their valence
+    /// feeds back into the somatic marker for this situation — reinforcing
+    /// the emotional association (Damasio's "as-if body loop").
+    fn update_somatic_after_recall(
+        &mut self,
+        query: &str,
+        results: &[RecallResult],
+    ) {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+        
+        // Only update if any recalled memories are emotional
+        let emotional_valences: Vec<f64> = results.iter()
+            .filter(|r| r.record.memory_type == crate::types::MemoryType::Emotional)
+            .map(|r| {
+                // Use importance as a proxy for valence direction:
+                // High importance (>0.5) → positive valence, low → negative
+                // This is a heuristic — memories don't store explicit valence yet
+                (r.record.importance - 0.5) * 2.0  // Maps [0,1] → [-1,1]
+            })
+            .collect();
+        
+        if emotional_valences.is_empty() {
+            return;
+        }
+        
+        // Average emotional valence from recalled memories
+        let avg_valence = emotional_valences.iter().sum::<f64>() / emotional_valences.len() as f64;
+        
+        let mut hasher = DefaultHasher::new();
+        query.hash(&mut hasher);
+        let situation_hash = hasher.finish();
+        
+        // Feed this emotional signal back into the somatic marker
+        self.interoceptive_hub.somatic_lookup(situation_hash, avg_valence);
+    }
+
     /// Hebbian channel scoring for C7 Multi-Retrieval Fusion.
     ///
     /// For each candidate, checks how many other candidates it's Hebbian-linked to.
@@ -1821,6 +3377,15 @@ impl Memory {
     ) -> Result<Vec<RecallResult>, Box<dyn std::error::Error>> {
         let fts_candidates = self.storage.search_fts_ns(query, limit * 3, Some(ns))?;
         
+        // Defense-in-depth: filter out any superseded memories that slipped through SQL filter
+        let fts_candidates: Vec<_> = fts_candidates.into_iter()
+            .filter(|r| r.superseded_by.is_none())
+            .collect();
+        
+        // Somatic channel scoring (also active in FTS-only path)
+        let somatic_scores = self.somatic_scores(query, &fts_candidates);
+        let somatic_w = self.config.somatic_weight;
+        
         let mut scored: Vec<_> = fts_candidates
             .into_iter()
             .map(|record| {
@@ -1833,7 +3398,12 @@ impl Memory {
                     self.config.importance_weight,
                     self.config.contradiction_penalty,
                 );
-                (record, activation)
+                
+                // Add somatic boost to activation score
+                let somatic_boost = somatic_scores.get(&record.id).copied().unwrap_or(0.0) * somatic_w;
+                let boosted_activation = activation + somatic_boost;
+                
+                (record, boosted_activation)
             })
             .filter(|(_, act)| *act > f64::NEG_INFINITY)
             .collect();
@@ -1878,6 +3448,37 @@ impl Memory {
             )?;
         }
 
+        // Cross-recall co-occurrence detection (C8 / GOAL-17)
+        // Track which memories are recalled across separate queries.
+        // If two memories are recalled within 30 seconds (across different queries),
+        // record their co-activation to strengthen Hebbian links.
+        {
+            let now_instant = std::time::Instant::now();
+            for result in &results {
+                // Check against previously recalled memories within 30s window
+                for (prev_id, prev_time) in &self.recent_recalls {
+                    if prev_id == &result.record.id { continue; }
+                    if now_instant.duration_since(*prev_time) <= std::time::Duration::from_secs(30) {
+                        // Within 30s window → record co-activation
+                        let _ = self.storage.record_coactivation_ns(
+                            prev_id,
+                            &result.record.id,
+                            self.config.hebbian_threshold,
+                            ns,
+                        );
+                    }
+                }
+                // Add this result to the ring buffer
+                self.recent_recalls.push_back((result.record.id.clone(), now_instant));
+                if self.recent_recalls.len() > 50 {
+                    self.recent_recalls.pop_front();
+                }
+            }
+        }
+
+        // Update somatic markers with emotional feedback from FTS recall results
+        self.update_somatic_after_recall(query, &results);
+
         Ok(results)
     }
 
@@ -1916,7 +3517,16 @@ impl Memory {
 
         // Decay Hebbian links
         if self.config.hebbian_enabled {
-            self.storage.decay_hebbian_links(self.config.hebbian_decay)?;
+            if self.config.association.enabled {
+                // Differential decay: co-recall links decay slowest, multi medium, single fastest
+                self.storage.decay_hebbian_links_differential(
+                    self.config.association.decay_corecall,
+                    self.config.association.decay_multi,
+                    self.config.association.decay_single,
+                )?;
+            } else {
+                self.storage.decay_hebbian_links(self.config.hebbian_decay)?;
+            }
         }
 
         // Run synthesis if enabled (GUARD-3: opt-in, backward compatible)
@@ -1945,7 +3555,113 @@ impl Memory {
             }
         }
 
+        // [ISS-016] Triple extraction phase (cold path, no DB lock during LLM calls)
+        if self.config.triple.enabled
+            && self.triple_extractor.is_some() {
+                if let Err(e) = self.run_triple_extraction() {
+                    log::warn!("Triple extraction failed (non-fatal): {e}");
+                }
+            }
+
+        // [ISS-008] Promotion detection phase
+        if self.config.promotion.enabled {
+            match self.detect_promotion_candidates() {
+                Ok(candidates) if !candidates.is_empty() => {
+                    log::info!("Promotion: {} candidates found", candidates.len());
+                    for c in &candidates {
+                        if let Err(e) = self.storage.store_promotion_candidate(c) {
+                            log::warn!("Failed to store promotion candidate: {}", e);
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("Promotion detection failed (non-fatal): {e}"),
+            }
+        }
+
         Ok(())
+    }
+
+    /// Run triple extraction on un-enriched memories.
+    /// Called during consolidation when triple extraction is enabled.
+    /// Uses lock-release-lock pattern to avoid holding DB lock during LLM calls.
+    fn run_triple_extraction(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let batch_size = self.config.triple.batch_size;
+        let max_retries = self.config.triple.max_retries;
+
+        // Step 1: Query un-enriched memories
+        let memory_ids = self.storage.get_unenriched_memory_ids(batch_size, max_retries)?;
+        if memory_ids.is_empty() {
+            return Ok(());
+        }
+
+        // Step 2: Read memory content (batch read)
+        let mut memory_texts: Vec<(String, String)> = Vec::new();
+        for id in &memory_ids {
+            if let Ok(Some(record)) = self.storage.get(id) {
+                memory_texts.push((id.clone(), record.content.clone()));
+            }
+        }
+
+        // Step 3: LLM extraction — NO DB lock held
+        let extractor = self.triple_extractor.as_ref().unwrap(); // caller checks this
+        type TripleResult = Vec<(String, Result<Vec<crate::triple::Triple>, Box<dyn std::error::Error + Send + Sync>>)>;
+        let mut results: TripleResult = Vec::new();
+        for (id, content) in &memory_texts {
+            let result = extractor.extract_triples(content);
+            results.push((id.clone(), result));
+        }
+
+        // Step 4: Store results in a transaction
+        self.storage.begin_transaction()?;
+        let write_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            for (id, result) in &results {
+                match result {
+                    Ok(triples) if !triples.is_empty() => {
+                        self.storage.store_triples(id, triples)?;
+                        log::debug!("Extracted {} triples for memory {}", triples.len(), id);
+                    }
+                    Ok(_) => {
+                        // Empty triples — mark as attempted
+                        self.storage.increment_extraction_attempts(id)?;
+                    }
+                    Err(e) => {
+                        log::warn!("Triple extraction failed for {}: {}", id, e);
+                        self.storage.increment_extraction_attempts(id)?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+
+        match write_result {
+            Ok(()) => {
+                self.storage.commit_transaction()?;
+            }
+            Err(e) => {
+                let _ = self.storage.rollback_transaction();
+                log::warn!("Triple storage failed (non-fatal): {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    // === [ISS-008] Knowledge Promotion API ===
+
+    /// Detect knowledge clusters ready for promotion to persistent documents.
+    pub fn detect_promotion_candidates(&self) -> Result<Vec<crate::promotion::PromotionCandidate>, Box<dyn std::error::Error>> {
+        crate::promotion::detect_promotable_clusters(&self.storage, &self.config.promotion)
+    }
+
+    /// Get pending promotion suggestions.
+    pub fn pending_promotions(&self) -> Result<Vec<crate::promotion::PromotionCandidate>, Box<dyn std::error::Error>> {
+        Ok(self.storage.get_pending_promotions()?)
+    }
+
+    /// Approve or dismiss a promotion candidate.
+    pub fn resolve_promotion(&self, id: &str, status: &str) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(self.storage.resolve_promotion(id, status)?)
     }
 
     /// Forget a specific memory or prune all below threshold.
@@ -1967,13 +3683,12 @@ impl Memory {
             let now = Utc::now();
             let all = self.storage.all()?;
             for record in all {
-                if !record.pinned && effective_strength(&record, now) < threshold {
-                    if record.layer != MemoryLayer::Archive {
+                if !record.pinned && effective_strength(&record, now) < threshold
+                    && record.layer != MemoryLayer::Archive {
                         let mut updated = record;
                         updated.layer = MemoryLayer::Archive;
                         self.storage.update(&updated)?;
                     }
-                }
             }
         }
 
@@ -2136,11 +3851,23 @@ impl Memory {
     /// Stores the old content in metadata for audit trail and regenerates
     /// the embedding if embedding support is enabled.
     ///
+    /// ## v1 → v2 upgrade side-effect (ISS-019 design §6)
+    ///
+    /// When the target row is still in the v1 flat metadata layout, this
+    /// method rewrites it to the v2 `{engram, user}` layout as a side
+    /// effect — same contract as `merge_enriched_into`. The audit trail
+    /// (previous content, reason, timestamp) is appended to
+    /// `user.update_audit[]` as a chronological list, never mixed into
+    /// the `engram.*` namespace or the v1 flat fields.
+    ///
+    /// If the row is already v2, the layout is preserved and a new
+    /// `update_audit` entry is appended.
+    ///
     /// # Arguments
     ///
     /// * `memory_id` - ID of the memory to update
     /// * `new_content` - New content to replace the existing content
-    /// * `reason` - Reason for the update (stored in metadata)
+    /// * `reason` - Reason for the update (stored in audit trail)
     ///
     /// # Returns
     ///
@@ -2151,19 +3878,82 @@ impl Memory {
         new_content: &str,
         reason: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        // Get existing memory
+        use crate::enriched::EnrichedMemory;
+
+        // Fetch existing record (v1 or v2 layout, both accepted).
         let record = self.storage.get(memory_id)?
             .ok_or_else(|| format!("Memory {} not found", memory_id))?;
-        
-        // Build updated metadata with audit trail
-        let mut metadata = record.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
-        if let Some(obj) = metadata.as_object_mut() {
-            obj.insert("previous_content".to_string(), serde_json::json!(record.content));
-            obj.insert("update_reason".to_string(), serde_json::json!(reason));
-            obj.insert("updated_at".to_string(), serde_json::json!(Utc::now().to_rfc3339()));
+
+        let previous_content = record.content.clone();
+
+        // Decode into typed EnrichedMemory. This is the dual-path read
+        // (`Dimensions::from_stored_metadata` handles v2 first, v1
+        // fallback). user_metadata captures any caller-supplied keys
+        // outside the engram-reserved set — including a v1 row's
+        // `update_audit` if one was written by an earlier call.
+        let em = EnrichedMemory::from_memory_record(&record).map_err(|e| {
+            format!(
+                "update_memory: failed to decode row {} into EnrichedMemory: {}",
+                memory_id, e
+            )
+        })?;
+
+        // Swap in new content. Per the EnrichedMemory invariant,
+        // core_fact must track content — rebuild Dimensions with the
+        // new fact. All other dimensional fields (participants,
+        // temporal, causation, …) are preserved verbatim because an
+        // update is a content rewrite, not a re-extraction.
+        let new_core = crate::dimensions::NonEmptyString::new(new_content)
+            .map_err(|_| "update_memory: new_content is empty or whitespace-only")?;
+        let mut new_dims = em.dimensions.clone();
+        new_dims.core_fact = new_core;
+
+        let new_em = EnrichedMemory::from_dimensions(
+            new_dims,
+            em.importance,
+            em.source.clone(),
+            em.namespace.clone(),
+            em.user_metadata.clone(),
+        );
+
+        // Serialize to v2 layout. `to_legacy_metadata()` (misnamed for
+        // historical reasons) produces the v2 `{engram, user}` shape.
+        let mut metadata = new_em.to_legacy_metadata();
+
+        // Append audit entry under `user.update_audit` — a chronological
+        // Vec of {previous_content, reason, updated_at}. Keeps audit
+        // data out of the engram.* namespace so reads stay clean.
+        let audit_entry = serde_json::json!({
+            "previous_content": previous_content,
+            "reason": reason,
+            "updated_at": Utc::now().to_rfc3339(),
+        });
+        if let Some(top) = metadata.as_object_mut() {
+            let user_entry = top
+                .entry("user".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if !user_entry.is_object() {
+                *user_entry = serde_json::json!({});
+            }
+            if let Some(user_obj) = user_entry.as_object_mut() {
+                let history_entry = user_obj
+                    .entry("update_audit".to_string())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if !history_entry.is_array() {
+                    *history_entry = serde_json::Value::Array(Vec::new());
+                }
+                if let Some(arr) = history_entry.as_array_mut() {
+                    arr.push(audit_entry);
+                    // Cap to last 10 entries — matches merge_history cap.
+                    if arr.len() > 10 {
+                        let start = arr.len() - 10;
+                        *arr = arr[start..].to_vec();
+                    }
+                }
+            }
         }
-        
-        // Update content in storage
+
+        // Persist — single UPDATE on content + metadata.
         self.storage.update_content(memory_id, new_content, Some(metadata))?;
         
         // Regenerate embedding if provider is available
@@ -2300,9 +4090,13 @@ impl Memory {
             })
             .collect();
         
+        // Defense-in-depth: filter out any superseded memories that slipped through
+        let recall_results: Vec<_> = recall_results.into_iter()
+            .filter(|r| r.record.superseded_by.is_none())
+            .collect();
+        
         Ok(recall_results)
-    }
-    
+    }    
     /// Uses Hebbian links to find memories that frequently co-occur.
     /// Note: this finds *associations*, not true causal relationships.
     /// LLMs can infer causality from the associated context.
@@ -2354,6 +4148,7 @@ impl Memory {
             // Score and filter
             let mut scored: Vec<_> = causal_memories
                 .into_iter()
+                .filter(|r| r.superseded_by.is_none()) // Defense-in-depth
                 .map(|record| {
                     let activation = retrieval_activation(
                         &record,
@@ -2862,6 +4657,7 @@ impl Memory {
         // Score each candidate with ACT-R activation
         let mut scored: Vec<_> = candidates
             .into_iter()
+            .filter(|r| r.superseded_by.is_none()) // Defense-in-depth
             .map(|record| {
                 let activation = retrieval_activation(
                     &record,
@@ -3009,7 +4805,7 @@ impl Memory {
         namespace: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let mgr = SubscriptionManager::new(self.storage.connection())?;
-        Ok(mgr.unsubscribe(agent_id, namespace)?)
+        mgr.unsubscribe(agent_id, namespace)
     }
     
     /// List subscriptions for an agent.
@@ -3018,7 +4814,7 @@ impl Memory {
         agent_id: &str,
     ) -> Result<Vec<Subscription>, Box<dyn std::error::Error>> {
         let mgr = SubscriptionManager::new(self.storage.connection())?;
-        Ok(mgr.list_subscriptions(agent_id)?)
+        mgr.list_subscriptions(agent_id)
     }
     
     /// Check for notifications since last check.
@@ -3030,7 +4826,7 @@ impl Memory {
         agent_id: &str,
     ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
         let mgr = SubscriptionManager::new(self.storage.connection())?;
-        Ok(mgr.check_notifications(agent_id)?)
+        mgr.check_notifications(agent_id)
     }
     
     /// Peek at notifications without updating cursor.
@@ -3039,7 +4835,7 @@ impl Memory {
         agent_id: &str,
     ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
         let mgr = SubscriptionManager::new(self.storage.connection())?;
-        Ok(mgr.peek_notifications(agent_id)?)
+        mgr.peek_notifications(agent_id)
     }
 
     /// Extract entities from existing memories that don't have entity links yet.
@@ -3099,6 +4895,7 @@ impl Memory {
     /// Removes:
     /// - Person entities that are 1-2 chars or pure digits (e.g., "0", "1", "types")
     /// - Orphaned entities with no memory links
+    ///
     /// Returns count of entities deleted.
     pub fn purge_garbage_entities(&self) -> Result<usize, Box<dyn std::error::Error>> {
         let mut total_deleted = 0;
@@ -3221,13 +5018,20 @@ impl Memory {
         )?;
 
         let mut gate_results = Vec::new();
+
+        // Pre-load all memories ONCE and build a HashMap index for O(1) lookups.
+        // Previously storage.all() was called inside the per-cluster loop — O(C×N).
+        let all_memories = self.storage.all()?;
+        let memory_index: std::collections::HashMap<String, MemoryRecord> = all_memories
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect();
+
         for cluster_data in &clusters {
-            let all_memories = self.storage.all()?;
-            let member_set: std::collections::HashSet<&str> =
-                cluster_data.members.iter().map(|s| s.as_str()).collect();
-            let members: Vec<MemoryRecord> = all_memories
-                .into_iter()
-                .filter(|m| member_set.contains(m.id.as_str()))
+            let members: Vec<MemoryRecord> = cluster_data
+                .members
+                .iter()
+                .filter_map(|id| memory_index.get(id).cloned())
                 .collect();
 
             let covered_pct = self.storage.check_coverage(&cluster_data.members)?;
@@ -3248,6 +5052,8 @@ impl Memory {
             clusters_auto_updated: 0,
             clusters_deferred: gate_results.iter().filter(|g| matches!(g.decision, crate::synthesis::types::GateDecision::Defer { .. })).count(),
             clusters_skipped: gate_results.iter().filter(|g| matches!(g.decision, crate::synthesis::types::GateDecision::Skip { .. })).count(),
+            synthesis_runs_full: 0,
+            synthesis_runs_incremental: 0,
             insights_created: Vec::new(),
             sources_demoted: Vec::new(),
             errors: Vec::new(),
@@ -3256,24 +5062,47 @@ impl Memory {
         })
     }
 
-    /// Unified sleep cycle: consolidate, then synthesize.
+    /// Unified sleep cycle: consolidate, synthesize, decay, forget, rebalance.
     ///
-    /// This is the recommended way to run both consolidation and synthesis in sequence.
+    /// This is the recommended way to run the full memory maintenance pipeline.
     /// Consolidation always runs; synthesis only runs if enabled via settings.
     pub fn sleep_cycle(
         &mut self,
         days: f64,
         namespace: Option<&str>,
     ) -> Result<SleepReport, Box<dyn std::error::Error>> {
-        // Phase 1: Synaptic consolidation (existing)
-        self.consolidate_namespace(days, namespace)?;
+        use std::time::Instant;
+        let cycle_start = Instant::now();
+        let mut phases = Vec::new();
 
-        // Phase 2: Knowledge synthesis (if enabled)
-        let synthesis = if self.synthesis_settings.as_ref().map_or(false, |s| s.enabled) {
+        // Phase 1: Synaptic consolidation (existing)
+        let t = Instant::now();
+        self.consolidate_namespace(days, namespace)?;
+        phases.push(PhaseReport {
+            name: "consolidate".to_string(),
+            duration_ms: t.elapsed().as_millis() as u64,
+            count: 0,
+        });
+
+        // Phase 2: Knowledge synthesis (if enabled, now incremental via C4)
+        let t = Instant::now();
+        let synthesis = if self.synthesis_settings.as_ref().is_some_and(|s| s.enabled) {
             match self.synthesize() {
-                Ok(report) => Some(report),
+                Ok(report) => {
+                    phases.push(PhaseReport {
+                        name: "synthesis".to_string(),
+                        duration_ms: t.elapsed().as_millis() as u64,
+                        count: report.insights_created.len(),
+                    });
+                    Some(report)
+                }
                 Err(e) => {
                     log::warn!("Synthesis in sleep cycle failed (non-fatal): {e}");
+                    phases.push(PhaseReport {
+                        name: "synthesis".to_string(),
+                        duration_ms: t.elapsed().as_millis() as u64,
+                        count: 0,
+                    });
                     None
                 }
             }
@@ -3281,9 +5110,61 @@ impl Memory {
             None
         };
 
+        // Phase 3: Decay check (C5) — flag weak memories
+        let t = Instant::now();
+        let decay = self.check_decay_and_flag(namespace)?;
+        phases.push(PhaseReport {
+            name: "decay".to_string(),
+            duration_ms: t.elapsed().as_millis() as u64,
+            count: decay.flagged_for_forget,
+        });
+
+        // Phase 4: Forget (C6) — soft-delete + hard-delete old
+        let t = Instant::now();
+        let forget = self.forget_bulk()?;
+        phases.push(PhaseReport {
+            name: "forget".to_string(),
+            duration_ms: t.elapsed().as_millis() as u64,
+            count: forget.soft_deleted + forget.hard_deleted,
+        });
+
+        // Phase 5: Rebalance (C9) — repair integrity
+        let t = Instant::now();
+        let rebalance = self.rebalance_internal()?;
+        phases.push(PhaseReport {
+            name: "rebalance".to_string(),
+            duration_ms: t.elapsed().as_millis() as u64,
+            count: rebalance.repairs,
+        });
+
+        // Reset per-cycle counters
+        self.dedup_merge_count = 0;
+        self.dedup_write_count = 0;
+        self.last_add_result = None;
+
+        // Meta-cognition: record synthesis event
+        if let Some(ref mut tracker) = self.metacognition {
+            let synth_ref = &synthesis;
+            let event = crate::metacognition::SynthesisEvent {
+                timestamp: chrono::Utc::now().timestamp(),
+                clusters_found: synth_ref.as_ref().map(|s| s.clusters_found).unwrap_or(0),
+                insights_created: synth_ref.as_ref().map(|s| s.insights_created.len()).unwrap_or(0),
+                duration_ms: cycle_start.elapsed().as_millis() as u64,
+                error_count: synth_ref.as_ref().map(|s| s.errors.len()).unwrap_or(0),
+            };
+            if let Err(e) = tracker.record_synthesis(self.storage.conn(), event) {
+                log::warn!("Metacognition synthesis record failed: {}", e);
+            }
+        }
+
         Ok(SleepReport {
             consolidation_ok: true,
             synthesis,
+            phases,
+            decay: Some(decay),
+            forget: Some(forget),
+            rebalance: Some(rebalance),
+            duration_ms: cycle_start.elapsed().as_millis() as u64,
         })
     }
 
@@ -3297,7 +5178,7 @@ impl Memory {
         let all = self.storage.all()?;
         let mut insights: Vec<MemoryRecord> = all
             .into_iter()
-            .filter(|r| is_insight(r))
+            .filter(is_insight)
             .collect();
         insights.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         if let Some(l) = limit {
@@ -3311,7 +5192,7 @@ impl Memory {
         &self,
         insight_id: &str,
     ) -> Result<Vec<crate::synthesis::types::ProvenanceRecord>, Box<dyn std::error::Error>> {
-        Ok(self.storage.get_insight_sources(insight_id)?)
+        self.storage.get_insight_sources(insight_id)
     }
 
     /// Get insights derived from a specific source memory.
@@ -3319,7 +5200,7 @@ impl Memory {
         &self,
         memory_id: &str,
     ) -> Result<Vec<crate::synthesis::types::ProvenanceRecord>, Box<dyn std::error::Error>> {
-        Ok(self.storage.get_memory_insights(memory_id)?)
+        self.storage.get_memory_insights(memory_id)
     }
 
     /// Reverse a synthesis: archive the insight and restore source importances.
@@ -3455,111 +5336,62 @@ fn detect_feedback_polarity(feedback: &str) -> f64 {
 // ISS-019 Step 4 helpers (module-level — re-used by the shim layer).
 // =========================================================================
 
-/// Build the legacy `metadata` JSON blob from a validated `EnrichedMemory`.
+/// Build the v2 namespaced `metadata` JSON blob from a validated
+/// `EnrichedMemory`.
 ///
-/// The on-disk layout is the same shape `add_to_namespace` has always
-/// produced — `dimensions.*` + `type_weights` + any caller user-metadata
-/// keys merged at top level. This keeps Step 4 strictly additive: dedup,
-/// merge history, and read-side consumers (KC, clustering) continue to
-/// work without schema changes.
+/// v2 on-disk layout (ISS-019 Step 7a):
+/// ```json
+/// {
+///   "engram": {
+///     "version": 2,
+///     "dimensions": { ..., "type_weights": { ... } },
+///     "merge_count": 0,
+///     "merge_history": []
+///   },
+///   "user": { /* caller-supplied keys */ }
+/// }
+/// ```
 ///
-/// Step 7 of the ISS-019 plan introduces the versioned `engram.*` /
-/// `user.*` namespacing. Moving it there keeps the diff reviewable.
+/// Reads remain backward-compatible with the v1 flat layout via
+/// `Dimensions::from_stored_metadata`. Step 7b will introduce the
+/// explicit backfill job for pre-v2 rows.
 fn build_legacy_metadata(mem: &crate::enriched::EnrichedMemory) -> serde_json::Value {
-    use crate::dimensions::TemporalMark;
-
     let d = &mem.dimensions;
 
-    // Dimensional sub-object — only fields that have a value are written,
-    // matching the legacy add_to_namespace behavior.
-    let mut dims = serde_json::Map::new();
-    if let Some(ref v) = d.participants {
-        dims.insert("participants".into(), serde_json::Value::String(v.clone()));
-    }
-    if let Some(ref v) = d.temporal {
-        let s = match v {
-            TemporalMark::Exact(dt) => dt.to_rfc3339(),
-            TemporalMark::Day(day) => day.format("%Y-%m-%d").to_string(),
-            TemporalMark::Range { start, end } => format!(
-                "{}..{}",
-                start.format("%Y-%m-%d"),
-                end.format("%Y-%m-%d")
-            ),
-            TemporalMark::Vague(s) => s.clone(),
-        };
-        dims.insert("temporal".into(), serde_json::Value::String(s));
-    }
-    if let Some(ref v) = d.location {
-        dims.insert("location".into(), serde_json::Value::String(v.clone()));
-    }
-    if let Some(ref v) = d.context {
-        dims.insert("context".into(), serde_json::Value::String(v.clone()));
-    }
-    if let Some(ref v) = d.causation {
-        dims.insert("causation".into(), serde_json::Value::String(v.clone()));
-    }
-    if let Some(ref v) = d.outcome {
-        dims.insert("outcome".into(), serde_json::Value::String(v.clone()));
-    }
-    if let Some(ref v) = d.method {
-        dims.insert("method".into(), serde_json::Value::String(v.clone()));
-    }
-    if let Some(ref v) = d.relations {
-        dims.insert("relations".into(), serde_json::Value::String(v.clone()));
-    }
-    if let Some(ref v) = d.sentiment {
-        dims.insert("sentiment".into(), serde_json::Value::String(v.clone()));
-    }
-    if let Some(ref v) = d.stance {
-        dims.insert("stance".into(), serde_json::Value::String(v.clone()));
-    }
+    // Serialize Dimensions directly — this produces the complete
+    // dimensional object including nested type_weights.
+    let mut dims_val = serde_json::to_value(d).unwrap_or_else(|_| serde_json::json!({}));
 
-    // Always-present scalar fields — mirrors ISS-020 P0.0 fix so KC
-    // / conflict detection / clustering can pre-filter by domain.
-    dims.insert("valence".into(), serde_json::json!(d.valence.get()));
-    dims.insert(
-        "confidence".into(),
-        serde_json::Value::String(
-            match d.confidence {
-                crate::dimensions::Confidence::Confident => "confident",
-                crate::dimensions::Confidence::Likely => "likely",
-                crate::dimensions::Confidence::Uncertain => "uncertain",
-            }
-            .to_string(),
-        ),
-    );
-    dims.insert(
-        "domain".into(),
-        serde_json::Value::String(domain_to_loose_str(&d.domain)),
-    );
-
-    // Tags — round-tripped as a JSON array for external consumers.
-    if !d.tags.is_empty() {
-        dims.insert(
-            "tags".into(),
-            serde_json::Value::Array(
-                d.tags
-                    .iter()
-                    .map(|s| serde_json::Value::String(s.clone()))
-                    .collect(),
-            ),
+    // Normalize domain to the legacy loose-str representation so
+    // downstream consumers (KC, clustering) keep working unchanged.
+    if let Some(obj) = dims_val.as_object_mut() {
+        obj.insert(
+            "domain".into(),
+            serde_json::Value::String(domain_to_loose_str(&d.domain)),
         );
-    }
-
-    // Top-level metadata object.
-    let mut meta = serde_json::Map::new();
-    meta.insert("dimensions".into(), serde_json::Value::Object(dims));
-    meta.insert("type_weights".into(), d.type_weights.to_json());
-
-    // Merge caller-supplied user metadata (user keys take priority, same
-    // contract as add_to_namespace).
-    if let serde_json::Value::Object(user) = &mem.user_metadata {
-        for (k, v) in user {
-            meta.insert(k.clone(), v.clone());
+        // Drop tags key if empty to match prior behavior (no empty arrays).
+        if d.tags.is_empty() {
+            obj.remove("tags");
         }
     }
 
-    serde_json::Value::Object(meta)
+    let engram = serde_json::json!({
+        "version": 2,
+        "dimensions": dims_val,
+        "merge_count": 0,
+        "merge_history": [],
+    });
+
+    let user = if let serde_json::Value::Object(_) = &mem.user_metadata {
+        mem.user_metadata.clone()
+    } else {
+        serde_json::json!({})
+    };
+
+    serde_json::json!({
+        "engram": engram,
+        "user": user,
+    })
 }
 
 fn domain_to_loose_str(d: &crate::dimensions::Domain) -> String {
@@ -3598,6 +5430,32 @@ fn short_hash(content: &str) -> String {
     let mut h = DefaultHasher::new();
     content.hash(&mut h);
     format!("{:016x}", h.finish())
+}
+
+/// Build a `TypeWeights` that favors the given `MemoryType`.
+///
+/// Used by the `store_raw` no-extractor branch (FINDING-4 / legacy
+/// shim) so an explicit `memory_type_hint` survives round-tripping
+/// through `Dimensions::type_weights.primary_type()`. Without this
+/// helper, a minimal `TypeWeights::default()` (all 1.0) would
+/// degenerate `primary_type()` to a tie-break winner (factual) and
+/// silently discard the caller's explicit classification.
+fn type_weights_favoring(mt: crate::types::MemoryType) -> crate::type_weights::TypeWeights {
+    use crate::types::MemoryType;
+    // Baseline 1.0 preserves neutral recall behavior for other types;
+    // the hinted type gets 2.0 so `primary_type()` picks it unambiguously.
+    let mut w = crate::type_weights::TypeWeights::default();
+    let favored = 2.0_f64;
+    match mt {
+        MemoryType::Factual => w.factual = favored,
+        MemoryType::Episodic => w.episodic = favored,
+        MemoryType::Procedural => w.procedural = favored,
+        MemoryType::Relational => w.relational = favored,
+        MemoryType::Emotional => w.emotional = favored,
+        MemoryType::Opinion => w.opinion = favored,
+        MemoryType::Causal => w.causal = favored,
+    }
+    w
 }
 
 #[cfg(test)]
@@ -3752,6 +5610,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
+            superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -3807,6 +5666,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
+            superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -3860,6 +5720,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
+            superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -3911,6 +5772,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
+            superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -3963,6 +5825,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
+            superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -4014,6 +5877,7 @@ mod confidence_tests {
             source: "test".to_string(),
             contradicts: None,
             contradicted_by: None,
+            superseded_by: None,
             metadata: None,
         }
     }
@@ -4367,4 +6231,14 @@ mod confidence_tests {
         assert_eq!(json["confidence"].as_str(), Some("likely"));
         assert_eq!(json["domain"].as_str(), Some("general"));
     }
+}
+
+/// Jaccard similarity between two string sets.
+fn jaccard_similarity_strings(a: &[String], b: &[String]) -> f64 {
+    if a.is_empty() && b.is_empty() { return 0.0; }
+    let set_a: std::collections::HashSet<&str> = a.iter().map(|s| s.as_str()).collect();
+    let set_b: std::collections::HashSet<&str> = b.iter().map(|s| s.as_str()).collect();
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
 }

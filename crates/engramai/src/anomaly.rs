@@ -65,7 +65,7 @@ impl BaselineTracker {
     pub fn update(&mut self, metric: &str, value: f64) {
         let window = self.data
             .entry(metric.to_string())
-            .or_insert_with(VecDeque::new);
+            .or_default();
         
         // Evict oldest if at capacity
         if window.len() >= self.window_size {

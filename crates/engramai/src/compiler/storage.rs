@@ -55,6 +55,10 @@ pub trait KnowledgeStore {
 
     /// Retrieve all source-memory references for a topic.
     fn get_source_refs(&self, topic_id: &TopicId) -> Result<Vec<SourceMemoryRef>, KcError>;
+
+    /// Delete ALL topic pages, compilation records, and source refs.
+    /// Used by recompile_all to start fresh.
+    fn purge_all(&self) -> Result<usize, KcError>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -567,6 +571,23 @@ impl KnowledgeStore for SqliteKnowledgeStore {
             );
         }
         Ok(out)
+    }
+
+    fn purge_all(&self) -> Result<usize, KcError> {
+        let count: usize = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM kc_topic_pages", [], |row| row.get(0))
+            .map_err(|e| KcError::Storage(format!("purge_all count: {e}")))?;
+
+        self.conn
+            .execute_batch(
+                "DELETE FROM kc_compilation_sources;
+                 DELETE FROM kc_compilation_records;
+                 DELETE FROM kc_topic_pages;",
+            )
+            .map_err(|e| KcError::Storage(format!("purge_all: {e}")))?;
+
+        Ok(count)
     }
 }
 

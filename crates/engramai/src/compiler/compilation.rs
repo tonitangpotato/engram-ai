@@ -8,12 +8,18 @@ use std::time::Instant;
 use crate::compiler::llm::LlmProvider;
 use crate::compiler::storage::KnowledgeStore;
 use crate::compiler::types::*;
+use crate::type_weights::TypeWeights;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Memory Snapshot
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Lightweight snapshot of a memory used during compilation.
+///
+/// Extended by ISS-020 P0.2 to carry dimensional metadata. Every new field is
+/// `Option<...>` so legacy memories (written before dimensional extraction)
+/// transparently get `None` and downstream code falls back to content-only
+/// behavior (investigation.md §7.2 invariant).
 #[derive(Clone, Debug)]
 pub struct MemorySnapshot {
     pub id: String,
@@ -26,6 +32,20 @@ pub struct MemorySnapshot {
     /// Pre-computed embedding from engram's memory_embeddings table.
     /// When Some, used directly for clustering. When None, falls back to hash-based pseudo-embedding.
     pub embedding: Option<Vec<f32>>,
+    // ─── ISS-020 P0.2 dimensional fields ─────────────────────────────────────
+    /// Structured cognitive dimensions parsed from `metadata.dimensions`.
+    /// `None` for legacy memories or when the dimensions object was absent.
+    pub dimensions: Option<Dimensions>,
+    /// Multi-type classification (7 weights). Parsed from `metadata.type_weights`.
+    /// `None` when absent; downstream code treats absence as "neutral weights".
+    pub type_weights: Option<TypeWeights>,
+    /// Convenience projection: `dimensions.as_ref().and_then(|d| d.confidence)`.
+    /// Populated by `From<&MemoryRecord>` at snapshot build time; may remain
+    /// `None` for memories written before ISS-020 P0.0 (valence/confidence persistence).
+    pub confidence: Option<Confidence>,
+    /// Convenience projection: `dimensions.as_ref().and_then(|d| d.valence)`.
+    /// Same caveat as `confidence`.
+    pub valence: Option<f64>,
 }
 
 impl MemorySnapshot {
@@ -40,6 +60,32 @@ impl MemorySnapshot {
             updated_at: Utc::now(),
             tags: vec![],
             embedding: None,
+            dimensions: None,
+            type_weights: None,
+            confidence: None,
+            valence: None,
+        }
+    }
+
+    /// Test helper: build a snapshot with dimensions attached.
+    /// Convenience for P0.4/P0.5 tests.
+    #[cfg(test)]
+    pub fn test_with_dimensions(id: &str, content: &str, dims: Dimensions) -> Self {
+        let confidence = dims.confidence;
+        let valence = dims.valence;
+        Self {
+            id: id.to_string(),
+            content: content.to_string(),
+            memory_type: "factual".to_string(),
+            importance: 0.5,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            tags: vec![],
+            embedding: None,
+            dimensions: Some(dims),
+            type_weights: None,
+            confidence,
+            valence,
         }
     }
 }
@@ -324,27 +370,175 @@ impl<'a> QualityScorer<'a> {
 //  Prompt Builders
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Build an LLM prompt for full (from-scratch) compilation.
+/// Render a single memory line for the compilation prompt according to
+/// `PromptDetailLevel`. Internal helper for both full and incremental builders.
+///
+/// Format rules (investigation.md §4.3):
+/// - `Minimal`: current behavior — `- [{type}] ({date}): {content}`
+/// - `Standard`: compact one-line enriched — only includes pipes for `Some` fields
+/// - `Full`: currently falls back to `Standard` (reserved)
+///
+/// When `snapshot.dimensions.is_none()` (legacy memory), always emits the minimal
+/// format regardless of configured level — back-compat invariant §7.2.
+fn render_memory_line(m: &MemorySnapshot, level: PromptDetailLevel) -> String {
+    let date = m.created_at.format("%Y-%m-%d");
+
+    // Legacy memory OR caller requested minimal → current format.
+    if level == PromptDetailLevel::Minimal || m.dimensions.is_none() {
+        return format!("- [{}] ({date}): {}\n", m.memory_type, m.content);
+    }
+
+    // Standard / Full: compact one-line enriched.
+    let dims = m.dimensions.as_ref().expect("checked above");
+    let mut header_bits = vec![m.memory_type.clone()];
+    if let Some(ref d) = dims.domain {
+        header_bits.push(d.clone());
+    }
+    if let Some(c) = m.confidence.or(dims.confidence) {
+        header_bits.push(format!("conf={}", c.as_str()));
+    }
+    let header = header_bits.join("|");
+
+    let mut line = format!("- [{header}] ({date})");
+
+    // Append pipe-delimited structural fields only when present.
+    let mut pipes: Vec<String> = Vec::new();
+    if let Some(ref p) = dims.participants {
+        pipes.push(format!("who:{p}"));
+    }
+    if let Some(ref c) = dims.causation {
+        pipes.push(format!("cause:{c}"));
+    }
+    if let Some(ref o) = dims.outcome {
+        pipes.push(format!("outcome:{o}"));
+    }
+    if let Some(ref s) = dims.stance {
+        pipes.push(format!("stance:{s}"));
+    }
+    if let Some(ref t) = dims.temporal {
+        pipes.push(format!("when:{t}"));
+    }
+    if !pipes.is_empty() {
+        line.push(' ');
+        line.push_str(&pipes.join(" | "));
+    }
+    line.push_str(&format!(": {}\n", m.content));
+    line
+}
+
+/// Estimate token count for a prompt string.
+fn estimate_tokens(s: &str, tokens_per_char: f64) -> usize {
+    ((s.len() as f64) * tokens_per_char) as usize
+}
+
+/// Apply token-budget guard: when projected input exceeds the cap, drop
+/// lowest-importance memories first until under budget. Returns the filtered
+/// list and a count of dropped entries.
+///
+/// Matches investigation.md §4.3 mitigation #3.
+fn enforce_prompt_budget<'m>(
+    memories: &'m [MemorySnapshot],
+    cfg: &PromptConfig,
+    header_tokens: usize,
+) -> (Vec<&'m MemorySnapshot>, usize) {
+    // Fast path: small corpus, skip sort.
+    let projected_each: Vec<usize> = memories
+        .iter()
+        .map(|m| {
+            estimate_tokens(
+                &render_memory_line(m, cfg.detail_level),
+                cfg.tokens_per_char,
+            )
+        })
+        .collect();
+    let total: usize = projected_each.iter().sum::<usize>() + header_tokens;
+
+    if total <= cfg.max_input_tokens {
+        return (memories.iter().collect(), 0);
+    }
+
+    // Over budget: sort by importance asc and drop until under budget.
+    // Work on indices so we preserve original order in the output.
+    let mut idx: Vec<usize> = (0..memories.len()).collect();
+    // Keep list is every index; drop list grows as we evict lowest-importance.
+    let mut to_drop: HashSet<usize> = HashSet::new();
+    // Sort indices ascending by importance (lowest first = first victims).
+    idx.sort_by(|&a, &b| {
+        memories[a]
+            .importance
+            .partial_cmp(&memories[b].importance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut remaining = total;
+    for victim_idx in &idx {
+        if remaining <= cfg.max_input_tokens {
+            break;
+        }
+        to_drop.insert(*victim_idx);
+        remaining = remaining.saturating_sub(projected_each[*victim_idx]);
+    }
+
+    let kept: Vec<&MemorySnapshot> = memories
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| if to_drop.contains(&i) { None } else { Some(m) })
+        .collect();
+    (kept, to_drop.len())
+}
+
+/// Build an LLM prompt for full (from-scratch) compilation (default config).
 pub fn build_full_compile_prompt(
     title: &str,
     memories: &[MemorySnapshot],
     user_edits: &[(String, String)],
 ) -> String {
+    build_full_compile_prompt_with(title, memories, user_edits, &PromptConfig::default())
+}
+
+/// Build an LLM prompt for full compilation with explicit prompt configuration
+/// (ISS-020 P0.4).
+pub fn build_full_compile_prompt_with(
+    title: &str,
+    memories: &[MemorySnapshot],
+    user_edits: &[(String, String)],
+    cfg: &PromptConfig,
+) -> String {
     let mut prompt = format!(
         "You are a knowledge compiler. Synthesize these memories into a coherent topic page.\n\n\
-         Topic: {title}\n\n\
-         Memories:\n"
+         Topic: {title}\n\n"
     );
 
-    for m in memories {
-        let date = m.created_at.format("%Y-%m-%d");
-        prompt.push_str(&format!("- [{}] ({date}): {}\n", m.memory_type, m.content));
+    // P0.4: instruct the LLM to preserve structural signal from enriched lines.
+    if cfg.detail_level != PromptDetailLevel::Minimal {
+        prompt.push_str(
+            "Each memory line may carry structured fields: [type|domain|conf=LEVEL] \
+             (date) who:... | cause:... | outcome:... | stance:... | when:...: content.\n\
+             When synthesizing, preserve causation→outcome chains and attribute stances \
+             to participants. Do not flatten structure into generic statements.\n\n",
+        );
+    }
+    prompt.push_str("Memories:\n");
+
+    // Token-budget guard.
+    let header_tokens = estimate_tokens(&prompt, cfg.tokens_per_char);
+    let (kept, dropped) = enforce_prompt_budget(memories, cfg, header_tokens);
+    if dropped > 0 {
+        prompt.push_str(&format!(
+            "(Note: {dropped} lower-importance memories omitted to fit context budget.)\n",
+        ));
+    }
+
+    for m in &kept {
+        prompt.push_str(&render_memory_line(m, cfg.detail_level));
     }
 
     if !user_edits.is_empty() {
         prompt.push_str("\nThe user has made manual edits. Preserve their intent:\n");
         for (original, replacement) in user_edits {
-            prompt.push_str(&format!("- Original: \"{original}\" → Replacement: \"{replacement}\"\n"));
+            prompt.push_str(&format!(
+                "- Original: \"{original}\" → Replacement: \"{replacement}\"\n"
+            ));
         }
     }
 
@@ -367,6 +561,25 @@ pub fn build_incremental_compile_prompt(
     memories: &[MemorySnapshot],
     user_edits: &[(String, String)],
 ) -> String {
+    build_incremental_compile_prompt_with(
+        title,
+        existing_content,
+        changes,
+        memories,
+        user_edits,
+        &PromptConfig::default(),
+    )
+}
+
+/// Incremental prompt builder with explicit configuration (ISS-020 P0.4).
+pub fn build_incremental_compile_prompt_with(
+    title: &str,
+    existing_content: &str,
+    changes: &ChangeSet,
+    memories: &[MemorySnapshot],
+    user_edits: &[(String, String)],
+    cfg: &PromptConfig,
+) -> String {
     let mem_index: std::collections::HashMap<&str, &MemorySnapshot> =
         memories.iter().map(|m| (m.id.as_str(), m)).collect();
 
@@ -381,8 +594,7 @@ pub fn build_incremental_compile_prompt(
         prompt.push_str("New memories:\n");
         for id in &changes.added {
             if let Some(m) = mem_index.get(id.as_str()) {
-                let date = m.created_at.format("%Y-%m-%d");
-                prompt.push_str(&format!("- [{}] ({date}): {}\n", m.memory_type, m.content));
+                prompt.push_str(&render_memory_line(m, cfg.detail_level));
             }
         }
     }
@@ -391,8 +603,10 @@ pub fn build_incremental_compile_prompt(
         prompt.push_str("Modified memories:\n");
         for id in &changes.modified {
             if let Some(m) = mem_index.get(id.as_str()) {
-                let date = m.updated_at.format("%Y-%m-%d");
-                prompt.push_str(&format!("- [{}] ({date}): {}\n", m.memory_type, m.content));
+                // Use updated_at for modified entries (same as legacy).
+                let mut tmp = (*m).clone();
+                tmp.created_at = m.updated_at;
+                prompt.push_str(&render_memory_line(&tmp, cfg.detail_level));
             }
         }
     }
@@ -548,6 +762,14 @@ impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
         // Persist
         self.store.create_topic_page(&page)?;
 
+        // Populate kc_compilation_sources for decay/health tracking
+        let source_refs: Vec<SourceMemoryRef> = memories.iter().map(|m| SourceMemoryRef {
+            memory_id: m.id.clone(),
+            relevance_score: m.importance,
+            added_at: now,
+        }).collect();
+        self.store.save_source_refs(&topic_id, &source_refs)?;
+
         let record = CompilationRecord {
             topic_id: topic_id.clone(),
             compiled_at: now,
@@ -611,6 +833,14 @@ impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
 
         // Persist
         self.store.update_topic_page(&updated)?;
+
+        // Populate kc_compilation_sources for decay/health tracking
+        let source_refs: Vec<SourceMemoryRef> = memories.iter().map(|m| SourceMemoryRef {
+            memory_id: m.id.clone(),
+            relevance_score: m.importance,
+            added_at: now,
+        }).collect();
+        self.store.save_source_refs(&topic.id, &source_refs)?;
 
         let record = CompilationRecord {
             topic_id: topic.id.clone(),
@@ -1322,5 +1552,127 @@ mod tests {
         let page = result.unwrap();
         assert_eq!(page.title, "Verbose Test Topic");
         assert!(page.content.contains("Test memory one"));
+    }
+
+    // ─── ISS-020 P0.4 prompt-enrichment tests ────────────────────────────────
+
+    fn make_dims(stance: Option<&str>, cause: Option<&str>, domain: Option<&str>) -> Dimensions {
+        Dimensions {
+            stance: stance.map(String::from),
+            causation: cause.map(String::from),
+            domain: domain.map(String::from),
+            confidence: Some(Confidence::Confident),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn iss020_p0_4_legacy_memory_uses_minimal_format_even_when_enriched_requested() {
+        // Legacy memory: dimensions=None. Output must match the current format
+        // regardless of configured detail level (back-compat §7.2 invariant).
+        let m = MemorySnapshot::test("m1", "legacy fact");
+        let cfg = PromptConfig {
+            detail_level: PromptDetailLevel::Standard,
+            ..Default::default()
+        };
+        let prompt = build_full_compile_prompt_with("Test", &[m], &[], &cfg);
+        // Extract just the memory-line portion (after "Memories:\n") to avoid
+        // matching the "cause:..." example in the header instruction.
+        let mem_section = prompt.split("Memories:\n").nth(1).expect("Memories: section");
+        assert!(mem_section.contains("- [factual] ("));
+        assert!(mem_section.contains("legacy fact"));
+        // Must NOT contain enriched pipes in the rendered memory lines.
+        assert!(!mem_section.contains("cause:"));
+        assert!(!mem_section.contains("stance:"));
+        assert!(!mem_section.contains("conf="));
+    }
+
+    #[test]
+    fn iss020_p0_4_enriched_memory_surfaces_dimensional_pipes() {
+        let dims = make_dims(
+            Some("prefers Rust over Go"),
+            Some("performance matters"),
+            Some("coding"),
+        );
+        let m = MemorySnapshot::test_with_dimensions("m1", "Rust is fast", dims);
+        let cfg = PromptConfig {
+            detail_level: PromptDetailLevel::Standard,
+            ..Default::default()
+        };
+        let prompt = build_full_compile_prompt_with("Test", &[m], &[], &cfg);
+        assert!(prompt.contains("coding"), "domain must appear in header");
+        assert!(prompt.contains("conf=confident"), "confidence in header");
+        assert!(prompt.contains("cause:performance matters"));
+        assert!(prompt.contains("stance:prefers Rust over Go"));
+        assert!(prompt.contains("Rust is fast"));
+        // Header instruction must be present so the LLM preserves structure.
+        assert!(prompt.contains("causation→outcome"));
+    }
+
+    #[test]
+    fn iss020_p0_4_minimal_level_reproduces_legacy_exactly() {
+        // With Minimal level, enriched dimensions are ignored entirely —
+        // output matches the original format byte-for-byte.
+        let dims = make_dims(Some("s1"), Some("c1"), Some("coding"));
+        let m = MemorySnapshot::test_with_dimensions("m1", "hello", dims);
+        let cfg = PromptConfig {
+            detail_level: PromptDetailLevel::Minimal,
+            ..Default::default()
+        };
+        let prompt = build_full_compile_prompt_with("Test", &[m.clone()], &[], &cfg);
+        // No header instruction, no pipes.
+        assert!(!prompt.contains("causation→outcome"));
+        assert!(!prompt.contains("cause:"));
+        assert!(!prompt.contains("stance:"));
+        // Legacy line format present.
+        let date = m.created_at.format("%Y-%m-%d");
+        let expected = format!("- [factual] ({date}): hello\n");
+        assert!(prompt.contains(&expected));
+    }
+
+    #[test]
+    fn iss020_p0_4_token_budget_drops_lowest_importance() {
+        // Force a tiny budget so all but the highest-importance memory gets dropped.
+        let cfg = PromptConfig {
+            detail_level: PromptDetailLevel::Minimal,
+            max_input_tokens: 80,
+            tokens_per_char: 0.3,
+        };
+        let mut m1 = MemorySnapshot::test("low", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        m1.importance = 0.1;
+        let mut m2 = MemorySnapshot::test("mid", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+        m2.importance = 0.5;
+        let mut m3 = MemorySnapshot::test("hi", "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC");
+        m3.importance = 0.9;
+
+        let prompt = build_full_compile_prompt_with("T", &[m1, m2, m3], &[], &cfg);
+        assert!(
+            prompt.contains("omitted to fit context budget"),
+            "truncation note must appear"
+        );
+        // Highest-importance memory survives.
+        assert!(
+            prompt.contains("CCCCCCCCC"),
+            "highest-importance memory must be retained"
+        );
+    }
+
+    #[test]
+    fn iss020_p0_4_partial_dimensions_only_emit_populated_pipes() {
+        // Only stance is set; causation/outcome must NOT appear as empty pipes.
+        let dims = Dimensions {
+            stance: Some("prefers coffee".into()),
+            domain: Some("life".into()),
+            ..Default::default()
+        };
+        let m = MemorySnapshot::test_with_dimensions("m1", "coffee is good", dims);
+        let cfg = PromptConfig::default();
+        let prompt = build_full_compile_prompt_with("T", &[m], &[], &cfg);
+        let mem_section = prompt.split("Memories:\n").nth(1).expect("Memories: section");
+        assert!(mem_section.contains("stance:prefers coffee"));
+        // No empty cause:/outcome:/who: pipes in the rendered line.
+        assert!(!mem_section.contains("cause:"));
+        assert!(!mem_section.contains("outcome:"));
+        assert!(!mem_section.contains("who:"));
     }
 }

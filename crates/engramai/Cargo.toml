@@ -1,6 +1,6 @@
 [package]
 name = "engramai"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 rust-version = "1.75"
 description = "Neuroscience-grounded memory system for AI agents. ACT-R activation, Hebbian learning, Ebbinghaus forgetting, cognitive consolidation."
@@ -36,24 +36,25 @@ log = "0.4"
 rand = "0.8"
 regex = "1"
 
-# CLI
-clap = { version = "4.5", features = ["derive", "env"] }
-
 # HTTP client for embeddings
 reqwest = { version = "0.12", features = ["blocking", "json"] }
-
-# Logging implementation for CLI
-env_logger = "0.11"
 
 # Config directory detection
 dirs = "5"
 jieba-rs = "0.8.1"
 
-# Community detection (used by unified clustering engine)
-infomap-rs = { version = "0.1.0", path = "../../../infomap-rs" }
+# Community detection for topic discovery
+infomap-rs = { version = "0.1.1", path = "../../../infomap-rs" }
+
+# ANN (Approximate Nearest Neighbors) for scalable topic discovery
+hnsw = "0.11"
+space = "0.17"
+rand_core = "0.6"
 
 [dev-dependencies]
 tempfile = "3.13"
+proptest = "1.5"
+env_logger = "0.11"
 
 [features]
 default = []
@@ -65,7 +66,3 @@ path = "examples/basic_usage.rs"
 [lib]
 name = "engramai"
 path = "src/lib.rs"
-
-[[bin]]
-name = "engram"
-path = "src/main.rs"

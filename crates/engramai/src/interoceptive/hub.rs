@@ -14,7 +14,8 @@ use std::collections::{HashMap, VecDeque};
 use chrono::Utc;
 
 use crate::interoceptive::types::{
-    DomainState, InteroceptiveSignal, InteroceptiveState, SomaticMarker,
+    AdaptiveBaseline, DeviationLevel, DomainState, InteroceptiveSignal,
+    InteroceptiveState, SomaticMarker,
 };
 
 /// Default maximum number of signals to retain in the buffer.
@@ -25,6 +26,12 @@ const DEFAULT_MARKER_CACHE_SIZE: usize = 256;
 
 /// Default EWMA alpha (recency weight). 0.3 gives ~70% weight to history.
 const DEFAULT_ALPHA: f64 = 0.3;
+
+/// Composite key for per-source-per-domain baselines.
+type BaselineKey = (String, String); // (source_name, domain)
+
+/// Default minimum samples before baseline is calibrated.
+const DEFAULT_BASELINE_MIN_SAMPLES: u64 = 20;
 
 /// The central integration hub for interoceptive signals.
 ///
@@ -48,6 +55,14 @@ pub struct InteroceptiveHub {
 
     /// EWMA smoothing factor for domain state updates.
     alpha: f64,
+
+    /// Adaptive baselines: (source, domain) → rolling stats.
+    /// Tracks mean + stddev for each signal source in each domain,
+    /// enabling σ-based deviation detection instead of hardcoded thresholds.
+    baselines: HashMap<BaselineKey, AdaptiveBaseline>,
+
+    /// Minimum samples before a baseline is considered calibrated.
+    baseline_min_samples: u64,
 }
 
 impl Default for InteroceptiveHub {
@@ -66,6 +81,8 @@ impl InteroceptiveHub {
             somatic_cache: HashMap::new(),
             marker_cache_size: DEFAULT_MARKER_CACHE_SIZE,
             alpha: DEFAULT_ALPHA,
+            baselines: HashMap::new(),
+            baseline_min_samples: DEFAULT_BASELINE_MIN_SAMPLES,
         }
     }
 
@@ -82,6 +99,8 @@ impl InteroceptiveHub {
             somatic_cache: HashMap::new(),
             marker_cache_size: marker_cache_size.max(1),
             alpha: alpha.clamp(0.01, 0.99),
+            baselines: HashMap::new(),
+            baseline_min_samples: DEFAULT_BASELINE_MIN_SAMPLES,
         }
     }
 
@@ -89,7 +108,8 @@ impl InteroceptiveHub {
     ///
     /// 1. Buffers the signal (FIFO eviction if full).
     /// 2. Updates the relevant domain state via EWMA.
-    /// 3. Returns `true` if the signal was notable (negative + urgent).
+    /// 3. Feeds adaptive baselines for σ-deviation tracking.
+    /// 4. Returns `true` if the signal was notable (negative + urgent).
     pub fn process_signal(&mut self, signal: InteroceptiveSignal) -> bool {
         let notable = signal.is_negative() && signal.is_urgent();
 
@@ -101,9 +121,17 @@ impl InteroceptiveHub {
 
         let ds = self
             .domain_states
-            .entry(domain_key)
+            .entry(domain_key.clone())
             .or_insert_with_key(|k| DomainState::new(k));
         ds.update(&signal, self.alpha);
+
+        // Feed adaptive baseline for this (source, domain) pair.
+        let baseline_key = (signal.source.to_string(), domain_key);
+        let baseline = self
+            .baselines
+            .entry(baseline_key)
+            .or_insert_with(|| AdaptiveBaseline::new(self.baseline_min_samples));
+        baseline.observe(signal.valence);
 
         // Buffer the signal.
         if self.signal_buffer.len() >= self.buffer_capacity {
@@ -233,11 +261,46 @@ impl InteroceptiveHub {
         self.somatic_cache.len()
     }
 
+    /// Get the adaptive baseline for a specific (source, domain) pair.
+    pub fn baseline(&self, source: &str, domain: &str) -> Option<&AdaptiveBaseline> {
+        let key = (source.to_string(), domain.to_string());
+        self.baselines.get(&key)
+    }
+
+    /// Query the deviation level of a value for a specific (source, domain) pair.
+    ///
+    /// Returns `DeviationLevel::Uncalibrated` if no baseline exists yet.
+    pub fn deviation_level(&self, source: &str, domain: &str, value: f64) -> DeviationLevel {
+        match self.baseline(source, domain) {
+            Some(bl) => bl.deviation_level(value),
+            None => DeviationLevel::Uncalibrated,
+        }
+    }
+
+    /// Get all baselines (for regulation layer introspection).
+    pub fn all_baselines(&self) -> &HashMap<BaselineKey, AdaptiveBaseline> {
+        &self.baselines
+    }
+
+    /// Check whether all baselines for a domain are calibrated.
+    pub fn is_domain_calibrated(&self, domain: &str) -> bool {
+        let domain_baselines: Vec<_> = self.baselines.iter()
+            .filter(|((_, d), _)| d == domain)
+            .collect();
+
+        if domain_baselines.is_empty() {
+            return false;
+        }
+
+        domain_baselines.iter().all(|(_, bl)| bl.is_calibrated())
+    }
+
     /// Clear all state (for testing or reset).
     pub fn clear(&mut self) {
         self.domain_states.clear();
         self.signal_buffer.clear();
         self.somatic_cache.clear();
+        self.baselines.clear();
     }
 }
 

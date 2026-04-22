@@ -1,0 +1,227 @@
+Starting 100-row pilot at Wed Apr 22 13:02:28 EDT 2026...
+    Finished `release` profile [optimized] target(s) in 0.06s
+     Running `target/release/examples/iss019_smoke_pilot --source /Users/potato/rustclaw/sessions.db --target .gid/issues/ISS-019-dimensional-metadata-write-gap/pilot/target-sessions-100.db --sample 100 --source-kind sessions`
+═══════════════════════════════════════════════════════
+  ISS-019 Step 9 — Smoke Rebuild Pilot
+═══════════════════════════════════════════════════════
+  source:       /Users/potato/rustclaw/sessions.db
+  source-kind:  Sessions
+  target:       .gid/issues/ISS-019-dimensional-metadata-write-gap/pilot/target-sessions-100.db
+  sample:       100 rows
+
+   session buckets: 2 telegram sessions (20 user msgs), 611 other sessions (388 user msgs)
+📥 Loaded 40 rows from source
+   by type: episodic=40 
+
+[2026-04-22T17:02:29Z INFO  engramai::memory] Ollama available at http://localhost:11434, embedding enabled
+🧠 Target Memory initialized with AnthropicExtractor (oauth=true)
+
+   progress: 20/40
+[2026-04-22T17:03:31Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 12 column 5 - content: [
+        {
+          "core_fact": "Add a `/sessions` command to RustClaw's Telegram channel that lists the 5 most recent sessions with metadata (key, message count, token usage, last updated time)",
+          "participants": "RustClaw (Telegram bot)",
+          "context": "Feature implementation for session management in Telegram interface",
+          "method": "Add `list_session_summaries()` method to `SessionManager` in `src/session.rs`, add `/sessions` handler in `src/channels/telegram.rs`, update `/help` command",
+          "importance": 0.85,
+          "tags": ["RustClaw", "Telegram", "sessions", "feature", "implementation"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Create a `SessionSummary` struct with fields: key, updated_at, message_count, total_tokens, channel; implement `list_session_summaries(&self, limit: usize)` method in SessionManager",
+          "context": "Backend implementation for session listing functionality",
+          "method": "Query DB with SQL selecting key, updated_at, total_tokens, channel, user_id, json_array_length(messages) as msg_count from sessions ordered by updated_at DESC; provide in-memory HashMap fallback",
+          "importance": 0.8,
+          "tags": ["SessionManager", "SessionSummary", "database", "struct"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Create `SessionSummaryRow` struct with sqlx::FromRow derive macro to map DB query results to Rust struct",
+          "context": "Database query mapping for session summaries",
+          "method": "Add #[derive(sqlx::FromRow)] struct with fields: key (String), updated_at (String), total_tokens (i64), channel (Option<String>), user_id (Option<String>), msg_count (i32)",
+          "importance": 0.75,
+          "tags": ["sqlx", "database", "struct", "FromRow"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Implement `/sessions` command handler in Telegram that displays formatted list of 5 recent sessions with message count and timestamp",
+          "context": "Telegram command handling in `src/channels/telegram.rs`",
+          "method": "Add match arm in `handle_command` method; format output as Markdown with emoji (📋, 📨, 🕐); trim timestamp to 'YYYY-MM-DD HH:MM:SS' format; handle empty sessions case with 'No active sessions' message",
+          "importance": 0.85,
+          "tags": ["Telegram", "command", "handler", "formatting"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Update `/help` command to include `/sessions — List recent active sessions`",
+          "context": "Documentation update for Telegram help interface",
+          "importance": 0.6,
+          "tags": ["help", "documentation", "Telegram"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Use `self.runner.sessions()` to access SessionManager from Agent; SessionManager has `pub fn sessions(&self) -> &SessionManager` method",
+          "context": "Architecture note for accessing session management from Telegram handler",
+          "importance": 0.75,
+          "tags": ["architecture", "Agent", "SessionManager", "API"]
+[2026-04-22T17:03:44Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 13 column 5 - content: [
+        {
+          "core_fact": "Task ISS-004: Implement two new LSP enrichment passes in gid-core to discover call edges via references and trait implementations via get_implementations()",
+          "participants": "User working on gid-rs project",
+          "location": "Project: /Users/potato/clawd/projects/gid-rs, Crate: crates/gid-core",
+          "context": "LSP client has get_references() and get_implementations() methods that are currently unused. Need to integrate them into refine_with_lsp() function in src/code_graph/build.rs",
+          "method": "Add Pass 2 (References enrichment) and Pass 3 (Implementation enrichment) after existing definition pass within for loop iterating configs",
+          "importance": 0.9,
+          "tags": ["ISS-004", "LSP", "gid-core", "call-graph", "implementation-detection", "references-discovery"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Pass 2 (References enrichment): For each function/method node, call get_references() at definition position; map reference locations to caller nodes; add Calls edges if not already present",
+          "context": "Discovers indirect calls and macro-generated calls that tree-sitter missed",
+          "method": "Use get_references(), find_closest_node(), check for existing Calls edges before adding, track references_queried and references_edges_added stats",
+          "location": "refine_with_lsp() in src/code_graph/build.rs",
+          "importance": 0.85,
+          "tags": ["Pass-2", "References", "Calls-edges", "LSP-enrichment"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Pass 3 (Implementation enrichment): For each trait/interface method node, call get_implementations() at definition position; map implementation locations to concrete impl nodes; add Implements edges",
+          "context": "Trait method detection: parent node is trait/interface or node name contains '::' with trait parent; must add Implements variant to EdgeRelation enum if missing",
+          "method": "Use get_implementations(), add EdgeRelation::Implements edges, track implementations_queried and implementation_edges_added stats",
+          "location": "refine_with_lsp() in src/code_graph/build.rs after Pass 2",
+          "importance": 0.85,
+          "tags": ["Pass-3", "Implementations", "Trait-methods", "EdgeRelation", "LSP-enrichment"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Key files to modify: src/code_graph/build.rs (refine_with_lsp function), src/lsp_client.rs (get_references/get_implementations signatures and LspRefinementStats), src/code_graph/types.rs (EdgeRelation enum), crates/gid-cli/src/main.rs (cmd_extract stats printing)",
+          "importance": 0.8,
+          "tags": ["file-list", "dependencies", "implementation-plan"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Quality requirements: cargo build --release must pass with zero errors, cargo test -p gid-core must pass, no new warnings, code style must match existing build.rs",
+          "importance": 0.8,
+          "tags": ["quality-requirements", "testing", "build-validation"]
+[2026-04-22T17:03:49Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 14 column 5 - content: [
+        {
+          "core_fact": "Task assigned: Write design document `design-migration.md` for GID SQLite migration project, covering migration function, algorithms for nodes/edges/knowledge, validation, and error handling.",
+          "location": "/Users/potato/clawd/projects/gid-rs/.gid/features/sqlite-migration/design-migration.md",
+          "context": "Workspace: /Users/potato/rustclaw. Scope: GOAL-2.1 through GOAL-2.10 and GUARDs 3, 5, 9 from requirements-migration.md. Existing types available from graph.rs (Graph, Node, Edge, KnowledgeNode).",
+          "outcome": "Document must include: Overview, Migration Function Signature, Pre-flight Checks, Node/Edge/Knowledge Migration Algorithms with pseudocode and SQL, Project Metadata Migration, Post-Migration Validation, Backup strategy, Progress Logging, Error Handling, CLI Integration, Trade-offs.",
+          "method": "Module location: crates/gid-core/src/storage/migrate.rs (~300 lines). Leverage load_graph() from parser.rs and SqliteStorage::open(). Metadata promotion rules: file_path, lang, start_line, end_line, signature, visibility, doc_comment, body_hash, node_kind, owner, source, repo, created_at, updated_at. Validation deletes .db on failure.",
+          "context": "Key requirements: GOAL-2.1 (migration prompt on YAML+no SQLite, non-blocking), GOAL-2.2 (use SQLite if .gid/graph.db exists), GOAL-2.3 (gid migrate reads YAML, creates schema, maps metadata), GOAL-2.4 (edge migration with confidence as REAL column, weight defaults to 1.0), GOAL-2.5 (knowledge as JSON), GOAL-2.6 (validation with rollback), GOAL-2.7 (backup to graph.yml.bak, preserve original), GOAL-2.8 (error if .db exists or no YAML), GOAL-2.9 (parse errors with location, dangling refs allowed, dedup via last-wins+warning), GOAL-2.10 (progress logging with counts and elapsed time).",
+          "importance": 0.9,
+          "tags": ["sqlite-migration", "design-document", "gid-project", "node-mapping", "edge-migration", "validation", "backup", "error-handling"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        }
+      ]
+[2026-04-22T17:03:55Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 12 column 5 - content: [
+        {
+          "core_fact": "Assigned to implement Layer 1 foundation tasks for SQLite migration feature in gid-rs project",
+          "participants": "User (potato)",
+          "location": "/Users/potato/clawd/projects/gid-rs/",
+          "context": "5 independent root tasks for SQLite migration feature",
+          "importance": 0.9,
+          "tags": ["gid-rs", "sqlite-migration", "layer1", "implementation"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Task 1: Define StorageError enum and StorageOp variants per design-storage.md §4",
+          "location": "/Users/potato/clawd/projects/gid-rs/crates/gid-core/src/storage/",
+          "context": "Layer 1 foundation task, no dependencies",
+          "importance": 0.8,
+          "tags": ["storage-error", "task1", "enum"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Task 2: Extend Node struct with 14 new fields (file_path, lang, signature, node_type, description, priority, assigned_to, line_start, line_end, body, parent_id, depth, complexity, is_public)",
+          "location": "/Users/potato/clawd/projects/gid-rs/crates/gid-core/src/",
+          "context": "Per design-storage.md §12, modifies existing Node type in graph types module",
+          "importance": 0.8,
+          "tags": ["node-struct-extend", "task2", "struct-modification"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Task 3: Add metadata field (Option<serde_json::Value>) to Edge struct",
+          "location": "/Users/potato/clawd/projects/gid-rs/crates/gid-core/src/",
+          "context": "Per design-storage.md §12, modifies existing Edge type",
+          "importance": 0.8,
+          "tags": ["edge-struct-extend", "task3", "struct-modification"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Task 4: Define GraphStorage trait with all method signatures from design-storage.md §3",
+          "location": "/Users/potato/clawd/projects/gid-rs/crates/gid-core/src/storage/",
+          "context": "Layer 1 foundation task",
+          "importance": 0.8,
+          "tags": ["graphstorage-trait", "task4", "trait-definition"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        },
+        {
+          "core_fact": "Task 5: Create SQLite schema DDL with 7 tables (nodes, edges, node_metadata, node_tags, knowledge, config, change_log) plus FTS5 virtual table and triggers",
+          "location": "/Users/potato/clawd/projects/gid-rs/crates/gid-core/src/storage/",
+          "context": "Layer 1 foundation task",
+          "importance": 0.8,
+          "tags": ["sqlite-schema", "task5", "ddl", "fts5"]
+   progress: 40/40
+
+⏱  Replay done: 40 rows in 118.3s (0 errors)
+
+📊 WriteStats:
+   stored_count      = 25
+   stored_fact_count = 32
+   merged_count      = 0
+   skipped_count     = 15
+   quarantined_count = 0
+   total_calls       = 40
+   coverage          = 62.50%
+   skip reasons:
+     NoFactsExtracted = 15
+
+🎯 DimensionalCoverage (target DB):
+   total_rows             = 32
+   with engram.dimensions = 32 (100.0%)
+   participants present   = 21 (65.6%)
+   temporal present       = 24 (75.0%)
+   causation present      = 2 (6.2%)
+
+═══════════════════════════════════════════════════════
+  Assertions (§9)
+═══════════════════════════════════════════════════════
+  [❌] stored/(total) > 0.95   — actual 62.50%
+  [✅] participants > 60%      — actual 65.6%
+  [✅] temporal > 40%          — actual 75.0%
+  [❌] causation > 30%         — actual 6.2%
+  [✅] zero rows missing engram.dimensions — actual 0 missing
+
+🔴 2 assertion(s) FAILED — do not proceed to Step 10.

@@ -63,10 +63,38 @@ impl TypeWeights {
     }
 
     /// Deserialize from metadata JSON. Returns `Default` if missing or malformed.
+    ///
+    /// Dual-path (ISS-019 Step 7a) — priority order preserves the
+    /// v1 contract "caller-supplied overrides engram-inferred":
+    /// 1. v2 user-supplied: `metadata.user.type_weights` (caller passed
+    ///    `{"type_weights": ...}` to `Memory::add` — wins over inferred)
+    /// 2. v1 flat layout: `metadata.type_weights` (older DB rows where
+    ///    the caller's top-level key is the only source)
+    /// 3. v2 engram-internal: `metadata.engram.dimensions.type_weights`
+    ///    (auto-inferred fallback when caller did not supply one)
     pub fn from_metadata(metadata: &Option<serde_json::Value>) -> Self {
-        metadata
-            .as_ref()
-            .and_then(|m| m.get("type_weights"))
+        let Some(m) = metadata.as_ref() else {
+            return Self::default();
+        };
+        // 1. v2 user-supplied (caller explicitly set type_weights)
+        if let Some(tw) = m
+            .get("user")
+            .and_then(|u| u.get("type_weights"))
+            .and_then(|tw| serde_json::from_value::<TypeWeights>(tw.clone()).ok())
+        {
+            return tw;
+        }
+        // 2. v1 flat fallback (older DB rows)
+        if let Some(tw) = m
+            .get("type_weights")
+            .and_then(|tw| serde_json::from_value::<TypeWeights>(tw.clone()).ok())
+        {
+            return tw;
+        }
+        // 3. v2 engram-inferred fallback
+        m.get("engram")
+            .and_then(|e| e.get("dimensions"))
+            .and_then(|d| d.get("type_weights"))
             .and_then(|tw| serde_json::from_value::<TypeWeights>(tw.clone()).ok())
             .unwrap_or_default()
     }

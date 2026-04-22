@@ -8,6 +8,12 @@ use crate::compiler::types::*;
 /// Manages manual edits to topic page sections.
 pub struct ManualEditManager;
 
+impl Default for ManualEditManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ManualEditManager {
     pub fn new() -> Self {
         Self

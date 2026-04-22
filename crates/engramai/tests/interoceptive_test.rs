@@ -5,7 +5,7 @@
 
 use engramai::interoceptive::{
     hub::InteroceptiveHub,
-    regulation::{evaluate, RegulationConfig},
+    regulation::{evaluate_with_hub, RegulationConfig},
     types::{InteroceptiveSignal, RegulationAction, SignalSource},
 };
 use engramai::Memory;
@@ -21,7 +21,8 @@ fn full_signal_flow_anomaly_to_regulation() {
     let config = RegulationConfig::default();
 
     // Phase 1: Feed a stream of negative anomaly signals into "coding" domain.
-    for _ in 0..8 {
+    // Need >= fallback_min_signals (10) to trigger SoulUpdateSuggestion in fallback mode.
+    for _ in 0..12 {
         let sig = InteroceptiveSignal::new(
             SignalSource::Anomaly,
             Some("coding".into()),
@@ -40,13 +41,14 @@ fn full_signal_flow_anomaly_to_regulation() {
         ds.valence_trend
     );
     assert!(
-        ds.signal_count >= 5,
-        "should have enough signals for regulation, got {}",
+        ds.signal_count >= 10,
+        "should have enough signals for regulation (need >= 10), got {}",
         ds.signal_count
     );
 
     // Phase 3: Regulation should generate SoulUpdateSuggestion.
-    let actions = evaluate(&state, &config);
+    // Use evaluate_with_hub for full integration (baselines uncalibrated → fallback path).
+    let actions = evaluate_with_hub(&state, &config, Some(&hub));
     assert!(
         actions.iter().any(|a| matches!(
             a,
@@ -63,11 +65,14 @@ fn full_signal_flow_low_confidence_to_retrieval_adjustment() {
     let config = RegulationConfig::default();
 
     // Simulate low-confidence recall signals in "research" domain.
-    for _ in 0..6 {
+    // Confidence maps valence [-1,1] → [0,1]: conf = (valence + 1.0) / 2.0
+    // With valence=-0.8, conf=0.1 per signal. EWMA from 0.5 towards 0.1.
+    // Need enough signals to push EWMA below fallback_low_confidence (0.3).
+    for _ in 0..10 {
         let sig = InteroceptiveSignal::new(
             SignalSource::Confidence,
             Some("research".into()),
-            -0.3, // low confidence → slightly negative
+            -0.8, // maps to confidence = 0.1
             0.4,
         );
         hub.process_signal(sig);
@@ -76,9 +81,9 @@ fn full_signal_flow_low_confidence_to_retrieval_adjustment() {
     let state = hub.current_state();
     let ds = state.domain_states.get("research").unwrap();
     // Confidence should be low (EWMA tracks valence component mapped to confidence).
-    assert!(ds.confidence < 0.5, "confidence should be low, got {}", ds.confidence);
+    assert!(ds.confidence < 0.3, "confidence should be below 0.3, got {}", ds.confidence);
 
-    let actions = evaluate(&state, &config);
+    let actions = evaluate_with_hub(&state, &config, Some(&hub));
     assert!(
         actions.iter().any(|a| matches!(
             a,
@@ -109,6 +114,8 @@ fn multi_domain_simultaneous_signals() {
     }
 
     // Trading domain: negative trend with anomalies.
+    // arousal=0.8 → anomaly_level input = 0.8*3.0 = 2.4, EWMA converges towards 2.4.
+    // After 10 signals, anomaly_level ≈ 2.33 > fallback_high_anomaly (2.0).
     for _ in 0..10 {
         hub.process_signal(InteroceptiveSignal::new(
             SignalSource::Anomaly,
@@ -135,8 +142,8 @@ fn multi_domain_simultaneous_signals() {
         trading.valence_trend
     );
 
-    // Trading anomaly should trigger an alert.
-    let actions = evaluate(&state, &config);
+    // Trading anomaly should trigger an alert (anomaly_level > 2.0).
+    let actions = evaluate_with_hub(&state, &config, Some(&hub));
     assert!(
         actions.iter().any(|a| matches!(a, RegulationAction::Alert { .. })),
         "expected anomaly alert for trading, got: {:?}",

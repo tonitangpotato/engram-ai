@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::storage::Storage;
@@ -137,6 +138,31 @@ pub struct ClusterDiscoveryConfig {
     /// Minimum temporal spread among cluster members (default: 1 hour).
     #[serde(with = "duration_secs")]
     pub temporal_spread_minimum: Duration,
+    /// Max neighbors per node for k-NN edge sparsification.
+    /// `None` = adaptive: `clamp(sqrt(n), 5, 30)` where n = node count.
+    #[serde(default)]
+    pub max_neighbors_per_node: Option<usize>,
+    /// Number of Infomap optimization trials.
+    /// `None` = adaptive: 1 if edge density < 5, else 3.
+    #[serde(default)]
+    pub infomap_trials: Option<usize>,
+    /// Whether Infomap uses hierarchical (multi-level) clustering.
+    /// `None` = adaptive: true if node count > 2000, else false.
+    #[serde(default)]
+    pub infomap_hierarchical: Option<bool>,
+    /// Hot assign threshold: cosine similarity to nearest centroid.
+    /// Above this → assign to cluster. Below → pending.
+    /// `None` = default 0.6.
+    #[serde(default)]
+    pub hot_assign_threshold: Option<f64>,
+    /// Cold recluster trigger: full recluster when pending exceeds this
+    /// fraction of total memories. `None` = default 0.2 (20%).
+    #[serde(default)]
+    pub cold_recluster_ratio: Option<f64>,
+    /// Warm recluster trigger: recluster when pending count exceeds this.
+    /// `None` = default 100.
+    #[serde(default)]
+    pub warm_recluster_interval: Option<usize>,
 }
 
 impl Default for ClusterDiscoveryConfig {
@@ -151,6 +177,12 @@ impl Default for ClusterDiscoveryConfig {
             temporal_half_life_hours: 168.0,
             cooldown_cycles: 3,
             temporal_spread_minimum: Duration::from_secs(3600),
+            max_neighbors_per_node: None,
+            infomap_trials: None,
+            infomap_hierarchical: None,
+            hot_assign_threshold: None,
+            cold_recluster_ratio: None,
+            warm_recluster_interval: None,
         }
     }
 }
@@ -211,7 +243,7 @@ pub struct GateConfig {
     pub gate_quality_threshold: f64,
     /// Quality score above which synthesis is deferred instead of skipped (default: 0.6).
     pub defer_quality_threshold: f64,
-    /// Cosine similarity threshold for duplicate detection (default: 0.92).
+    /// Cosine similarity threshold for duplicate detection (default: 0.95).
     pub duplicate_similarity: f64,
     /// Minimum number of distinct memory types in a cluster (default: 2).
     pub min_type_diversity: usize,
@@ -227,7 +259,7 @@ impl Default for GateConfig {
             min_cluster_size: 3,
             gate_quality_threshold: 0.4,
             defer_quality_threshold: 0.6,
-            duplicate_similarity: 0.92,
+            duplicate_similarity: 0.95,
             min_type_diversity: 2,
             cost_threshold: 0.05,
             premium_threshold: 0.8,
@@ -406,6 +438,37 @@ pub struct RestoredSource {
 // §6 — Incremental Updates
 // ===========================================================================
 
+/// Per-cluster incremental state for staleness detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncrementalState {
+    /// Member IDs from last synthesis run.
+    pub last_member_snapshot: HashSet<String>,
+    /// Quality score from last synthesis run.
+    pub last_quality_score: f64,
+    /// When last synthesis ran.
+    pub last_run: DateTime<Utc>,
+    /// How many times this cluster has been synthesized.
+    pub run_count: usize,
+    /// When this cluster was last attempted (gate-checked), regardless of outcome.
+    /// Defaults to `last_run` for backward compatibility with pre-existing state.
+    #[serde(default = "default_attempt_timestamp")]
+    pub last_attempt_timestamp: DateTime<Utc>,
+    /// How many times this cluster has been attempted (gate-checked), regardless of outcome.
+    /// Includes successful synthesis, deferred, skipped, and auto-updated attempts.
+    #[serde(default)]
+    pub attempt_count: usize,
+    /// Member snapshot at the time of the last attempt (may differ from last_member_snapshot
+    /// which is only updated on successful synthesis).
+    #[serde(default)]
+    pub last_attempt_members: HashSet<String>,
+}
+
+/// Default for backward compatibility: returns Unix epoch so old states without
+/// `last_attempt_timestamp` are treated as never-attempted.
+fn default_attempt_timestamp() -> DateTime<Utc> {
+    DateTime::<Utc>::from_timestamp(0, 0).unwrap()
+}
+
 /// Configuration for incremental/staleness detection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncrementalConfig {
@@ -441,6 +504,10 @@ pub struct SynthesisReport {
     pub clusters_deferred: usize,
     /// Number of clusters skipped.
     pub clusters_skipped: usize,
+    /// Number of full synthesis runs (no prior state).
+    pub synthesis_runs_full: usize,
+    /// Number of incremental synthesis runs (seeded from existing insight).
+    pub synthesis_runs_incremental: usize,
     /// IDs of newly created insight memories.
     pub insights_created: Vec<String>,
     /// IDs of source memories whose importance was demoted.

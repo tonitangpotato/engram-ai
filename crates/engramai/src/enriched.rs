@@ -218,10 +218,185 @@ impl EnrichedMemory {
         self
     }
 
+    /// Build an `EnrichedMemory` from an already-persisted
+    /// `MemoryRecord`. Used by the merge path (Step 5) and the
+    /// backfill pipeline (Step 8) to reconstruct a typed value from
+    /// what's currently on disk.
+    ///
+    /// Metadata decoding is best-effort:
+    /// `Dimensions::from_legacy_metadata` handles both v1 raw-legacy
+    /// rows and v1-shape rows written by `store_enriched`. Missing
+    /// dimensional fields degrade to `Dimensions::minimal` defaults.
+    ///
+    /// The caller-supplied metadata namespace (keys outside the
+    /// reserved `dimensions` / `type_weights` / `merge_history` /
+    /// `merge_count` set) is preserved in `user_metadata` so it
+    /// round-trips through merge.
+    ///
+    /// Fails **only** when `record.content` is empty or whitespace-only
+    /// — the `NonEmptyString` invariant is the one thing we can't
+    /// paper over.
+    pub fn from_memory_record(
+        record: &crate::types::MemoryRecord,
+    ) -> Result<Self, ConstructionError> {
+        let metadata_value = record
+            .metadata
+            .clone()
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+
+        let dimensions =
+            Dimensions::from_stored_metadata(&metadata_value, &record.content)?;
+
+        // Carve out a `user_metadata` JSON from every top-level key
+        // that isn't an engram-reserved name. Keeps caller-supplied
+        // JSON (e.g., RustClaw's `source`, `chat_id`) round-tripping
+        // through merge without landing under `engram.*`.
+        //
+        // Three shapes to handle:
+        //   (v2) `{ "engram": {...}, "user": { <user keys> } }`
+        //        → take the `user` object verbatim.
+        //   (v1) `{ "participants": ..., "temporal": ..., <user keys> }`
+        //        → take top-level keys minus the v1-reserved set.
+        //   (mixed/partial) one of engram/user present, rest is flat v1
+        //        → union: user object + non-reserved v1 top-level keys.
+        const RESERVED: &[&str] = &[
+            // v2 namespace keys — never belong in user_metadata.
+            "engram",
+            "user",
+            // v1 metadata plumbing.
+            "dimensions",
+            "type_weights",
+            "merge_history",
+            "merge_count",
+            // v1 dimensional fields mirrored into Dimensions so they
+            // don't accidentally duplicate under user_metadata.
+            "participants",
+            "temporal",
+            "location",
+            "context",
+            "causation",
+            "outcome",
+            "method",
+            "relations",
+            "sentiment",
+            "stance",
+            "valence",
+            "confidence",
+            "domain",
+            "tags",
+        ];
+        let user_metadata = match &metadata_value {
+            serde_json::Value::Object(obj) => {
+                let mut out = serde_json::Map::new();
+
+                // v2 path: lift `user` subobject into user_metadata.
+                if let Some(user_sub) = obj.get("user").and_then(|v| v.as_object()) {
+                    for (k, v) in user_sub {
+                        out.insert(k.clone(), v.clone());
+                    }
+                }
+
+                // v1 / mixed path: also take any top-level keys not in
+                // RESERVED. This is a no-op for well-formed v2 rows
+                // (all top-level keys are `engram` or `user`) and
+                // preserves v1 caller keys that live flat at the top.
+                for (k, v) in obj {
+                    if !RESERVED.contains(&k.as_str()) {
+                        // Don't clobber v2 `user.*` keys with a stray
+                        // top-level key of the same name — the v2
+                        // namespace wins.
+                        out.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+
+                if out.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::Object(out)
+                }
+            }
+            _ => serde_json::Value::Null,
+        };
+
+        Ok(Self {
+            content: dimensions.core_fact.as_str().to_string(),
+            dimensions,
+            embedding: None,
+            importance: Importance::new(record.importance),
+            source: Some(record.source.clone()).filter(|s| !s.is_empty()),
+            namespace: None,
+            user_metadata,
+        })
+    }
+
     /// True iff `content` matches `dimensions.core_fact`. Used by
     /// debug assertions; normal callers never see this false.
     pub fn invariants_hold(&self) -> bool {
         self.content.as_str() == self.dimensions.core_fact.as_str()
+    }
+
+    /// Serialize this `EnrichedMemory` to the v2 on-disk metadata
+    /// layout (ISS-019 Step 7a).
+    ///
+    /// Layout:
+    /// ```json
+    /// {
+    ///   "engram": {
+    ///     "version": 2,
+    ///     "dimensions": { ..., "type_weights": { ... } },
+    ///     "merge_count": 0,
+    ///     "merge_history": []
+    ///   },
+    ///   "user": { /* caller-supplied keys */ }
+    /// }
+    /// ```
+    ///
+    /// Reads remain backward-compatible with the v1 flat layout via
+    /// `Dimensions::from_stored_metadata`.
+    pub fn to_legacy_metadata(&self) -> serde_json::Value {
+        use crate::dimensions::Domain;
+
+        let d = &self.dimensions;
+
+        // Serialize Dimensions directly — includes nested type_weights.
+        let mut dims_val =
+            serde_json::to_value(d).unwrap_or_else(|_| serde_json::json!({}));
+
+        if let Some(obj) = dims_val.as_object_mut() {
+            // Normalize domain to the loose string representation.
+            let domain_str = match &d.domain {
+                Domain::Coding => "coding".to_string(),
+                Domain::Trading => "trading".to_string(),
+                Domain::Research => "research".to_string(),
+                Domain::Communication => "communication".to_string(),
+                Domain::General => "general".to_string(),
+                Domain::Other(s) => s.clone(),
+            };
+            obj.insert("domain".into(), serde_json::Value::String(domain_str));
+
+            // Drop empty tags for compactness.
+            if d.tags.is_empty() {
+                obj.remove("tags");
+            }
+        }
+
+        let engram = serde_json::json!({
+            "version": 2,
+            "dimensions": dims_val,
+            "merge_count": 0,
+            "merge_history": [],
+        });
+
+        let user = if let serde_json::Value::Object(_) = &self.user_metadata {
+            self.user_metadata.clone()
+        } else {
+            serde_json::json!({})
+        };
+
+        serde_json::json!({
+            "engram": engram,
+            "user": user,
+        })
     }
 }
 

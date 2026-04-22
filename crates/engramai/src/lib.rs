@@ -90,6 +90,7 @@
 
 pub mod anomaly;
 pub mod anthropic_client;
+pub mod association;
 pub mod bus;
 pub mod clustering;
 pub mod compiler;
@@ -105,6 +106,7 @@ pub mod interoceptive;
 pub mod lifecycle;
 pub mod memory;
 pub mod merge_types;
+pub mod metacognition;
 pub mod migration_types;
 pub mod models;
 pub mod promotion;
@@ -117,19 +119,24 @@ pub mod triple;
 pub mod triple_extractor;
 pub mod type_weights;
 pub mod types;
+pub mod write_stats;
 
 // Re-export main types
 pub use bus::{EmpathyBus, SoulUpdate, HeartbeatUpdate, Drive, HeartbeatTask, Identity, EmpathyTrend, ActionStats, SubscriptionManager, Subscription, Notification, DriveEmbeddings, score_alignment_hybrid};
 // Backward-compat aliases
 pub use bus::{EmotionalBus, EmotionalTrend};
 pub use config::MemoryConfig;
+pub use config::TripleConfig;
 pub use embeddings::{EmbeddingConfig, EmbeddingProvider, EmbeddingError};
 pub use extractor::{MemoryExtractor, ExtractedFact, AnthropicExtractor, AnthropicExtractorConfig, TokenProvider, OllamaExtractor, OllamaExtractorConfig};
 pub use type_weights::{TypeWeights, infer_type_weights};
 pub use memory::{Memory, SleepReport, is_insight};
+pub use write_stats::{
+    CountingSink, EventSink, NoopSink, SharedSink, StoreEvent, WriteStats,
+};
 pub use storage::EmbeddingStats;
 pub use storage::EntityRecord;
-pub use types::{AclEntry, CrossLink, HebbianLink, MemoryLayer, MergeOutcome, MemoryRecord, MemoryStats, MemoryType, Permission, RecallResult, RecallWithAssociationsResult};
+pub use types::{AclEntry, CrossLink, HebbianLink, MemoryLayer, MergeOutcome, MemoryRecord, MemoryStats, MemoryType, Permission, RecallResult, RecallWithAssociationsResult, SupersessionError, SupersessionInfo, BulkCorrectionResult};
 
 // Re-export new modules
 pub use anomaly::{BaselineTracker, Baseline, AnomalyResult};
@@ -141,3 +148,8 @@ pub use synthesis::types::{
     SynthesisLlmProvider, MemoryCluster, GateDecision, GateResult,
     ProvenanceRecord, ProvenanceChain, UndoSynthesis,
 };
+pub use triple::{Triple, Predicate, TripleSource};
+pub use triple_extractor::{TripleExtractor, AnthropicTripleExtractor, OllamaTripleExtractor};
+pub use promotion::PromotionCandidate;
+pub use metacognition::{MetaCognitionTracker, MetaCognitionReport, ParameterSuggestion, RecallEvent, SynthesisEvent};
+pub use lifecycle::{DecayReport, ForgetReport, AddResult, LifecycleError, PhaseReport, HealthReport, RebalanceReport};

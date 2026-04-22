@@ -131,6 +131,7 @@ mod tests {
             source: "test".to_string(),
             contradicts: None,
             contradicted_by: None,
+            superseded_by: None,
             metadata: None,
         }
     }

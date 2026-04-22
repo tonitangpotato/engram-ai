@@ -761,6 +761,12 @@ pub struct IntakePipeline {
     extractors: Vec<Box<dyn ContentExtractor>>,
 }
 
+impl Default for IntakePipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IntakePipeline {
     /// Create a new, empty `IntakePipeline` with no extractors.
     pub fn new() -> Self {

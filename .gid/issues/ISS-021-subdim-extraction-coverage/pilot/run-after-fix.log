@@ -1,0 +1,229 @@
+═══════════════════════════════════════════════════════
+  ISS-019 Step 9 — Smoke Rebuild Pilot
+═══════════════════════════════════════════════════════
+  source:       .gid/issues/ISS-019-dimensional-metadata-write-gap/pilot/source.db
+  source-kind:  Engram
+  target:       .gid/issues/ISS-021-subdim-extraction-coverage/pilot/target-100-after.db
+  sample:       100 rows
+
+📥 Loaded 100 rows from source
+   by type: emotional=1 causal=28 factual=24 episodic=17 opinion=12 relational=2 procedural=16 
+
+[2026-04-22T19:02:13Z INFO  engramai::memory] Ollama available at http://localhost:11434, embedding enabled
+🧠 Target Memory initialized with AnthropicExtractor (oauth=true)
+
+   progress: 20/100
+[2026-04-22T19:03:28Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 11 column 5 - content: [
+        {
+          "core_fact": "Smoke test verified that Anthropic LLM extractor correctly returns valence and domain fields, and produces clean memory content",
+          "participants": ["Anthropic LLM extractor"],
+          "outcome": "Extractor confirmed to return valence (sample: 0.60) and domain (sample: general) fields; produces clean memory output including disk space recovery metrics (25GB) and decisions like 'KC will be developed within engram-ai-rust'",
+          "importance": 0.7,
+          "tags": ["smoke test", "LLM extractor", "Anthropic", "verification", "memory extraction"],
+          "confidence": "confident",
+          "valence": 0.8,
+          "domain": "coding"
+        }
+      ]
+[2026-04-22T19:03:46Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 25 column 5 - content: [
+        {
+          "core_fact": "ISS-019 design doc completed with first-principles root fix for dimensional metadata write gap",
+          "participants": [],
+          "temporal": [],
+          "location": [],
+          "context": "ISS-019 appears to be a tracked issue or ticket related to a dimensional metadata write gap problem",
+          "causation": [],
+          "outcome": "Design document now exists with a root cause fix approach",
+          "method": "First-principles analysis applied to identify root fix",
+          "relations": [],
+          "sentiment": [],
+          "stance": [],
+          "importance": 0.7,
+          "tags": [
+            "ISS-019",
+            "design doc",
+            "metadata",
+            "root fix",
+            "dimensional metadata"
+          ],
+          "confidence": "confident",
+          "valence": 0.6,
+          "domain": "coding"
+        }
+      ]
+   progress: 40/100
+[2026-04-22T19:03:49Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 13 column 5 - content: [
+        {
+          "core_fact": "User decided to have LLM implement the 3-part shutdown notification fix immediately, with manual verification via SIGTERM test",
+          "participants": ["User", "LLM"],
+          "temporal": "immediately",
+          "context": "Shutdown notification fix implementation",
+          "method": "LLM implementation followed by manual SIGTERM test verification",
+          "importance": 0.85,
+          "tags": ["decision", "shutdown", "notification", "fix", "implementation", "verification", "SIGTERM"],
+          "confidence": "confident",
+          "valence": 0.7,
+          "domain": "coding"
+        }
+      ]
+[2026-04-22T19:03:59Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 17 column 5 - content: [
+        {
+          "core_fact": "Memory ranking system has two architectural gaps: QueryType classifier only captures query form (temporal/keyword/semantic/general) without intent dimension, and 7-channel fusion ignores memory_type signal despite memories carrying factual/episodic/relational metadata",
+          "participants": [],
+          "temporal": [],
+          "location": [],
+          "context": "Memory ranking architecture analysis",
+          "causation": "Missing intent dimension in QueryType and unused memory_type metadata cause ranking issues",
+          "outcome": "Identified two root causes for memory ranking problems",
+          "method": "Architectural analysis of query classification and fusion channels",
+          "relations": ["QueryType classifier", "7-channel fusion", "memory_type metadata"],
+          "importance": 0.85,
+          "tags": ["memory-ranking", "architecture", "QueryType", "fusion", "metadata"],
+          "confidence": "confident",
+          "valence": -0.4,
+          "domain": "coding"
+        }
+      ]
+[2026-04-22T19:04:07Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 19 column 5 - content: [
+        {
+          "core_fact": "Proposed feature scope for LLM API Reliability includes 4 layers: L1 (TCP keepalive, HTTP/2 ping, pool idle timeout, dead socket detection), L2 (exponential backoff retry, retryable vs fatal error distinction, per-request timeout watchdog), L3 (graceful error handling, user-visible status feedback), L4 (health check endpoint, dashboard, Telegram alerts)",
+          "participants": [],
+          "temporal": [],
+          "location": "Anthropic, OpenAI, Google providers and 2 clients in tools.rs",
+          "context": "Feature implementation planning across multiple LLM API providers",
+          "causation": [],
+          "outcome": [],
+          "method": "Layered architecture approach (L1-L4)",
+          "relations": [],
+          "sentiment": [],
+          "stance": [],
+          "importance": 0.8,
+          "tags": ["LLM API", "reliability", "feature scope", "architecture", "error handling", "monitoring"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        }
+      ]
+[2026-04-22T19:04:09Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 17 column 5 - content: [
+        {
+          "core_fact": "During investigation of accuracy decline, discovered that recall stage was missing intent classification; fixed by implementing L1 Regex and L2 Haiku intent classification through ISS-018",
+          "participants": [],
+          "temporal": [],
+          "location": "recall stage",
+          "context": "Accuracy decline investigation",
+          "causation": "Missing intent classification in recall stage was causing accuracy decline",
+          "outcome": "Intent classification restored through ISS-018 implementation",
+          "method": "L1 Regex and L2 Haiku intent classification",
+          "relations": "ISS-018 ticket",
+          "importance": 0.85,
+          "tags": ["intent_classification", "recall", "accuracy", "fix", "ISS-018", "L1_Regex", "L2_Haiku"],
+          "confidence": "confident",
+          "valence": 0.7,
+          "domain": "coding"
+        }
+      ]
+[2026-04-22T19:04:11Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 19 column 5 - content: [
+        {
+          "core_fact": "606 agent sub-sessions totaling 58MB contain complete engineering task execution processes including technical decisions, bug diagnosis, and design discussions with reconstruction value",
+          "participants": [],
+          "temporal": [],
+          "location": [],
+          "context": "Agent session data archive",
+          "causation": [],
+          "outcome": "Data identified as having reconstruction/replay value for engineering processes",
+          "method": [],
+          "relations": [],
+          "sentiment": [],
+          "stance": "Data is valuable and worth preserving",
+          "importance": 0.7,
+          "tags": ["agent-sessions", "engineering-tasks", "technical-decisions", "bug-diagnosis", "design-discussion", "data-archive"],
+          "confidence": "confident",
+          "valence": 0.6,
+          "domain": "coding"
+        }
+      ]
+[2026-04-22T19:04:15Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 16 column 3 - content: [
+      {
+        "core_fact": "Recall strategy should use dual approach: exact dimensional matching as primary method, with memory_type derivation multiplier as weak signal auxiliary",
+        "participants": [],
+        "temporal": [],
+        "location": [],
+        "context": "Discussion of recall mechanism design",
+        "causation": "Exact dimensional matching alone may be insufficient, requiring auxiliary weak signals for better recall",
+        "method": "Dual strategy combining exact dimensional matching (primary) and memory_type derivation multiplier (auxiliary weak signal)",
+        "stance": "Proposes balanced approach using both strong and weak signals",
+        "importance": 0.75,
+        "tags": ["recall", "strategy", "matching", "dimensional", "memory_type", "dual_approach"],
+        "confidence": "confident",
+        "valence": 0.5,
+        "domain": "general"
+      }
+    ]
+   progress: 60/100
+[2026-04-22T19:05:11Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 19 column 5 - content: [
+        {
+          "core_fact": "Raw layer needs to implement: store a copy of original text after each successful extraction (source_text field or associated record)",
+          "participants": [],
+          "temporal": [],
+          "location": "raw layer",
+          "context": "Memory extraction system implementation detail",
+          "causation": "To preserve original source material alongside extracted data",
+          "outcome": [],
+          "method": "Add source_text field or create associated record to store original text",
+          "relations": ["extraction process", "data persistence"],
+          "sentiment": [],
+          "stance": "requirement/specification",
+          "importance": 0.7,
+          "tags": ["raw_layer", "extraction", "source_preservation", "implementation_requirement"],
+          "confidence": "confident",
+          "valence": 0.0,
+          "domain": "coding"
+        }
+      ]
+   progress: 80/100
+[2026-04-22T19:05:31Z WARN  engramai::extractor] Failed to parse extraction JSON: missing field `content` at line 13 column 5 - content: [
+        {
+          "core_fact": "engram 的 cogmembench adapter 在 cogmembench/benchmarks/locomo/runner.py 中，recall_for_question() 方法仅将 memory.content 传给 evaluator 做 evidence_recall 匹配，未包含 metadata.source_text，导致新 extractor 救回的原文无法体现 score 提升",
+          "participants": ["engram"],
+          "location": "cogmembench/benchmarks/locomo/runner.py",
+          "context": "cogmembench adapter 的 recall_for_question() 方法实现",
+          "causation": "recall_for_question() 仅传递 memory.content 而未包含 metadata.source_text，导致新 extractor 救回的原文无法体现 score 提升",
+          "importance": 0.8,
+          "tags": ["engram", "cogmembench", "adapter", "bug", "recall", "metadata", "source_text", "scorer"],
+          "confidence": "confident",
+          "valence": -0.7,
+          "domain": "coding"
+        }
+      ]
+   progress: 100/100
+
+⏱  Replay done: 100 rows in 222.6s (0 errors)
+
+📊 WriteStats:
+   stored_count      = 74
+   stored_fact_count = 77
+   merged_count      = 0
+   skipped_count     = 26
+   quarantined_count = 0
+   total_calls       = 100
+   coverage          = 74.00%
+   skip reasons:
+     NoFactsExtracted = 26
+
+🎯 DimensionalCoverage (target DB):
+   total_rows             = 77
+   with engram.dimensions = 77 (100.0%)
+   participants present   = 30 (39.0%)
+   temporal present       = 21 (27.3%)
+   causation present      = 26 (33.8%)
+
+═══════════════════════════════════════════════════════
+  Assertions (§9)
+═══════════════════════════════════════════════════════
+  [❌] stored/(total) > 0.95   — actual 74.00%
+  [❌] participants > 60%      — actual 39.0%
+  [❌] temporal > 40%          — actual 27.3%
+  [✅] causation > 30%         — actual 33.8%
+  [✅] zero rows missing engram.dimensions — actual 0 missing
+
+🔴 3 assertion(s) FAILED — do not proceed to Step 10.

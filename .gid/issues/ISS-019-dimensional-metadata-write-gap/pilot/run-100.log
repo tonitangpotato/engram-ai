@@ -1,0 +1,49 @@
+═══════════════════════════════════════════════════════
+  ISS-019 Step 9 — Smoke Rebuild Pilot
+═══════════════════════════════════════════════════════
+  source:  .gid/issues/ISS-019-dimensional-metadata-write-gap/pilot/source.db
+  target:  .gid/issues/ISS-019-dimensional-metadata-write-gap/pilot/target-100.db
+  sample:  100 rows (random, last 24h)
+
+📥 Loaded 100 rows from source
+   by type: causal=14 procedural=16 episodic=28 opinion=9 factual=32 emotional=1 
+
+[2026-04-22T16:37:25Z INFO  engramai::memory] Ollama available at http://localhost:11434, embedding enabled
+🧠 Target Memory initialized with AnthropicExtractor (oauth=true)
+
+   progress: 20/100
+   progress: 40/100
+   progress: 60/100
+   progress: 80/100
+   progress: 100/100
+
+⏱  Replay done: 100 rows in 179.0s (0 errors)
+
+📊 WriteStats:
+   stored_count      = 94
+   stored_fact_count = 98
+   merged_count      = 0
+   skipped_count     = 6
+   quarantined_count = 0
+   total_calls       = 100
+   coverage          = 94.00%
+   skip reasons:
+     NoFactsExtracted = 6
+
+🎯 DimensionalCoverage (target DB):
+   total_rows             = 98
+   with engram.dimensions = 98 (100.0%)
+   participants present   = 0 (0.0%)
+   temporal present       = 6 (6.1%)
+   causation present      = 13 (13.3%)
+
+═══════════════════════════════════════════════════════
+  Assertions (§9)
+═══════════════════════════════════════════════════════
+  [❌] stored/(total) > 0.95   — actual 94.00%
+  [❌] participants > 60%      — actual 0.0%
+  [❌] temporal > 40%          — actual 6.1%
+  [❌] causation > 30%         — actual 13.3%
+  [✅] zero rows missing engram.dimensions — actual 0 missing
+
+🔴 4 assertion(s) FAILED — do not proceed to Step 10.

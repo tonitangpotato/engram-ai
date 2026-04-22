@@ -1,26 +1,29 @@
 //! # Knowledge Compiler (KC)
 //!
 //! Compiles scattered memories into coherent, maintained topic pages.
-//! Gated behind the `kc` feature flag.
 //!
 //! ## Submodules
 //!
 //! - `types` — Shared type definitions used across all KC subsystems
-//!
-//! Future submodules (not yet implemented):
 //! - `discovery` — Topic candidate discovery from memory clusters
 //! - `compilation` — Core compilation pipeline (pure logic + LLM enhancement)
-//! - `trigger` — Change detection and recompile triggering
-//! - `lifecycle` — Merge, split, archive operations
-//! - `feedback` — User feedback processing
-//! - `decay` — Knowledge decay and staleness detection
+//! - `config` — KC configuration
 //! - `conflict` — Conflict detection and resolution
-//! - `health` — Health reporting and link integrity
+//! - `decay` — Knowledge decay and staleness detection
+//! - `degradation` — Capability degradation handling
 //! - `export` — Export/import functionality
-//! - `access` — Query and CLI access layer
-//! - `privacy` — Privacy level enforcement
-//! - `llm` — LLM provider abstraction for KC
+//! - `feedback` — User feedback processing
+//! - `health` — Health reporting and link integrity
+//! - `import` — Import pipeline
 //! - `intake` — Document intake and splitting
+//! - `llm` — LLM provider abstraction for KC
+//! - `lock` — Topic locking for concurrent access
+//! - `manual_edit` — Manual editing support
+//! - `privacy` — Privacy level enforcement
+//! - `storage` — Knowledge store abstraction
+//! - `topic_lifecycle` — Merge, split, archive operations
+//! - `watcher` — Directory watcher for auto-import
+//! - `api` — Maintenance and query API
 
 pub mod api;
 pub mod compilation;

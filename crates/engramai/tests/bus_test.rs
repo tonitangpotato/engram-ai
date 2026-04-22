@@ -1,4 +1,4 @@
-//! Tests for the Emotional Bus (Phase 2)
+//! Tests for the Empathy Bus (Phase 2)
 
 use engramai::{Memory, MemoryConfig, MemoryType, EmpathyBus};
 use engramai::bus::accumulator::{EmpathyAccumulator, NEGATIVE_THRESHOLD, MIN_EVENTS_FOR_SUGGESTION};
@@ -46,7 +46,7 @@ honesty: Be direct and transparent in communication
     tmpdir
 }
 
-// === Test: Emotional Accumulator ===
+// === Test: Empathy Accumulator ===
 
 #[test]
 fn test_emotional_accumulator() {

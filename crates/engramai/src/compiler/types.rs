@@ -16,6 +16,252 @@ use thiserror::Error;
 pub type MemoryId = String;
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  DIMENSIONAL METADATA (ISS-020 P0.1)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Extractor-produced cognitive dimensions, parsed from `memory.metadata.dimensions`.
+///
+/// Every field is `Option<...>` — legacy memories written before dimensional
+/// extraction landed have no dimensions, and KC must degrade gracefully
+/// (investigation.md §7.2 invariant).
+///
+/// Field list mirrors the extractor's `ExtractedFact` (src/extractor.rs:16-64):
+/// - 10 string-typed optional fields for narrative dimensions
+/// - `domain` (categorical), `valence` (f64 in [-1, 1]), `confidence` (3-level)
+///   — all always-present in facts produced AFTER P0.0 landed, but kept optional
+///   here so KC handles legacy rows correctly.
+///
+/// See investigation.md §3 (field→stage mapping) and §4.1 (struct shape).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Dimensions {
+    /// Who was involved.
+    pub participants: Option<String>,
+    /// When it happened — free-form phrase ("yesterday", "Q1 2025", "after the refactor").
+    /// NOT a parseable timestamp — see investigation.md §6 Q6.
+    pub temporal: Option<String>,
+    /// Location / source.
+    pub location: Option<String>,
+    /// Background / surrounding situation.
+    pub context: Option<String>,
+    /// Cause / motivation. Pairs with `outcome` to form cause→effect edges.
+    pub causation: Option<String>,
+    /// Result / impact. Pairs with `causation`.
+    pub outcome: Option<String>,
+    /// How it was done / procedural steps.
+    pub method: Option<String>,
+    /// Connections to other entities/concepts.
+    pub relations: Option<String>,
+    /// Emotional coloring ("frustrated", "excited").
+    pub sentiment: Option<String>,
+    /// Opinion/preference/position ("prefers X over Y").
+    /// **Critical for conflict detection** (investigation.md §4.4).
+    pub stance: Option<String>,
+    /// Domain classifier: "coding" / "trading" / "research" / "communication" / "general" / ...
+    /// Used for clustering pre-filter (P1.1) and same-domain gate in conflict detection (P0.5).
+    /// NOTE: the extractor's default is `"general"` — a catch-all bucket (investigation.md §4.5 caveat).
+    pub domain: Option<String>,
+    /// Emotional valence in `[-1.0, 1.0]`. Drives interoception and decay weighting.
+    /// Populated starting with P0.0 (2026-04-22); older memories have `None`.
+    pub valence: Option<f64>,
+    /// Confidence level of the extracted fact: Confident / Likely / Uncertain.
+    /// Populated starting with P0.0 (2026-04-22); older memories have `None`.
+    pub confidence: Option<Confidence>,
+}
+
+impl Dimensions {
+    /// Parse dimensional fields out of a `MemoryRecord.metadata` JSON value.
+    ///
+    /// Robust to:
+    /// - `None` metadata → returns `None` (no dimensional data available)
+    /// - missing `dimensions` key → returns `None`
+    /// - malformed fields (wrong types) → those fields default to `None` silently,
+    ///   but the rest of the struct is still returned
+    ///
+    /// Returns `Some(Dimensions)` when at least one dimensional field could be parsed;
+    /// `None` when there's genuinely no dimensional data to surface.
+    pub fn from_metadata(metadata: &Option<serde_json::Value>) -> Option<Self> {
+        let dims_obj = metadata
+            .as_ref()
+            .and_then(|m| m.get("dimensions"))
+            .and_then(|d| d.as_object())?;
+
+        fn get_str(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+            obj.get(key).and_then(|v| v.as_str()).map(String::from)
+        }
+
+        let d = Dimensions {
+            participants: get_str(dims_obj, "participants"),
+            temporal: get_str(dims_obj, "temporal"),
+            location: get_str(dims_obj, "location"),
+            context: get_str(dims_obj, "context"),
+            causation: get_str(dims_obj, "causation"),
+            outcome: get_str(dims_obj, "outcome"),
+            method: get_str(dims_obj, "method"),
+            relations: get_str(dims_obj, "relations"),
+            sentiment: get_str(dims_obj, "sentiment"),
+            stance: get_str(dims_obj, "stance"),
+            domain: get_str(dims_obj, "domain"),
+            valence: dims_obj
+                .get("valence")
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite() && (-1.0..=1.0).contains(v)),
+            confidence: get_str(dims_obj, "confidence").and_then(|s| Confidence::parse(&s)),
+        };
+
+        // If every field ended up None → the dimensions object was present but
+        // contained nothing usable. Still return Some(default) — callers distinguish
+        // "no dimensions object at all" (None) from "empty dimensions object" (Some(default)).
+        Some(d)
+    }
+
+    /// `true` when every field is None — useful for back-compat paths that want
+    /// to fall back to legacy behavior on empty dimensions.
+    pub fn is_empty(&self) -> bool {
+        self.participants.is_none()
+            && self.temporal.is_none()
+            && self.location.is_none()
+            && self.context.is_none()
+            && self.causation.is_none()
+            && self.outcome.is_none()
+            && self.method.is_none()
+            && self.relations.is_none()
+            && self.sentiment.is_none()
+            && self.stance.is_none()
+            && self.domain.is_none()
+            && self.valence.is_none()
+            && self.confidence.is_none()
+    }
+}
+
+/// Three-level confidence for extracted facts.
+///
+/// Mirrors the string-form values produced by the extractor
+/// (`src/extractor.rs` — `fact.confidence: String`). KC propagates uncertainty
+/// through to synthesis (P1.3): topics compiled from >20% `Uncertain` sources
+/// should hedge their claims.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    Confident,
+    Likely,
+    Uncertain,
+}
+
+impl Confidence {
+    /// Parse from the extractor's string form. Returns `None` on unknown input.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "confident" => Some(Self::Confident),
+            "likely" => Some(Self::Likely),
+            "uncertain" => Some(Self::Uncertain),
+            _ => None,
+        }
+    }
+
+    /// Render as the string form the extractor emits.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Confident => "confident",
+            Self::Likely => "likely",
+            Self::Uncertain => "uncertain",
+        }
+    }
+}
+
+impl fmt::Display for Confidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod dimensions_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn from_metadata_fully_populated() {
+        let meta = Some(json!({
+            "dimensions": {
+                "participants": "potato",
+                "temporal": "2026-04-22",
+                "stance": "prefers Rust",
+                "domain": "coding",
+                "valence": 0.7,
+                "confidence": "confident"
+            }
+        }));
+        let d = Dimensions::from_metadata(&meta).expect("Some");
+        assert_eq!(d.participants.as_deref(), Some("potato"));
+        assert_eq!(d.stance.as_deref(), Some("prefers Rust"));
+        assert_eq!(d.domain.as_deref(), Some("coding"));
+        assert_eq!(d.valence, Some(0.7));
+        assert_eq!(d.confidence, Some(Confidence::Confident));
+    }
+
+    #[test]
+    fn from_metadata_no_dimensions_key() {
+        let meta = Some(json!({ "tags": ["foo"] }));
+        assert!(Dimensions::from_metadata(&meta).is_none());
+    }
+
+    #[test]
+    fn from_metadata_none() {
+        assert!(Dimensions::from_metadata(&None).is_none());
+    }
+
+    #[test]
+    fn from_metadata_empty_dimensions_object() {
+        let meta = Some(json!({ "dimensions": {} }));
+        let d = Dimensions::from_metadata(&meta).expect("Some");
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn from_metadata_malformed_fields_degrade_silently() {
+        let meta = Some(json!({
+            "dimensions": {
+                "participants": 42,           // wrong type → None
+                "temporal": "ok",              // good
+                "valence": "not-a-number",     // wrong type → None
+                "valence_bad": f64::INFINITY,  // ignored (wrong key)
+                "confidence": "weird-value"    // unparseable → None
+            }
+        }));
+        let d = Dimensions::from_metadata(&meta).expect("Some");
+        assert!(d.participants.is_none());
+        assert_eq!(d.temporal.as_deref(), Some("ok"));
+        assert!(d.valence.is_none());
+        assert!(d.confidence.is_none());
+    }
+
+    #[test]
+    fn from_metadata_valence_out_of_range_rejected() {
+        let meta = Some(json!({
+            "dimensions": { "valence": 2.5 }
+        }));
+        let d = Dimensions::from_metadata(&meta).expect("Some");
+        assert!(d.valence.is_none(), "out-of-range valence must be rejected");
+    }
+
+    #[test]
+    fn confidence_parse_case_insensitive() {
+        assert_eq!(Confidence::parse("Confident"), Some(Confidence::Confident));
+        assert_eq!(Confidence::parse("LIKELY"), Some(Confidence::Likely));
+        assert_eq!(Confidence::parse("uncertain"), Some(Confidence::Uncertain));
+        assert_eq!(Confidence::parse(""), None);
+        assert_eq!(Confidence::parse("maybe"), None);
+    }
+
+    #[test]
+    fn confidence_as_str_roundtrip() {
+        for c in [Confidence::Confident, Confidence::Likely, Confidence::Uncertain] {
+            assert_eq!(Confidence::parse(c.as_str()), Some(c));
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  CORE
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -593,6 +839,55 @@ pub struct LlmConfig {
     pub max_retries: u32,
     pub timeout_secs: u64,
     pub temperature: f32,
+}
+
+/// Compilation prompt detail level (ISS-020 P0.4).
+///
+/// Controls how much dimensional signal is surfaced to the synthesis LLM.
+/// Default is `Standard` — compact one-line enriched format.
+///
+/// Token-budget trade-off (per investigation.md §4.3):
+/// - `Minimal`:  ~210 tok/memory — today's format, safest under tight budgets.
+/// - `Standard`: ~300 tok/memory — compact pipe-delimited fields (recommended).
+/// - `Full`:     ~390 tok/memory — multi-line verbose; reserved, not yet implemented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptDetailLevel {
+    /// Legacy format: `- [{type}] ({date}): {content}` — no dimensional signal.
+    /// Use as a rollback flag if enriched prompts regress topic quality.
+    Minimal,
+    /// Compact one-line enriched format (default). Surfaces domain, confidence,
+    /// participants, causation, outcome, stance when present.
+    #[default]
+    Standard,
+    /// Multi-line verbose format. Reserved for high-quality synthesis runs.
+    /// Falls back to Standard until explicitly implemented.
+    Full,
+}
+
+/// Prompt-generation tuning for KC compilation (ISS-020 P0.4).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PromptConfig {
+    /// How much dimensional signal to surface to the synthesis LLM.
+    pub detail_level: PromptDetailLevel,
+    /// Token budget ceiling for the prompt INPUT (memories list + header).
+    /// When projected input exceeds this, lowest-importance memories are
+    /// dropped first and a truncation note is added to the prompt header.
+    /// Default: 120_000 tokens (safe margin below Claude's 200k context).
+    pub max_input_tokens: usize,
+    /// Approximate tokens-per-character heuristic for budget estimation.
+    /// Default: 0.3 (≈3.3 chars/token average for mixed English/code).
+    pub tokens_per_char: f64,
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        Self {
+            detail_level: PromptDetailLevel::default(),
+            max_input_tokens: 120_000,
+            tokens_per_char: 0.3,
+        }
+    }
 }
 
 /// Embedding provider settings specific to the KC.
