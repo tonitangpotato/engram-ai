@@ -3,8 +3,16 @@
 //! Classifies queries into Temporal, Keyword, Semantic, or General types
 //! using heuristics (no LLM). Each type produces weight modifiers that
 //! boost or reduce the contribution of each retrieval channel.
+//!
+//! Also classifies **query intent** (Definition, HowTo, Event, Relational,
+//! Context, General) for type-affinity modulation — boosting memories
+//! whose `MemoryType` matches the intent behind the query.
 
 use chrono::{DateTime, Datelike, Duration, NaiveTime, Utc, TimeZone};
+use regex::RegexSet;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use crate::anthropic_client::{build_anthropic_headers, DEFAULT_ANTHROPIC_API_URL};
 
 /// Detected query type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,13 +27,96 @@ pub enum QueryType {
     General,
 }
 
+/// Query intent — what kind of information the user is looking for.
+///
+/// Used for type-affinity modulation: each intent maps to a set of
+/// multipliers that boost or suppress different `MemoryType`s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryIntent {
+    /// "what is X", "X 是什么" → wants facts/definitions
+    Definition,
+    /// "how to X", "怎么做" → wants procedures/instructions
+    HowTo,
+    /// "what happened", "发生了什么" → wants episodic/event memories
+    Event,
+    /// "relationship between", "关系", "who knows" → wants relational knowledge
+    Relational,
+    /// "I'm working on X", "我在搞" → working context, non-question
+    Context,
+    /// Fallback — no strong intent signal
+    General,
+}
+
+/// Per-MemoryType affinity multipliers for a given query intent.
+///
+/// These are applied as multiplicative modulation on the combined 7-channel
+/// score. A multiplier of 1.0 means no change; >1 boosts, <1 suppresses.
+#[derive(Debug, Clone)]
+pub struct TypeAffinity {
+    pub factual: f64,
+    pub episodic: f64,
+    pub relational: f64,
+    pub emotional: f64,
+    pub procedural: f64,
+    pub opinion: f64,
+    pub causal: f64,
+}
+
+impl TypeAffinity {
+    /// Neutral affinity — all types at 1.0 (no modulation).
+    pub fn neutral() -> Self {
+        Self {
+            factual: 1.0,
+            episodic: 1.0,
+            relational: 1.0,
+            emotional: 1.0,
+            procedural: 1.0,
+            opinion: 1.0,
+            causal: 1.0,
+        }
+    }
+}
+
+impl QueryIntent {
+    /// Get the type-affinity multipliers for this intent.
+    pub fn type_affinity(&self) -> TypeAffinity {
+        match self {
+            QueryIntent::Definition => TypeAffinity {
+                factual: 2.0, episodic: 0.5, relational: 1.5,
+                emotional: 0.3, procedural: 0.8, opinion: 0.5, causal: 0.8,
+            },
+            QueryIntent::HowTo => TypeAffinity {
+                factual: 0.8, episodic: 0.5, relational: 0.5,
+                emotional: 0.3, procedural: 2.5, opinion: 0.5, causal: 1.0,
+            },
+            QueryIntent::Event => TypeAffinity {
+                factual: 0.5, episodic: 2.5, relational: 0.8,
+                emotional: 1.5, procedural: 0.3, opinion: 0.5, causal: 0.8,
+            },
+            QueryIntent::Relational => TypeAffinity {
+                factual: 0.8, episodic: 0.5, relational: 2.5,
+                emotional: 1.5, procedural: 0.3, opinion: 1.5, causal: 0.8,
+            },
+            QueryIntent::Context => TypeAffinity {
+                factual: 1.2, episodic: 1.8, relational: 1.0,
+                emotional: 0.8, procedural: 1.0, opinion: 0.8, causal: 1.0,
+            },
+            QueryIntent::General => TypeAffinity::neutral(),
+        }
+    }
+}
+
 /// Result of query analysis.
 #[derive(Debug, Clone)]
 pub struct QueryAnalysis {
     /// Detected query type
     pub query_type: QueryType,
+    /// Detected query intent (for type-affinity modulation)
+    pub query_intent: QueryIntent,
     /// Suggested weight multipliers per channel (1.0 = no change)
     pub weight_modifiers: ChannelWeightModifiers,
+    /// Per-MemoryType affinity multipliers derived from query intent
+    pub type_affinity: TypeAffinity,
     /// Extracted time range if temporal query detected
     pub time_range: Option<TimeRange>,
 }
@@ -49,11 +140,13 @@ pub struct TimeRange {
 }
 
 impl QueryAnalysis {
-    /// Neutral analysis — all modifiers at 1.0, no time range.
+    /// Neutral analysis — all modifiers at 1.0, no time range, General intent.
     pub fn neutral() -> Self {
         Self {
             query_type: QueryType::General,
+            query_intent: QueryIntent::General,
             weight_modifiers: ChannelWeightModifiers::neutral(),
+            type_affinity: TypeAffinity::neutral(),
             time_range: None,
         }
     }
@@ -373,15 +466,292 @@ fn extract_time_range(query: &str) -> Option<TimeRange> {
     None
 }
 
+// ── Intent classification (Level 1: regex) ────────────────────────
+
+/// Intent patterns for English queries.
+const INTENT_DEFINITION_EN: &[&str] = &[
+    "what is", "what are", "what does", "what's",
+    "define", "definition of", "meaning of",
+    "tell me about", "explain what",
+    "who is", "who are",
+];
+
+const INTENT_HOWTO_EN: &[&str] = &[
+    "how to", "how do i", "how do you", "how can i", "how should",
+    "steps to", "tutorial", "instructions for",
+    "guide to", "way to", "best way to",
+    "how does", "how is",
+];
+
+const INTENT_EVENT_EN: &[&str] = &[
+    "what happened", "what did", "what was discussed",
+    "when did", "did we", "did i", "did you",
+    "last time", "that time when",
+    "history of", "timeline",
+];
+
+const INTENT_RELATIONAL_EN: &[&str] = &[
+    "relationship between", "connection between",
+    "who knows", "related to",
+    "what do you think about", "opinion on", "opinion about",
+    "how do you feel about", "what about",
+    "between", // weaker signal, combined with other heuristics
+];
+
+const INTENT_CONTEXT_EN: &[&str] = &[
+    "i'm working on", "i am working on", "working on",
+    "currently building", "i'm building",
+    "dealing with", "i'm dealing",
+    "my project", "my task",
+    "right now i", "at the moment",
+    "(?i)i am (?:building|working)",
+];
+
+/// Intent patterns for Chinese queries.
+const INTENT_DEFINITION_ZH: &[&str] = &[
+    "是什么", "什么是", "定义", "意思是",
+    "介绍一下", "解释一下", "说说",
+    "什么书", "什么东西", "什么人",
+    "用了什么", "用的什么", "用什么",
+    "谁", "在哪", "哪里",
+];
+
+const INTENT_HOWTO_ZH: &[&str] = &[
+    "怎么做", "怎么搞", "怎么弄", "如何",
+    "步骤", "方法", "教程", "怎样",
+    "操作", "指南",
+    "怎么\\w+",
+];
+
+const INTENT_EVENT_ZH: &[&str] = &[
+    "发生了什么", "发生了啥", "做了什么", "做了啥",
+    "什么时候", "上次", "那次",
+    "经历", "过去",
+];
+
+const INTENT_RELATIONAL_ZH: &[&str] = &[
+    "关系", "认识", "之间",
+    "觉得怎么样", "看法", "对.*的看法",
+    "怎么看",
+];
+
+const INTENT_CONTEXT_ZH: &[&str] = &[
+    "我在做", "我在搞", "正在做", "正在搞",
+    "手上有", "目前在", "现在在",
+];
+
+// ── RegexSet-based intent matching ─────────────────────────────────
+
+struct IntentRegex {
+    howto_en: RegexSet,
+    howto_zh: RegexSet,
+    event_en: RegexSet,
+    event_zh: RegexSet,
+    definition_en: RegexSet,
+    definition_zh: RegexSet,
+    relational_en: RegexSet,
+    relational_zh: RegexSet,
+    context_en: RegexSet,
+    context_zh: RegexSet,
+}
+
+static INTENT_REGEX: OnceLock<IntentRegex> = OnceLock::new();
+
+fn get_intent_regex() -> &'static IntentRegex {
+    INTENT_REGEX.get_or_init(|| {
+        IntentRegex {
+            howto_en: RegexSet::new(INTENT_HOWTO_EN).unwrap(),
+            howto_zh: RegexSet::new(INTENT_HOWTO_ZH).unwrap(),
+            event_en: RegexSet::new(INTENT_EVENT_EN).unwrap(),
+            event_zh: RegexSet::new(INTENT_EVENT_ZH).unwrap(),
+            definition_en: RegexSet::new(INTENT_DEFINITION_EN).unwrap(),
+            definition_zh: RegexSet::new(INTENT_DEFINITION_ZH).unwrap(),
+            relational_en: RegexSet::new(INTENT_RELATIONAL_EN).unwrap(),
+            relational_zh: RegexSet::new(INTENT_RELATIONAL_ZH).unwrap(),
+            context_en: RegexSet::new(INTENT_CONTEXT_EN).unwrap(),
+            context_zh: RegexSet::new(INTENT_CONTEXT_ZH).unwrap(),
+        }
+    })
+}
+
+/// Classify query intent using RegexSet pattern matching (Level 1).
+pub fn classify_intent_regex(query: &str) -> QueryIntent {
+    let r = get_intent_regex();
+    let lower = query.to_lowercase();
+
+    if r.howto_en.is_match(&lower) || r.howto_zh.is_match(query) { return QueryIntent::HowTo; }
+    if r.event_en.is_match(&lower) || r.event_zh.is_match(query) { return QueryIntent::Event; }
+    if r.relational_en.is_match(&lower) || r.relational_zh.is_match(query) { return QueryIntent::Relational; }
+    if r.definition_en.is_match(&lower) || r.definition_zh.is_match(query) { return QueryIntent::Definition; }
+    if r.context_en.is_match(&lower) || r.context_zh.is_match(query) { return QueryIntent::Context; }
+    QueryIntent::General
+}
+
+// ── Intent classification (Level 2: Haiku LLM) ────────────────────
+
+/// Haiku-based intent classifier for Level 2 fallback.
+///
+/// When regex (Level 1) returns General, this classifier calls the
+/// Anthropic API with a lightweight model to classify the query intent.
+pub struct HaikuIntentClassifier {
+    client: reqwest::blocking::Client,
+    token_provider: Box<dyn crate::extractor::TokenProvider>,
+    is_oauth: bool,
+    model: String,
+    api_url: String,
+    #[allow(dead_code)]
+    timeout_secs: u64,
+    disabled: AtomicBool,
+}
+
+impl HaikuIntentClassifier {
+    pub fn new(
+        token_provider: Box<dyn crate::extractor::TokenProvider>,
+        is_oauth: bool,
+        model: String,
+        api_url: Option<String>,
+        timeout_secs: u64,
+    ) -> Self {
+        Self {
+            client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .build()
+                .unwrap_or_default(),
+            token_provider,
+            is_oauth,
+            model,
+            api_url: api_url.unwrap_or_else(|| DEFAULT_ANTHROPIC_API_URL.to_string()),
+            timeout_secs,
+            disabled: AtomicBool::new(false),
+        }
+    }
+
+    pub fn classify(&self, query: &str) -> QueryIntent {
+        if self.disabled.load(Ordering::Relaxed) {
+            return QueryIntent::General;
+        }
+
+        let token = match self.token_provider.get_token() {
+            Ok(t) => t,
+            Err(_) => return QueryIntent::General,
+        };
+
+        let headers = build_anthropic_headers(&token, self.is_oauth);
+
+        let prompt = format!(
+            "Classify the intent of this query into EXACTLY ONE category.\n\
+            Categories: definition, howto, event, relational, context, general\n\n\
+            Rules:\n\
+            - definition: asking what something IS, facts, descriptions\n\
+            - howto: asking HOW to do something, steps, instructions\n\
+            - event: asking what HAPPENED, when, history, timeline\n\
+            - relational: asking about relationships, connections, opinions about\n\
+            - context: stating what the speaker is working on (not a question)\n\
+            - general: greetings, unclear, or doesn't fit above\n\n\
+            The query may be in English or Chinese — classify based on meaning, not language.\n\n\
+            Respond with ONLY the category name, nothing else.\n\n\
+            Query: \"{}\"", query
+        );
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": 20,
+            "messages": [{"role": "user", "content": prompt}]
+        });
+
+        let url = format!("{}/v1/messages", self.api_url);
+        let resp = self.client.post(&url)
+            .headers(headers)
+            .json(&body)
+            .send();
+
+        match resp {
+            Ok(r) => {
+                if r.status() == reqwest::StatusCode::UNAUTHORIZED || r.status() == reqwest::StatusCode::FORBIDDEN {
+                    self.disabled.store(true, Ordering::Relaxed);
+                    log::warn!("HaikuIntentClassifier disabled: auth failure ({})", r.status());
+                    return QueryIntent::General;
+                }
+                if !r.status().is_success() {
+                    return QueryIntent::General;
+                }
+                // Parse Anthropic response
+                if let Ok(json) = r.json::<serde_json::Value>() {
+                    if let Some(text) = json["content"][0]["text"].as_str() {
+                        return Self::parse_intent(text);
+                    }
+                }
+                QueryIntent::General
+            }
+            Err(e) => {
+                log::debug!("HaikuIntentClassifier L2 call failed: {}", e);
+                QueryIntent::General
+            }
+        }
+    }
+
+    fn parse_intent(text: &str) -> QueryIntent {
+        match text.trim().to_lowercase().as_str() {
+            "definition" => QueryIntent::Definition,
+            "howto" => QueryIntent::HowTo,
+            "event" => QueryIntent::Event,
+            "relational" => QueryIntent::Relational,
+            "context" => QueryIntent::Context,
+            "general" => QueryIntent::General,
+            _ => QueryIntent::General,
+        }
+    }
+}
+
 // ── Main classifier ────────────────────────────────────────────────
 
 /// Classify a query and produce weight modifiers + optional time range.
+///
+/// Uses regex-only intent classification (Level 1).
+/// For Level 2 Haiku-based intent classification, use
+/// [`classify_query_with_l2`].
 pub fn classify_query(query: &str) -> QueryAnalysis {
+    let intent = classify_intent_regex(query);
+    let type_affinity = intent.type_affinity();
+    classify_query_inner(query, intent, type_affinity)
+}
+
+/// Classify a query with optional Haiku L2 intent fallback.
+///
+/// Two-level intent classification:
+/// - Level 1: RegexSet pattern matching (always runs)
+/// - Level 2: if regex returns General and `haiku_classifier` is provided,
+///   call the Anthropic API with a lightweight model
+///
+/// # Arguments
+///
+/// * `query` - The natural language query
+/// * `haiku_classifier` - Optional HaikuIntentClassifier for Level 2 fallback
+pub fn classify_query_with_l2(
+    query: &str,
+    haiku_classifier: Option<&HaikuIntentClassifier>,
+) -> QueryAnalysis {
+    let mut intent = classify_intent_regex(query);
+
+    if intent == QueryIntent::General {
+        if let Some(classifier) = haiku_classifier {
+            intent = classifier.classify(query);
+        }
+    }
+
+    let type_affinity = intent.type_affinity();
+    classify_query_inner(query, intent, type_affinity)
+}
+
+/// Inner classifier: determines QueryType and builds the full QueryAnalysis.
+fn classify_query_inner(query: &str, intent: QueryIntent, type_affinity: TypeAffinity) -> QueryAnalysis {
     // Check temporal first (highest priority — temporal queries often contain other signals)
     if is_temporal_query(query) {
         return QueryAnalysis {
             query_type: QueryType::Temporal,
+            query_intent: intent,
             weight_modifiers: ChannelWeightModifiers::for_temporal(),
+            type_affinity,
             time_range: extract_time_range(query),
         };
     }
@@ -390,7 +760,9 @@ pub fn classify_query(query: &str) -> QueryAnalysis {
     if is_keyword_query(query) {
         return QueryAnalysis {
             query_type: QueryType::Keyword,
+            query_intent: intent,
             weight_modifiers: ChannelWeightModifiers::for_keyword(),
+            type_affinity,
             time_range: None,
         };
     }
@@ -399,13 +771,21 @@ pub fn classify_query(query: &str) -> QueryAnalysis {
     if is_semantic_query(query) {
         return QueryAnalysis {
             query_type: QueryType::Semantic,
+            query_intent: intent,
             weight_modifiers: ChannelWeightModifiers::for_semantic(),
+            type_affinity,
             time_range: None,
         };
     }
 
     // Default: general
-    QueryAnalysis::neutral()
+    QueryAnalysis {
+        query_type: QueryType::General,
+        query_intent: intent,
+        weight_modifiers: ChannelWeightModifiers::neutral(),
+        type_affinity,
+        time_range: None,
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -527,5 +907,185 @@ mod tests {
     fn test_classify_keyword_snake_case() {
         let analysis = classify_query("memory_config");
         assert_eq!(analysis.query_type, QueryType::Keyword);
+    }
+
+    // ── Intent classification tests ────────────────────────────────
+
+    #[test]
+    fn test_intent_definition_english() {
+        let analysis = classify_query("what is ACT-R activation");
+        assert_eq!(analysis.query_intent, QueryIntent::Definition);
+    }
+
+    #[test]
+    fn test_intent_definition_chinese() {
+        let analysis = classify_query("embedding是什么");
+        assert_eq!(analysis.query_intent, QueryIntent::Definition);
+    }
+
+    #[test]
+    fn test_intent_howto_english() {
+        let analysis = classify_query("how to configure the memory system for best results");
+        assert_eq!(analysis.query_intent, QueryIntent::HowTo);
+    }
+
+    #[test]
+    fn test_intent_howto_chinese() {
+        let analysis = classify_query("怎么做数据库迁移");
+        assert_eq!(analysis.query_intent, QueryIntent::HowTo);
+    }
+
+    #[test]
+    fn test_intent_event_english() {
+        let analysis = classify_query("what happened in the last meeting");
+        assert_eq!(analysis.query_intent, QueryIntent::Event);
+    }
+
+    #[test]
+    fn test_intent_event_chinese() {
+        let analysis = classify_query("上次发生了什么");
+        assert_eq!(analysis.query_intent, QueryIntent::Event);
+    }
+
+    #[test]
+    fn test_intent_relational_english() {
+        let analysis = classify_query("what is the relationship between potato and engram");
+        assert_eq!(analysis.query_intent, QueryIntent::Relational);
+    }
+
+    #[test]
+    fn test_intent_relational_chinese() {
+        let analysis = classify_query("potato和小明的关系");
+        assert_eq!(analysis.query_intent, QueryIntent::Relational);
+    }
+
+    #[test]
+    fn test_intent_context_english() {
+        let analysis = classify_query("i'm working on the recall system");
+        assert_eq!(analysis.query_intent, QueryIntent::Context);
+    }
+
+    #[test]
+    fn test_intent_context_chinese() {
+        let analysis = classify_query("我在搞一个新的feature");
+        assert_eq!(analysis.query_intent, QueryIntent::Context);
+    }
+
+    #[test]
+    fn test_intent_general_fallback() {
+        let analysis = classify_query("hello");
+        assert_eq!(analysis.query_intent, QueryIntent::General);
+    }
+
+    // ── Type affinity tests ────────────────────────────────────────
+
+    #[test]
+    fn test_type_affinity_definition_boosts_factual() {
+        let affinity = QueryIntent::Definition.type_affinity();
+        assert!(affinity.factual > 1.5, "Definition should boost factual: {}", affinity.factual);
+        assert!(affinity.emotional < 0.5, "Definition should suppress emotional: {}", affinity.emotional);
+    }
+
+    #[test]
+    fn test_type_affinity_howto_boosts_procedural() {
+        let affinity = QueryIntent::HowTo.type_affinity();
+        assert!(affinity.procedural > 2.0, "HowTo should strongly boost procedural: {}", affinity.procedural);
+        assert!(affinity.emotional < 0.5, "HowTo should suppress emotional: {}", affinity.emotional);
+    }
+
+    #[test]
+    fn test_type_affinity_event_boosts_episodic() {
+        let affinity = QueryIntent::Event.type_affinity();
+        assert!(affinity.episodic > 2.0, "Event should strongly boost episodic: {}", affinity.episodic);
+        assert!(affinity.emotional > 1.0, "Event should boost emotional: {}", affinity.emotional);
+        assert!(affinity.procedural < 0.5, "Event should suppress procedural: {}", affinity.procedural);
+    }
+
+    #[test]
+    fn test_type_affinity_relational_boosts_relational() {
+        let affinity = QueryIntent::Relational.type_affinity();
+        assert!(affinity.relational > 2.0, "Relational should strongly boost relational: {}", affinity.relational);
+        assert!(affinity.opinion > 1.0, "Relational should boost opinion: {}", affinity.opinion);
+    }
+
+    #[test]
+    fn test_type_affinity_general_is_neutral() {
+        let affinity = QueryIntent::General.type_affinity();
+        assert_eq!(affinity.factual, 1.0);
+        assert_eq!(affinity.episodic, 1.0);
+        assert_eq!(affinity.relational, 1.0);
+        assert_eq!(affinity.emotional, 1.0);
+        assert_eq!(affinity.procedural, 1.0);
+        assert_eq!(affinity.opinion, 1.0);
+        assert_eq!(affinity.causal, 1.0);
+    }
+
+    #[test]
+    fn test_neutral_analysis_has_general_intent() {
+        let analysis = QueryAnalysis::neutral();
+        assert_eq!(analysis.query_intent, QueryIntent::General);
+        assert_eq!(analysis.type_affinity.factual, 1.0);
+    }
+
+    // ── RegexSet and new pattern tests ───────────────────────────────
+
+    #[test]
+    fn test_regex_set_unicode_w() {
+        // Verify that RegexSet with \w matches Chinese characters
+        let rs = RegexSet::new(&["什么\\w+"]).unwrap();
+        assert!(rs.is_match("什么书"));
+        assert!(rs.is_match("什么东西"));
+    }
+
+    #[test]
+    fn test_new_regex_howto_zh_verb() {
+        // "怎么配置" should match "怎么\w+" pattern → HowTo
+        assert_eq!(classify_intent_regex("怎么配置"), QueryIntent::HowTo);
+    }
+
+    #[test]
+    fn test_new_regex_definition_zh_what_tool() {
+        // "用了什么工具" should match "用了什么" → Definition
+        assert_eq!(classify_intent_regex("用了什么工具"), QueryIntent::Definition);
+    }
+
+    #[test]
+    fn test_new_regex_definition_zh_who() {
+        // "谁写了这个" should match "谁" → Definition
+        assert_eq!(classify_intent_regex("谁写了这个"), QueryIntent::Definition);
+    }
+
+    #[test]
+    fn test_classify_query_with_l2_none_classifier() {
+        // L1-only path: no Haiku classifier → regex only
+        let analysis = classify_query_with_l2("what is Rust", None);
+        assert_eq!(analysis.query_intent, QueryIntent::Definition);
+
+        let analysis2 = classify_query_with_l2("hello world", None);
+        assert_eq!(analysis2.query_intent, QueryIntent::General);
+    }
+
+    #[test]
+    fn test_haiku_parse_intent_valid() {
+        assert_eq!(HaikuIntentClassifier::parse_intent("definition"), QueryIntent::Definition);
+        assert_eq!(HaikuIntentClassifier::parse_intent("howto"), QueryIntent::HowTo);
+        assert_eq!(HaikuIntentClassifier::parse_intent("event"), QueryIntent::Event);
+        assert_eq!(HaikuIntentClassifier::parse_intent("relational"), QueryIntent::Relational);
+        assert_eq!(HaikuIntentClassifier::parse_intent("context"), QueryIntent::Context);
+        assert_eq!(HaikuIntentClassifier::parse_intent("general"), QueryIntent::General);
+    }
+
+    #[test]
+    fn test_haiku_parse_intent_case_insensitive() {
+        assert_eq!(HaikuIntentClassifier::parse_intent("Definition"), QueryIntent::Definition);
+        assert_eq!(HaikuIntentClassifier::parse_intent("HOWTO"), QueryIntent::HowTo);
+        assert_eq!(HaikuIntentClassifier::parse_intent("  Event  "), QueryIntent::Event);
+    }
+
+    #[test]
+    fn test_haiku_parse_intent_invalid() {
+        assert_eq!(HaikuIntentClassifier::parse_intent("unknown"), QueryIntent::General);
+        assert_eq!(HaikuIntentClassifier::parse_intent(""), QueryIntent::General);
+        assert_eq!(HaikuIntentClassifier::parse_intent("something else entirely"), QueryIntent::General);
     }
 }
