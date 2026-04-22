@@ -89,22 +89,33 @@
 //! ```
 
 pub mod anomaly;
+pub mod anthropic_client;
 pub mod bus;
 pub mod clustering;
 pub mod compiler;
 pub mod confidence;
+pub mod dimensions;
+pub mod enriched;
 pub mod entities;
 pub mod config;
 pub mod embeddings;
 pub mod extractor;
 pub mod hybrid_search;
 pub mod interoceptive;
+pub mod lifecycle;
 pub mod memory;
+pub mod merge_types;
+pub mod migration_types;
 pub mod models;
+pub mod promotion;
 pub mod query_classifier;
 pub mod session_wm;
 pub mod storage;
+pub mod store_api;
 pub mod synthesis;
+pub mod triple;
+pub mod triple_extractor;
+pub mod type_weights;
 pub mod types;
 
 // Re-export main types
@@ -114,6 +125,7 @@ pub use bus::{EmotionalBus, EmotionalTrend};
 pub use config::MemoryConfig;
 pub use embeddings::{EmbeddingConfig, EmbeddingProvider, EmbeddingError};
 pub use extractor::{MemoryExtractor, ExtractedFact, AnthropicExtractor, AnthropicExtractorConfig, TokenProvider, OllamaExtractor, OllamaExtractorConfig};
+pub use type_weights::{TypeWeights, infer_type_weights};
 pub use memory::{Memory, SleepReport, is_insight};
 pub use storage::EmbeddingStats;
 pub use storage::EntityRecord;
