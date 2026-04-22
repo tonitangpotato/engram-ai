@@ -1,7 +1,7 @@
 //! Tests for the Emotional Bus (Phase 2)
 
-use engramai::{Memory, MemoryConfig, MemoryType, EmotionalBus};
-use engramai::bus::accumulator::{EmotionalAccumulator, NEGATIVE_THRESHOLD, MIN_EVENTS_FOR_SUGGESTION};
+use engramai::{Memory, MemoryConfig, MemoryType, EmpathyBus};
+use engramai::bus::accumulator::{EmpathyAccumulator, NEGATIVE_THRESHOLD, MIN_EVENTS_FOR_SUGGESTION};
 use engramai::bus::feedback::{BehaviorFeedback, LOW_SCORE_THRESHOLD, MIN_ATTEMPTS_FOR_SUGGESTION as MIN_BEHAVIOR_ATTEMPTS};
 use engramai::bus::alignment::{score_alignment, calculate_importance_boost, ALIGNMENT_BOOST};
 use engramai::bus::mod_io::{Drive, parse_soul, parse_heartbeat, parse_identity};
@@ -51,7 +51,7 @@ honesty: Be direct and transparent in communication
 #[test]
 fn test_emotional_accumulator() {
     let conn = Connection::open_in_memory().unwrap();
-    let acc = EmotionalAccumulator::new(&conn).unwrap();
+    let acc = EmpathyAccumulator::new(&conn).unwrap();
     
     // Record some emotions in different domains
     acc.record_emotion("coding", 0.8).unwrap();
@@ -78,7 +78,7 @@ fn test_emotional_accumulator() {
 #[test]
 fn test_emotional_accumulator_threshold() {
     let conn = Connection::open_in_memory().unwrap();
-    let acc = EmotionalAccumulator::new(&conn).unwrap();
+    let acc = EmpathyAccumulator::new(&conn).unwrap();
     
     // Record many negative emotions to trigger threshold
     for _ in 0..12 {
@@ -138,7 +138,7 @@ fn test_drive_alignment_boosts_memory_importance() {
     let db_path = tmpdir.path().join("test.db");
     
     // Create memory with emotional bus
-    let mut mem = Memory::with_emotional_bus(
+    let mut mem = Memory::with_empathy_bus(
         db_path.to_str().unwrap(),
         tmpdir.path().to_str().unwrap(),
         Some(MemoryConfig::default()),
@@ -220,7 +220,7 @@ fn test_bus_integration() {
     let db_path = tmpdir.path().join("test.db");
     
     // Create memory with emotional bus
-    let mut mem = Memory::with_emotional_bus(
+    let mut mem = Memory::with_empathy_bus(
         db_path.to_str().unwrap(),
         tmpdir.path().to_str().unwrap(),
         Some(MemoryConfig::default()),
@@ -239,7 +239,7 @@ fn test_bus_integration() {
     ).unwrap();
     
     // Record more negative emotions to build trend
-    let bus = mem.emotional_bus().unwrap();
+    let bus = mem.empathy_bus().unwrap();
     for _ in 0..10 {
         bus.process_interaction(mem.connection(), "more frustration", -0.6, "debugging").unwrap();
     }
@@ -260,7 +260,7 @@ fn test_bus_integration() {
 fn test_bus_heartbeat_suggestions() {
     let tmpdir = setup_workspace();
     let conn = Connection::open_in_memory().unwrap();
-    let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
+    let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
     
     // Log many negative behavior outcomes
     for _ in 0..15 {
@@ -326,7 +326,7 @@ fn test_full_emotional_loop() {
     let tmpdir = setup_workspace();
     let db_path = tmpdir.path().join("test.db");
     
-    let mut mem = Memory::with_emotional_bus(
+    let mut mem = Memory::with_empathy_bus(
         db_path.to_str().unwrap(),
         tmpdir.path().to_str().unwrap(),
         Some(MemoryConfig::default()),
@@ -360,7 +360,7 @@ fn test_full_emotional_loop() {
     }
     
     // Step 2: Log behavior outcomes
-    let bus = mem.emotional_bus().unwrap();
+    let bus = mem.empathy_bus().unwrap();
     for _ in 0..5 {
         bus.log_behavior(mem.connection(), "helpful_action", true).unwrap();
     }

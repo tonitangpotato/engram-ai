@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write;
 use uuid::Uuid;
 
-use crate::bus::EmotionalBus;
+use crate::bus::EmpathyBus;
 use crate::config::MemoryConfig;
 use crate::embeddings::{EmbeddingConfig, EmbeddingProvider, EmbeddingError};
 use crate::entities::EntityExtractor;
@@ -49,7 +49,7 @@ pub struct Memory {
     /// Agent ID for this memory instance (used for ACL checks)
     agent_id: Option<String>,
     /// Optional Emotional Bus for drive alignment and emotional tracking
-    emotional_bus: Option<EmotionalBus>,
+    empathy_bus: Option<EmpathyBus>,
     /// Embedding provider for semantic similarity (optional - falls back to FTS if unavailable)
     embedding: Option<EmbeddingProvider>,
     /// Optional LLM-based memory extractor for converting raw text to structured facts
@@ -97,7 +97,7 @@ impl Memory {
             config,
             created_at,
             agent_id: None,
-            emotional_bus: None,
+            empathy_bus: None,
             embedding,
             extractor: None,
             entity_extractor,
@@ -144,7 +144,7 @@ impl Memory {
             config,
             created_at,
             agent_id: None,
-            emotional_bus: None,
+            empathy_bus: None,
             embedding: Some(embedding),
             extractor: None,
             entity_extractor,
@@ -192,7 +192,7 @@ impl Memory {
             config,
             created_at,
             agent_id: None,
-            emotional_bus: None,
+            empathy_bus: None,
             embedding,
             extractor: None,
             entity_extractor,
@@ -217,7 +217,7 @@ impl Memory {
     /// * `path` - Path to SQLite database file
     /// * `workspace_dir` - Path to the agent workspace directory
     /// * `config` - Optional MemoryConfig
-    pub fn with_emotional_bus(
+    pub fn with_empathy_bus(
         path: &str,
         workspace_dir: &str,
         config: Option<MemoryConfig>,
@@ -226,8 +226,8 @@ impl Memory {
         let config = config.unwrap_or_default();
         let created_at = Utc::now();
         
-        // Create Emotional Bus using storage's connection
-        let emotional_bus = Some(EmotionalBus::new(workspace_dir, storage.connection())?);
+        // Create Empathy Bus using storage's connection
+        let empathy_bus = Some(EmpathyBus::new(workspace_dir, storage.connection())?);
         
         // Create embedding provider (optional - check if Ollama is available)
         let embedding_provider = EmbeddingProvider::new(config.embedding.clone());
@@ -245,7 +245,7 @@ impl Memory {
             config,
             created_at,
             agent_id: None,
-            emotional_bus,
+            empathy_bus,
             embedding,
             extractor: None,
             entity_extractor,
@@ -259,16 +259,33 @@ impl Memory {
         
         Ok(mem)
     }
-    
-    /// Get a reference to the Emotional Bus, if attached.
-    pub fn emotional_bus(&self) -> Option<&EmotionalBus> {
-        self.emotional_bus.as_ref()
+
+    /// Backward-compat alias.
+    pub fn with_emotional_bus(
+        path: &str,
+        workspace_dir: &str,
+        config: Option<MemoryConfig>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_empathy_bus(path, workspace_dir, config)
     }
     
-    /// Get a mutable reference to the Emotional Bus, if attached.
-    pub fn emotional_bus_mut(&mut self) -> Option<&mut EmotionalBus> {
-        self.emotional_bus.as_mut()
+    /// Get a reference to the Empathy Bus, if attached.
+    pub fn empathy_bus(&self) -> Option<&EmpathyBus> {
+        self.empathy_bus.as_ref()
     }
+
+    /// Backward-compat alias.
+    #[inline]
+    pub fn emotional_bus(&self) -> Option<&EmpathyBus> { self.empathy_bus() }
+    
+    /// Get a mutable reference to the Empathy Bus, if attached.
+    pub fn empathy_bus_mut(&mut self) -> Option<&mut EmpathyBus> {
+        self.empathy_bus.as_mut()
+    }
+
+    /// Backward-compat alias.
+    #[inline]
+    pub fn emotional_bus_mut(&mut self) -> Option<&mut EmpathyBus> { self.empathy_bus_mut() }
 
     // ── Interoceptive Hub API ─────────────────────────────────────────
 
@@ -296,7 +313,7 @@ impl Memory {
     /// Call this periodically (e.g., every heartbeat or every N messages)
     /// to keep the interoceptive state current.
     pub fn interoceptive_tick(&mut self) {
-        use crate::bus::accumulator::EmotionalAccumulator;
+        use crate::bus::accumulator::EmpathyAccumulator;
         use crate::bus::feedback::BehaviorFeedback;
         use crate::interoceptive::InteroceptiveSignal;
 
@@ -306,7 +323,7 @@ impl Memory {
         let conn = self.storage.connection();
 
         // Accumulator: pull all emotional trends.
-        if let Ok(acc) = EmotionalAccumulator::new(conn) {
+        if let Ok(acc) = EmpathyAccumulator::new(conn) {
             if let Ok(trends) = acc.get_all_trends() {
                 for trend in &trends {
                     if let Ok(Some(sig)) = acc.to_signal(&trend.domain) {
@@ -372,7 +389,7 @@ impl Memory {
             signals.push(conf_signal);
 
             // 2. Alignment signal — does this memory align with core drives?
-            if let Some(ref bus) = self.emotional_bus {
+            if let Some(ref bus) = self.empathy_bus {
                 let drives = bus.drives();
                 if !drives.is_empty() {
                     let align_signal =
@@ -744,7 +761,7 @@ impl Memory {
         let base_importance = importance.unwrap_or_else(|| memory_type.default_importance());
         
         // Apply drive alignment boost if Emotional Bus is attached
-        let importance = if let Some(ref bus) = self.emotional_bus {
+        let importance = if let Some(ref bus) = self.empathy_bus {
             let boost = bus.align_importance(content);
             (base_importance * boost).min(1.0) // Cap at 1.0
         } else {
@@ -917,7 +934,7 @@ impl Memory {
         let id = self.add_to_namespace(content, memory_type, importance, source, metadata, namespace)?;
         
         // Record emotion if bus is attached
-        if let Some(ref bus) = self.emotional_bus {
+        if let Some(ref bus) = self.empathy_bus {
             bus.process_interaction(self.storage.connection(), content, emotion, domain)?;
         }
         

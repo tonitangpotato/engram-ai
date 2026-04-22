@@ -108,7 +108,9 @@ pub mod synthesis;
 pub mod types;
 
 // Re-export main types
-pub use bus::{EmotionalBus, SoulUpdate, HeartbeatUpdate, Drive, HeartbeatTask, Identity, EmotionalTrend, ActionStats, SubscriptionManager, Subscription, Notification, DriveEmbeddings, score_alignment_hybrid};
+pub use bus::{EmpathyBus, SoulUpdate, HeartbeatUpdate, Drive, HeartbeatTask, Identity, EmpathyTrend, ActionStats, SubscriptionManager, Subscription, Notification, DriveEmbeddings, score_alignment_hybrid};
+// Backward-compat aliases
+pub use bus::{EmotionalBus, EmotionalTrend};
 pub use config::MemoryConfig;
 pub use embeddings::{EmbeddingConfig, EmbeddingProvider, EmbeddingError};
 pub use extractor::{MemoryExtractor, ExtractedFact, AnthropicExtractor, AnthropicExtractorConfig, TokenProvider, OllamaExtractor, OllamaExtractorConfig};

@@ -231,7 +231,7 @@ fn memory_interoceptive_snapshot_end_to_end() {
     // Record some emotional data so interoceptive_tick can pull it.
     {
         let conn = mem.connection();
-        let acc = engramai::bus::accumulator::EmotionalAccumulator::new(conn).unwrap();
+        let acc = engramai::bus::accumulator::EmpathyAccumulator::new(conn).unwrap();
         for _ in 0..5 {
             acc.record_emotion("coding", 0.7).unwrap();
         }

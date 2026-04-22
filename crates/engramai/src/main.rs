@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use engramai::{Memory, MemoryConfig, MemoryType, Permission, EmotionalBus, EmbeddingConfig, AnthropicExtractor, OllamaExtractor};
+use engramai::{Memory, MemoryConfig, MemoryType, Permission, EmpathyBus, EmbeddingConfig, AnthropicExtractor, OllamaExtractor};
 use engramai::compiler::{
     self,
     api::MaintenanceApi,
@@ -769,7 +769,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create Memory with or without Emotional Bus
     let mut mem = if let Some(ref workspace) = cli.workspace {
         let ws_path = workspace.to_str().ok_or("invalid workspace path")?;
-        Memory::with_emotional_bus(db_path, ws_path, Some(mem_config))?
+        Memory::with_empathy_bus(db_path, ws_path, Some(mem_config))?
     } else {
         Memory::new(db_path, Some(mem_config))?
     };
@@ -1159,7 +1159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws_path = workspace.to_str().ok_or("invalid workspace path")?;
             
             // Create bus directly if not already attached
-            let bus = EmotionalBus::new(ws_path, mem.connection())?;
+            let bus = EmpathyBus::new(ws_path, mem.connection())?;
             
             match action {
                 BusAction::Trends { json } => {

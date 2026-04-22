@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use engramai::{Memory, MemoryConfig, MemoryType, Permission, EmotionalBus, EmbeddingConfig, AnthropicExtractor, OllamaExtractor};
+use engramai::{Memory, MemoryConfig, MemoryType, Permission, EmpathyBus, EmbeddingConfig, AnthropicExtractor, OllamaExtractor};
 
 /// Engram — Neuroscience-grounded memory system for AI agents.
 #[derive(Parser)]
@@ -98,6 +98,13 @@ enum Commands {
         /// Use OAuth mode for Anthropic (Claude Max)
         #[arg(long)]
         oauth: bool,
+
+        /// Side-channel metadata as KEY=VALUE (repeatable). Values are parsed as JSON
+        /// if possible, otherwise stored as string. Examples:
+        ///   --meta dia_id=D1:3 --meta speaker=Caroline --meta turn=3
+        /// See docs/metadata-channel.md for the design contract.
+        #[arg(long = "meta", value_parser = parse_meta_kv)]
+        meta: Vec<(String, serde_json::Value)>,
     },
     
     /// Recall memories by query
@@ -602,6 +609,23 @@ enum ExtractorArg {
     Anthropic,
 }
 
+/// Parse a `KEY=VALUE` pair from the CLI into a (String, serde_json::Value).
+/// VALUE is parsed as JSON if it's valid JSON (numbers, bools, arrays, objects);
+/// otherwise stored as a plain string. This matches the common `--meta foo=3`
+/// (int) vs `--meta name=Caroline` (string) expectation.
+fn parse_meta_kv(s: &str) -> Result<(String, serde_json::Value), String> {
+    let (key, raw) = s
+        .split_once('=')
+        .ok_or_else(|| format!("--meta expected KEY=VALUE, got: {}", s))?;
+    if key.is_empty() {
+        return Err(format!("--meta has empty key: {}", s));
+    }
+    // Try JSON parse first, fall back to string
+    let value = serde_json::from_str::<serde_json::Value>(raw)
+        .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
+    Ok((key.to_string(), value))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
@@ -626,7 +650,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create Memory with or without Emotional Bus
     let mut mem = if let Some(ref workspace) = cli.workspace {
         let ws_path = workspace.to_str().ok_or("invalid workspace path")?;
-        Memory::with_emotional_bus(db_path, ws_path, Some(mem_config))?
+        Memory::with_empathy_bus(db_path, ws_path, Some(mem_config))?
     } else {
         Memory::new(db_path, Some(mem_config))?
     };
@@ -739,7 +763,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         
-        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth } => {
+        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, meta } => {
             // Set up extractor if requested
             if let Some(ext) = extractor {
                 match ext {
@@ -759,6 +783,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             
+            // Build metadata JSON object from --meta KEY=VALUE pairs
+            let metadata_value: Option<serde_json::Value> = if meta.is_empty() {
+                None
+            } else {
+                let mut obj = serde_json::Map::new();
+                for (k, v) in meta {
+                    obj.insert(k, v);
+                }
+                Some(serde_json::Value::Object(obj))
+            };
+
             // If emotion is provided, use add_with_emotion
             let id = if let (Some(em), Some(dom)) = (emotion, domain.as_ref()) {
                 mem.add_with_emotion(
@@ -766,7 +801,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     r#type.into(),
                     importance,
                     source.as_deref(),
-                    None,
+                    metadata_value,
                     Some(&ns),
                     em,
                     dom,
@@ -777,7 +812,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     r#type.into(),
                     importance,
                     source.as_deref(),
-                    None,
+                    metadata_value,
                     Some(&ns),
                 )?
             };
@@ -1016,7 +1051,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws_path = workspace.to_str().ok_or("invalid workspace path")?;
             
             // Create bus directly if not already attached
-            let bus = EmotionalBus::new(ws_path, mem.connection())?;
+            let bus = EmpathyBus::new(ws_path, mem.connection())?;
             
             match action {
                 BusAction::Trends { json } => {

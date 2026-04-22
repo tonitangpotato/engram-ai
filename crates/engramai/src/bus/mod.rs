@@ -1,6 +1,6 @@
-//! Emotional Bus — Connects Engram to agent workspace files.
+//! Empathy Bus — Connects Engram to agent workspace files.
 //!
-//! The Emotional Bus creates closed-loop feedback between:
+//! The Empathy Bus creates closed-loop feedback between:
 //! - Memory emotions → SOUL updates (drive evolution)
 //! - SOUL drives → Memory importance (what matters)
 //! - Behavior outcomes → HEARTBEAT adjustments (adaptive behavior)
@@ -20,13 +20,16 @@ use std::path::{Path, PathBuf};
 
 use crate::embeddings::EmbeddingProvider;
 
-pub use accumulator::{EmotionalAccumulator, EmotionalTrend, NEGATIVE_THRESHOLD, MIN_EVENTS_FOR_SUGGESTION};
+pub use accumulator::{EmpathyAccumulator, EmpathyTrend, NEGATIVE_THRESHOLD, MIN_EVENTS_FOR_SUGGESTION};
+/// Backward-compat aliases
+pub type EmotionalAccumulator<'a> = EmpathyAccumulator<'a>;
+pub type EmotionalTrend = EmpathyTrend;
 pub use alignment::{score_alignment, calculate_importance_boost, find_aligned_drives, score_alignment_hybrid, DriveEmbeddings, ALIGNMENT_BOOST};
 pub use feedback::{BehaviorFeedback, ActionStats, BehaviorLog, LOW_SCORE_THRESHOLD, MIN_ATTEMPTS_FOR_SUGGESTION};
 pub use mod_io::{Drive, HeartbeatTask, Identity};
 pub use subscriptions::{SubscriptionManager, Subscription, Notification};
 
-/// A suggested update to SOUL.md based on emotional trends.
+/// A suggested update to SOUL.md based on empathy trends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SoulUpdate {
     /// The domain/topic this update relates to
@@ -35,8 +38,8 @@ pub struct SoulUpdate {
     pub action: String,
     /// Suggested content
     pub content: String,
-    /// The emotional trend that triggered this suggestion
-    pub trend: EmotionalTrend,
+    /// The empathy trend that triggered this suggestion
+    pub trend: EmpathyTrend,
 }
 
 /// A suggested update to HEARTBEAT.md based on behavior feedback.
@@ -50,16 +53,23 @@ pub struct HeartbeatUpdate {
     pub stats: ActionStats,
 }
 
-/// The Emotional Bus — main interface for emotional feedback loops.
-pub struct EmotionalBus {
+/// The Empathy Bus — senses user emotional state from interactions.
+///
+/// This is NOT the agent's own emotions. It observes the *user's* emotional
+/// signals (sentiment in messages) and tracks trends per domain.
+/// Think "mirror neurons" / social cognition, not limbic system.
+pub struct EmpathyBus {
     workspace_dir: PathBuf,
     drives: Vec<Drive>,
     /// Pre-computed drive embeddings for semantic alignment (None if embedding unavailable)
     drive_embeddings: Option<DriveEmbeddings>,
 }
 
-impl EmotionalBus {
-    /// Create a new Emotional Bus.
+/// Backward-compat alias
+pub type EmotionalBus = EmpathyBus;
+
+impl EmpathyBus {
+    /// Create a new Empathy Bus.
     ///
     /// # Arguments
     ///
@@ -69,7 +79,7 @@ impl EmotionalBus {
         let workspace_dir = workspace_dir.as_ref().to_path_buf();
         
         // Initialize tables
-        EmotionalAccumulator::new(conn)?;
+        EmpathyAccumulator::new(conn)?;
         BehaviorFeedback::new(conn)?;
         
         // Load drives from SOUL.md
@@ -142,7 +152,7 @@ impl EmotionalBus {
         domain: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Record emotion in accumulator
-        let acc = EmotionalAccumulator::new(conn)?;
+        let acc = EmpathyAccumulator::new(conn)?;
         acc.record_emotion(domain, emotion)?;
         
         Ok(())
@@ -202,9 +212,9 @@ impl EmotionalBus {
         Ok(())
     }
     
-    /// Get emotional trends.
-    pub fn get_trends(&self, conn: &Connection) -> Result<Vec<EmotionalTrend>, Box<dyn std::error::Error>> {
-        let acc = EmotionalAccumulator::new(conn)?;
+    /// Get empathy trends (observed user emotional patterns).
+    pub fn get_trends(&self, conn: &Connection) -> Result<Vec<EmpathyTrend>, Box<dyn std::error::Error>> {
+        let acc = EmpathyAccumulator::new(conn)?;
         Ok(acc.get_all_trends()?)
     }
     
@@ -214,12 +224,12 @@ impl EmotionalBus {
         Ok(feedback.get_all_action_stats()?)
     }
     
-    /// Suggest SOUL updates based on accumulated emotional trends.
+    /// Suggest SOUL updates based on accumulated empathy trends.
     ///
     /// Returns suggestions when domains have accumulated enough negative
     /// or positive patterns to warrant drive adjustments.
     pub fn suggest_soul_updates(&self, conn: &Connection) -> Result<Vec<SoulUpdate>, Box<dyn std::error::Error>> {
-        let acc = EmotionalAccumulator::new(conn)?;
+        let acc = EmpathyAccumulator::new(conn)?;
         let trends_needing_update = acc.get_trends_needing_update()?;
         
         let mut suggestions = Vec::new();
@@ -378,7 +388,7 @@ helpfulness: Assist the user effectively
     #[test]
     fn test_bus_creation_and_drives() {
         let (tmpdir, conn) = setup_workspace();
-        let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
+        let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
         
         assert!(!bus.drives().is_empty());
         assert!(bus.drives().iter().any(|d| d.name == "curiosity"));
@@ -387,7 +397,7 @@ helpfulness: Assist the user effectively
     #[test]
     fn test_importance_alignment() {
         let (tmpdir, conn) = setup_workspace();
-        let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
+        let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
         
         // Content aligned with "curiosity"
         let aligned = "I want to understand and learn new things";
@@ -403,7 +413,7 @@ helpfulness: Assist the user effectively
     #[test]
     fn test_process_interaction() {
         let (tmpdir, conn) = setup_workspace();
-        let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
+        let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
         
         // Record some interactions
         bus.process_interaction(&conn, "test content", 0.8, "coding").unwrap();
@@ -418,7 +428,7 @@ helpfulness: Assist the user effectively
     #[test]
     fn test_behavior_logging() {
         let (tmpdir, conn) = setup_workspace();
-        let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
+        let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
         
         bus.log_behavior(&conn, "check_email", true).unwrap();
         bus.log_behavior(&conn, "check_email", false).unwrap();
@@ -431,9 +441,7 @@ helpfulness: Assist the user effectively
     #[test]
     fn test_suggest_soul_updates() {
         let (tmpdir, conn) = setup_workspace();
-        let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
-        
-        // Record many negative interactions
+        let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
         for _ in 0..15 {
             bus.process_interaction(&conn, "bad experience", -0.8, "debugging").unwrap();
         }
@@ -446,9 +454,7 @@ helpfulness: Assist the user effectively
     #[test]
     fn test_suggest_heartbeat_updates() {
         let (tmpdir, conn) = setup_workspace();
-        let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
-        
-        // Log many failed attempts
+        let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
         for _ in 0..15 {
             bus.log_behavior(&conn, "useless_check", false).unwrap();
         }
@@ -462,7 +468,7 @@ helpfulness: Assist the user effectively
     #[test]
     fn test_get_identity() {
         let (tmpdir, conn) = setup_workspace();
-        let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
+        let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
         
         let identity = bus.get_identity().unwrap();
         assert_eq!(identity.name, Some("TestAgent".to_string()));
@@ -472,7 +478,7 @@ helpfulness: Assist the user effectively
     #[test]
     fn test_get_heartbeat_tasks() {
         let (tmpdir, conn) = setup_workspace();
-        let bus = EmotionalBus::new(tmpdir.path(), &conn).unwrap();
+        let bus = EmpathyBus::new(tmpdir.path(), &conn).unwrap();
         
         let tasks = bus.get_heartbeat_tasks().unwrap();
         assert_eq!(tasks.len(), 2);

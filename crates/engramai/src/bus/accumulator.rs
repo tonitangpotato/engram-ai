@@ -1,6 +1,6 @@
-//! Emotional Accumulator — Track emotional valence trends per domain.
+//! Empathy Accumulator — Track observed user emotional valence trends per domain.
 //!
-//! Monitors emotional patterns over time and flags domains that need SOUL updates.
+//! Monitors user emotional patterns over time and flags domains that need SOUL updates.
 
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -26,9 +26,9 @@ pub const NEGATIVE_THRESHOLD: f64 = -0.5;
 /// Minimum event count before suggesting SOUL updates.
 pub const MIN_EVENTS_FOR_SUGGESTION: i32 = 10;
 
-/// Emotional trend for a domain.
+/// Observed user emotional trend for a domain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmotionalTrend {
+pub struct EmpathyTrend {
     /// Domain name (e.g., "coding", "communication", "research")
     pub domain: String,
     /// Running average valence (-1.0 to 1.0)
@@ -39,7 +39,7 @@ pub struct EmotionalTrend {
     pub last_updated: DateTime<Utc>,
 }
 
-impl EmotionalTrend {
+impl EmpathyTrend {
     /// Check if this trend suggests a need for SOUL update.
     pub fn needs_soul_update(&self) -> bool {
         self.count >= MIN_EVENTS_FOR_SUGGESTION && self.valence < NEGATIVE_THRESHOLD
@@ -62,12 +62,12 @@ impl EmotionalTrend {
     }
 }
 
-/// Emotional accumulator that tracks valence trends per domain.
-pub struct EmotionalAccumulator<'a> {
+/// Empathy accumulator that tracks observed user valence trends per domain.
+pub struct EmpathyAccumulator<'a> {
     conn: &'a Connection,
 }
 
-impl<'a> EmotionalAccumulator<'a> {
+impl<'a> EmpathyAccumulator<'a> {
     /// Create a new accumulator using an existing database connection.
     pub fn new(conn: &'a Connection) -> Result<Self, rusqlite::Error> {
         Self::ensure_table(conn)?;
@@ -130,14 +130,14 @@ impl<'a> EmotionalAccumulator<'a> {
     }
     
     /// Get the emotional trend for a specific domain.
-    pub fn get_trend(&self, domain: &str) -> Result<Option<EmotionalTrend>, rusqlite::Error> {
+    pub fn get_trend(&self, domain: &str) -> Result<Option<EmpathyTrend>, rusqlite::Error> {
         self.conn
             .query_row(
                 "SELECT domain, valence, count, last_updated FROM emotional_trends WHERE domain = ?",
                 params![domain],
                 |row| {
                     let last_updated_f64: f64 = row.get(3)?;
-                    Ok(EmotionalTrend {
+                    Ok(EmpathyTrend {
                         domain: row.get(0)?,
                         valence: row.get(1)?,
                         count: row.get(2)?,
@@ -149,14 +149,14 @@ impl<'a> EmotionalAccumulator<'a> {
     }
     
     /// Get all emotional trends.
-    pub fn get_all_trends(&self) -> Result<Vec<EmotionalTrend>, rusqlite::Error> {
+    pub fn get_all_trends(&self) -> Result<Vec<EmpathyTrend>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT domain, valence, count, last_updated FROM emotional_trends ORDER BY count DESC"
         )?;
         
         let rows = stmt.query_map([], |row| {
             let last_updated_f64: f64 = row.get(3)?;
-            Ok(EmotionalTrend {
+            Ok(EmpathyTrend {
                 domain: row.get(0)?,
                 valence: row.get(1)?,
                 count: row.get(2)?,
@@ -168,7 +168,7 @@ impl<'a> EmotionalAccumulator<'a> {
     }
     
     /// Get all trends that suggest SOUL updates.
-    pub fn get_trends_needing_update(&self) -> Result<Vec<EmotionalTrend>, rusqlite::Error> {
+    pub fn get_trends_needing_update(&self) -> Result<Vec<EmpathyTrend>, rusqlite::Error> {
         let all = self.get_all_trends()?;
         Ok(all.into_iter().filter(|t| t.needs_soul_update()).collect())
     }
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn test_record_and_get_emotion() {
         let conn = Connection::open_in_memory().unwrap();
-        let acc = EmotionalAccumulator::new(&conn).unwrap();
+        let acc = EmpathyAccumulator::new(&conn).unwrap();
         
         // Record some emotions
         acc.record_emotion("coding", 0.8).unwrap();
@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn test_negative_trend_flags_update() {
         let conn = Connection::open_in_memory().unwrap();
-        let acc = EmotionalAccumulator::new(&conn).unwrap();
+        let acc = EmpathyAccumulator::new(&conn).unwrap();
         
         // Record many negative emotions
         for _ in 0..12 {
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_get_all_trends() {
         let conn = Connection::open_in_memory().unwrap();
-        let acc = EmotionalAccumulator::new(&conn).unwrap();
+        let acc = EmpathyAccumulator::new(&conn).unwrap();
         
         acc.record_emotion("coding", 0.5).unwrap();
         acc.record_emotion("writing", -0.3).unwrap();
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn test_reset_trend() {
         let conn = Connection::open_in_memory().unwrap();
-        let acc = EmotionalAccumulator::new(&conn).unwrap();
+        let acc = EmpathyAccumulator::new(&conn).unwrap();
         
         acc.record_emotion("test", 0.5).unwrap();
         assert!(acc.get_trend("test").unwrap().is_some());
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn test_valence_clamping() {
         let conn = Connection::open_in_memory().unwrap();
-        let acc = EmotionalAccumulator::new(&conn).unwrap();
+        let acc = EmpathyAccumulator::new(&conn).unwrap();
         
         // Values outside range should be clamped
         acc.record_emotion("extreme", 5.0).unwrap();
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn test_to_signal_positive_trend() {
         let conn = Connection::open_in_memory().unwrap();
-        let acc = EmotionalAccumulator::new(&conn).unwrap();
+        let acc = EmpathyAccumulator::new(&conn).unwrap();
 
         for _ in 0..5 {
             acc.record_emotion("coding", 0.8).unwrap();
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn test_to_signal_negative_trend() {
         let conn = Connection::open_in_memory().unwrap();
-        let acc = EmotionalAccumulator::new(&conn).unwrap();
+        let acc = EmpathyAccumulator::new(&conn).unwrap();
 
         for _ in 0..10 {
             acc.record_emotion("debugging", -0.7).unwrap();
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn test_to_signal_no_data() {
         let conn = Connection::open_in_memory().unwrap();
-        let acc = EmotionalAccumulator::new(&conn).unwrap();
+        let acc = EmpathyAccumulator::new(&conn).unwrap();
 
         let sig = acc.to_signal("nonexistent").unwrap();
         assert!(sig.is_none());
