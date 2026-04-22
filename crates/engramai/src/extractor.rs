@@ -4,9 +4,76 @@
 //! that preserves backward compatibility — if no extractor is set,
 //! memories are stored as-is.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::error::Error;
 use std::time::Duration;
+
+/// Deserializer for dimensional fields that tolerates LLM output variance.
+///
+/// LLMs occasionally express "empty dimension" as `[]`, `null`, or `""`
+/// instead of omitting the field. We also accept `["Alice", "Bob"]` arrays
+/// and flatten them into a comma-separated string (provisional — see
+/// tech debt ticket for future `Vec<String>` refactor).
+///
+/// Accepted inputs → output:
+/// - `null` / missing       → `None`
+/// - `""` / `"   "`         → `None`
+/// - `"Alice"`              → `Some("Alice")`
+/// - `[]`                   → `None`
+/// - `["Alice"]`            → `Some("Alice")`
+/// - `["Alice", "Bob"]`     → `Some("Alice, Bob")`
+/// - `[null, "Alice", ""]`  → `Some("Alice")` (filter empty entries)
+fn deserialize_flexible_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde_json::Value;
+
+    let value: Option<Value> = Option::deserialize(deserializer)?;
+    let value = match value {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Value::Array(items) => {
+            let parts: Vec<String> = items
+                .into_iter()
+                .filter_map(|v| match v {
+                    Value::String(s) => {
+                        let t = s.trim();
+                        if t.is_empty() { None } else { Some(t.to_string()) }
+                    }
+                    Value::Null => None,
+                    other => Some(other.to_string()),
+                })
+                .collect();
+            if parts.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(parts.join(", ")))
+            }
+        }
+        // Numbers, bools, objects: coerce to string as last resort
+        other => {
+            let s = other.to_string();
+            if s.is_empty() || s == "\"\"" {
+                Ok(None)
+            } else {
+                Ok(Some(s))
+            }
+        }
+    }
+}
 
 /// A single extracted fact from a conversation (dimensional format).
 ///
@@ -17,34 +84,34 @@ pub struct ExtractedFact {
     /// Core fact — the essential information (required). Maps to MemoryRecord.content.
     pub core_fact: String,
     /// Participants — who was involved
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub participants: Option<String>,
     /// Temporal — when it happened
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub temporal: Option<String>,
     /// Location / source
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     /// Background / surrounding situation
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
     /// Cause / motivation
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub causation: Option<String>,
     /// Result / impact
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
     /// How it was done / steps
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     /// Connections to other known things
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub relations: Option<String>,
     /// Emotional expression if present (e.g., frustrated, excited)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub sentiment: Option<String>,
     /// Opinion / preference / position (e.g., prefers X over Y)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
     pub stance: Option<String>,
     /// Importance score (0.0–1.0)
     pub importance: f64,
@@ -173,11 +240,11 @@ Respond with ONLY valid JSON (no markdown, no explanation):
 {"memories": [
   {
     "core_fact": "What happened — the essential fact (REQUIRED)",
-    "participants": "Who was involved (omit if not mentioned)",
-    "temporal": "When it happened (omit if not mentioned)",
+    "participants": "Who was involved — extract EVERY named person/agent/entity. Required if ANY person/agent is named anywhere in the text or in core_fact itself. Do NOT skip just because the name already appears in core_fact — still list it here. Only omit when truly nobody is named.",
+    "temporal": "When it happened — extract ANY time reference: absolute (2026-04-22, Monday, 3pm), relative (yesterday, last week, just now), or duration (for 2 hours). Required if ANY time cue exists in the text or in core_fact. Do NOT skip just because the time already appears in core_fact — still extract it here. Only omit when no time reference exists at all.",
     "location": "Where / in what context (omit if not mentioned)",
     "context": "Background / surrounding situation (omit if not relevant)",
-    "causation": "Why it happened / motivation (omit if not mentioned)",
+    "causation": "Why it happened / motivation / trigger — extract if the text contains ANY causal or motivational information. Three cue types to recognize: (A) Explicit connectors: because, since, due to, so that, in order to, 因为, 所以, 为了, triggered by, caused by, required for, leads to, results in. (B) Structural causation verbs where subject-verb-object itself expresses cause→effect: necessitates, penalizes, forces, enables, prevents, blocks, requires (for a purpose, not as a parameter declaration), 'lacks X needs Y', 'failure modes include X', 'X is needed for Y'. (C) Implicit reason clauses: 'X is lowest-risk because Y', 'X performs worse under Y', 'X is the chosen approach for Y reason'. Required if any such cue exists in text or core_fact. Do NOT skip just because the reason already appears in core_fact — still extract it here. Only omit when truly no causal/motivational information is present.",
     "outcome": "What resulted / impact (omit if not mentioned)",
     "method": "How it was done / steps (omit if not mentioned)",
     "relations": "Connections to other known things (omit if none)",
@@ -198,7 +265,7 @@ Field notes:
 - confidence (REQUIRED): confident | likely | uncertain
 - valence (REQUIRED): -1.0 (very negative) to 1.0 (very positive). 0.0 = neutral. Consider speaker's emotional state.
 - domain (REQUIRED): coding | trading | research | communication | general
-- All other fields: include ONLY if explicitly present in the text
+- All other fields: include if information is present in the text OR in core_fact. Structural fields (participants, temporal, causation) MUST be filled when relevant information exists — do not skip them just because the info is already captured in core_fact. Fields are extraction of dimensions, not deduplication.
 
 Conversation:
 "#;
@@ -729,7 +796,80 @@ Hope this helps!"#;
         assert_eq!(fact.domain, "general");
         assert_eq!(fact.valence, 0.0);
     }
-    
+
+    #[test]
+    fn test_flexible_dim_accepts_empty_array() {
+        // LLM sometimes outputs empty arrays for "unknown" dimensions.
+        // Regression test for ISS-021 storage coverage drop.
+        let json = r#"[{"core_fact": "Test fact", "participants": [], "temporal": [], "causation": [], "importance": 0.5, "tags": []}]"#;
+        let facts = parse_extraction_response(json).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].core_fact, "Test fact");
+        assert!(facts[0].participants.is_none());
+        assert!(facts[0].temporal.is_none());
+        assert!(facts[0].causation.is_none());
+    }
+
+    #[test]
+    fn test_flexible_dim_accepts_null() {
+        let json = r#"[{"core_fact": "Test", "participants": null, "temporal": null, "importance": 0.5, "tags": []}]"#;
+        let facts = parse_extraction_response(json).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0].participants.is_none());
+        assert!(facts[0].temporal.is_none());
+    }
+
+    #[test]
+    fn test_flexible_dim_accepts_empty_string() {
+        let json = r#"[{"core_fact": "Test", "participants": "", "temporal": "   ", "importance": 0.5, "tags": []}]"#;
+        let facts = parse_extraction_response(json).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0].participants.is_none(), "empty string → None");
+        assert!(facts[0].temporal.is_none(), "whitespace-only → None");
+    }
+
+    #[test]
+    fn test_flexible_dim_accepts_single_string() {
+        // Normal case still works
+        let json = r#"[{"core_fact": "Test", "participants": "Alice", "importance": 0.5, "tags": []}]"#;
+        let facts = parse_extraction_response(json).unwrap();
+        assert_eq!(facts[0].participants.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn test_flexible_dim_accepts_string_array() {
+        // LLM returns list — we join with ", " (provisional; see Vec<String> tech debt)
+        let json = r#"[{"core_fact": "Test", "participants": ["Alice", "Bob"], "importance": 0.5, "tags": []}]"#;
+        let facts = parse_extraction_response(json).unwrap();
+        assert_eq!(facts[0].participants.as_deref(), Some("Alice, Bob"));
+    }
+
+    #[test]
+    fn test_flexible_dim_filters_empty_items_in_array() {
+        let json = r#"[{"core_fact": "Test", "participants": ["", "Alice", null, "   "], "importance": 0.5, "tags": []}]"#;
+        let facts = parse_extraction_response(json).unwrap();
+        assert_eq!(facts[0].participants.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn test_flexible_dim_mixed_forms_in_single_payload() {
+        // Real-world LLM output mixing all forms in one fact
+        let json = r#"[{
+            "core_fact": "Mixed test",
+            "participants": ["Alice"],
+            "temporal": [],
+            "causation": "because X",
+            "outcome": null,
+            "importance": 0.5,
+            "tags": []
+        }]"#;
+        let facts = parse_extraction_response(json).unwrap();
+        assert_eq!(facts[0].participants.as_deref(), Some("Alice"));
+        assert!(facts[0].temporal.is_none());
+        assert_eq!(facts[0].causation.as_deref(), Some("because X"));
+        assert!(facts[0].outcome.is_none());
+    }
+
     #[test]
     #[ignore] // Requires Ollama running locally
     fn test_ollama_extraction() {

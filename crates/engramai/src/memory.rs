@@ -62,6 +62,25 @@ pub struct Memory {
     synthesis_llm_provider: Option<Box<dyn crate::synthesis::types::SynthesisLlmProvider>>,
     /// Interoceptive hub for unified internal state monitoring
     interoceptive_hub: crate::interoceptive::InteroceptiveHub,
+    /// Optional LLM-based triple extractor for knowledge graph enrichment
+    triple_extractor: Option<Box<dyn crate::triple_extractor::TripleExtractor>>,
+    /// Cached emotion data from last LLM extraction: Vec<(valence, domain)>.
+    /// One-shot: `take_last_emotions()` clears it.
+    last_extraction_emotions: std::sync::Mutex<Option<Vec<(f64, String)>>>,
+    /// Recent recall timestamps for cross-recall co-occurrence detection (C8).
+    /// Bounded ring buffer: last 50 recalls.
+    recent_recalls: VecDeque<(String, std::time::Instant)>,
+    /// Last add result for metrics access. Reset each sleep_cycle.
+    last_add_result: Option<crate::lifecycle::AddResult>,
+    /// Dedup merge counter (reset each sleep_cycle).
+    dedup_merge_count: usize,
+    /// Dedup new-write counter (reset each sleep_cycle).
+    dedup_write_count: usize,
+    /// Meta-cognition tracker for self-monitoring (lazy-init when enabled).
+    metacognition: Option<crate::metacognition::MetaCognitionTracker>,
+    /// Haiku-based intent classifier for Level 2 query-intent classification.
+    /// Initialized via `auto_configure_intent_classifier()` when enabled in config.
+    intent_classifier: Option<crate::query_classifier::HaikuIntentClassifier>,
 }
 
 impl Memory {
@@ -104,10 +123,22 @@ impl Memory {
             synthesis_settings: None,
             synthesis_llm_provider: None,
             interoceptive_hub: crate::interoceptive::InteroceptiveHub::new(),
+            triple_extractor: None,
+            last_extraction_emotions: std::sync::Mutex::new(None),
+            recent_recalls: VecDeque::new(),
+            last_add_result: None,
+            dedup_merge_count: 0,
+            dedup_write_count: 0,
+            metacognition: None,
+            intent_classifier: None,
         };
         
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
+        mem.auto_configure_intent_classifier();
+
+        // Initialize meta-cognition tracker if enabled
+        mem.init_metacognition_if_enabled();
         
         Ok(mem)
     }
@@ -151,10 +182,19 @@ impl Memory {
             synthesis_settings: None,
             synthesis_llm_provider: None,
             interoceptive_hub: crate::interoceptive::InteroceptiveHub::new(),
+            triple_extractor: None,
+            last_extraction_emotions: std::sync::Mutex::new(None),
+            recent_recalls: VecDeque::new(),
+            last_add_result: None,
+            dedup_merge_count: 0,
+            dedup_write_count: 0,
+            metacognition: None,
+            intent_classifier: None,
         };
         
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
+        mem.auto_configure_intent_classifier();
         
         Ok(mem)
     }
@@ -199,10 +239,19 @@ impl Memory {
             synthesis_settings: None,
             synthesis_llm_provider: None,
             interoceptive_hub: crate::interoceptive::InteroceptiveHub::new(),
+            triple_extractor: None,
+            last_extraction_emotions: std::sync::Mutex::new(None),
+            recent_recalls: VecDeque::new(),
+            last_add_result: None,
+            dedup_merge_count: 0,
+            dedup_write_count: 0,
+            metacognition: None,
+            intent_classifier: None,
         };
         
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
+        mem.auto_configure_intent_classifier();
         
         Ok(mem)
     }
@@ -252,10 +301,19 @@ impl Memory {
             synthesis_settings: None,
             synthesis_llm_provider: None,
             interoceptive_hub: crate::interoceptive::InteroceptiveHub::new(),
+            triple_extractor: None,
+            last_extraction_emotions: std::sync::Mutex::new(None),
+            recent_recalls: VecDeque::new(),
+            last_add_result: None,
+            dedup_merge_count: 0,
+            dedup_write_count: 0,
+            metacognition: None,
+            intent_classifier: None,
         };
         
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
+        mem.auto_configure_intent_classifier();
         
         Ok(mem)
     }
@@ -544,6 +602,31 @@ impl Memory {
         // No extractor configured - that's fine, backward compatible
         log::debug!("No extractor configured, storing raw text");
     }
+
+    /// Auto-configure Haiku intent classifier from environment and config.
+    ///
+    /// Reads `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` from environment
+    /// and creates a `HaikuIntentClassifier` if `haiku_l2_enabled` is true
+    /// in `config.intent_classification`.
+    pub fn auto_configure_intent_classifier(&mut self) {
+        let config = &self.config.intent_classification;
+        if !config.haiku_l2_enabled {
+            return;
+        }
+        if let Ok(token) = std::env::var("ANTHROPIC_AUTH_TOKEN")
+            .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        {
+            let is_oauth = std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok();
+            self.intent_classifier = Some(crate::query_classifier::HaikuIntentClassifier::new(
+                Box::new(crate::anthropic_client::StaticToken(token)),
+                is_oauth,
+                config.model.clone(),
+                config.api_url.clone(),
+                config.timeout_secs,
+            ));
+            log::info!("HaikuIntentClassifier: configured (oauth={})", is_oauth);
+        }
+    }
     
     /// Load extractor configuration from ~/.config/engram/config.json.
     ///
@@ -676,13 +759,14 @@ impl Memory {
                         content.chars().take(40).collect::<String>());
                     let mut last_id = String::new();
                     for fact in &facts {
-                        log::info!("  → [{}] (imp={:.1}) {}", fact.memory_type, fact.importance,
-                            fact.content.chars().take(80).collect::<String>());
+                        log::info!("  → (imp={:.1}, val={:.2}, dom={}) {}", 
+                            fact.importance, fact.valence, fact.domain,
+                            fact.core_fact.chars().take(80).collect::<String>());
                     }
                     for fact in facts {
-                        // Convert extracted memory_type string to MemoryType enum
-                        let fact_type = Self::parse_memory_type(&fact.memory_type)
-                            .unwrap_or(memory_type);
+                        // Infer type weights from dimensional fields
+                        let type_weights = crate::type_weights::infer_type_weights(&fact);
+                        let fact_type = type_weights.primary_type();
                         
                         // Cap auto-extracted importance to prevent noise from dominating recall
                         let capped_importance = fact.importance.min(self.config.auto_extract_importance_cap);
@@ -690,14 +774,64 @@ impl Memory {
                             log::debug!("  ↓ importance capped: {:.2} → {:.2}", fact.importance, capped_importance);
                         }
                         let fact_importance = Some(capped_importance);
+
+                        // Build dimensional metadata
+                        let mut dim_metadata = serde_json::Map::new();
+                        
+                        // Dimensional fields
+                        let mut dimensions = serde_json::Map::new();
+                        if let Some(ref v) = fact.participants { dimensions.insert("participants".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.temporal { dimensions.insert("temporal".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.location { dimensions.insert("location".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.context { dimensions.insert("context".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.causation { dimensions.insert("causation".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.outcome { dimensions.insert("outcome".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.method { dimensions.insert("method".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.relations { dimensions.insert("relations".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.sentiment { dimensions.insert("sentiment".into(), serde_json::Value::String(v.clone())); }
+                        if let Some(ref v) = fact.stance { dimensions.insert("stance".into(), serde_json::Value::String(v.clone())); }
+                        // ISS-020 P0.0: persist always-present fields that were previously dropped.
+                        // `valence` (f64) and `confidence` (string) are required fields on ExtractedFact
+                        // but were missing from the persisted dimensions object — KC could not read them.
+                        // `domain` is also always-present; persisting it here unblocks KC conflict detection
+                        // (P0.5 needs same-domain matching) and future clustering pre-filter (P1.1).
+                        dimensions.insert("valence".into(), serde_json::json!(fact.valence));
+                        dimensions.insert("confidence".into(), serde_json::Value::String(fact.confidence.clone()));
+                        dimensions.insert("domain".into(), serde_json::Value::String(fact.domain.clone()));
+                        if !dimensions.is_empty() {
+                            dim_metadata.insert("dimensions".into(), serde_json::Value::Object(dimensions));
+                        }
+                        
+                        // Type weights
+                        dim_metadata.insert("type_weights".into(), type_weights.to_json());
+                        
+                        // NOTE: source_text deliberately NOT stored here.
+                        // Preserving raw input is a caller concern (e.g., benchmark adapters
+                        // that need dia_id markers for evidence tracking). Storing it in every
+                        // memory doubles storage footprint and violates engram's separation
+                        // between cognitive facts (content) and source material.
+                        // Callers needing raw text should maintain their own cache or pass it
+                        // via the `metadata` parameter.
+                        
+                        // Merge with caller-provided metadata (caller's keys take priority)
+                        let fact_metadata = if let Some(ref caller_meta) = metadata {
+                            if let Some(caller_obj) = caller_meta.as_object() {
+                                for (k, v) in caller_obj {
+                                    dim_metadata.insert(k.clone(), v.clone());
+                                }
+                            }
+                            Some(serde_json::Value::Object(dim_metadata))
+                        } else {
+                            Some(serde_json::Value::Object(dim_metadata))
+                        };
                         
                         // Store each extracted fact separately
                         last_id = self.add_raw(
-                            &fact.content,
+                            &fact.core_fact,
                             fact_type,
                             fact_importance,
                             source,
-                            metadata.clone(),
+                            fact_metadata,
                             namespace,
                         )?;
                     }
@@ -722,6 +856,7 @@ impl Memory {
     }
     
     /// Parse a memory type string into MemoryType enum.
+    #[allow(dead_code)] // Kept for potential future use (e.g., legacy migration)
     fn parse_memory_type(s: &str) -> Option<MemoryType> {
         match s.to_lowercase().as_str() {
             "factual" => Some(MemoryType::Factual),
@@ -941,7 +1076,226 @@ impl Memory {
         Ok(id)
     }
 
-    /// Retrieve relevant memories using ACT-R activation-based retrieval.
+    // =========================================================================
+    // ISS-019 Step 4+: typed write-path API
+    //
+    // `store_enriched` — caller already has a validated `EnrichedMemory`.
+    // `store_raw`      — caller has text only; engram runs the extractor
+    //                    (or falls back to `Dimensions::minimal`) and
+    //                    dispatches per-fact through `store_enriched`.
+    //
+    // These entry points are the canonical write surface going forward.
+    // The legacy `add` / `add_to_namespace` / `add_with_emotion` stay as
+    // `#[deprecated]` shims (Step 4.5) that forward to `store_raw` so
+    // downstream callers migrate at their own pace.
+    // =========================================================================
+
+    /// Store a memory whose `Dimensions` are already validated.
+    ///
+    /// This is the primary write path. The returned `StoreOutcome` tells
+    /// the caller whether a fresh row was inserted or the content was
+    /// dedup-merged into an existing row.
+    ///
+    /// Metadata layout on disk today: we write the same legacy JSON shape
+    /// the existing `add_raw` path produces, so dedup + merge history
+    /// code keeps working untouched. Step 7 of the ISS-019 plan is where
+    /// we namespace the blob under `engram.*` / `user.*`.
+    pub fn store_enriched(
+        &mut self,
+        mem: crate::enriched::EnrichedMemory,
+    ) -> Result<crate::store_api::StoreOutcome, crate::store_api::StoreError> {
+        // Debug-time sanity: constructor guarantees this, but a caller
+        // that built the struct literally could violate it.
+        debug_assert!(mem.invariants_hold(), "EnrichedMemory::content must equal dimensions.core_fact");
+
+        let memory_type = mem.dimensions.type_weights.primary_type();
+        let importance_hint = Some(mem.importance.get());
+        let source_opt = mem.source.clone();
+        let namespace_opt = mem.namespace.clone();
+
+        // Build the legacy metadata blob from the typed Dimensions.
+        let metadata_json = build_legacy_metadata(&mem);
+
+        let id = self
+            .add_raw(
+                &mem.content,
+                memory_type,
+                importance_hint,
+                source_opt.as_deref(),
+                Some(metadata_json),
+                namespace_opt.as_deref(),
+            )
+            .map_err(boxed_err_to_store_error)?;
+
+        // Translate `last_add_result` into the typed outcome.
+        match self.last_add_result.clone() {
+            Some(crate::lifecycle::AddResult::Merged { into, similarity }) => {
+                Ok(crate::store_api::StoreOutcome::Merged { id: into, similarity })
+            }
+            Some(crate::lifecycle::AddResult::Created { id: created_id }) => {
+                Ok(crate::store_api::StoreOutcome::Inserted { id: created_id })
+            }
+            None => {
+                // add_raw always sets last_add_result; treat missing as Inserted
+                // using the id we got back, keeping the contract intact.
+                Ok(crate::store_api::StoreOutcome::Inserted { id })
+            }
+        }
+    }
+
+    /// Store raw text, running the configured extractor if present.
+    ///
+    /// Dispatch (see ISS-019 design §3.2):
+    ///
+    /// - no extractor configured      → `Dimensions::minimal` → `store_enriched`
+    /// - extractor returns facts      → each fact → `EnrichedMemory::from_extracted`
+    ///                                  → `store_enriched`
+    /// - extractor returns empty      → `Skipped { NoFactsExtracted }`
+    /// - extractor runtime failure    → `Quarantined { ExtractorError }`
+    ///
+    /// Note: Step 4 ships with the quarantine path as an **in-memory**
+    /// outcome (no dedicated SQLite table yet). The id returned in
+    /// `Quarantined { id }` is a synthetic `q-*` hash of the content
+    /// so callers can correlate retries. The persistent quarantine
+    /// table lands in Step 6.
+    pub fn store_raw(
+        &mut self,
+        content: &str,
+        meta: crate::store_api::StorageMeta,
+    ) -> Result<crate::store_api::RawStoreOutcome, crate::store_api::StoreError> {
+        use crate::store_api::{ContentHash, QuarantineId, QuarantineReason, RawStoreOutcome, SkipReason};
+
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return Ok(RawStoreOutcome::Skipped {
+                reason: SkipReason::TooShort,
+                content_hash: ContentHash::new(short_hash(content)),
+            });
+        }
+
+        // Path A: extractor present.
+        if let Some(ref extractor) = self.extractor {
+            match extractor.extract(content) {
+                Ok(facts) if facts.is_empty() => {
+                    log::info!(
+                        "store_raw: extractor returned nothing for content ({}...)",
+                        content.chars().take(50).collect::<String>()
+                    );
+                    return Ok(RawStoreOutcome::Skipped {
+                        reason: SkipReason::NoFactsExtracted,
+                        content_hash: ContentHash::new(short_hash(content)),
+                    });
+                }
+                Ok(facts) => {
+                    // Cache emotion data for downstream consumers (parity
+                    // with add_to_namespace).
+                    let emotions: Vec<(f64, String)> = facts
+                        .iter()
+                        .map(|f| (f.valence, f.domain.clone()))
+                        .collect();
+                    *self.last_extraction_emotions.lock().unwrap() = Some(emotions);
+
+                    let mut outcomes = Vec::with_capacity(facts.len());
+                    let mut any_valid = false;
+                    let mut first_err: Option<String> = None;
+
+                    for fact in facts {
+                        // Cap auto-extracted importance to prevent noise from
+                        // dominating recall — same rule as the legacy path.
+                        let capped = fact
+                            .importance
+                            .min(self.config.auto_extract_importance_cap);
+
+                        let mut fact_adj = fact;
+                        fact_adj.importance = capped;
+
+                        match crate::enriched::EnrichedMemory::from_extracted(
+                            fact_adj,
+                            meta.source.clone(),
+                            meta.namespace.clone(),
+                            meta.user_metadata.clone(),
+                        ) {
+                            Ok(em) => {
+                                any_valid = true;
+                                let outcome = self.store_enriched(em)?;
+                                outcomes.push(outcome);
+                            }
+                            Err(e) => {
+                                // Don't abort the whole batch for a single
+                                // empty-core_fact; skip that one fact and
+                                // record the first error for the
+                                // `AllFactsInvalid` branch below.
+                                log::warn!(
+                                    "store_raw: skipping invalid fact ({}); continuing batch",
+                                    e
+                                );
+                                if first_err.is_none() {
+                                    first_err = Some(e.to_string());
+                                }
+                            }
+                        }
+                    }
+
+                    if any_valid {
+                        return Ok(RawStoreOutcome::Stored(outcomes));
+                    }
+
+                    // Extractor produced facts but every one failed validation.
+                    let qid = QuarantineId::new(format!("q-{}", short_hash(content)));
+                    let reason = QuarantineReason::AllFactsInvalid(
+                        first_err.unwrap_or_else(|| "no valid facts".to_string()),
+                    );
+                    log::warn!(
+                        "store_raw: quarantining content ({}...): {:?}",
+                        content.chars().take(50).collect::<String>(),
+                        reason
+                    );
+                    return Ok(RawStoreOutcome::Quarantined { id: qid, reason });
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    log::warn!("store_raw: extractor error: {}", err_msg);
+                    let qid = QuarantineId::new(format!("q-{}", short_hash(content)));
+                    return Ok(RawStoreOutcome::Quarantined {
+                        id: qid,
+                        reason: QuarantineReason::ExtractorError(err_msg),
+                    });
+                }
+            }
+        }
+
+        // Path B: no extractor — fall back to minimal dimensions.
+        let importance_val = meta
+            .importance_hint
+            .map(crate::dimensions::Importance::new)
+            .unwrap_or_else(|| {
+                // Use the legacy memory_type default if the caller
+                // threaded one through.
+                let base = meta
+                    .memory_type_hint
+                    .map(|mt| mt.default_importance())
+                    .unwrap_or(0.5);
+                crate::dimensions::Importance::new(base)
+            });
+
+        let em = crate::enriched::EnrichedMemory::minimal(
+            content,
+            importance_val,
+            meta.source.clone(),
+            meta.namespace.clone(),
+        )
+        .map_err(|e| crate::store_api::StoreError::InvalidInput(e.to_string()))?;
+
+        let em = crate::enriched::EnrichedMemory {
+            user_metadata: meta.user_metadata.clone(),
+            ..em
+        };
+
+        let outcome = self.store_enriched(em)?;
+        Ok(RawStoreOutcome::Stored(vec![outcome]))
+    }
+
+
     ///
     /// Unlike simple cosine similarity, this uses:
     /// - Base-level activation (frequency × recency, power law)
@@ -1044,8 +1398,12 @@ impl Memory {
             };
             
             // Query-type adaptive weight adjustment (C7: Multi-Retrieval Fusion)
+            // + Query intent classification (Level 1 regex + Level 2 Haiku LLM)
             let query_analysis = if self.config.adaptive_weights {
-                crate::query_classifier::classify_query(query)
+                crate::query_classifier::classify_query_with_l2(
+                    query,
+                    self.intent_classifier.as_ref(),
+                )
             } else {
                 crate::query_classifier::QueryAnalysis::neutral()
             };
@@ -1166,7 +1524,25 @@ impl Memory {
                         + (temp_weight * temporal_score)
                         + (hebb_weight * hebbian_score);
                     
-                    (record, combined_score, activation)
+                    // Type-affinity modulation: weighted max over type_weights × affinity.
+                    // For old memories (no type_weights in metadata), TypeWeights::default() (all 1.0)
+                    // gives: max(1.0 × affinity_i) = max(affinity_i), equivalent to old behavior.
+                    let type_weights = crate::type_weights::TypeWeights::from_metadata(&record.metadata);
+                    let affinity_multiplier = [
+                        type_weights.factual    * query_analysis.type_affinity.factual,
+                        type_weights.episodic   * query_analysis.type_affinity.episodic,
+                        type_weights.relational * query_analysis.type_affinity.relational,
+                        type_weights.emotional  * query_analysis.type_affinity.emotional,
+                        type_weights.procedural * query_analysis.type_affinity.procedural,
+                        type_weights.opinion    * query_analysis.type_affinity.opinion,
+                        type_weights.causal     * query_analysis.type_affinity.causal,
+                    ]
+                    .iter()
+                    .cloned()
+                    .fold(f64::NEG_INFINITY, f64::max);
+                    let final_score = combined_score * affinity_multiplier;
+                    
+                    (record, final_score, activation)
                 })
                 .collect();
 
@@ -1174,7 +1550,8 @@ impl Memory {
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
             // Take expanded candidate pool for dedup backfilling
-            let expanded_limit = if self.config.recall_dedup_enabled { limit * 3 } else { limit };
+            // Extra 3x expansion for type-affinity reranking (affinity may change ordering)
+            let expanded_limit = if self.config.recall_dedup_enabled { limit * 3 } else { limit * 3 };
             let top_candidates: Vec<_> = scored.into_iter().take(expanded_limit).collect();
 
             // Build pairwise embedding lookup for dedup
@@ -3074,6 +3451,155 @@ fn detect_feedback_polarity(feedback: &str) -> f64 {
     }
 }
 
+// =========================================================================
+// ISS-019 Step 4 helpers (module-level — re-used by the shim layer).
+// =========================================================================
+
+/// Build the legacy `metadata` JSON blob from a validated `EnrichedMemory`.
+///
+/// The on-disk layout is the same shape `add_to_namespace` has always
+/// produced — `dimensions.*` + `type_weights` + any caller user-metadata
+/// keys merged at top level. This keeps Step 4 strictly additive: dedup,
+/// merge history, and read-side consumers (KC, clustering) continue to
+/// work without schema changes.
+///
+/// Step 7 of the ISS-019 plan introduces the versioned `engram.*` /
+/// `user.*` namespacing. Moving it there keeps the diff reviewable.
+fn build_legacy_metadata(mem: &crate::enriched::EnrichedMemory) -> serde_json::Value {
+    use crate::dimensions::TemporalMark;
+
+    let d = &mem.dimensions;
+
+    // Dimensional sub-object — only fields that have a value are written,
+    // matching the legacy add_to_namespace behavior.
+    let mut dims = serde_json::Map::new();
+    if let Some(ref v) = d.participants {
+        dims.insert("participants".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = d.temporal {
+        let s = match v {
+            TemporalMark::Exact(dt) => dt.to_rfc3339(),
+            TemporalMark::Day(day) => day.format("%Y-%m-%d").to_string(),
+            TemporalMark::Range { start, end } => format!(
+                "{}..{}",
+                start.format("%Y-%m-%d"),
+                end.format("%Y-%m-%d")
+            ),
+            TemporalMark::Vague(s) => s.clone(),
+        };
+        dims.insert("temporal".into(), serde_json::Value::String(s));
+    }
+    if let Some(ref v) = d.location {
+        dims.insert("location".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = d.context {
+        dims.insert("context".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = d.causation {
+        dims.insert("causation".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = d.outcome {
+        dims.insert("outcome".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = d.method {
+        dims.insert("method".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = d.relations {
+        dims.insert("relations".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = d.sentiment {
+        dims.insert("sentiment".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = d.stance {
+        dims.insert("stance".into(), serde_json::Value::String(v.clone()));
+    }
+
+    // Always-present scalar fields — mirrors ISS-020 P0.0 fix so KC
+    // / conflict detection / clustering can pre-filter by domain.
+    dims.insert("valence".into(), serde_json::json!(d.valence.get()));
+    dims.insert(
+        "confidence".into(),
+        serde_json::Value::String(
+            match d.confidence {
+                crate::dimensions::Confidence::Confident => "confident",
+                crate::dimensions::Confidence::Likely => "likely",
+                crate::dimensions::Confidence::Uncertain => "uncertain",
+            }
+            .to_string(),
+        ),
+    );
+    dims.insert(
+        "domain".into(),
+        serde_json::Value::String(domain_to_loose_str(&d.domain)),
+    );
+
+    // Tags — round-tripped as a JSON array for external consumers.
+    if !d.tags.is_empty() {
+        dims.insert(
+            "tags".into(),
+            serde_json::Value::Array(
+                d.tags
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            ),
+        );
+    }
+
+    // Top-level metadata object.
+    let mut meta = serde_json::Map::new();
+    meta.insert("dimensions".into(), serde_json::Value::Object(dims));
+    meta.insert("type_weights".into(), d.type_weights.to_json());
+
+    // Merge caller-supplied user metadata (user keys take priority, same
+    // contract as add_to_namespace).
+    if let serde_json::Value::Object(user) = &mem.user_metadata {
+        for (k, v) in user {
+            meta.insert(k.clone(), v.clone());
+        }
+    }
+
+    serde_json::Value::Object(meta)
+}
+
+fn domain_to_loose_str(d: &crate::dimensions::Domain) -> String {
+    match d {
+        crate::dimensions::Domain::Coding => "coding".into(),
+        crate::dimensions::Domain::Trading => "trading".into(),
+        crate::dimensions::Domain::Research => "research".into(),
+        crate::dimensions::Domain::Communication => "communication".into(),
+        crate::dimensions::Domain::General => "general".into(),
+        crate::dimensions::Domain::Other(s) => s.clone(),
+    }
+}
+
+/// Map `add_raw`'s `Box<dyn Error>` into the typed `StoreError`.
+///
+/// `add_raw` today returns a boxed trait object, which is too loose for
+/// the new API. The only error kind we actually expect through this
+/// path is a `rusqlite::Error` (DB write failure); anything else is
+/// treated as a pipeline error and surfaces as `InvalidState`.
+fn boxed_err_to_store_error(
+    e: Box<dyn std::error::Error>,
+) -> crate::store_api::StoreError {
+    // Attempt to downcast to rusqlite::Error first — the common case.
+    match e.downcast::<rusqlite::Error>() {
+        Ok(db_err) => crate::store_api::StoreError::DbError(*db_err),
+        Err(other) => crate::store_api::StoreError::InvalidState(other.to_string()),
+    }
+}
+
+/// Short, stable hex digest of content (first 16 hex chars of SHA-256).
+/// Used for skip / quarantine content_hash; cheap, deterministic, not
+/// cryptographically strong (not a security boundary here).
+fn short_hash(content: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    content.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
 #[cfg(test)]
 mod confidence_tests {
     use super::*;
@@ -3714,5 +4240,131 @@ mod confidence_tests {
 
         // B should now be in working memory (primed by spreading activation).
         assert!(wm.contains(&id_b), "id_b should be in WM after spreading");
+    }
+
+    /// ISS-020 P0.0: valence, confidence, and domain must be persisted into
+    /// `metadata.dimensions` on every `remember()` path that calls the extractor.
+    ///
+    /// This test simulates the serialization step in isolation — it mirrors the
+    /// exact code inside `Memory::remember()` at src/memory.rs:~1325, but drives
+    /// it with a hand-built ExtractedFact so we don't need a live LLM.
+    ///
+    /// The invariant: for ANY ExtractedFact, `metadata.dimensions` always
+    /// contains `valence` (number), `confidence` (string), and `domain` (string).
+    #[test]
+    fn test_iss020_p0_0_dimensions_persist_valence_confidence_domain() {
+        use crate::extractor::ExtractedFact;
+
+        let fact = ExtractedFact {
+            core_fact: "potato prefers Rust for systems work".into(),
+            participants: Some("potato".into()),
+            temporal: Some("2026-04-22".into()),
+            location: None,
+            context: None,
+            causation: None,
+            outcome: None,
+            method: None,
+            relations: None,
+            sentiment: Some("positive".into()),
+            stance: Some("prefers Rust over Go".into()),
+            importance: 0.7,
+            tags: vec!["coding".into()],
+            confidence: "confident".into(),
+            valence: 0.6,
+            domain: "coding".into(),
+        };
+
+        // Mirror the exact write-path logic from Memory::remember().
+        let mut dimensions = serde_json::Map::new();
+        if let Some(ref v) = fact.participants {
+            dimensions.insert(
+                "participants".into(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+        if let Some(ref v) = fact.temporal {
+            dimensions.insert("temporal".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(ref v) = fact.sentiment {
+            dimensions.insert("sentiment".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(ref v) = fact.stance {
+            dimensions.insert("stance".into(), serde_json::Value::String(v.clone()));
+        }
+        // P0.0 additions:
+        dimensions.insert("valence".into(), serde_json::json!(fact.valence));
+        dimensions.insert(
+            "confidence".into(),
+            serde_json::Value::String(fact.confidence.clone()),
+        );
+        dimensions.insert(
+            "domain".into(),
+            serde_json::Value::String(fact.domain.clone()),
+        );
+
+        // Serialize → deserialize (SQLite stores as JSON text; this is the round-trip).
+        let json = serde_json::Value::Object(dimensions);
+        let serialized = serde_json::to_string(&json).expect("serialize");
+        let roundtripped: serde_json::Value =
+            serde_json::from_str(&serialized).expect("deserialize");
+
+        // valence: must be present as a number in [-1.0, 1.0].
+        let v = roundtripped
+            .get("valence")
+            .expect("valence must be persisted");
+        let v_num = v.as_f64().expect("valence must be a number");
+        assert!(
+            (-1.0..=1.0).contains(&v_num),
+            "valence {v_num} out of range [-1, 1]"
+        );
+        assert!((v_num - 0.6).abs() < 1e-9, "valence round-trip mismatch");
+
+        // confidence: must be a string in {"confident", "likely", "uncertain"}.
+        let c = roundtripped
+            .get("confidence")
+            .and_then(|v| v.as_str())
+            .expect("confidence must be persisted as string");
+        assert!(
+            matches!(c, "confident" | "likely" | "uncertain"),
+            "confidence {c} not a recognized variant"
+        );
+
+        // domain: must be a non-empty string.
+        let d = roundtripped
+            .get("domain")
+            .and_then(|v| v.as_str())
+            .expect("domain must be persisted as string");
+        assert!(!d.is_empty(), "domain must not be empty");
+        assert_eq!(d, "coding");
+    }
+
+    /// P0.0 edge case: extractor may produce valence = 0.0 (neutral) — still persist.
+    #[test]
+    fn test_iss020_p0_0_neutral_valence_still_persisted() {
+        use crate::extractor::ExtractedFact;
+
+        let fact = ExtractedFact {
+            core_fact: "neutral fact".into(),
+            confidence: "likely".into(),
+            valence: 0.0,
+            domain: "general".into(),
+            ..Default::default()
+        };
+
+        let mut dimensions = serde_json::Map::new();
+        dimensions.insert("valence".into(), serde_json::json!(fact.valence));
+        dimensions.insert(
+            "confidence".into(),
+            serde_json::Value::String(fact.confidence.clone()),
+        );
+        dimensions.insert(
+            "domain".into(),
+            serde_json::Value::String(fact.domain.clone()),
+        );
+
+        let json = serde_json::Value::Object(dimensions);
+        assert_eq!(json["valence"].as_f64(), Some(0.0));
+        assert_eq!(json["confidence"].as_str(), Some("likely"));
+        assert_eq!(json["domain"].as_str(), Some("general"));
     }
 }

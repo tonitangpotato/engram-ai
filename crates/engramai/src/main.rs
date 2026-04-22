@@ -2141,21 +2141,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .collect();
 
                     // Step 3: Convert MemoryRecord → MemorySnapshot
+                    //
+                    // ISS-020 P0.3: pipe dimensional metadata from `metadata.dimensions`
+                    // and `metadata.type_weights` into the snapshot so downstream KC stages
+                    // (discovery, conflict, compilation prompt) can see structural signal.
+                    //
+                    // `updated_at` stopgap: `MemoryRecord` has no `updated_at` column
+                    // (verified at src/types.rs:162 — only `created_at` + `access_times`).
+                    // Use the most recent access time as a proxy; adding a real `updated_at`
+                    // to `MemoryRecord` is deferred to a separate ticket.
                     let snapshots: Vec<MemorySnapshot> = all_memories.iter().map(|m| {
                         let tags = m.metadata.as_ref()
                             .and_then(|v| v.get("tags"))
                             .and_then(|v| v.as_array())
                             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                             .unwrap_or_default();
+
+                        // Parse dimensional metadata. `None` when absent (legacy memory).
+                        let dimensions = engramai::compiler::types::Dimensions::from_metadata(&m.metadata);
+                        let confidence = dimensions.as_ref().and_then(|d| d.confidence);
+                        let valence = dimensions.as_ref().and_then(|d| d.valence);
+
+                        // type_weights always succeeds — falls back to Default (all 1.0) if absent.
+                        // We only populate Some when the JSON was actually present, so downstream
+                        // code can distinguish "no data" from "neutral data".
+                        let type_weights = m.metadata.as_ref()
+                            .and_then(|v| v.get("type_weights"))
+                            .and_then(|tw| serde_json::from_value::<engramai::type_weights::TypeWeights>(tw.clone()).ok());
+
+                        // updated_at stopgap from access_times.
+                        let updated_at = m.access_times.last().copied().unwrap_or(m.created_at);
+
                         MemorySnapshot {
                             id: m.id.clone(),
                             content: m.content.clone(),
                             memory_type: format!("{:?}", m.memory_type).to_lowercase(),
                             importance: m.importance,
                             created_at: m.created_at,
-                            updated_at: m.created_at,
+                            updated_at,
                             tags,
                             embedding: embedding_map.get(&m.id).cloned(),
+                            dimensions,
+                            type_weights,
+                            confidence,
+                            valence,
                         }
                     }).collect();
 
