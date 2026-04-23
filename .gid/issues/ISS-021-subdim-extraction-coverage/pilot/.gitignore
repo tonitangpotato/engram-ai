@@ -1,0 +1,4 @@
+# SQLite runtime files from smoke tests — not for version control
+*.db
+*.db-shm
+*.db-wal
