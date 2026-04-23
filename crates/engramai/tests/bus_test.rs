@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! Tests for the Empathy Bus (Phase 2)
 
 use engramai::{Memory, MemoryConfig, MemoryType, EmpathyBus};

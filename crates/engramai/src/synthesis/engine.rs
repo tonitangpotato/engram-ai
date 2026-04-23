@@ -760,6 +760,7 @@ fn generate_id() -> String {
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(clippy::match_single_binding, clippy::neg_cmp_op_on_partial_ord, clippy::field_reassign_with_default, clippy::useless_vec)]
 mod tests {
     use super::*;
     use crate::types::{MemoryLayer, MemoryType};

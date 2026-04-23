@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! Integration tests for ISS-016: LLM Triple Extraction for Hebbian Link Quality.
 //!
 //! Tests cover storage, entity fusion, consolidation integration, and error handling.

@@ -188,6 +188,7 @@ pub fn check_gate(
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(clippy::neg_cmp_op_on_partial_ord, clippy::single_match)]
 mod tests {
     use super::*;
     use crate::types::{MemoryLayer, MemoryType};

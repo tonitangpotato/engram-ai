@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 
 //! End-to-end integration tests for the Knowledge Compiler (KC).
 //!

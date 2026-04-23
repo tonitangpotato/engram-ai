@@ -1962,8 +1962,7 @@ impl Memory {
     /// Dispatch (see ISS-019 design §3.2):
     ///
     /// - no extractor configured      → `Dimensions::minimal` → `store_enriched`
-    /// - extractor returns facts      → each fact → `EnrichedMemory::from_extracted`
-    ///                                  → `store_enriched`
+    /// - extractor returns facts      → each fact → `EnrichedMemory::from_extracted` → `store_enriched`
     /// - extractor returns empty      → `Skipped { NoFactsExtracted }`
     /// - extractor runtime failure    → `Quarantined { ExtractorError }`
     ///
@@ -2293,8 +2292,10 @@ impl Memory {
             .list_quarantine_for_retry_batch(max_items)
             .map_err(StoreError::DbError)?;
 
-        let mut report = RetryReport::default();
-        report.attempted = rows.len();
+        let mut report = RetryReport {
+            attempted: rows.len(),
+            ..RetryReport::default()
+        };
 
         for row in rows {
             // Reconstruct StorageMeta from the preserved hints.
@@ -2935,9 +2936,9 @@ impl Memory {
             // Sort by combined score descending
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
-            // Take expanded candidate pool for dedup backfilling
-            // Extra 3x expansion for type-affinity reranking (affinity may change ordering)
-            let expanded_limit = if self.config.recall_dedup_enabled { limit * 3 } else { limit * 3 };
+            // Take expanded candidate pool for dedup backfilling + type-affinity reranking.
+            // 3x expansion applied unconditionally: dedup may drop duplicates, affinity may reorder.
+            let expanded_limit = limit * 3;
             let top_candidates: Vec<_> = scored.into_iter().take(expanded_limit).collect();
 
             // Build pairwise embedding lookup for dedup
@@ -5459,6 +5460,7 @@ fn type_weights_favoring(mt: crate::types::MemoryType) -> crate::type_weights::T
 }
 
 #[cfg(test)]
+#[allow(deprecated, clippy::field_reassign_with_default, clippy::manual_range_contains, clippy::cloned_ref_to_slice_refs, clippy::items_after_test_module)]
 mod confidence_tests {
     use super::*;
 

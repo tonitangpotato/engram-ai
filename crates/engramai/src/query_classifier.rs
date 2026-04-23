@@ -796,6 +796,7 @@ fn classify_query_inner(query: &str, intent: QueryIntent, type_affinity: TypeAff
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::needless_borrows_for_generic_args)]
 mod tests {
     use super::*;
 

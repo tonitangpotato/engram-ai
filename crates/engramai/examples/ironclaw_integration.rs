@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! Example: Integrating engramai with IronClaw
 //!
 //! Shows how engramai can augment IronClaw's built-in FTS+vector memory

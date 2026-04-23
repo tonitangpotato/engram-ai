@@ -1081,6 +1081,7 @@ fn compute_emotional_salience(
 }
 
 #[cfg(test)]
+#[allow(clippy::useless_vec)]
 mod tests {
     use super::*;
 

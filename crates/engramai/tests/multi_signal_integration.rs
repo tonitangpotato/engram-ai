@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! Integration tests for multi-signal Hebbian link formation (Phases 5 & 6).
 //!
 //! Tests:

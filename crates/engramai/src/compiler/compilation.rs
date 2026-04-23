@@ -1101,6 +1101,7 @@ pub fn aggregate_tags(memories: &[MemorySnapshot]) -> Vec<String> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
+#[allow(clippy::cloned_ref_to_slice_refs)]
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};

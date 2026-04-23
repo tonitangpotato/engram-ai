@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! Integration tests for Somatic Marker → Recall pipeline.
 //!
 //! Tests Damasio's somatic marker hypothesis implementation:

@@ -475,11 +475,9 @@ impl MetaCognitionTracker {
                 })
             },
         )?;
-        for row in recall_rows {
-            if let Ok(event) = row {
-                self.recall_window.push_front(event);
-                count += 1;
-            }
+        for event in recall_rows.flatten() {
+            self.recall_window.push_front(event);
+            count += 1;
         }
 
         // Load recent synthesis events
@@ -501,11 +499,9 @@ impl MetaCognitionTracker {
                 })
             },
         )?;
-        for row in synth_rows {
-            if let Ok(event) = row {
-                self.synthesis_window.push_front(event);
-                count += 1;
-            }
+        for event in synth_rows.flatten() {
+            self.synthesis_window.push_front(event);
+            count += 1;
         }
 
         Ok(count)
@@ -518,6 +514,7 @@ impl MetaCognitionTracker {
 }
 
 #[cfg(test)]
+#[allow(clippy::unnecessary_filter_map, clippy::unnecessary_find_map)]
 mod tests {
     use super::*;
     use rusqlite::Connection;

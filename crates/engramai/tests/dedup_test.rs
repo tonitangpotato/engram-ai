@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure, clippy::bool_assert_comparison)]
+
 //! Tests for B2: Dedup on Write.
 //!
 //! Uses synthetic embedding vectors to test dedup logic without requiring

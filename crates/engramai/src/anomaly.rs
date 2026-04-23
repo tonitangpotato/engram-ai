@@ -336,6 +336,7 @@ impl BaselineTracker {
 }
 
 #[cfg(test)]
+#[allow(clippy::manual_range_contains)]
 mod tests {
     use super::*;
     

@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! Basic usage example demonstrating IronClaw-Engram's core API.
 
 use engramai::{Memory, MemoryType};

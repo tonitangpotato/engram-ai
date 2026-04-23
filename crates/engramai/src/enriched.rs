@@ -53,7 +53,7 @@ impl From<EmptyCoreFactError> for ConstructionError {
 /// - `dimensions.core_fact` is non-empty.
 /// - `content` equals `dimensions.core_fact.as_str()` byte-for-byte.
 ///   (Kept redundant to preserve ergonomics for FTS / search index
-///    code that already reads `.content`; constructors sync them.)
+///   code that already reads `.content`; constructors sync them.)
 /// - `importance` is in `[0.0, 1.0]` (by construction of `Importance`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnrichedMemory {

@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! Integration test: Dimensional Memory Extraction end-to-end.
 //!
 //! Tests that:

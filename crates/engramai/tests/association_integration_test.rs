@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! Integration test for multi-signal Hebbian association discovery.
 //!
 //! Tests the full pipeline: store memories → associations form automatically.

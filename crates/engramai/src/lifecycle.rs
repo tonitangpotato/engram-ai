@@ -95,6 +95,7 @@ pub struct RebalanceReport {
 }
 
 #[cfg(test)]
+#[allow(deprecated, clippy::field_reassign_with_default, clippy::if_same_then_else, clippy::unnecessary_filter_map, clippy::manual_range_contains, clippy::match_single_binding, clippy::useless_vec, clippy::redundant_clone, clippy::cloned_ref_to_slice_refs, clippy::needless_borrows_for_generic_args, clippy::neg_cmp_op_on_partial_ord)]
 mod tests {
     use crate::Memory;
     use crate::types::MemoryType;

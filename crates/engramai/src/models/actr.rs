@@ -123,6 +123,7 @@ pub fn normalize_activation(activation: f64, center: f64, scale: f64) -> f64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::manual_range_contains)]
 mod tests {
     use super::*;
     use chrono::Duration;

@@ -169,6 +169,7 @@ pub fn infer_type_weights(fact: &ExtractedFact) -> TypeWeights {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
