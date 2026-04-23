@@ -1,0 +1,57 @@
+{
+  "id": "r-e9410e",
+  "phase": "Graphing",
+  "task": "Fix ISS-024: Dimensional metadata pipeline half-wired end-to-end. Two gaps to close: (A) `engram store` CLI missing `--meta key=value` argument → caller-supplied dimensions silently dropped with rc=2. (B) Retrieval path (hybrid_search.rs + temporal_score + recall_from_namespace 7 channels) completely ignores `metadata.dimensions.*` → even when dimensions are stored, they never influence ranking.\n\nScope (from .gid/issues/ISS-024-dimensional-read-path-and-cli-meta-gap/investigation.md):\n- Change 1: Add `--meta` flag to `engram store` CLI (src/main.rs Store subcommand), with `parse_kv` helper.\n- Change 2: Add rc-check in adapter call sites (LoCoMo bench runner, RustClaw skill, any other callers) — equal priority to Change 1, not just defense in depth.\n- Change 3a: Extend `temporal_score` to also consume `metadata.dimensions.temporal` (natural-language time expression → time range). max(insertion_time_score, dimension_time_score).\n- Change 4: End-to-end contract test crossing CLI boundary: `engram store --meta` → persist → `engram recall` → assert ranking benefits from dimension match.\n\nOut of scope (deferred): Change 3b (new `dimension_match` 8th channel — belongs to ISS-020 Phase B), ISS-022 schema refactor, existing DB backfill.\n\nSkip requirements phase (this is a bugfix + contract completion, AC already enumerated in investigation.md).\n\nDesign phase MUST address:\n1. Change 3a natural-language time parsing: which library/rules, failure fallback, caching strategy (this is the highest-risk sub-step, underspecified in investigation).\n2. Change 2 complete adapter inventory (investigation only named 2 call sites, there may be more — grep for `engram store` invocations across the ecosystem).\n3. AC-2 reserved-namespace semantics: exact error message when caller passes `--meta dimensions=...`, hard-reject vs warn, behavior of conflict between `--meta foo=bar` and extractor-produced `metadata.foo`.\n4. Contract test framework: make it reusable so future cross-CLI-boundary issues copy-paste the pattern.\n5. Interface shape for 3a → 3b (reserve enough in the dimension-consumption layer that adding the 8th channel later doesn't require refactoring 3a).\n\nProject root: /Users/potato/clawd/projects/engram-ai-rust\nFeature folder: .gid/issues/ISS-024-dimensional-read-path-and-cli-meta-gap/\nInvestigation doc: .gid/issues/ISS-024-dimensional-read-path-and-cli-meta-gap/investigation.md\nProject location: /Users/potato/clawd/projects/engram-ai-rust",
+  "target_root": "/Users/potato/clawd/projects/engram-ai-rust",
+  "project": {
+    "has_requirements": true,
+    "has_design": true,
+    "has_graph": true,
+    "has_source": true,
+    "has_tests": true,
+    "language": "rust",
+    "source_file_count": 75,
+    "verify_command": "cargo build && cargo test"
+  },
+  "strategy": "SingleLlm",
+  "verify_retries": 0,
+  "phase_retries": {},
+  "failed_phase": null,
+  "error_context": "triage: size=large, skip_design=true, skip_graph=false",
+  "review_target": null,
+  "triage_size": "large",
+  "phase_tokens": {
+    "triage": 1143,
+    "planning": 773
+  },
+  "review_round": 0,
+  "transitions": [
+    {
+      "from": "Idle",
+      "to": "Initializing",
+      "event": "Idle → Initializing",
+      "timestamp": "2026-04-23T01:16:50.319596Z"
+    },
+    {
+      "from": "Initializing",
+      "to": "Triaging",
+      "event": "Initializing → Triaging",
+      "timestamp": "2026-04-23T01:16:50.325006Z"
+    },
+    {
+      "from": "Triaging",
+      "to": "Planning",
+      "event": "Triaging → Planning",
+      "timestamp": "2026-04-23T01:16:51.390343Z"
+    },
+    {
+      "from": "Planning",
+      "to": "Graphing",
+      "event": "Planning → Graphing",
+      "timestamp": "2026-04-23T01:17:02.667520Z"
+    }
+  ],
+  "started_at": "2026-04-23T01:16:50.318541Z",
+  "updated_at": "2026-04-23T01:17:02.667522Z",
+  "adapter_pid": 48115
+}

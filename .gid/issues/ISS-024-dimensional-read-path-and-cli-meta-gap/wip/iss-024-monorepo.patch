@@ -1,0 +1,646 @@
+diff --git a/crates/engramai/Cargo.toml b/crates/engramai/Cargo.toml
+index f60f749..f86930b 100644
+--- a/crates/engramai/Cargo.toml
++++ b/crates/engramai/Cargo.toml
+@@ -57,6 +57,12 @@ hnsw = "0.11"
+ space = "0.17"
+ rand_core = "0.6"
+ 
++# Natural-language time parsing for temporal dimension scoring (ISS-024)
++two_timer = "2.2"
++
++# LRU cache for temporal dim parse results
++lru = "0.12"
++
+ [dev-dependencies]
+ tempfile = "3.13"
+ proptest = "1.5"
+diff --git a/crates/engramai/src/dimensions.rs b/crates/engramai/src/dimensions.rs
+index 3244a73..009d841 100644
+--- a/crates/engramai/src/dimensions.rs
++++ b/crates/engramai/src/dimensions.rs
+@@ -430,9 +430,32 @@ impl Dimensions {
+         };
+ 
+         let participants = get_string("participants");
+-        let temporal = get_string("temporal").map(|s| {
+-            crate::enriched::parse_temporal_mark(&s)
+-        });
++        // Temporal accepts two shapes for backward/forward compatibility:
++        //   (a) v1 legacy: a plain string ("2026-04-22", "last Tuesday", ...)
++        //       → parsed via `parse_temporal_mark` into Exact/Day/Vague.
++        //   (b) v2 typed: a JSON object `{"kind": "...", "value": ...}`
++        //       produced by `serde_json::to_value(&TemporalMark)` (serde tag
++        //       attribute). This path preserves Range and exact DateTime without
++        //       re-parsing — critical for roundtrip correctness (see design §1.1a,
++        //       §5.3). Without it, v2-written temporal marks are silently dropped
++        //       on read-back and all §5.3 TemporalMark match arms are dead code.
++        let temporal = {
++            let raw = dims_obj
++                .and_then(|o| o.get("temporal"))
++                .or_else(|| top_obj.and_then(|o| o.get("temporal")));
++            match raw {
++                Some(serde_json::Value::String(s)) if !s.is_empty() => {
++                    Some(crate::enriched::parse_temporal_mark(s))
++                }
++                Some(v @ serde_json::Value::Object(_)) => {
++                    // Try typed deserialization; fall back to None if the object
++                    // is malformed. Malformed objects are treated as "missing"
++                    // rather than erroring — consistent with other lenient fields.
++                    serde_json::from_value::<TemporalMark>(v.clone()).ok()
++                }
++                _ => None,
++            }
++        };
+         let location = get_string("location");
+         let context = get_string("context");
+         let causation = get_string("causation");
+@@ -1323,6 +1346,143 @@ mod tests {
+         let _ = err; // EmptyCoreFactError; we just need it to be Err
+     }
+ 
++    #[test]
++    fn from_legacy_metadata_accepts_v2_typed_temporal_exact() {
++        // v2 serialization path: TemporalMark serializes as a tagged object.
++        // The reader must accept this shape (not just strings).
++        let meta = serde_json::json!({
++            "dimensions": {
++                "temporal": {
++                    "kind": "exact",
++                    "value": "2026-04-22T01:56:24Z",
++                },
++            },
++        });
++        let d = Dimensions::from_legacy_metadata(&meta, "core").unwrap();
++        match d.temporal {
++            Some(TemporalMark::Exact(dt)) => {
++                assert_eq!(dt.to_rfc3339(), "2026-04-22T01:56:24+00:00");
++            }
++            other => panic!("expected Exact, got {:?}", other),
++        }
++    }
++
++    #[test]
++    fn from_legacy_metadata_accepts_v2_typed_temporal_day() {
++        let meta = serde_json::json!({
++            "dimensions": {
++                "temporal": { "kind": "day", "value": "2026-04-22" },
++            },
++        });
++        let d = Dimensions::from_legacy_metadata(&meta, "core").unwrap();
++        assert!(matches!(d.temporal, Some(TemporalMark::Day(_))));
++    }
++
++    #[test]
++    fn from_legacy_metadata_accepts_v2_typed_temporal_range() {
++        // Range was the variant most at-risk of silent drop: legacy string
++        // path had no way to represent it at all.
++        let meta = serde_json::json!({
++            "dimensions": {
++                "temporal": {
++                    "kind": "range",
++                    "value": { "start": "2026-04-20", "end": "2026-04-22" },
++                },
++            },
++        });
++        let d = Dimensions::from_legacy_metadata(&meta, "core").unwrap();
++        match d.temporal {
++            Some(TemporalMark::Range { start, end }) => {
++                assert_eq!(start.to_string(), "2026-04-20");
++                assert_eq!(end.to_string(), "2026-04-22");
++            }
++            other => panic!("expected Range, got {:?}", other),
++        }
++    }
++
++    #[test]
++    fn from_legacy_metadata_accepts_v2_typed_temporal_vague() {
++        let meta = serde_json::json!({
++            "dimensions": {
++                "temporal": { "kind": "vague", "value": "last Tuesday" },
++            },
++        });
++        let d = Dimensions::from_legacy_metadata(&meta, "core").unwrap();
++        match d.temporal {
++            Some(TemporalMark::Vague(s)) => assert_eq!(s, "last Tuesday"),
++            other => panic!("expected Vague, got {:?}", other),
++        }
++    }
++
++    #[test]
++    fn from_legacy_metadata_still_parses_v1_string_temporal() {
++        // v1 backward compat: plain string must still work.
++        let meta = serde_json::json!({
++            "dimensions": { "temporal": "2026-04-22" },
++        });
++        let d = Dimensions::from_legacy_metadata(&meta, "core").unwrap();
++        assert!(matches!(d.temporal, Some(TemporalMark::Day(_))));
++    }
++
++    #[test]
++    fn from_legacy_metadata_malformed_temporal_object_is_none() {
++        // Unknown tag / malformed structure must degrade to None, not error.
++        let meta = serde_json::json!({
++            "dimensions": {
++                "temporal": { "kind": "nonsense", "value": 42 },
++            },
++        });
++        let d = Dimensions::from_legacy_metadata(&meta, "core").unwrap();
++        assert!(d.temporal.is_none());
++    }
++
++    #[test]
++    fn temporal_full_roundtrip_all_variants() {
++        // The canary: write each TemporalMark variant through the full
++        // to_legacy_metadata → from_stored_metadata pipeline and confirm
++        // the exact same variant comes back. Without the typed-object
++        // branch in from_legacy_metadata, Exact/Day/Range/Vague all
++        // silently degrade to None (§1.1a).
++        use crate::dimensions::Importance;
++        use crate::enriched::EnrichedMemory;
++
++        let variants = vec![
++            TemporalMark::Exact(
++                chrono::DateTime::parse_from_rfc3339("2026-04-22T01:56:24Z")
++                    .unwrap()
++                    .with_timezone(&chrono::Utc),
++            ),
++            TemporalMark::Day(
++                chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
++            ),
++            TemporalMark::Range {
++                start: chrono::NaiveDate::from_ymd_opt(2026, 4, 20).unwrap(),
++                end: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
++            },
++            TemporalMark::Vague("next quarter".to_string()),
++        ];
++
++        for original in variants {
++            let mut d = Dimensions::minimal("rt").unwrap();
++            d.temporal = Some(original.clone());
++            let em = EnrichedMemory::from_dimensions(
++                d,
++                Importance::new(0.5),
++                None,
++                None,
++                serde_json::Value::Null,
++            );
++            let meta = em.to_legacy_metadata();
++            let parsed = Dimensions::from_stored_metadata(&meta, "rt").unwrap();
++            assert_eq!(
++                parsed.temporal,
++                Some(original.clone()),
++                "temporal variant lost in roundtrip: {:?}",
++                original,
++            );
++        }
++    }
++
+     #[test]
+     fn from_legacy_metadata_round_trips_via_to_legacy_metadata() {
+         // Build a dimensions, serialize via EnrichedMemory::to_legacy_metadata
+diff --git a/crates/engramai/src/lib.rs b/crates/engramai/src/lib.rs
+index 68608f8..bff22e6 100644
+--- a/crates/engramai/src/lib.rs
++++ b/crates/engramai/src/lib.rs
+@@ -96,6 +96,7 @@ pub mod clustering;
+ pub mod compiler;
+ pub mod confidence;
+ pub mod dimensions;
++pub mod dimension_access;
+ pub mod enriched;
+ pub mod entities;
+ pub mod config;
+@@ -115,6 +116,7 @@ pub mod session_wm;
+ pub mod storage;
+ pub mod store_api;
+ pub mod synthesis;
++pub mod temporal_dim;
+ pub mod triple;
+ pub mod triple_extractor;
+ pub mod type_weights;
+diff --git a/crates/engramai/src/memory.rs b/crates/engramai/src/memory.rs
+index fc624fa..815c7d3 100644
+--- a/crates/engramai/src/memory.rs
++++ b/crates/engramai/src/memory.rs
+@@ -2858,7 +2858,12 @@ impl Memory {
+                 fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight, som_weight,
+                 query_analysis.query_type,
+             );
+-            
++
++            // ISS-024 Change 3a: cache for parsing `TemporalMark::Vague` phrases.
++            // Lifetime = this recall call only. Only the `Vague` variant hits
++            // `two_timer`; typed variants bypass the cache entirely.
++            let mut dim_parse_cache = crate::temporal_dim::DimParseCache::default();
++
+             let mut scored: Vec<_> = candidates
+                 .into_iter()
+                 .map(|record| {
+@@ -2894,7 +2899,7 @@ impl Memory {
+                     );
+                     
+                     // Temporal channel (5th) — time-range proximity
+-                    let temporal_score = Self::temporal_score(&record, &query_analysis.time_range, now);
++                    let temporal_score = Self::temporal_score(&record, &query_analysis.time_range, now, &mut dim_parse_cache);
+                     
+                     // Hebbian channel (6th) — graph connectivity
+                     let hebbian_score = hebbian_scores.get(&record.id).copied().unwrap_or(0.0);
+@@ -3146,46 +3151,145 @@ impl Memory {
+     
+     /// Temporal channel scoring for C7 Multi-Retrieval Fusion.
+     ///
+-    /// When a time range is detected in the query, memories within that range
+-    /// are scored by proximity to the range center (1.0 at center, 0.5 at edges).
+-    /// Memories outside the range get 0.0.
+-    ///
+-    /// When no time range is detected, returns a neutral 0.5 for all memories
+-    /// (so the temporal channel doesn't distort results when there's no temporal signal).
++    /// When a time range is detected in the query, we consider **two** signals:
++    /// 1. **Insertion-time score**: proximity of `record.created_at` to the
++    ///    range center (legacy behavior, unchanged). 1.0 at center, 0.5 at
++    ///    edges, 0.0 outside.
++    /// 2. **Dimension-time score**: overlap between the query range and the
++    ///    extractor-produced `TemporalMark` stored on the record. Converts
++    ///    `Exact`/`Range`/`Day` directly; uses `DimParseCache` for `Vague`.
++    ///
++    /// The final score is `max(insertion_score, dim_score)` — this guarantees
++    /// **no regression**: worst case `dim_score = 0.0` and we return the legacy
++    /// value exactly (ISS-024 design §5.6, `.gid/issues/ISS-024-.../design.md`).
++    ///
++    /// When no time range is in the query, returns the legacy recency signal
++    /// (gentle sigmoid around 72 hours). Dim path is skipped — a query with
++    /// no temporal intent shouldn't be shaped by memories that happen to have
++    /// temporal marks.
+     fn temporal_score(
+         record: &MemoryRecord,
+         time_range: &Option<crate::query_classifier::TimeRange>,
+         now: chrono::DateTime<chrono::Utc>,
++        dim_parser: &mut crate::temporal_dim::DimParseCache,
+     ) -> f64 {
+         match time_range {
+             Some(range) => {
+-                if record.created_at >= range.start && record.created_at <= range.end {
++                // --- Channel A: insertion-time score (legacy) ---
++                let insertion_score = if record.created_at >= range.start
++                    && record.created_at <= range.end
++                {
+                     // Within range: score by proximity to center of range
+                     let range_duration = (range.end - range.start).num_seconds() as f64;
+                     let range_center = range.start + (range.end - range.start) / 2;
+                     let distance = (record.created_at - range_center).num_seconds().abs() as f64;
+                     let half_range = range_duration / 2.0;
+                     if half_range > 0.0 {
+-                        // 1.0 at center, 0.5 at edges
+                         1.0 - (distance / half_range) * 0.5
+                     } else {
+                         1.0
+                     }
+                 } else {
+-                    0.0 // Outside range
+-                }
++                    0.0
++                };
++
++                // --- Channel B: dimension-time score (ISS-024 Change 3a) ---
++                let dim_score =
++                    Self::dimension_time_score(record, range, dim_parser).unwrap_or(0.0);
++
++                // Max-of-two: never regress below legacy behavior.
++                insertion_score.max(dim_score)
+             }
+             None => {
+                 // No temporal query: gentle recency signal (complement ACT-R)
+-                // Recent memories get slight boost, but not enough to dominate
+                 let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
+-                // Sigmoid centered at 72 hours (3 days), scale 48
+                 let recency = 1.0 / (1.0 + (age_hours - 72.0).exp() / 48.0_f64.exp());
+-                // Map to 0.3-0.7 range (narrow band so it's a weak signal)
+                 0.3 + recency * 0.4
+             }
+         }
+     }
++
++    /// Convert the record's stored `TemporalMark` into a `TimeRange` and
++    /// score its overlap against the query's time range.
++    ///
++    /// Returns `None` if:
++    /// - the record has no temporal dimension, OR
++    /// - the `Vague` phrase is unparseable (cache returns `None`).
++    ///
++    /// Callers treat `None` as "skip dim channel; fall back to insertion score".
++    /// Design ref: `.gid/issues/ISS-024-.../design.md` §5.3.
++    fn dimension_time_score(
++        record: &MemoryRecord,
++        query_range: &crate::query_classifier::TimeRange,
++        dim_parser: &mut crate::temporal_dim::DimParseCache,
++    ) -> Option<f64> {
++        use crate::dimension_access::DimensionView;
++        use crate::dimensions::TemporalMark;
++        use crate::query_classifier::TimeRange;
++        use chrono::{Duration, NaiveTime};
++
++        let view = DimensionView::from_record(record);
++        let dim_range: TimeRange = match view.temporal()? {
++            TemporalMark::Exact(dt) => TimeRange {
++                start: *dt,
++                end: *dt,
++            },
++            TemporalMark::Range { start, end } => {
++                // NaiveDate endpoints (inclusive) → UTC range covering
++                // [start 00:00, end+1 00:00). Range is thus day-granular, not
++                // DateTime-granular. NaiveTime::MIN is const and infallible
++                // (no `?` needed in this Option-returning context, but also no
++                // `unwrap` footgun as with and_hms_opt).
++                let s = start.and_time(NaiveTime::MIN).and_utc();
++                let e = end.and_time(NaiveTime::MIN).and_utc() + Duration::days(1);
++                TimeRange { start: s, end: e }
++            }
++            TemporalMark::Day(date) => {
++                // Midnight-to-midnight UTC range for the stored calendar day.
++                let start = date.and_time(NaiveTime::MIN).and_utc();
++                let end = start + Duration::days(1);
++                TimeRange { start, end }
++            }
++            TemporalMark::Vague(phrase) => {
++                // Only variant that hits two_timer. Cache collapses repeated
++                // phrases to O(1) after first parse.
++                dim_parser.get_or_parse(phrase, record.created_at)?
++            }
++        };
++
++        Some(Self::range_overlap_score(query_range, &dim_range))
++    }
++
++    /// Overlap score between two time ranges in `[0.0, 1.0]`.
++    ///
++    /// Returns:
++    /// - `0.0` if the ranges are disjoint
++    /// - `1.0` if the dim range is entirely inside the query range (perfect hit)
++    /// - `overlap_seconds / dim_duration` otherwise — biased toward "how much
++    ///   of the dim's claim falls inside what the query asked for", since the
++    ///   query range is the reference and we're rating the candidate.
++    ///
++    /// Point-in-time dim ranges (`Exact`: start==end) score 1.0 iff the point
++    /// is inside the query range, 0.0 otherwise.
++    fn range_overlap_score(
++        query_range: &crate::query_classifier::TimeRange,
++        dim_range: &crate::query_classifier::TimeRange,
++    ) -> f64 {
++        let overlap_start = query_range.start.max(dim_range.start);
++        let overlap_end = query_range.end.min(dim_range.end);
++        if overlap_end < overlap_start {
++            return 0.0;
++        }
++        let overlap_secs = (overlap_end - overlap_start).num_seconds() as f64;
++        let dim_secs = (dim_range.end - dim_range.start).num_seconds() as f64;
++
++        if dim_secs <= 0.0 {
++            // Point-in-time dim: contained iff we got here (overlap_end >= overlap_start).
++            1.0
++        } else {
++            (overlap_secs / dim_secs).clamp(0.0, 1.0)
++        }
++    }
+     
+     /// Somatic marker channel scoring (7th channel — Damasio's somatic marker hypothesis).
+     ///
+@@ -5888,16 +5992,16 @@ mod confidence_tests {
+     fn test_temporal_score_within_range() {
+         use crate::query_classifier::TimeRange;
+         let now = Utc::now();
+-        
++
+         // Memory at the center of a 24-hour range
+         let range = TimeRange {
+             start: now - chrono::Duration::hours(24),
+             end: now,
+         };
+-        
++
+         let record = make_test_record("t1", "test", now - chrono::Duration::hours(12));
+-        
+-        let score = Memory::temporal_score(&record, &Some(range), now);
++        let mut cache = crate::temporal_dim::DimParseCache::new(16);
++        let score = Memory::temporal_score(&record, &Some(range), now, &mut cache);
+         assert!(score > 0.9, "Center of range should score high: {}", score);
+     }
+ 
+@@ -5905,30 +6009,210 @@ mod confidence_tests {
+     fn test_temporal_score_outside_range() {
+         use crate::query_classifier::TimeRange;
+         let now = Utc::now();
+-        
++
+         let range = TimeRange {
+             start: now - chrono::Duration::hours(24),
+             end: now - chrono::Duration::hours(12),
+         };
+-        
++
+         let record = make_test_record("t2", "test", now - chrono::Duration::hours(1));
+-        
+-        let score = Memory::temporal_score(&record, &Some(range), now);
++        let mut cache = crate::temporal_dim::DimParseCache::new(16);
++        let score = Memory::temporal_score(&record, &Some(range), now, &mut cache);
+         assert!(score < 0.01, "Outside range should score ~0: {}", score);
+     }
+ 
+     #[test]
+     fn test_temporal_score_no_range() {
+         let now = Utc::now();
+-        
++
+         let record = make_test_record("t3", "test", now - chrono::Duration::hours(1));
+-        
+-        let score = Memory::temporal_score(&record, &None, now);
++        let mut cache = crate::temporal_dim::DimParseCache::new(16);
++        let score = Memory::temporal_score(&record, &None, now, &mut cache);
+         // Should be in neutral range (0.25-0.75)
+         assert!(score >= 0.25 && score <= 0.75,
+             "No range: score should be neutral-ish: {}", score);
+     }
+ 
++    // ---- ISS-024 Change 3a: dimension-time scoring integration ----
++
++    /// Helper: build a record whose metadata carries a typed v2 temporal mark.
++    fn make_record_with_temporal(
++        id: &str,
++        content: &str,
++        created_at: chrono::DateTime<Utc>,
++        mark: crate::dimensions::TemporalMark,
++    ) -> MemoryRecord {
++        let mut dims = crate::dimensions::Dimensions::minimal(content).unwrap();
++        dims.temporal = Some(mark);
++        let metadata = serde_json::json!({
++            "engram": {
++                "dimensions": serde_json::to_value(&dims).unwrap()
++            }
++        });
++        let mut rec = make_test_record(id, content, created_at);
++        rec.metadata = Some(metadata);
++        rec
++    }
++
++    #[test]
++    fn test_dim_score_boosts_when_created_at_outside_but_dim_inside() {
++        // Memory stored TODAY (created_at) but its TemporalMark::Day points to
++        // a date INSIDE the query range. Legacy score: 0.0 (created_at outside).
++        // New score: >0 via the dim channel. This is the motivating case.
++        use crate::dimensions::TemporalMark;
++        use crate::query_classifier::TimeRange;
++        use chrono::NaiveDate;
++
++        let now = Utc::now();
++        let created_far_outside = now - chrono::Duration::days(90);
++        let dim_day = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
++
++        // Query range: the calendar day the extractor recorded.
++        let query_range = TimeRange {
++            start: dim_day.and_hms_opt(0, 0, 0).unwrap().and_utc(),
++            end: (dim_day + chrono::Duration::days(1))
++                .and_hms_opt(0, 0, 0)
++                .unwrap()
++                .and_utc(),
++        };
++
++        let record = make_record_with_temporal(
++            "r1",
++            "Alice met Bob",
++            created_far_outside,
++            TemporalMark::Day(dim_day),
++        );
++        let mut cache = crate::temporal_dim::DimParseCache::new(16);
++
++        let score = Memory::temporal_score(&record, &Some(query_range), now, &mut cache);
++        // Dim range fully contained in query range → dim_score = 1.0
++        // Insertion score = 0.0 (created_at is 90 days outside)
++        // max(0.0, 1.0) = 1.0
++        assert!(score > 0.99, "expected dim_score = 1.0, got {}", score);
++    }
++
++    #[test]
++    fn test_dim_score_regression_guarantee_insertion_wins_when_dim_missing() {
++        // No temporal dimension on the record → dim_score should be 0, and the
++        // final score is purely the legacy insertion score. This is the
++        // no-regression guarantee (design §5.6).
++        use crate::query_classifier::TimeRange;
++
++        let now = Utc::now();
++        let range = TimeRange {
++            start: now - chrono::Duration::hours(24),
++            end: now,
++        };
++        let record = make_test_record("r-nodim", "no dimensions", now - chrono::Duration::hours(12));
++        let mut cache = crate::temporal_dim::DimParseCache::new(16);
++
++        let with_dim = Memory::temporal_score(&record, &Some(range.clone()), now, &mut cache);
++        // Recompute "legacy" path by hand using the same formula:
++        let range_dur = (range.end - range.start).num_seconds() as f64;
++        let center = range.start + (range.end - range.start) / 2;
++        let dist = (record.created_at - center).num_seconds().abs() as f64;
++        let legacy = 1.0 - (dist / (range_dur / 2.0)) * 0.5;
++        assert!(
++            (with_dim - legacy).abs() < 1e-9,
++            "no-regression: {} vs legacy {}",
++            with_dim,
++            legacy
++        );
++    }
++
++    #[test]
++    fn test_dim_score_exact_variant_inside_range() {
++        // TemporalMark::Exact — a point-in-time mark. Query range contains it.
++        use crate::dimensions::TemporalMark;
++        use crate::query_classifier::TimeRange;
++
++        let now = Utc::now();
++        let created = now - chrono::Duration::days(60); // legacy score would be 0 for this
++        let exact = now - chrono::Duration::hours(3);
++        let query_range = TimeRange {
++            start: now - chrono::Duration::hours(24),
++            end: now,
++        };
++
++        let record = make_record_with_temporal(
++            "r-exact",
++            "Alice emailed Bob at 9am",
++            created,
++            TemporalMark::Exact(exact),
++        );
++        let mut cache = crate::temporal_dim::DimParseCache::new(16);
++
++        let score = Memory::temporal_score(&record, &Some(query_range), now, &mut cache);
++        // Point-in-time inside query range → dim_score = 1.0 per range_overlap_score.
++        assert!(score > 0.99, "point-in-time inside range: {}", score);
++    }
++
++    #[test]
++    fn test_dim_score_vague_parseable_phrase() {
++        // TemporalMark::Vague("yesterday") → two_timer parse → range.
++        // Use a fixed reference so the parse is deterministic.
++        use crate::dimensions::TemporalMark;
++        use crate::query_classifier::TimeRange;
++        use chrono::{NaiveDate, TimeZone};
++
++        let created = Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap();
++        let now = created; // query "now" can be anything for this test
++
++        // "yesterday" anchored at 2024-06-15 → 2024-06-14.
++        let query_day = NaiveDate::from_ymd_opt(2024, 6, 14).unwrap();
++        let query_range = TimeRange {
++            start: query_day.and_hms_opt(0, 0, 0).unwrap().and_utc(),
++            end: (query_day + chrono::Duration::days(1))
++                .and_hms_opt(0, 0, 0)
++                .unwrap()
++                .and_utc(),
++        };
++
++        let record = make_record_with_temporal(
++            "r-vague",
++            "something happened",
++            created,
++            TemporalMark::Vague("yesterday".to_string()),
++        );
++        let mut cache = crate::temporal_dim::DimParseCache::new(16);
++
++        let score = Memory::temporal_score(&record, &Some(query_range), now, &mut cache);
++        assert!(
++            score > 0.5,
++            "'yesterday' vs yesterday's calendar day range should overlap well: {}",
++            score
++        );
++    }
++
++    #[test]
++    fn test_dim_score_disjoint_range_returns_insertion_only() {
++        // Dim range and query range are disjoint → dim_score=0.
++        // If insertion_score is also 0 (created_at outside), final is 0.
++        use crate::dimensions::TemporalMark;
++        use crate::query_classifier::TimeRange;
++        use chrono::{NaiveDate, TimeZone};
++
++        let now = Utc::now();
++        let created = now - chrono::Duration::days(365);
++        let dim_day = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
++        // Query range in a completely different year.
++        let query_range = TimeRange {
++            start: Utc.with_ymd_and_hms(2023, 6, 15, 0, 0, 0).unwrap(),
++            end: Utc.with_ymd_and_hms(2023, 6, 16, 0, 0, 0).unwrap(),
++        };
++
++        let record = make_record_with_temporal(
++            "r-disjoint",
++            "old event",
++            created,
++            TemporalMark::Day(dim_day),
++        );
++        let mut cache = crate::temporal_dim::DimParseCache::new(16);
++
++        let score = Memory::temporal_score(&record, &Some(query_range), now, &mut cache);
++        assert!(score < 0.01, "disjoint ranges: {}", score);
++    }
++
+     #[test]
+     fn test_hebbian_channel_scores_basic() {
+         let dir = tempfile::tempdir().unwrap();

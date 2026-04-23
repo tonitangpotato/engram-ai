@@ -1,0 +1,102 @@
+{
+  "id": "r-5fd66f",
+  "phase": "Done",
+  "task": "Implement ISS-022: refactor ExtractedFact dimension fields from `Option<String>` to `Vec<String>`. Remove the temporary `deserialize_flexible_string` shim (introduced by ISS-021 as a stopgap). Update write path in `src/memory.rs` to persist dimensions as JSON arrays in `memory.metadata.dimensions.*`. Update KC read path (`compiler/`) to consume `Vec<String>`. Provide migration strategy for legacy scalar-string values in existing databases (decide between on-read split vs one-shot backfill at design time). Preserve all existing dimensional behavior from ISS-019/020/021 (participants, temporal, causation, outcome, stance, sentiment, location, context, method, relations). Acceptance criteria are fully listed in `.gid/issues/ISS-022-dimension-vec-string-schema/investigation.md` §Acceptance Criteria. All 891 existing tests must pass; add new tests for Vec-shaped dimension handling and migration.\nProject location: /Users/potato/clawd/projects/engram-ai-rust",
+  "target_root": "/Users/potato/clawd/projects/engram-ai-rust",
+  "project": {
+    "has_requirements": true,
+    "has_design": true,
+    "has_graph": true,
+    "has_source": true,
+    "has_tests": true,
+    "language": "rust",
+    "source_file_count": 75,
+    "verify_command": "cargo build && cargo test"
+  },
+  "strategy": "SingleLlm",
+  "verify_retries": 0,
+  "phase_retries": {},
+  "failed_phase": null,
+  "error_context": "triage: size=large, skip_design=true, skip_graph=false",
+  "review_target": "tasks",
+  "triage_size": "large",
+  "phase_tokens": {
+    "triage": 694,
+    "planning": 838,
+    "graph": 6148,
+    "implement": 8229,
+    "reviewing": 4479
+  },
+  "review_round": 0,
+  "transitions": [
+    {
+      "from": "Idle",
+      "to": "Initializing",
+      "event": "Idle → Initializing",
+      "timestamp": "2026-04-23T03:26:21.809431Z"
+    },
+    {
+      "from": "Initializing",
+      "to": "Triaging",
+      "event": "Initializing → Triaging",
+      "timestamp": "2026-04-23T03:26:21.814868Z"
+    },
+    {
+      "from": "Triaging",
+      "to": "Planning",
+      "event": "Triaging → Planning",
+      "timestamp": "2026-04-23T03:26:23.060485Z"
+    },
+    {
+      "from": "Planning",
+      "to": "Graphing",
+      "event": "Planning → Graphing",
+      "timestamp": "2026-04-23T03:26:35.733971Z"
+    },
+    {
+      "from": "Graphing",
+      "to": "Reviewing",
+      "event": "Graphing → Reviewing",
+      "timestamp": "2026-04-23T03:28:43.543689Z"
+    },
+    {
+      "from": "Reviewing",
+      "to": "WaitingApproval",
+      "event": "Reviewing → WaitingApproval",
+      "timestamp": "2026-04-23T03:30:09.233469Z"
+    },
+    {
+      "from": "WaitingApproval",
+      "to": "Reviewing",
+      "event": "WaitingApproval → Reviewing",
+      "timestamp": "2026-04-23T03:33:09.469699Z"
+    },
+    {
+      "from": "Reviewing",
+      "to": "WaitingApproval",
+      "event": "Reviewing → WaitingApproval",
+      "timestamp": "2026-04-23T03:34:14.095656Z"
+    },
+    {
+      "from": "WaitingApproval",
+      "to": "Implementing",
+      "event": "WaitingApproval → Implementing",
+      "timestamp": "2026-04-23T03:37:14.385661Z"
+    },
+    {
+      "from": "Implementing",
+      "to": "Verifying",
+      "event": "Implementing → Verifying",
+      "timestamp": "2026-04-23T03:38:59.773136Z"
+    },
+    {
+      "from": "Verifying",
+      "to": "Done",
+      "event": "Verifying → Done",
+      "timestamp": "2026-04-23T03:39:16.081329Z"
+    }
+  ],
+  "started_at": "2026-04-23T03:26:21.807804Z",
+  "updated_at": "2026-04-23T03:39:16.081330Z",
+  "adapter_pid": 54032
+}

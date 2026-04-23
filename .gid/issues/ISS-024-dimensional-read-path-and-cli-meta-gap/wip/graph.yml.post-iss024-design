@@ -1,0 +1,2459 @@
+project: null
+nodes:
+- id: phase-a
+  title: 'Phase A: 止血 — 堵住上游污染源'
+  status: done
+  description: RustClaw 侧过滤 + extractor 改进 + 存量清理。不改 engramai crate 核心逻辑。
+  tags:
+  - engram
+  - memory-quality
+  priority: 10
+- id: a1-hook-filter
+  title: 'A1: EngramStoreHook 加过滤 — 不存垃圾内容'
+  status: done
+  description: |
+    在 rustclaw/src/engram_hooks.rs 的 EngramStoreHook 加 content-level 过滤：
+    - HEARTBEAT_OK → 直接跳过
+    - NO_REPLY → 直接跳过
+    - 系统指令特征检测（"你是 RustClaw"、"Read SOUL.md"、tool call 格式等）→ 跳过
+    - Heartbeat 有实质内容的响应 → 保留让 extractor 正常处理
+    约 30 行改动。不需要 ritual。
+  tags:
+  - engram
+  - rustclaw
+  - filter
+  priority: 10
+  metadata:
+    file: rustclaw/src/engram_hooks.rs
+    project: rustclaw
+- id: a2-extractor-negatives
+  title: 'A2: Extractor prompt 加 negative examples'
+  status: done
+  description: |
+    在 engramai/src/extractor.rs 的 EXTRACTION_PROMPT 加 negative examples：
+    - 不提取系统指令（"你是 XX agent"、"Read SOUL.md"、"Follow AGENTS.md"）
+    - 不提取工具调用格式描述
+    - 不提取 agent 身份/角色描述
+    - 不提取模板化状态报告（"所有系统正常"、"无新 commit"）
+    约 20 行改动。不需要 ritual。
+  tags:
+  - engram
+  - engramai
+  - extractor
+  priority: 10
+  metadata:
+    project: engramai
+    file: engramai/src/extractor.rs
+- id: a3-sql-cleanup
+  title: 'A3: SQL 一次性清理 — 删存量重复 + 系统指令垃圾'
+  status: done
+  description: |
+    跑 SQL 脚本清理存量垃圾：
+    1. 删精确重复（105 条 content hash 相同）— 保留 access_count 最高的
+    2. 删系统指令垃圾（匹配 "你是 RustClaw"、"Read SOUL.md" 等 pattern）
+    3. 清理前先 backup DB
+    4. 清理后 PRAGMA integrity_check + 验证 recall 质量
+    必须先完成 A1+A2 堵住污染源，否则清理完又会写入新垃圾。
+  tags:
+  - engram
+  - cleanup
+  - one-time
+  priority: 15
+  metadata:
+    project: engramai
+- id: phase-b
+  title: 'Phase B: 提质 — engramai crate 核心改进'
+  status: done
+  description: 改 engramai crate 核心：entity 索引、dedup、confidence、recency。需要 ritual 流程。
+  tags:
+  - engram
+  - memory-quality
+  priority: 20
+- id: b1-entity-index
+  title: 'B1: Entity 索引实现 — extraction + storage + recall (ISS-009)'
+  status: done
+  description: |
+    ISS-009 最大改动，需要 ritual 流程。
+    1. Entity extraction on write — extractor 返回 entities（人名/项目名/概念/工具名）
+    2. Entity storage — 写入 entities + memory_entities + entity_relations 三张表
+    3. Entity-aware recall — 第 4 路检索：query→entity→related memories
+    4. Entity dedup — 同名 entity 合并（fuzzy match）
+    估计 500-800 行新代码，跨 extractor.rs、storage.rs、memory.rs、hybrid_search.rs
+
+    分解为 7 个子任务（见 entity-types → entity-integration-tests）
+  tags:
+  - engram
+  - engramai
+  - entity
+  - recall-quality
+  priority: 20
+  metadata:
+    iss: ISS-009
+    ritual: true
+    project: engramai
+- id: entity-types
+  title: 'B1.1: Entity types & config structs'
+  status: done
+  description: |
+    Create src/entities.rs with foundational types (~80 lines):
+    - EntityType enum (Project, Person, Technology, Concept, File, Url, Organization, Other)
+    - ExtractedEntity struct (name, normalized, entity_type)
+    - EntityRecord struct (DB representation)
+    - EntityConfig struct in config.rs (known_projects, known_people, known_technologies, enabled, recall_weight)
+    - normalize_entity_name() function
+    - Add aho-corasick dependency to Cargo.toml
+    - Add pub mod entities; to lib.rs
+
+    Files: src/entities.rs (new), src/config.rs (+20 lines), Cargo.toml (+1 dep), lib.rs (+2 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - types
+  priority: 20
+  metadata:
+    files:
+    - src/entities.rs
+    - src/config.rs
+    - Cargo.toml
+    - src/lib.rs
+    iss: ISS-009
+    project: engramai
+- id: entity-unit-tests
+  title: 'B1.2: EntityExtractor unit tests'
+  status: done
+  description: |
+    Write unit tests for entity extraction (~100 lines):
+    - Test known entity extraction (Aho-Corasick path)
+    - Test regex patterns (ISS-XXX, file paths, URLs, @mentions)
+    - Test normalization (case, trailing slashes, @-prefix stripping)
+    - Test dedup within same content
+    - Test empty/no-entity content
+
+    Files: src/entities.rs (#[cfg(test)] mod tests)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - tests
+  priority: 20
+  metadata:
+    project: engramai
+    iss: ISS-009
+    files:
+    - src/entities.rs
+- id: entity-storage
+  title: 'B1.3: Storage entity CRUD methods'
+  status: done
+  description: |
+    Add entity methods to Storage (~120 lines in storage.rs):
+    - upsert_entity() — deterministic ID generation (sha256), INSERT OR REPLACE
+    - link_memory_entity() — memory_entities junction table
+    - upsert_entity_relation() — entity_relations with co-occurrence counter
+    - find_entities() — exact name match lookup
+    - get_entity_memories() — get memory IDs for entity
+    - get_related_entities() — 1-hop relations
+    - get_entity() — fetch by ID
+    - count_entities() — namespace stats
+
+    Files: src/storage.rs (+120 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - storage
+  priority: 20
+  metadata:
+    iss: ISS-009
+    project: engramai
+    files:
+    - src/storage.rs
+- id: entity-add-raw
+  title: 'B1.4: Integrate entity extraction into add_raw()'
+  status: done
+  description: |
+    Hook entity extraction into memory write path (~80 lines):
+    - Initialize EntityExtractor in MemorySystem::new()
+    - In add_raw(), after embedding storage:
+      * Extract entities from content
+      * Upsert each entity
+      * Link memory to entities
+      * Build co-occurrence relations (capped at 10 entities to avoid O(n²))
+    - Add entity_config field to MemoryConfig
+    - Add entity_extractor field to MemorySystem
+
+    Files: src/memory.rs (+80 lines), src/config.rs (EntityConfig integration)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - write-path
+  priority: 20
+  metadata:
+    project: engramai
+    files:
+    - src/memory.rs
+    - src/config.rs
+    iss: ISS-009
+- id: entity-recall
+  title: 'B1.5: Entity-aware recall channel'
+  status: done
+  description: |
+    Add entity recall as 4th hybrid search channel (~150 lines):
+    - entity_recall() function in entities.rs:
+      * Extract entities from query
+      * Find matching entities in DB (exact name match)
+      * Get memory IDs for entities + related entities (1-hop)
+      * Score memories by entity relevance (primary entity match = 1.0, related = 0.5, multi-entity boost)
+    - Integrate into recall_from_namespace() in memory.rs
+    - Add entity channel weight to hybrid search scoring (default 0.15)
+
+    Files: src/entities.rs (+150 lines), src/memory.rs (+20 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - recall
+  priority: 20
+  metadata:
+    iss: ISS-009
+    project: engramai
+    files:
+    - src/entities.rs
+    - src/memory.rs
+- id: entity-backfill
+  title: 'B1.6: Backfill CLI command for existing memories'
+  status: done
+  description: |
+    Add backfill_entities() to process existing memories (~40 lines in main.rs):
+    - New CLI subcommand: engram backfill-entities [--namespace NS]
+    - backfill_entities(&memory_system, namespace: Option<&str>):
+      * Get all memories in namespace
+      * For each memory: extract entities, upsert, link, build relations
+      * Progress logging every 100 memories
+      * Stats: total processed, entities created, links created
+    - Idempotent — safe to re-run
+
+    Files: src/main.rs (+40 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - cli
+  priority: 20
+  metadata:
+    project: engramai
+    files:
+    - src/main.rs
+    iss: ISS-009
+- id: entity-integration-tests
+  title: 'B1.7: Entity indexing integration tests'
+  status: done
+  description: |
+    End-to-end tests for entity indexing (~150 lines):
+    - Test entity extraction + storage in add_raw()
+    - Test entity-aware recall finds memories via entity match
+    - Test co-occurrence relations are built correctly
+    - Test backfill on existing memories
+    - Test entity dedup (same normalized name → same ID)
+    - Test recall boost for multi-entity match
+    - Test namespace isolation for entities
+
+    Files: tests/entity_integration_test.rs (new, ~150 lines)
+  tags:
+  - engram
+  - engramai
+  - entity
+  - tests
+  priority: 20
+  metadata:
+    iss: ISS-009
+    project: engramai
+    files:
+    - tests/entity_integration_test.rs
+- id: b2-dedup
+  title: 'B2: Dedup on write — embedding similarity + merge (ISS-003)'
+  status: done
+  description: |-
+    ISS-003 升级完成。merge_memory_into() 从简单的 importance=MAX + access_log 升级为智能合并：
+    1. Content evolution — 新内容 >30% 更长时替换旧内容
+    2. Merge history — metadata.merge_history 记录每次合并（FIFO, cap 10）
+    3. Merge count — metadata.merge_count 累计合并次数
+    4. MergeOutcome 返回类型，调用方可根据结果做进一步处理
+    5. 5 个新测试 + 所有旧测试更新到新签名
+    324 tests pass, commit 5d50753
+  tags:
+  - engram
+  - engramai
+  - dedup
+  priority: 25
+  metadata:
+    project: engramai
+    iss: ISS-003
+- id: b3-confidence
+  title: 'B3: Confidence score — 多信号融合 recall confidence (ISS-007)'
+  status: done
+  description: |
+    ISS-007。confidence.rs 已有框架，需要：
+    1. 从 hybrid search 多路分数融合 confidence（embedding sim + FTS score + ACT-R activation + entity match）
+    2. 归一化到 0.0-1.0
+    3. recall 返回每个结果的 confidence
+    4. RustClaw auto-recall hook 按阈值过滤低 confidence 结果
+    约 100 行改动
+  tags:
+  - engram
+  - engramai
+  - confidence
+  priority: 30
+  metadata:
+    project: engramai
+    iss: ISS-007
+- id: b4-recency
+  title: 'B4: Recency 调参 — ACT-R decay analysis + tuning (ISS-002)'
+  status: done
+  description: |
+    ISS-002。需要先量化当前 ACT-R 分布：
+    1. 分析当前 decay parameter d 值及其效果
+    2. 对比新旧记忆的 activation 分布
+    3. 调整 d 值让 recency 权重更高
+    4. 或在 scoring 中加 recency bonus factor
+    约 20 行代码 + 分析工作
+  tags:
+  - engram
+  - engramai
+  - recency
+  priority: 35
+  metadata:
+    project: engramai
+    iss: ISS-002
+- id: iss-005-synthesis
+  title: 'ISS-005: Knowledge Synthesis Engine'
+  status: done
+  description: Complete implementation of the knowledge synthesis engine — cluster discovery, gate check, insight generation, provenance tracing. See design-1-engine.md.
+  tags:
+  - iss-005
+  - knowledge-synthesis
+- id: synth-types
+  title: Create synthesis types module (src/synthesis/types.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - foundation
+- id: synth-mod
+  title: Create src/synthesis/mod.rs and wire into lib.rs
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - foundation
+- id: synth-cluster
+  title: Implement cluster discovery (src/synthesis/cluster.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - GOAL-1
+- id: synth-gate
+  title: Implement gate check (src/synthesis/gate.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - GOAL-3
+- id: synth-insight
+  title: Implement insight generation (src/synthesis/insight.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - GOAL-2
+- id: synth-provenance
+  title: Implement provenance tracing (src/synthesis/provenance.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - GOAL-4
+- id: synth-engine
+  title: Implement SynthesisEngine trait (src/synthesis/engine.rs)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - integration
+- id: synth-consolidate
+  title: Integrate synthesis into consolidate() call path
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - integration
+- id: synth-incremental
+  title: Implement incremental operations (cluster updates on new memory)
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - incremental
+- id: synth-unit-tests
+  title: Write unit tests for all synthesis components
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - tests
+- id: synth-integration-tests
+  title: Write integration tests for full synthesis pipeline
+  status: done
+  tags:
+  - iss-005
+  - knowledge-synthesis
+  - tests
+- id: kc
+  title: Knowledge Compiler
+  status: done
+  description: KC 产品层：把碎片记忆编译成结构化知识库。P0 在 engram-ai-rust 内作为 src/compiler/ 模块实现。
+  tags:
+  - kc
+  - product
+  - p0
+  type: component
+- id: kc-compilation
+  title: 'KC: Topic Compilation & Feedback'
+  status: done
+  description: 'Topic discovery → compilation → incremental recompilation → merge/split → feedback loop. Design: .gid/features/knowledge-compiler/compilation/design.md'
+  tags:
+  - kc
+  - compilation
+  - p0
+  type: feature
+- id: kc-maintenance
+  title: 'KC: Knowledge Maintenance, Access & Privacy'
+  status: done
+  description: 'Knowledge decay, conflict detection, health reporting, export/import, CLI/API access, privacy. Design: .gid/features/knowledge-compiler/maintenance/design.md'
+  tags:
+  - kc
+  - maintenance
+  - p0
+  type: feature
+- id: kc-platform
+  title: 'KC: Platform Setup, LLM Config, Import & Intake'
+  status: done
+  description: 'Setup wizard, LLM config, import pipeline, intake integration. Design: .gid/features/knowledge-compiler/platform/design.md'
+  tags:
+  - kc
+  - platform
+  - p0
+  type: feature
+- id: kc-topic-discovery
+  title: Topic Discovery (clustering + LLM labeling)
+  status: done
+  description: §3.1 TopicDiscovery — discover topic candidates from memory clusters via 4-signal clustering + LLM labeling. Reuses synthesis::cluster. GOAL-comp.1, GOAL-comp.2
+  tags:
+  - kc
+  - compilation
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    file: src/compiler/discovery.rs
+    design_ref: compilation/design.md §3.1
+    goals: GOAL-comp.1
+- id: kc-compilation-pipeline
+  title: Compilation Pipeline (compile + provenance + failure handling)
+  status: done
+  description: §3.2 CompilationPipeline — compile topic pages from candidates with provenance tracking. compile_new, recompile_full, recompile_partial. Citation parsing + ProvenanceRecord. GOAL-comp.1 (page generation), GOAL-comp.3 (provenance), GOAL-comp.10 (failure handling)
+  tags:
+  - kc
+  - compilation
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    file: src/compiler/pipeline.rs
+    design_ref: compilation/design.md §3.2, §3.5
+    goals: GOAL-comp.2, GOAL-comp.3, GOAL-comp.6
+- id: kc-incremental-trigger
+  title: Incremental Trigger (change detection + recompile decision)
+  status: done
+  description: §3.3 IncrementalTrigger — detect when recompilation needed, decide skip/partial/full. ChangeSet diffing + content hash dedup. GOAL-comp.3 (incremental), GOAL-comp.10 (cost awareness)
+  tags:
+  - kc
+  - compilation
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-comp.4, GOAL-comp.5
+    file: src/compiler/trigger.rs
+    design_ref: compilation/design.md §3.3
+- id: kc-topic-lifecycle
+  title: Topic Lifecycle (merge + split)
+  status: done
+  description: §3.4 TopicLifecycle — merge overlapping topics, split divergent ones. Overlap detection, re-clustering, provenance preservation. GOAL-comp.4, GOAL-comp.5
+  tags:
+  - kc
+  - compilation
+  - p1
+  priority: 50
+  type: task
+  metadata:
+    design_ref: compilation/design.md §3.4
+    goals: GOAL-comp.4, GOAL-comp.5
+    file: src/compiler/lifecycle.rs
+- id: kc-feedback-processor
+  title: 'KC Feedback: Point Feedback + Dry Run (src/compiler/feedback.rs)'
+  status: done
+  description: §3.5 FeedbackProcessor — record user feedback, build prompt context for recompilation, trigger recompile on corrections. GOAL-comp.7 (manual edit), GOAL-comp.8 (point feedback)
+  tags:
+  - knowledge-compiler
+  - p1
+  - compilation
+  priority: 30
+  type: task
+  metadata:
+    file: src/compiler/feedback.rs
+    goals: GOAL-comp.8, GOAL-comp.9
+    design_ref: compilation/design.md §3.5
+- id: kc-quality-scorer
+  title: Quality Scorer (coherence + coverage + freshness)
+  status: done
+  description: §3.6 QualityScorer — multi-dimensional quality assessment (coherence, coverage, freshness). Heuristic scoring, suggestions gen. GOAL-comp.9 (dry run preview uses quality info), GOAL-comp.10
+  tags:
+  - kc
+  - compilation
+  - p1
+  priority: 50
+  type: task
+  metadata:
+    design_ref: compilation/design.md §3.6
+    goals: GOAL-comp.10
+    file: src/compiler/quality.rs
+- id: kc-decay-engine
+  title: Decay Engine (time + access decay)
+  status: done
+  description: §2.1 DecayEngine — time-based + access-based decay with configurable half-lives. evaluate_topic, evaluate_all, apply_decay. GOAL-maint.1
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-maint.1
+    design_ref: maintenance/design.md §2.1
+    file: src/compiler/decay.rs
+- id: kc-conflict-detector
+  title: Conflict Detector (contradictions + duplicates)
+  status: done
+  description: '§2.2 ConflictDetector — contradiction detection + near-duplicate detection. Two-phase: candidate selection (embedding/overlap) → LLM check. GOAL-maint.2, GOAL-maint.4'
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-maint.2, GOAL-maint.4
+    file: src/compiler/conflict.rs
+    design_ref: maintenance/design.md §2.2
+- id: kc-health-auditor
+  title: Health Auditor (link integrity + health reports)
+  status: done
+  description: §2.3 HealthAuditor — broken link detection + repair, health reports with per-topic scores. GOAL-maint.3, GOAL-maint.5, GOAL-maint.5b
+  tags:
+  - kc
+  - maintenance
+  - p1
+  priority: 30
+  type: task
+  metadata:
+    file: src/compiler/health.rs
+    goals: GOAL-maint.3, GOAL-maint.5, GOAL-maint.5b
+    design_ref: maintenance/design.md §2.3
+- id: kc-export-engine
+  title: Export Engine (JSON/Markdown/SQLite + privacy filter)
+  status: done
+  description: §2.4 ExportEngine — export to JSON/Markdown/SQLite, import with dedup. Privacy enforcement on export. GOAL-maint.6 (knowledge-aware recall), GOAL-maint.7 (markdown export)
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    design_ref: maintenance/design.md §2.4
+    file: src/compiler/export.rs
+    goals: GOAL-maint.6, GOAL-maint.7
+- id: kc-cli
+  title: CLI Interface (knowledge subcommands)
+  status: done
+  description: '§2.5 CLI Interface — engram knowledge subcommands: query, inspect, export, import, health, decay, conflicts, audit, privacy. GOAL-maint.8'
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-maint.8
+    design_ref: maintenance/design.md §2.5
+    file: src/compiler/cli.rs
+- id: kc-api
+  title: Programmatic API (MaintenanceApi)
+  status: done
+  description: §2.6 MaintenanceApi — Rust API mirroring all CLI capabilities. Query, maintenance ops, export/import, privacy. GOAL-maint.9
+  tags:
+  - kc
+  - maintenance
+  - p1
+  priority: 50
+  type: task
+  metadata:
+    goals: GOAL-maint.9
+    design_ref: maintenance/design.md §2.6
+    file: src/compiler/api.rs
+- id: kc-privacy-guard
+  title: Privacy Guard (levels + redaction + audit log)
+  status: done
+  description: §2.7 PrivacyGuard — privacy levels (public/sensitive/private), redaction pipeline, audit logging. GOAL-maint.10, GOAL-maint.11
+  tags:
+  - kc
+  - maintenance
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    file: src/compiler/privacy.rs
+    design_ref: maintenance/design.md §2.7
+    goals: GOAL-maint.10, GOAL-maint.11
+- id: kc-maintenance-lock
+  title: Maintenance Lock (multi-process safety)
+  status: done
+  description: §3 MaintenanceLock — file-based leader election for multi-process safety. Stale lock recovery. GOAL-maint.12
+  tags:
+  - kc
+  - maintenance
+  - p1
+  priority: 30
+  type: task
+  metadata:
+    file: src/compiler/lock.rs
+    design_ref: maintenance/design.md §3
+    goals: GOAL-maint.12
+- id: kc-llm-provider
+  title: LLM Provider (multi-provider + model router + token budget)
+  status: done
+  description: §2.1 LlmProvider trait + OpenAI/Anthropic/Local impls + ModelRouter (task-based model selection) + token budget enforcement. GOAL-plat.1, GOAL-plat.2, GOAL-plat.3
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 5
+  type: task
+  metadata:
+    file: src/compiler/llm.rs
+    design_ref: platform/design.md §2.1
+    goals: GOAL-plat.1, GOAL-plat.2, GOAL-plat.3
+- id: kc-config
+  title: Configuration Management (zero-config + TOML + resolution)
+  status: done
+  description: §2.2 ConfigManagement — zero-config defaults, TOML config file, 4-layer resolution (CLI > env > project > user > default). GOAL-plat.2 (config file), GOAL-plat.7 (zero-config), GOAL-plat.8 (progressive disclosure)
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 5
+  type: task
+  metadata:
+    file: src/compiler/config.rs
+    goals: GOAL-plat.2, GOAL-plat.7, GOAL-plat.8
+    design_ref: platform/design.md §2.2
+- id: kc-embedding-pipeline
+  title: Embedding Pipeline (auto-download + cache + model mgmt)
+  status: done
+  description: §2.3 EmbeddingPipeline — auto-download models, model management (list/remove/switch), per-memory embedding cache with model tagging. GOAL-plat.4, GOAL-plat.5, GOAL-plat.6
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 5
+  type: task
+  metadata:
+    file: src/compiler/embedding.rs
+    design_ref: platform/design.md §2.3
+    goals: GOAL-plat.4, GOAL-plat.5, GOAL-plat.6
+- id: kc-import
+  title: Import Pipeline (Markdown + Obsidian + URL + dedup)
+  status: done
+  description: §2.4 Import/Export — Markdown/Logseq/Obsidian/JSON importers + duplicate handling (content hash + near-dupe embedding). GOAL-plat.8, GOAL-plat.9, GOAL-plat.10, GOAL-plat.11
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    goals: GOAL-plat.8, GOAL-plat.9, GOAL-plat.10, GOAL-plat.11
+    file: src/compiler/import.rs
+    design_ref: platform/design.md §2.4
+- id: kc-intake
+  title: Intake Pipeline (URL extraction + auto-import)
+  status: done
+  description: §2.5 IntakePipeline — URL content extraction (Jina/yt-dlp/GitHub), auto-import via import pipeline. GOAL-plat.12, GOAL-plat.13
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    file: src/compiler/intake.rs
+    goals: GOAL-plat.12, GOAL-plat.13
+    design_ref: platform/design.md §2.5
+- id: kc-degradation
+  title: Graceful Degradation (capability levels + fallback chain)
+  status: done
+  description: §2.6 GracefulDegradation — CapabilityLevel detection (Minimal/Embeddings/Full), FallbackProvider chain, actionable error messages. GOAL-plat.3, GOAL-plat.14, GOAL-plat.15, GOAL-plat.16
+  tags:
+  - kc
+  - platform
+  - p0
+  priority: 10
+  type: task
+  metadata:
+    file: src/compiler/degradation.rs
+    goals: GOAL-plat.3, GOAL-plat.14, GOAL-plat.15, GOAL-plat.16
+    design_ref: platform/design.md §2.6
+- id: kc-types
+  title: KC Shared Types (TopicPage, CompilationRecord, etc.)
+  status: done
+  description: 'Shared KC types from architecture doc §4: TopicPage, TopicId, CompilationRecord, SourceMemoryRef, KcConfig, RecompileStrategy, FeedbackEntry, FeedbackKind, HealthReport, TopicStatus, plus feature-local types from compilation §2.1 (TopicCandidate, ChangeSet, TriggerDecision, LifecycleOp, TopicFeedback, QualityReport)'
+  tags:
+  - kc
+  - foundation
+  - p0
+  priority: 1
+  type: task
+  metadata:
+    file: src/compiler/types.rs
+- id: kc-storage
+  title: KC Storage Schema (SQLite tables + migrations)
+  status: done
+  description: 'SQLite storage for KC — topic_pages + compilation_records + compilation_sources tables. Must expose KnowledgeStore trait with: create_topic_page(), update_topic_page(), get_topic_page(), list_topic_pages(), delete_topic_page(), save_compilation_record(), get_compilation_record(), get_pages_by_status(), update_activity_score(), mark_archived(), get_stale_pages(). All downstream modules (decay, conflict, health, export, etc.) depend on this trait interface.'
+  tags:
+  - kc
+  - foundation
+  - p0
+  priority: 1
+  type: task
+  metadata:
+    file: src/compiler/storage.rs
+- id: kc-mod
+  title: KC Module Scaffold (mod.rs + feature flag)
+  status: done
+  description: src/compiler/mod.rs — module declaration, re-exports, compiler module entry point. Feature flag gating (kc feature flag).
+  tags:
+  - kc
+  - foundation
+  - p0
+  priority: 1
+  type: task
+  metadata:
+    file: src/compiler/mod.rs
+- id: kc-manual-edit
+  title: 'KC Manual Edit: Topic Page Direct Editing (src/compiler/feedback.rs)'
+  status: done
+  description: Implement manual edit capability for topic pages — user can directly edit compiled page content, edits persist across recompilation cycles. GOAL-comp.7 (P0). Shares feedback.rs with kc-feedback-processor but this is the P0 portion.
+  tags:
+  - knowledge-compiler
+  - p0
+  - compilation
+  priority: 8
+  metadata:
+    goals: GOAL-comp.7
+    file: src/compiler/feedback.rs
+    design_ref: compilation/design.md §3.5
+- id: kc-unit-tests
+  title: KC Unit Tests (per-module)
+  status: done
+  description: 'Unit tests for each KC module: types serialization, storage CRUD, topic discovery clustering, compilation pipeline stages, decay scoring, conflict detection, export formatting. Each module gets its own test submodule. Target: >80% coverage on P0 modules.'
+  tags:
+  - knowledge-compiler
+  - p0
+  - testing
+  priority: 9
+  metadata:
+    file: src/compiler/tests/
+    goals: GUARD-2 (correctness)
+- id: kc-integration-tests
+  title: KC Integration Tests (end-to-end flows)
+  status: done
+  description: 'End-to-end integration tests: (1) memories → compile → topic pages with provenance, (2) incremental recompilation on memory change, (3) CLI compile + list + export round-trip, (4) Markdown import → compile → export → compare, (5) decay + archive lifecycle. Uses temp DB, no LLM mock needed (use deterministic test provider).'
+  tags:
+  - knowledge-compiler
+  - p0
+  - testing
+  priority: 10
+  metadata:
+    file: tests/knowledge_compiler.rs
+    goals: GUARD-2 (correctness)
+- id: cluster-scaling
+  title: 'Cluster Discovery Scaling: VP-tree ANN + Incremental Clustering'
+  status: done
+  description: '让 discover_clusters 从百条级扩展到十万条级。VP-tree ANN 补齐 embedding pair discovery 盲点，Hot/Warm/Cold 三层增量聚类避免全量 recluster。设计文档: DESIGN-cluster-scaling.md'
+  tags:
+  - performance
+  - scaling
+  - clustering
+  priority: 10
+  type: feature
+- id: cs-vptree
+  title: VP-tree implementation + ANN pair discovery
+  status: done
+  description: 在 cluster.rs 内实现 VpTree struct (~80行 Rust，零依赖)。L2 distance on normalized embeddings。build O(n log n), query_k_nearest O(log n) amortized。Step 3 增加 ANN pairs source：对每个候选记忆找 k 个 embedding 最近邻加入 candidate_pairs。k = sqrt(n).clamp(5, 30)。修复当前盲点：embedding signal 只在 scoring 用，不参与 pair discovery。
+  tags:
+  - ann
+  - vp-tree
+  - performance
+  priority: 10
+- id: cs-refactor-inner
+  title: Refactor discover_clusters_inner extraction
+  status: done
+  description: 把 discover_clusters() 核心逻辑 (Step 2-6) 提取到 discover_clusters_inner()。discover_clusters() 和新的 discover_clusters_subset() 共享内部实现。避免代码重复。全量测试不 regress。
+  tags:
+  - refactor
+  priority: 20
+- id: cs-storage
+  title: Storage tables + API for cluster state persistence
+  status: done
+  description: '新增 3 张 SQLite 表: cluster_state, cluster_assignments, cluster_centroids。在 Storage 上实现全套 CRUD: init_cluster_tables(), get_cluster_centroids(), assign_to_cluster(), update_centroid_incremental(), mark_cluster_dirty(), get_dirty_cluster_ids(), add_pending_memory(), get_pending_memory_ids(), get_cluster_members(), replace_clusters(), get_memories_by_ids(), clear_pending_and_dirty()。单元测试覆盖。'
+  tags:
+  - storage
+  - sqlite
+  priority: 20
+- id: cs-hot-path
+  title: 'Hot path: assign new memory to nearest cluster'
+  status: done
+  description: '实现 assign_new_memory(): 新记忆进来 → 加载 cluster centroids → 找最近 centroid (cosine sim) → 超过 hot_assign_threshold (0.6) 归入 cluster + 增量更新 centroid → 否则加入 pending。O(C) 复杂度。on_memory_added() hook 集成到 add() 路径。'
+  tags:
+  - incremental
+  - hot-path
+  priority: 30
+- id: cs-warm-path
+  title: 'Warm path: recluster dirty clusters + pending memories'
+  status: done
+  description: '实现 recluster_dirty(): 取 dirty cluster IDs + pending memory IDs → 收集所有相关记忆 → 调 discover_clusters_subset() 局部 Infomap → 更新 assignments + centroids → 清除 dirty/pending 标记。触发条件: 每 100 条新增或 consolidate() 调用时。O(m log m) where m << n。'
+  tags:
+  - incremental
+  - warm-path
+  priority: 40
+- id: cs-consolidate
+  title: Cold path + consolidate() integration
+  status: done
+  description: '改造 consolidate(): 三层判断 — pending 超 20% → cold (全量 recluster), pending > 0 → warm (局部 recluster), 否则用缓存 clusters。Cold path = 现有 discover_clusters() 不变。集成 hot/warm/cold 选择逻辑。全量 regression 测试 + benchmark (模拟 1000/5000/10000 条记忆)。'
+  tags:
+  - integration
+  - consolidate
+  priority: 50
+- id: f3-phase1
+  title: 'Phase 1: Decay Detection + Safe Forget (C5+C6)'
+  status: done
+  description: 'DB migration: add deleted_at column. Implement check_decay_and_flag(), soft_delete(), hard_delete_cascade(). Update search to exclude soft-deleted. Ebbinghaus decay threshold flagging.'
+  tags:
+  - feat-003
+  - memory-lifecycle
+  priority: 10
+- id: f3-phase2
+  title: 'Phase 2: Semantic Dedup + Intelligent Merge (C1+C2)'
+  status: done
+  description: find_entity_overlap(), dedup_scan(), merge_memories() with entity union, Hebbian link union, provenance chain.
+  tags:
+  - feat-003
+  - memory-lifecycle
+  priority: 20
+- id: f3-phase3
+  title: 'Phase 3: Co-occurrence Auto-create + Reconcile (C8+C3)'
+  status: done
+  description: ✅ DONE — co-occurrence auto-create in recall path (30s window ring buffer), reconcile scan (embedding sim + entity Jaccard), reconcile_apply (dry_run support), all tests pass. Uncommitted with supersession changes.
+  tags:
+  - feat-003
+  - memory-lifecycle
+  priority: 30
+- id: f3-phase4
+  title: 'Phase 4: Incremental Synthesis (C4)'
+  status: done
+  description: ✅ DONE — should_resynthesize() with staleness_member_change_pct + quality_delta checks, IncrementalState persisted to storage (get/set_incremental_state), wired into synthesis engine loop (clusters_skipped counter), 4 unit tests. Already integrated into consolidate() path.
+  tags:
+  - feat-003
+  - memory-lifecycle
+  priority: 40
+- id: f3-phase5
+  title: 'Phase 5: Sleep Cycle Orchestration + Rebalance (C7+C9)'
+  status: done
+  description: '✅ DONE — 5-phase sleep_cycle (consolidate → synthesis → decay → forget → rebalance), HealthReport with all metrics (total_memories, soft_deleted, stale_clusters TODO only), RebalanceReport with 3 cleanup ops (orphaned access_log, dangling hebbian, orphaned entity links), SleepReport struct with per-phase timings + synthesis report. Tests: test_enhanced_sleep_cycle_phases, test_rebalance_cleans_orphaned_access_log, test_rebalance_cleans_dangling_hebbian.'
+  tags:
+  - feat-003
+  - memory-lifecycle
+  priority: 50
+- id: commit-supersession
+  title: 'Commit: Memory Supersession feature'
+  status: todo
+  description: 'Stage and commit all superseded_by field changes: types.rs, storage.rs, lib.rs, main.rs, memory.rs, test fixtures. See TASKS-AUTOPILOT.md TASK-01 for file list.'
+  tags:
+  - p0
+  - git
+  - engram
+  priority: 0
+- id: commit-lifecycle
+  title: 'Commit: Lifecycle Phase 4-5 (health, sleep cycle, rebalance)'
+  status: todo
+  description: Stage and commit lifecycle.rs (PhaseReport, HealthReport, RebalanceReport) + memory.rs (health(), rebalance(), expanded sleep_cycle()). See TASKS-AUTOPILOT.md TASK-02.
+  tags:
+  - p0
+  - git
+  - engram
+  priority: 0
+- id: commit-incremental-synthesis
+  title: 'Commit: Synthesis incremental staleness (C4)'
+  status: todo
+  description: 'Stage and commit synthesis engine changes: should_resynthesize(), incremental state check, SynthesisReport tracking. See TASKS-AUTOPILOT.md TASK-03.'
+  tags:
+  - p0
+  - git
+  - engram
+  priority: 0
+- id: commit-gid-graph
+  title: 'Commit: GID graph update'
+  status: todo
+  description: Stage and commit .gid/graph.yml separately. See TASKS-AUTOPILOT.md TASK-04.
+  tags:
+  - p0
+  - git
+  - engram
+  priority: 0
+- id: publish-v023
+  title: Publish v0.2.3 to crates.io
+  status: todo
+  description: Run pre-checks (test, clippy, doc, package), cargo publish, git tag v0.2.3. See TASKS-AUTOPILOT.md TASK-05.
+  tags:
+  - p0
+  - publish
+  - engram
+  priority: 0
+- id: fix-storage-all-perf
+  title: Fix storage.all() hot-loop O(C×N) performance bug
+  status: todo
+  description: 'synthesis/engine.rs:296 calls storage.all() inside per-cluster loop. Fix: either hoist above loop with HashMap index, or add Storage::get_by_ids() batch method. Audit all 17 call sites. See TASKS-AUTOPILOT.md TASK-06.'
+  tags:
+  - p0
+  - perf
+  - engram
+  priority: 0
+- id: wire-emotional-modulation
+  title: Wire emotional modulation into synthesis
+  status: todo
+  description: synthesis/engine.rs:268 — check if cluster_emotional module exists, wire it in or create minimal implementation (sort clusters by emotional valence). See TASKS-AUTOPILOT.md TASK-07.
+  tags:
+  - p1
+  - synthesis
+  - engram
+  priority: 50
+- id: persist-cluster-history
+  title: Persist cluster attempt history
+  status: todo
+  description: synthesis/engine.rs:307 — Add last_attempt_timestamp + attempt_count to IncrementalState. Use Jaccard check to determine cluster_changed. See TASKS-AUTOPILOT.md TASK-08.
+  tags:
+  - p1
+  - synthesis
+  - engram
+  priority: 50
+- id: compute-pairwise-similarity
+  title: Compute pairwise similarity (replace hardcoded false)
+  status: todo
+  description: synthesis/engine.rs:309 — Compute cosine similarity between member embeddings. If all pairs > 0.95 threshold, set true. Sample for large clusters. See TASKS-AUTOPILOT.md TASK-09.
+  tags:
+  - p1
+  - synthesis
+  - engram
+  priority: 50
+- id: impl-auto-update-actions
+  title: Implement auto-update actions (merge duplicates, strengthen links)
+  status: todo
+  description: 'synthesis/engine.rs:445 — Implement AutoUpdate match arm: MergeDuplicates (use supersession API), StrengthenLinks (Hebbian boost), UpdateMetadata. See TASKS-AUTOPILOT.md TASK-10.'
+  tags:
+  - p1
+  - synthesis
+  - engram
+  priority: 50
+- id: impl-stale-cluster-count
+  title: Implement stale cluster counting in health()
+  status: todo
+  description: memory.rs:807 — Count clusters with >50% dead/superseded members. Use cached clusters + check member liveness. See TASKS-AUTOPILOT.md TASK-11.
+  tags:
+  - p1
+  - synthesis
+  - engram
+  priority: 50
+- id: fix-flaky-env-test
+  title: Fix flaky test_merge_from_env (thread-safety)
+  status: todo
+  description: compiler/config.rs:301 — test_merge_from_env uses env::set_var which is not thread-safe. Fix with Mutex lock, serial_test crate, or refactor to accept env reader fn. See TASKS-AUTOPILOT.md TASK-12.
+  tags:
+  - p1
+  - test
+  - engram
+  priority: 50
+- id: audit-knowledge-compiler
+  title: Audit Knowledge Compiler integration
+  status: todo
+  description: Review src/compiler/ module completeness. Check CLI commands work. Run compiler tests. Document gaps. See TASKS-AUTOPILOT.md TASK-13.
+  tags:
+  - p2
+  - audit
+  - engram
+  priority: 100
+- id: connect-somatic-markers
+  title: Connect Somatic markers to decision loop
+  status: todo
+  description: Wire somatic markers into recall scoring. Check existing types, add SomaticMarker table if needed, boost/penalize recall by valence×domain. See TASKS-AUTOPILOT.md TASK-14.
+  tags:
+  - p2
+  - somatic
+  - engram
+  priority: 100
+- id: impl-metacognition-loop
+  title: Meta-Cognition Loop implementation
+  status: todo
+  description: Implement meta-cognition loop that monitors synthesis quality and auto-adjusts parameters. Find design docs first, may need further splitting. See TASKS-AUTOPILOT.md TASK-15.
+  tags:
+  - p2
+  - metacognition
+  - engram
+  priority: 100
+- id: dim-type-weights
+  title: TypeWeights struct + infer_type_weights()
+  status: done
+  description: 'Create src/type_weights.rs: TypeWeights struct (7 fields), Default impl (all 1.0), infer_type_weights(&ExtractedFact), from_metadata(), to_metadata(). ~80 lines.'
+  tags:
+  - dimensional-extract
+  type: task
+- id: dim-extractor
+  title: ExtractedFact dimensional fields + structured prompt + dual-path parser
+  status: done
+  description: 'Modify src/extractor.rs: ExtractedFact fields (core_fact + 10 dimensions + confidence/valence/domain), new structured output prompt, DimensionalResponse + LegacyExtractedFact types, dual-path parse_extraction_response.'
+  tags:
+  - dimensional-extract
+  type: task
+- id: dim-memory-integration
+  title: Storage integration + recall scoring with TypeWeights
+  status: done
+  description: 'Modify src/memory.rs: add_to_namespace builds dimensional metadata + type_weights + source_text. recall() uses TypeWeights max strategy instead of discrete match. Wire type_weights.rs into lib.rs.'
+  tags:
+  - dimensional-extract
+  type: task
+- id: dim-tests
+  title: Tests for dimensional extraction
+  status: done
+  description: 'Unit tests: type_weights inference, parser (new + legacy format), recall scoring with TypeWeights, backward compat (old memories with no type_weights).'
+  tags:
+  - dimensional-extract
+  type: task
+- id: iss-019
+  title: 'ISS-019: Dimensional metadata as first-class type (write-gap fix)'
+  status: todo
+  description: 'Make dimensions a strongly-typed Rust value (not Option<JSON>). Split write path by intent (store_enriched/store_raw). Failed extractions → quarantine, not main table. Merge via Dimensions::union with proptest-verified invariants. v1→v2 migration via LegacyClassification + backfill_queue. All 3 legacy entries (add/add_to_namespace/add_with_emotion) shimmed. Design: .gid/issues/ISS-019-dimensional-metadata-write-gap/design.md (850 lines, review-r1 8 findings applied).'
+  tags:
+  - dimensional
+  - write-path
+  - refactor
+  - iss-019
+  priority: 10
+  type: feature
+  metadata:
+    design_doc: .gid/issues/ISS-019-dimensional-metadata-write-gap/design.md
+- id: iss-019-s1-types
+  title: 'Step 1: All pure type definitions (dimensions + store API + merge + migration)'
+  status: done
+  description: |-
+    Define ALL pure types referenced by design §2, §3, §4.2, §5, §6, §8 in one pass. No method bodies with real logic, no callers — just type definitions + constructors + trivial accessors. This locks type signatures so later steps don't need to retrofit them.
+
+    **Primary types (src/dimensions.rs, ~300 lines):**
+    - Dimensions struct (core_fact + 10 narrative fields + 4 scalar fields + type_weights)
+    - NonEmptyString newtype (constructor returns Result<_, EmptyCoreFactError>)
+    - Valence(f64) newtype (clamped [-1.0, 1.0])
+    - Importance(f64) newtype (clamped [0.0, 1.0])
+    - Domain enum (Coding|Trading|Research|Communication|General|Other(String))
+    - Confidence enum (Confident|Likely|Uncertain) with Ord
+    - TemporalMark enum (Exact|Day|Range|Vague) + precision_rank()
+    - Dimensions::minimal(content) constructor (FINDING-4)
+
+    **Write-path API types (src/store_api.rs, ~150 lines):**
+    - StoreOutcome { Inserted{id}, Merged{id, similarity} }
+    - RawStoreOutcome { Stored(Vec<StoreOutcome>), Skipped{reason, content_hash}, Quarantined{id, reason} }
+    - StoreError enum (DbError | Quarantined{id, reason} | InvalidState(String))
+    - StorageMeta { importance_hint, source, namespace, user_metadata, memory_type_hint }
+    - SkipReason enum (NoFactsExtracted | DuplicateContent | etc.)
+    - QuarantineReason enum (ExtractorTimeout | ExtractorError{msg} | ExtractorPanic | etc.)
+    - QuarantineId newtype (String or UUID)
+    - ContentHash newtype
+
+    **Merge types (src/merge_types.rs, ~60 lines):**
+    - MergeOutcome { id, similarity, merge_count_after }
+
+    **Migration/telemetry types (src/migration_types.rs, ~80 lines):**
+    - LegacyClassification enum (HasExtractorData | LowDimLegacy{reason} | UnparseableLegacy)
+    - BackfillReason enum
+    - BackfillReport { attempted, upgraded, unchanged, failed }
+    - WriteStats { stored, skipped, quarantined, merged, skipped_by_reason: HashMap<SkipReason, u64> }
+    - StoreEvent enum (Stored | Skipped | Quarantined | Merged)
+
+    Reuse existing src/type_weights.rs (TypeWeights struct already there).
+
+    Unit tests (15-20 total): newtype invariants, constructor failures, Dimensions::minimal round-trip, Confidence Ord, TemporalMark precision_rank, serde round-trip for each enum.
+
+    Verify: cargo build + cargo test --lib passes, 0 warnings.
+
+    Design refs: §2.1, §2.2, §3.1, §3.2, §4.2, §5, §6, §8
+  priority: 10
+  type: task
+  metadata:
+    scope_note: all pure type definitions — no method bodies
+    design_ref: §2.1-§2.2, §3.1-§3.2, §4.2, §5, §6, §8
+    expected_lines: 600
+- id: iss-019-s2-enriched
+  title: 'Step 2: EnrichedMemory type + from_extracted (src/enriched.rs)'
+  status: done
+  description: |-
+    Create src/enriched.rs with EnrichedMemory:
+    - content: String (kept in sync with dimensions.core_fact)
+    - dimensions: Dimensions
+    - embedding: Option<Embedding> (None = compute inline, Some = caller precomputed — FINDING-3)
+    - importance: Importance (newtype, clamped [0.0, 1.0])
+    - source, namespace, user_metadata fields
+
+    Constructors:
+    - from_extracted(fact, source, namespace, user_metadata) → Result<Self, ConstructionError>
+    - minimal(content, source, namespace, user_metadata) — for extractor-less mode
+
+    Unit tests: from_extracted round-trip, EmptyCoreFact failure, minimal() fields defaulted correctly, embedding Option preserved.
+
+    Design refs: §2.3 (lines ~160-220)
+  priority: 10
+  type: task
+  metadata:
+    design_ref: §2.3
+- id: iss-019-s3-union
+  title: 'Step 3: Dimensions::union + proptest invariants [HIGHEST RISK] (FINDING-1/6/7)'
+  status: done
+  description: |-
+    ⚠️ **HIGHEST RISK STEP IN THIS REFACTOR.** design §11 explicitly flags this as "pin it down first" — get union logic and proptest invariants locked before any integration work downstream. Failure here cascades into every merge operation in Steps 5/5.5/5.9.
+
+    **Signature (from design §5.1):**
+    ```rust
+    impl Dimensions {
+        pub fn union(self, other: Dimensions, weights: MergeWeights) -> Dimensions;
+    }
+
+    pub struct MergeWeights {
+        pub existing_importance: f64,
+        pub incoming_importance: f64,
+    }
+    ```
+
+    Note: `self` = existing, `other` = incoming (non-commutative roles).
+
+    **Per-field strategies (design §5.1 — authoritative):**
+    - core_fact: longer wins (proxy for fuller extraction)
+    - participants: set-union of comma-separated names
+    - temporal: higher precision_rank wins (Exact > Range > Day > Vague) — note design lists this ordering
+    - location / context / causation / outcome / method: longer wins
+    - relations: set-union (semicolon-separated)
+    - sentiment: existing wins if present, else incoming (non-commutative)
+    - stance: same as sentiment
+    - valence: **importance-weighted average** = (a.valence * w.existing_importance + b.valence * w.incoming_importance) / (w.existing + w.incoming), then clamp to [-1.0, 1.0]
+    - domain: FINDING-6 rule — (1) concrete beats Other(_), (2) two concretes → existing wins, (3) two Other(_) → longer string wins, tie → existing
+    - confidence: min (most cautious) — Uncertain < Likely < Confident for Ord, so min picks lowest
+    - tags: BTreeSet union
+    - type_weights: per-variant max (affinity never decays)
+
+    **Proptest invariants (mandatory 3, per design §5.3):**
+    - idempotence: `a.union(a, weights).eq(&a)` for equal weights
+    - associativity: `(a.union(b)).union(c) == a.union(b.union(c))` (modulo consistent weights)
+    - monotonicity (information-only-grows): `info_content(union(a,b)) >= max(info_content(a), info_content(b))` where info_content counts Some(_) narrative fields and tags cardinality
+
+    DO NOT assert commutativity — non-commutative by design (sentiment/stance "existing wins").
+
+    **Targeted unit tests for non-commutative cases:**
+    - sentiment: Dimensions{sentiment: Some("happy")}.union(Dimensions{sentiment: Some("sad")}) → sentiment = "happy" (existing wins)
+    - sentiment: Dimensions{sentiment: None}.union(Dimensions{sentiment: Some("sad")}) → sentiment = "sad" (incoming fills None)
+    - stance: same pattern
+    - Domain: Coding ∪ Other("foo") = Coding (concrete beats Other)
+    - Domain: Coding ∪ Trading = Coding (existing wins among two concretes)
+    - Domain: Other("a") ∪ Other("longer") = Other("longer")
+    - Domain: Other("same") ∪ Other("same") = Other("same")
+    - TemporalMark precision: Vague ∪ Exact = Exact; Day ∪ Range = Range (Range > Day per design)
+    - Valence weighted: 0.9 weighted 1.0, -0.3 weighted 0.1 → ≈ 0.79
+    - Confidence: Confident ∪ Uncertain = Uncertain (min picks most cautious)
+    - info_content: union never has fewer Some narrative fields than existing
+
+    Verify: `cargo test --lib dimensions::union` passes (incl. 3 proptests, default 256 cases each), 0 warnings.
+
+    Design refs: §5.1, §5.3
+  priority: 10
+  type: task
+  metadata:
+    design_ref: §5.1, §5.3
+    risk_level: highest
+- id: iss-019-s4-store-api
+  title: 'Step 4: store_enriched + store_raw + v2 metadata write (FINDING-4)'
+  status: done
+  description: |-
+    Add new write API to MemoryManager:
+
+    pub fn store_enriched(&mut self, mem: EnrichedMemory) → Result<StoreOutcome, StoreError>
+    pub fn store_raw(&mut self, content: &str, meta: StorageMeta) → Result<RawStoreOutcome, StoreError>
+
+    store_raw three-branch behavior (FINDING-4):
+    1. No extractor configured → build Dimensions::minimal(content) → route to store_enriched → RawStoreOutcome::Stored
+    2. Extractor present + empty facts → RawStoreOutcome::Skipped{reason: NoFactsExtracted}
+    3. Extractor present + runtime failure → write row to quarantine table → RawStoreOutcome::Quarantined (NOT main memories table)
+    4. Extractor present + facts → each fact → EnrichedMemory::from_extracted → store_enriched → RawStoreOutcome::Stored(Vec<_>)
+
+    **v2 metadata WRITE (moved from Step 7 — see review issue 4):**
+    Implement Dimensions::to_stored_metadata(&self) → serde_json::Value emitting the v2 namespaced layout:
+    ```
+    {
+      "engram": { "dimensions": {...}, "version": 2 },
+      "user": { ...caller-supplied user_metadata... }
+    }
+    ```
+    store_enriched uses this to serialize metadata before INSERT. The READ path (v1 fallback, LegacyClassification, backfill_queue) is still Step 7 — here we only implement the write side. Reading rows written here must round-trip correctly (write→read same Dimensions).
+
+    Route internal callers that already have Dimensions to store_enriched.
+    Legacy entry points (add/add_to_namespace/add_with_emotion) unchanged until Step 4.5.
+
+    Unit tests: three-branch dispatch, v2 metadata write+read round-trip, minimal Dimensions path, extractor-error → quarantine path (may stub quarantine table insert if s6 not done — use #[ignore] for cross-cutting cases).
+
+    Design refs: §3, §4, §6 (write side only), §8
+  priority: 10
+  type: task
+- id: iss-019-s4-5-shim
+  title: 'Step 4.5: Shim 3 legacy entry points + engramai-internal integration test (FINDING-2)'
+  status: done
+  description: |-
+    Shim all three legacy entry points (FINDING-2 — breaking change acknowledged, shim preserves wire compat):
+
+    #[deprecated(note = "Use store_raw or store_enriched")]
+    pub fn add(&mut self, content: &str, memory_type, importance, source, metadata) → Result<String, _>
+
+    #[deprecated(note = "Use store_raw or store_enriched")]
+    pub fn add_to_namespace(&mut self, content: &str, memory_type, importance, source, metadata, namespace) → Result<String, _>
+
+    #[deprecated(note = "Use store_raw or store_enriched")]
+    pub fn add_with_emotion(&mut self, content: &str, memory_type, importance, source, metadata, valence) → Result<String, _>
+
+    All three forward to store_raw (packaging args into StorageMeta). Return signature unchanged — still Result<String, _> — extracted from RawStoreOutcome::Stored per design §3.3:
+    - Stored(outcomes) → outcomes.first().id (warn-log if N > 1)
+    - Skipped{..} → Ok(format!("skipped:{content_hash}")) sentinel (preserves legacy "dummy id on skip" behavior)
+    - Quarantined{id, reason} → Err(StoreError::Quarantined{id, reason}) — NOT silent success
+
+    **Integration test scope (per review issue 3):**
+    Test file: `tests/legacy_shim_compat.rs` inside the engram-ai-rust crate. Do NOT invoke RustClaw binary. Test by calling engramai's own public API with the exact call shape RustClaw uses:
+
+    ```rust
+    // Simulate RustClaw's call site shape (rustclaw/src/memory.rs:416, 610):
+    let mem = Memory::open(tmp_db)?;
+    let id = mem.add(content, MemoryType::Episodic, Some(0.7), Some("telegram"), None)?;
+    ```
+
+    Assertions:
+    - Row written to main memories table (not quarantine)
+    - Metadata layout is v2 namespaced (engram.dimensions present)
+    - Dimensions is minimal when no extractor configured
+    - Return value is a valid id string (not panic, not empty on Stored path)
+    - deprecation warning visible in cargo build output
+    - Skipped path returns "skipped:*" sentinel, not panic
+    - Quarantined path returns Err with structured reason
+
+    Design refs: §3.3, §10 R4, §11 Step 4.5
+  priority: 10
+  type: task
+- id: iss-019-s5-merge-enriched
+  title: 'Step 5: merge_enriched_into (coexist with legacy merge)'
+  status: done
+  description: |-
+    Introduce merge_enriched_into(&EnrichedMemory) alongside existing merge_memory_into(&str, ...).
+
+    New signature:
+    fn merge_enriched_into(&mut self, existing_id: &MemoryId, incoming: &EnrichedMemory, weight: f64) → Result<MergeOutcome, _>
+
+    Uses Dimensions::union() internally. Preserves merge_history, merge_count fields.
+    Legacy merge_memory_into still exists, still used by shim path. Zero breakage.
+
+    Unit tests: union applied correctly, merge_count incremented, merge_history updated (FIFO cap 10), idempotent on identical inputs.
+
+    Design refs: §5, §11 Step 5
+  priority: 10
+  type: task
+- id: iss-019-s5-5-migrate-callers
+  title: 'Step 5.5: Migrate internal merge callers to EnrichedMemory (FINDING-8)'
+  status: done
+  description: |-
+    Migrate all internal callers of merge_memory_into (memory.rs:714, 1478, 1517) to build EnrichedMemory and call merge_enriched_into.
+
+    Each call site:
+    1. Load existing row → decode Dimensions (or Dimensions::minimal if v1)
+    2. Build incoming EnrichedMemory from whatever the caller currently passes
+    3. Call merge_enriched_into
+
+    Verify via grep that merge_memory_into has ZERO internal callers after this step.
+    Shim also updated to new path.
+
+    Design refs: §11 Step 5.5, FINDING-8
+  priority: 10
+  type: task
+- id: iss-019-s5-9-rename
+  title: 'Step 5.9: Delete legacy merge + rename canonical'
+  status: todo
+  description: |-
+    After grep confirms zero internal callers, delete legacy merge_memory_into. Rename merge_enriched_into → merge_memory_into as canonical name.
+
+    This is the ONLY intentional breaking rename in the plan. Must happen in same PR as delete to avoid dangling references.
+
+    Verify: cargo build clean, grep returns only the new definition.
+
+    Design refs: §11 Step 5.9
+  priority: 10
+  type: task
+- id: iss-019-s6-quarantine
+  title: 'Step 6: Quarantine table + retry API'
+  status: done
+  description: |-
+    Add SQLite migration for quarantine table:
+    CREATE TABLE quarantine (id TEXT PRIMARY KEY, content TEXT, error_kind TEXT, error_detail TEXT, created_at REAL, retry_count INTEGER DEFAULT 0, last_retry_at REAL, permanently_rejected INTEGER DEFAULT 0);
+    CREATE INDEX idx_quarantine_created ON quarantine(created_at);
+
+    API methods on MemoryManager:
+    - retry_quarantined(max_items: usize) → QuarantineReport
+    - purge_quarantined() → usize (count of permanently_rejected rows deleted, honors TTL default 30d)
+
+    store_raw path: extractor error → INSERT INTO quarantine with error_kind.
+
+    Integration test: induce extractor failure (mock extractor that returns Err), confirm row in quarantine (not in memories), retry recovers when mock is fixed.
+
+    Design refs: §4.2, §10 R2, §11 Step 6
+  priority: 15
+  type: task
+- id: iss-019-s7-v2-metadata
+  title: 'Step 7: v1 read-path backward compat + LegacyClassification + backfill_queue (FINDING-5)'
+  status: done
+  description: |-
+    **COMPLETED 2026-04-22.**
+
+    Step 7 now fully closes the write-path v1→v2 upgrade gap from design §6.
+
+    **What was done:**
+
+    1. **update_memory rewritten** (src/memory.rs:3673) — no longer writes audit keys at top level. Now decodes row via EnrichedMemory::from_memory_record (handles v1 or v2), swaps core_fact to new content while preserving all other Dimensions, re-serializes via to_legacy_metadata() (v2 `{engram, user}` layout), and appends audit entry to user.update_audit[] (capped at 10, mirroring merge_history cap).
+
+    2. **Latent bug fixed in EnrichedMemory::from_memory_record** (src/enriched.rs) — RESERVED key list was missing "engram" and "user" v2 namespace keys. On v2 rows, the entire engram namespace was getting swept into user_metadata, then nested again on re-serialize. Added explicit v2 `user` sub-object lift path before the v1 flat-fallback scan.
+
+    3. **Audit trail schema:** user.update_audit[] is a Vec<{previous_content, reason, updated_at}>, chronological, capped at 10.
+
+    **Tests added** (tests/iss019_update_memory_v1_upgrade.rs, 4 cases):
+    - update_upgrades_v1_row_to_v2_layout — v1 row gets rewritten to v2, participants/domain/user keys round-trip, audit entry correctly placed
+    - update_preserves_v2_layout_without_pollution — v2 rows stay v2, engram namespace never polluted with audit
+    - repeated_updates_accumulate_audit_history — 3 sequential updates produce 3 audit entries in order
+    - audit_history_capped_at_ten_entries — 15 updates → only last 10 retained, correct eviction order
+
+    **Verification:**
+    - cargo test --lib --tests --release: 1142 passed, 0 failed, 4 ignored
+    - clippy: zero errors in modified files (63 pre-existing errors in synthesis/engine.rs etc. are separate debt)
+
+    **Design refs satisfied:** §6 write-side "if a v1 row is touched by normal write path (merge), it gets upgraded to v2 as side effect" — now also applies to update_memory, not just merge_enriched_into.
+  priority: 15
+  type: task
+- id: iss-019-s8-telemetry-backfill
+  title: 'Step 8: WriteStats telemetry + backfill_dimensions API'
+  status: done
+  description: |-
+    Add WriteStats telemetry struct exposing stored/skipped/quarantined/merged counters + skipped_by_reason HashMap.
+
+    MemoryManager::stats() → WriteStats
+
+    Lightweight EventSink trait for pluggable telemetry (default impl: atomic counters). store_raw/store_enriched emit StoreEvent::{Stored|Skipped|Quarantined|Merged} on each call.
+
+    Demote redundant info! logs to debug! where covered by counters.
+
+    backfill_dimensions(max_items) → BackfillReport with attempted/upgraded/unchanged/failed fields. Reuses merge_enriched_into machinery.
+
+    Design refs: §6 backfill API, §8 telemetry, §11 Step 8
+
+    ---
+
+    ## Progress (2026-04-22) — COMPLETE
+
+    **Part A — WriteStats telemetry (§8): ✅ DONE**
+    - `src/write_stats.rs` (445 lines): `StoreEvent`, `EventSink`, `CountingSink`, `NoopSink`, `WriteStats`, `SharedSink`, `duration_to_ms`
+    - `Memory` integration: `event_sink` + `counting_sink` fields, `install_default_counting_sink`, `set_event_sink`, `install_default_write_stats`, `write_stats`, `reset_write_stats`, `emit_store_event`
+    - `store_raw` emits one event at each of 6 return points
+    - Demoted redundant `info!` → `debug!` (2 sites in memory.rs)
+    - Tests: 12 lib unit + 12 integration, all pass
+
+    **Part B — backfill_dimensions API (§6): ✅ DONE**
+    - `src/migration_types.rs`: `LegacyClassification` enum (HasExtractorData/LowDimLegacy/UnparseableLegacy), `BackfillReport { attempted, upgraded, unchanged, failed, permanently_rejected }`, `classify_stored_metadata()`
+    - `src/storage.rs`: `backfill_queue` table with migration, CRUD: `enqueue_backfill`, `list_backfill_batch`, `record_backfill_attempt`, `mark_backfill_permanently_rejected`, `delete_backfill_row`, `count_backfill_live`
+    - `src/memory.rs`: `scan_and_enqueue_backfill(max_rows)` classifies v1 rows and enqueues; `backfill_dimensions(max_items)` reuses `merge_enriched_into` with similarity 1.0; `bump_backfill_attempts_or_reject` handles retry/permanent-rejection with `BACKFILL_MAX_ATTEMPTS`
+    - Tests: `tests/iss019_backfill_test.rs` — 6 tests covering noop-without-extractor, v1→v2 upgrade path, queue idempotency, already-v2 drops queue row, classification of all three legacy shapes, permanent-rejection after max attempts
+    - Fixed: `examples/kc_e2e_real.rs` missing ISS-020 dimensional fields (dimensions/type_weights/confidence/valence = None for raw-SQL loads)
+    - Removed unused import in `src/write_stats.rs` test module
+
+    **Final state:** 1169 tests pass, 0 failures, 0 new warnings. Full workspace `cargo test` exits 0.
+  priority: 20
+  type: task
+- id: iss-019-s9-smoke-pilot
+  title: 'Step 9: 24h-slice smoke rebuild pilot + coverage assertions'
+  status: done
+  description: |-
+    **COMPLETED AS DIAGNOSTIC 2026-04-22** — see PIVOT-NOTE.md.
+
+    Step 9 已跑完两次（engram/telegram 100 条 + sessions 40 条），成功揭示**下游 bug**：
+
+    | Source | dim 容器 | participants | temporal | causation |
+    |---|---|---|---|---|
+    | engram/telegram | 100% ✅ | 0% ❌ | 6% ❌ | 13% ❌ |
+    | sessions | 100% ✅ | 66% ✅ | 75% ✅ | 6% ❌ |
+
+    结论：写路径容器层修好了（Step 1-8 生效），但子维度抽取能力不稳定 → 需要新 issue (ISS-021) 诊断。
+
+    **Step 9 的价值已兑现**：作为 diagnostic pipeline 证明了 Step 1-8 容器修复有效，同时发现了下游问题。不需要再跑更多 sample。
+
+    衍生的两个 sub-task（断言诊断分离、切 raw_memory）都 cancelled——Step 9 pipeline 本身已足够。
+  priority: 150
+  type: task
+- id: iss-019-s10-full-rebuild
+  title: 'Step 10: 58MB full rebuild (gated on Step 9)'
+  status: todo
+  description: |-
+    Only after Step 9 green. Run full rebuild on 58MB production engram DB.
+
+    Named phases:
+    1. Backup original DB
+    2. Run backfill_dimensions as explicit step → BackfillReport
+    3. Run full rebuild (re-extract + re-ingest via store_raw)
+    4. Compare coverage: target ≥ smoke pilot thresholds
+    5. Spot-check recall quality on known-good queries vs. backup
+
+    Commit report + any anomalies to issue log.
+
+    Design refs: §11 Step 10
+  priority: 30
+  type: task
+- id: iss-019-s8-5-verify
+  title: 'Step 8.5: Quality gate — full test suite + clippy + no-regression (review issue 6)'
+  status: todo
+  description: |-
+    Quality gate before running any rebuild pilot (review issue 6). This step does NOT write new code — it verifies the refactor didn't break anything.
+
+    **Verification steps:**
+
+    1. Full test suite:
+       ```
+       cargo test --all --release
+       ```
+       Must be 100% green. Includes:
+       - All unit tests from Steps 1-8
+       - All integration tests (tests/legacy_shim_compat.rs, tests/*.rs)
+       - All proptest invariants (Step 3 union)
+       - All doctests
+
+    2. Lint clean:
+       ```
+       cargo clippy --all-targets --all-features -- -D warnings
+       ```
+       Zero warnings tolerated. `#[deprecated]` on legacy shims is expected — suppress in test files only, not in lib.
+
+    3. No regression in adjacent features. Grep verify:
+       - knowledge-synthesis tests still pass
+       - multi-signal-hebbian tests still pass
+       - rumination tests still pass
+       - supersession tests still pass
+       - memory-lifecycle tests still pass
+       - entity-indexing tests still pass
+       - knowledge-compiler tests still pass
+
+    4. Binary size sanity check:
+       ```
+       cargo build --release && ls -la target/release/*.rlib
+       ```
+       Note: previous release build size for comparison; alert if >15% growth.
+
+    5. Snapshot state for rollback: `git status` clean, `git log --oneline -10` shows all Step 1-8 commits.
+
+    **Gate criteria:** if ANY of 1/2/3 fail, block Step 9. Fix and rerun.
+
+    Output: commit a VERIFY_REPORT.md to .gid/issues/ISS-019-dimensional-metadata-write-gap/ summarizing test count, clippy clean, adjacent-feature health.
+
+    Design refs: implicit (every step must compile + pass tests, this formalizes it before production rebuild)
+  tags:
+  - verify
+  - quality-gate
+  - iss-019
+  priority: 22
+  type: task
+- id: iss-020
+  title: 'ISS-020: LoCoMo dim-aware retrieval (读路径改造)'
+  status: todo
+  description: |-
+    **The actual LoCoMo score-lifting work.** ISS-019 修好了写路径（维度齐全），这个 issue 在读路径把维度用起来。
+
+    **动机**：LoCoMo 当前 ~77.9% accuracy，48.3% 误差是 "retrieved-but-irrelevant"（ranking 问题）。activation level 与 query relevance 不相关 → 需要 type-aware retrieval。
+
+    **Phase A - Baseline**:
+    - 用 ISS-019 修复后的 HEAD 重新灌 LoCoMo memories
+    - SQL 检查维度覆盖率
+    - 跑一次 LoCoMo 获取 baseline（预期仍接近 77.9%）
+
+    **Phase B - Dim-aware ranking**:
+    - 检索时调用 extract_query_dimensions(query)
+    - 对 candidates 计算 dim-match score
+    - 加入排序函数（与 activation、embedding 相似度加权）
+    - 再跑 LoCoMo
+
+    **Phase C - Ablation**:
+    - 对比 activation-only vs dim-aware
+    - 量化 Δaccuracy
+    - 若 Δ > 2% → 方向验证；若 Δ ≈ 0 → 排查 ingestion 或实现
+
+    详见 .gid/issues/ISS-019-.../PIVOT-NOTE.md
+  tags:
+  - locomo
+  - retrieval
+  - ranking
+  - benchmark
+  - blocked_by_iss019
+  priority: 50
+  type: task
+- id: iss-021
+  title: 'ISS-021: Sub-dimension extraction coverage audit'
+  status: todo
+  description: |-
+    **The actual coverage bug exposed by Step 9.**
+
+    Step 9 pilot 显示：`engram.dimensions` 容器 100% 覆盖，但子字段稀疏：
+    - telegram source: participants 0%, temporal 6%, causation 13%
+    - sessions source: participants 66%, temporal 75%, causation 6%
+
+    **假设空间**：
+    - H1: LegacyClassification dispatch 漏，部分路径没触发 v2 分类器
+    - H2: Extractor 本身不抽 participants/temporal/causation（缺抽取逻辑）
+    - H3: 抽到了但序列化到 metadata 时被丢弃（新的写路径漏点）
+    - H4: 内容真稀疏（任务文本本身无此信息，LoCoMo 对话数据可能 OK）
+
+    **实验**：
+    1. 从 Step 9 target DB 随机抽 10 条"维度为空"的记忆，人工标注原文是否含 participants/temporal/causation
+    2. 追踪 extractor → dimensions → metadata 数据流，每步打印字段存在性
+    3. 根据结果修复：H1/H3 → bug fix; H2 → 扩展 extractor 或 classifier; H4 → 用 LoCoMo 对话数据验证
+
+    **不做**：在未知哪个假设之前盲目改代码。先诊断，再修复。
+
+    这是 ISS-020 LoCoMo dim-aware ranking 的前置依赖——没有可匹配的 dim 值，ranking 无意义。
+  tags:
+  - dim-extraction
+  - coverage
+  - diagnostic
+  - blocks_iss020
+  priority: 40
+  type: task
+- id: iss-024
+  title: 'ISS-024: Dimensional metadata pipeline half-wired end-to-end'
+  status: blocked
+  description: |-
+    **Root cause:** The dimensional side channel is architecturally present but functionally dead on both ends.
+    
+    **Gap A (write surface):** `engram store` CLI has no `--meta` / `--metadata` argument. 
+    Adapters calling `engram store "..." --meta dia_id=D1:3` get rc=2 from clap, writes nothing, 
+    adapter silently continues (no rc check).
+    
+    **Gap B (read surface):** The 7 recall channels in `recall_from_namespace` (embedding/FTS/entity/
+    temporal/somatic/activation/confidence) operate entirely on `content`, `entities` table, and 
+    `created_at`. Zero channels consult `metadata.dimensions.*`. `temporal_score` uses `record.created_at`; 
+    nothing uses `dimensions.temporal`. No `dimension_match` channel exists.
+    
+    **Net result:** ISS-019/020/021/022 improvements to write coverage change nothing the ranker sees.
+    
+    **This is the root cause of "Rust unit tests all green, real pipeline broken"** — no test crosses 
+    the CLI boundary end-to-end with dimensions.
+    
+    **Scope:**
+    - Change 1: Add `--meta` flag to CLI Store subcommand
+    - Change 2: Add rc-check in adapter call sites (equal priority to Change 1)
+    - Change 3a: Extend `temporal_score` to consume `metadata.dimensions.temporal`
+    - Change 4: End-to-end contract test crossing CLI boundary
+    
+    **Out of scope (deferred):** 
+    - Change 3b (new `dimension_match` 8th channel — belongs to ISS-020 Phase B)
+    - ISS-022 schema refactor
+    - Existing DB backfill
+    
+    **Blocks:** ISS-020 Phase B cannot deliver LoCoMo gains until retrieval reads dimensions.
+    
+    See .gid/issues/ISS-024-dimensional-read-path-and-cli-meta-gap/investigation.md
+  tags:
+  - dimensional
+  - cli
+  - retrieval
+  - bugfix
+  - contract-completion
+  - blocks_iss020
+  priority: 45
+  type: task
+  metadata:
+    iss: ISS-024
+    related:
+    - ISS-019
+    - ISS-020
+    - ISS-021
+    - ISS-022
+- id: iss-024-design
+  title: 'ISS-024 Design: Time parsing + adapter inventory + reserved-ns semantics + contract framework'
+  status: done
+  description: |-
+    Design phase addressing the 5 underspecified areas from investigation:
+    
+    1. **Change 3a natural-language time parsing:** Which library/rules for parsing dimensions.temporal 
+       natural-language expressions (e.g., "yesterday afternoon", "last Tuesday") → time range? 
+       Failure fallback strategy? Caching to avoid repeated parse? (Highest-risk sub-step)
+    
+    2. **Change 2 complete adapter inventory:** Investigation named 2 call sites (LoCoMo bench runner, 
+       RustClaw skill). Grep for all `engram store` invocations across ecosystem — may be more.
+    
+    3. **AC-2 reserved-namespace semantics:** Exact error message when caller passes `--meta dimensions=...`? 
+       Hard-reject vs warn? Behavior when `--meta foo=bar` conflicts with extractor-produced `metadata.foo`?
+    
+    4. **Contract test framework:** Make it reusable so future cross-CLI-boundary issues copy-paste pattern. 
+       Helper functions? Shared test harness?
+    
+    5. **Interface shape for 3a → 3b:** Reserve enough in dimension-consumption layer that adding 8th 
+       channel (dimension_match) later doesn't require refactoring 3a temporal work.
+    
+    **Deliverable:** design-1-*.md in .gid/issues/ISS-024-dimensional-read-path-and-cli-meta-gap/
+    - Covers all 5 questions with concrete decisions
+    - Adapter inventory table (call site, current args, needed rc-check changes)
+    - Time parsing library selection + API surface
+    - Reserved namespace error messages (exact strings)
+    - Contract test skeleton showing reuse pattern
+  tags:
+  - design
+  - iss-024
+  priority: 45
+  type: design
+  metadata:
+    deliverable: design-1-*.md
+- id: iss-024-cli-meta
+  title: 'ISS-024 Change 1: Add --meta flag to CLI Store subcommand'
+  status: todo
+  description: |-
+    **Goal:** Close Gap A — enable adapters to pass caller-supplied metadata via CLI.
+    
+    **Implementation (~40 lines in src/main.rs):**
+    - Add to Store enum:
+      ```rust
+      #[arg(long = "meta", value_parser = parse_kv, action = clap::ArgAction::Append)]
+      metadata: Vec<(String, String)>,
+      ```
+    - Implement `parse_kv(s: &str) -> Result<(String, String), String>`:
+      * Split once on `=`
+      * Validate non-empty key
+      * Reject reserved keys: `dimensions`, `merge_history`, `merge_count`, etc. (from design)
+      * Return (key, value) as strings
+    - At dispatch, fold Vec<(String, String)> into serde_json::Value::Object
+    - Pass to Memory::remember() metadata argument
+    - Update `engram store --help` docstring to document caller-owned side channel contract
+    
+    **AC:**
+    - `engram store "x" --meta foo=bar` returns rc=0
+    - Memory has `metadata.foo == "bar"`
+    - `--meta dimensions=x` returns rc=2 with clear error message (reserved namespace)
+    - Multiple `--meta` flags accumulate (Append action)
+    
+    **Files:** src/main.rs (~40 lines)
+  tags:
+  - cli
+  - iss-024
+  - gap-a
+  priority: 45
+  type: task
+  metadata:
+    files:
+    - src/main.rs
+    iss: ISS-024
+    blocked_by: iss-024-design
+- id: iss-024-adapter-rc
+  title: 'ISS-024 Change 2: Adapter rc-check at all call sites'
+  status: todo
+  description: |-
+    **Goal:** Defense in depth — ensure adapters fail loudly on CLI invocation errors.
+    
+    **Implementation (varies per adapter):**
+    For each call site identified in design phase (LoCoMo bench, RustClaw skill, etc.):
+    1. Check `cmd.status.success()` and fail loudly on non-zero exit
+    2. Log exact CLI invocation on failure (especially `--meta` pairs) for forensic replay
+    3. Add dry-run mode that prints resolved command without executing
+    
+    **Known call sites from investigation:**
+    - LoCoMo benchmark runner
+    - RustClaw engram skill
+    - (Design phase will complete inventory)
+    
+    **AC:**
+    - All call sites check rc
+    - Failure includes CLI invocation in error message
+    - Dry-run mode available for pre-ingestion schema validation
+    
+    **Files:** (identified in design phase)
+    - Likely: benchmarks/locomo/runner.rs, rustclaw/src/skills/engram.rs, others TBD
+  tags:
+  - adapter
+  - iss-024
+  - gap-a
+  - defense-in-depth
+  priority: 45
+  type: task
+  metadata:
+    iss: ISS-024
+    blocked_by: iss-024-design
+- id: iss-024-temporal-dim
+  title: 'ISS-024 Change 3a: Extend temporal_score to consume dimensions.temporal'
+  status: todo
+  description: |-
+    **Goal:** Close Gap B (surgical approach) — make temporal scoring use dimensional time expressions.
+    
+    **Implementation (~80 lines in src/memory.rs):**
+    - When `time_range` is present in query, compute TWO scores:
+      * `insertion_time_score`: existing logic using `record.created_at`
+      * `dimension_time_score`: parse `record.metadata.dimensions.temporal` (natural-language expression 
+        like "yesterday afternoon") into time range, score overlap with query time_range
+    - Return `max(insertion_time_score, dimension_time_score)` — best-available signal wins
+    - Parsing handled by helper from design phase (library selection TBD)
+    - Cache parsed time ranges in memory record to avoid re-parsing on every score call
+    - Failure fallback: if parse fails, log warning and use only insertion_time_score
+    
+    **AC:**
+    - Memory with `dimensions.temporal = "3pm yesterday"` matches temporal query for that range
+    - Memory with old `created_at` but recent `dimensions.temporal` scores higher than pure insertion time
+    - Backwards compatible: empty dimensions.temporal → existing behavior (insertion time only)
+    - No performance regression: parsing cached per-record
+    
+    **Files:** src/memory.rs (~80 lines), possibly new src/temporal_parse.rs if library integration large
+  tags:
+  - retrieval
+  - iss-024
+  - gap-b
+  - temporal
+  priority: 45
+  type: task
+  metadata:
+    files:
+    - src/memory.rs
+    iss: ISS-024
+    blocked_by: iss-024-design
+- id: iss-024-contract-test
+  title: 'ISS-024 Change 4: End-to-end contract test crossing CLI boundary'
+  status: todo
+  description: |-
+    **Goal:** Prevent regression — create reusable contract test pattern for CLI ↔ core integration.
+    
+    **Implementation (~150 lines in tests/dimensional_contract_test.rs):**
+    1. Spawn `engram store` with `--meta dia_id=D1:3`, LoCoMo-style content, extractor enabled
+    2. Assert rc=0, memory persisted, `metadata.dimensions.participants` non-empty, `metadata.dia_id == "D1:3"`
+    3. Run `engram recall "who was at the meeting"` same namespace
+    4. Assert memory from step 1 in top-3 results AND score benefits from dimension match
+    5. Compare against control memory (empty dimensions) — dimension-rich should rank higher
+    
+    **Test harness utilities (reusable for future CLI contract tests):**
+    - `spawn_cli(args: &[&str]) -> (ExitStatus, String, String)` — run CLI, capture stdout/stderr
+    - `assert_cli_success(result)` — check rc=0, pretty error on failure
+    - `parse_recall_output(stdout) -> Vec<RecallResult>` — structured access to CLI output
+    - `setup_test_namespace() -> TempNamespace` — isolated namespace, auto-cleanup
+    
+    **AC (this is THE contract):**
+    - Test passes on current HEAD (after Changes 1-3 land)
+    - Test fails if `--meta` flag removed (catches Gap A regression)
+    - Test fails if `temporal_score` stops reading dimensions (catches Gap B regression)
+    - Test is copy-pasteable for future CLI contract needs
+    
+    **Files:** tests/dimensional_contract_test.rs (new, ~150 lines)
+  tags:
+  - testing
+  - iss-024
+  - contract
+  - e2e
+  priority: 45
+  type: task
+  metadata:
+    files:
+    - tests/dimensional_contract_test.rs
+    iss: ISS-024
+    blocked_by: iss-024-design
+- id: iss-024-extractor-stub
+  title: 'ISS-024 Prep: Add StubExtractor for deterministic contract testing'
+  status: todo
+  description: |-
+    **Goal:** Enable deterministic dimension-seeding in CI so iss-024-contract-test
+    can exercise the end-to-end pipeline without depending on the real Anthropic
+    extractor (non-deterministic, requires network + auth, prompt drift breaks tests).
+
+    **Implementation (~40 LOC in src/extractor.rs + 2 fixture files):**
+    - Add `StubExtractor` variant that reads a JSON fixture path from env
+      var `ENGRAM_EXTRACTOR_STUB_PATH` and returns its contents as the
+      extraction result.
+    - Plumb through `ExtractorArg::Stub` in src/main.rs (one new enum variant).
+    - Fixtures in `tests/fixtures/iss024/`:
+      * `alice_met_bob.json` — one fact, `dimensions.temporal = ["yesterday afternoon"]`
+      * `control.json` — one fact, empty dimensions
+
+    **AC:**
+    - `engram store "x" --extractor stub` with `ENGRAM_EXTRACTOR_STUB_PATH=...`
+      persists the fixture's dimensions verbatim.
+    - Unit test asserts fixture → MemoryRecord.metadata round-trip.
+
+    **Design ref:** design.md §4.5 "Extractor Handling in CI"
+  tags:
+  - iss-024
+  - testing
+  - prep
+  priority: 45
+  type: task
+  metadata:
+    files:
+    - src/extractor.rs
+    - src/main.rs
+    - tests/fixtures/iss024/alice_met_bob.json
+    - tests/fixtures/iss024/control.json
+    iss: ISS-024
+    blocked_by: iss-024-design
+edges:
+- from: a1-hook-filter
+  to: phase-a
+  relation: subtask_of
+- from: a2-extractor-negatives
+  to: phase-a
+  relation: subtask_of
+- from: a3-sql-cleanup
+  to: phase-a
+  relation: subtask_of
+- from: b1-entity-index
+  to: phase-b
+  relation: subtask_of
+- from: b2-dedup
+  to: phase-b
+  relation: subtask_of
+- from: b3-confidence
+  to: phase-b
+  relation: subtask_of
+- from: b4-recency
+  to: phase-b
+  relation: subtask_of
+- from: a3-sql-cleanup
+  to: a1-hook-filter
+  relation: depends_on
+- from: a3-sql-cleanup
+  to: a2-extractor-negatives
+  relation: depends_on
+- from: phase-b
+  to: phase-a
+  relation: depends_on
+- from: b1-entity-index
+  to: a3-sql-cleanup
+  relation: depends_on
+- from: b2-dedup
+  to: a3-sql-cleanup
+  relation: depends_on
+- from: b3-confidence
+  to: b1-entity-index
+  relation: depends_on
+- from: b4-recency
+  to: b3-confidence
+  relation: depends_on
+- from: entity-types
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-unit-tests
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-storage
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-add-raw
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-recall
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-backfill
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-integration-tests
+  to: b1-entity-index
+  relation: subtask_of
+- from: entity-storage
+  to: entity-types
+  relation: depends_on
+- from: entity-unit-tests
+  to: entity-types
+  relation: depends_on
+- from: entity-add-raw
+  to: entity-storage
+  relation: depends_on
+- from: entity-recall
+  to: entity-storage
+  relation: depends_on
+- from: entity-backfill
+  to: entity-add-raw
+  relation: depends_on
+- from: entity-backfill
+  to: entity-recall
+  relation: depends_on
+- from: entity-integration-tests
+  to: entity-backfill
+  relation: depends_on
+- from: synth-types
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-mod
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-cluster
+  to: synth-types
+  relation: depends_on
+- from: synth-cluster
+  to: synth-mod
+  relation: depends_on
+- from: synth-gate
+  to: synth-types
+  relation: depends_on
+- from: synth-gate
+  to: synth-mod
+  relation: depends_on
+- from: synth-gate
+  to: synth-cluster
+  relation: depends_on
+- from: synth-insight
+  to: synth-types
+  relation: depends_on
+- from: synth-insight
+  to: synth-mod
+  relation: depends_on
+- from: synth-provenance
+  to: synth-types
+  relation: depends_on
+- from: synth-provenance
+  to: synth-mod
+  relation: depends_on
+- from: synth-engine
+  to: synth-cluster
+  relation: depends_on
+- from: synth-engine
+  to: synth-gate
+  relation: depends_on
+- from: synth-engine
+  to: synth-insight
+  relation: depends_on
+- from: synth-engine
+  to: synth-provenance
+  relation: depends_on
+- from: synth-consolidate
+  to: synth-engine
+  relation: depends_on
+- from: synth-incremental
+  to: synth-cluster
+  relation: depends_on
+- from: synth-incremental
+  to: synth-provenance
+  relation: depends_on
+- from: synth-unit-tests
+  to: synth-cluster
+  relation: depends_on
+- from: synth-unit-tests
+  to: synth-gate
+  relation: depends_on
+- from: synth-unit-tests
+  to: synth-insight
+  relation: depends_on
+- from: synth-unit-tests
+  to: synth-provenance
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-engine
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-consolidate
+  relation: depends_on
+- from: synth-integration-tests
+  to: synth-incremental
+  relation: depends_on
+- from: synth-cluster
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-gate
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-insight
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-provenance
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-engine
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-consolidate
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-incremental
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-unit-tests
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-integration-tests
+  to: iss-005-synthesis
+  relation: subtask_of
+- from: synth-cluster
+  to: b1-entity-index
+  relation: depends_on
+- from: kc-compilation
+  to: kc
+  relation: subtask_of
+- from: kc-maintenance
+  to: kc
+  relation: subtask_of
+- from: kc-platform
+  to: kc
+  relation: subtask_of
+- from: kc-topic-discovery
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-compilation-pipeline
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-incremental-trigger
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-topic-lifecycle
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-feedback-processor
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-quality-scorer
+  to: kc-compilation
+  relation: subtask_of
+- from: kc-decay-engine
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-conflict-detector
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-health-auditor
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-export-engine
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-cli
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-api
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-privacy-guard
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-maintenance-lock
+  to: kc-maintenance
+  relation: subtask_of
+- from: kc-llm-provider
+  to: kc-platform
+  relation: subtask_of
+- from: kc-config
+  to: kc-platform
+  relation: subtask_of
+- from: kc-embedding-pipeline
+  to: kc-platform
+  relation: subtask_of
+- from: kc-import
+  to: kc-platform
+  relation: subtask_of
+- from: kc-intake
+  to: kc-platform
+  relation: subtask_of
+- from: kc-degradation
+  to: kc-platform
+  relation: subtask_of
+- from: kc-types
+  to: kc
+  relation: subtask_of
+- from: kc-storage
+  to: kc
+  relation: subtask_of
+- from: kc-mod
+  to: kc
+  relation: subtask_of
+- from: kc-storage
+  to: kc-types
+  relation: depends_on
+- from: kc-storage
+  to: kc-mod
+  relation: depends_on
+- from: kc-config
+  to: kc-types
+  relation: depends_on
+- from: kc-llm-provider
+  to: kc-config
+  relation: depends_on
+- from: kc-embedding-pipeline
+  to: kc-config
+  relation: depends_on
+- from: kc-degradation
+  to: kc-llm-provider
+  relation: depends_on
+- from: kc-degradation
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-topic-discovery
+  to: kc-storage
+  relation: depends_on
+- from: kc-topic-discovery
+  to: kc-llm-provider
+  relation: depends_on
+- from: kc-compilation-pipeline
+  to: kc-topic-discovery
+  relation: depends_on
+- from: kc-compilation-pipeline
+  to: kc-llm-provider
+  relation: depends_on
+- from: kc-incremental-trigger
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-incremental-trigger
+  to: kc-storage
+  relation: depends_on
+- from: kc-topic-lifecycle
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-feedback-processor
+  to: kc-storage
+  relation: depends_on
+- from: kc-feedback-processor
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-quality-scorer
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-quality-scorer
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-decay-engine
+  to: kc-storage
+  relation: depends_on
+- from: kc-conflict-detector
+  to: kc-storage
+  relation: depends_on
+- from: kc-conflict-detector
+  to: kc-llm-provider
+  relation: depends_on
+- from: kc-conflict-detector
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-health-auditor
+  to: kc-decay-engine
+  relation: depends_on
+- from: kc-health-auditor
+  to: kc-conflict-detector
+  relation: depends_on
+- from: kc-export-engine
+  to: kc-storage
+  relation: depends_on
+- from: kc-export-engine
+  to: kc-privacy-guard
+  relation: depends_on
+- from: kc-privacy-guard
+  to: kc-storage
+  relation: depends_on
+- from: kc-cli
+  to: kc-decay-engine
+  relation: depends_on
+- from: kc-cli
+  to: kc-conflict-detector
+  relation: depends_on
+- from: kc-cli
+  to: kc-export-engine
+  relation: depends_on
+- from: kc-cli
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-api
+  to: kc-cli
+  relation: depends_on
+- from: kc-import
+  to: kc-storage
+  relation: depends_on
+- from: kc-import
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-intake
+  to: kc-import
+  relation: depends_on
+- from: kc-maintenance-lock
+  to: kc-types
+  relation: depends_on
+- from: kc-manual-edit
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-types
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-storage
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-topic-discovery
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-decay-engine
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-conflict-detector
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-export-engine
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-embedding-pipeline
+  relation: depends_on
+- from: kc-unit-tests
+  to: kc-manual-edit
+  relation: depends_on
+- from: kc-integration-tests
+  to: kc-compilation-pipeline
+  relation: depends_on
+- from: kc-integration-tests
+  to: kc-cli
+  relation: depends_on
+- from: kc-integration-tests
+  to: kc-import
+  relation: depends_on
+- from: cs-vptree
+  to: cluster-scaling
+  relation: subtask_of
+- from: cs-refactor-inner
+  to: cluster-scaling
+  relation: subtask_of
+- from: cs-storage
+  to: cluster-scaling
+  relation: subtask_of
+- from: cs-hot-path
+  to: cluster-scaling
+  relation: subtask_of
+- from: cs-warm-path
+  to: cluster-scaling
+  relation: subtask_of
+- from: cs-consolidate
+  to: cluster-scaling
+  relation: subtask_of
+- from: cs-refactor-inner
+  to: cs-vptree
+  relation: depends_on
+- from: cs-hot-path
+  to: cs-storage
+  relation: depends_on
+- from: cs-warm-path
+  to: cs-refactor-inner
+  relation: depends_on
+- from: cs-warm-path
+  to: cs-hot-path
+  relation: depends_on
+- from: cs-consolidate
+  to: cs-warm-path
+  relation: depends_on
+- from: f3-phase2
+  to: f3-phase1
+  relation: depends_on
+- from: f3-phase3
+  to: f3-phase2
+  relation: depends_on
+- from: f3-phase4
+  to: f3-phase3
+  relation: depends_on
+- from: f3-phase5
+  to: f3-phase4
+  relation: depends_on
+- from: commit-lifecycle
+  to: commit-supersession
+  relation: depends_on
+- from: commit-incremental-synthesis
+  to: commit-lifecycle
+  relation: depends_on
+- from: commit-gid-graph
+  to: commit-incremental-synthesis
+  relation: depends_on
+- from: publish-v023
+  to: commit-gid-graph
+  relation: depends_on
+- from: fix-storage-all-perf
+  to: publish-v023
+  relation: depends_on
+- from: wire-emotional-modulation
+  to: fix-storage-all-perf
+  relation: depends_on
+- from: persist-cluster-history
+  to: fix-storage-all-perf
+  relation: depends_on
+- from: compute-pairwise-similarity
+  to: fix-storage-all-perf
+  relation: depends_on
+- from: impl-auto-update-actions
+  to: fix-storage-all-perf
+  relation: depends_on
+- from: impl-stale-cluster-count
+  to: fix-storage-all-perf
+  relation: depends_on
+- from: fix-flaky-env-test
+  to: fix-storage-all-perf
+  relation: depends_on
+- from: audit-knowledge-compiler
+  to: fix-storage-all-perf
+  relation: depends_on
+- from: connect-somatic-markers
+  to: audit-knowledge-compiler
+  relation: depends_on
+- from: impl-metacognition-loop
+  to: audit-knowledge-compiler
+  relation: depends_on
+- from: dim-extractor
+  to: dim-type-weights
+  relation: depends_on
+- from: dim-memory-integration
+  to: dim-extractor
+  relation: depends_on
+- from: dim-tests
+  to: dim-memory-integration
+  relation: depends_on
+- from: iss-019-s2-enriched
+  to: iss-019-s1-types
+  relation: depends_on
+- from: iss-019-s3-union
+  to: iss-019-s1-types
+  relation: depends_on
+- from: iss-019-s4-store-api
+  to: iss-019-s2-enriched
+  relation: depends_on
+- from: iss-019-s4-5-shim
+  to: iss-019-s4-store-api
+  relation: depends_on
+- from: iss-019-s5-merge-enriched
+  to: iss-019-s3-union
+  relation: depends_on
+- from: iss-019-s5-merge-enriched
+  to: iss-019-s4-5-shim
+  relation: depends_on
+- from: iss-019-s5-5-migrate-callers
+  to: iss-019-s5-merge-enriched
+  relation: depends_on
+- from: iss-019-s5-9-rename
+  to: iss-019-s5-5-migrate-callers
+  relation: depends_on
+- from: iss-019-s6-quarantine
+  to: iss-019-s4-store-api
+  relation: depends_on
+- from: iss-019-s7-v2-metadata
+  to: iss-019-s5-9-rename
+  relation: depends_on
+- from: iss-019-s8-telemetry-backfill
+  to: iss-019-s7-v2-metadata
+  relation: depends_on
+- from: iss-019-s8-telemetry-backfill
+  to: iss-019-s6-quarantine
+  relation: depends_on
+- from: iss-019-s9-smoke-pilot
+  to: iss-019-s8-telemetry-backfill
+  relation: depends_on
+- from: iss-019-s10-full-rebuild
+  to: iss-019-s9-smoke-pilot
+  relation: depends_on
+- from: iss-019-s8-5-verify
+  to: iss-019-s8-telemetry-backfill
+  relation: depends_on
+- from: iss-019-s9-smoke-pilot
+  to: iss-019-s8-5-verify
+  relation: depends_on
+- from: iss-019-s1-types
+  to: iss-019
+  relation: subtask_of
+- from: iss-019-s10-full-rebuild
+  to: iss-019
+  relation: subtask_of
+- from: iss-020
+  to: iss-019-s9-smoke-pilot
+  relation: depends_on
+- from: iss-021
+  to: iss-019-s9-smoke-pilot
+  relation: depends_on
+- from: iss-020
+  to: iss-021
+  relation: depends_on
+- from: iss-024-design
+  to: iss-024
+  relation: subtask_of
+- from: iss-024-cli-meta
+  to: iss-024
+  relation: subtask_of
+- from: iss-024-adapter-rc
+  to: iss-024
+  relation: subtask_of
+- from: iss-024-temporal-dim
+  to: iss-024
+  relation: subtask_of
+- from: iss-024-contract-test
+  to: iss-024
+  relation: subtask_of
+- from: iss-024-cli-meta
+  to: iss-024-design
+  relation: depends_on
+- from: iss-024-adapter-rc
+  to: iss-024-design
+  relation: depends_on
+- from: iss-024-temporal-dim
+  to: iss-024-design
+  relation: depends_on
+- from: iss-024-contract-test
+  to: iss-024-design
+  relation: depends_on
+- from: iss-024-contract-test
+  to: iss-024-cli-meta
+  relation: depends_on
+- from: iss-024-contract-test
+  to: iss-024-adapter-rc
+  relation: depends_on
+- from: iss-024-contract-test
+  to: iss-024-temporal-dim
+  relation: depends_on
+- from: iss-020
+  to: iss-024-contract-test
+  relation: depends_on
+- from: iss-024-extractor-stub
+  to: iss-024
+  relation: subtask_of
+- from: iss-024-extractor-stub
+  to: iss-024-design
+  relation: depends_on
+- from: iss-024-contract-test
+  to: iss-024-extractor-stub
+  relation: depends_on
