@@ -1,3 +1,5 @@
+#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+
 //! KC End-to-End test with real engram DB.
 //!
 //! Run: cargo run --example kc_e2e_real --features kc -- /path/to/engram-memory.db

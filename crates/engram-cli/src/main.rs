@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Engram CLI — command-line interface for multi-agent memory.
 //!
 //! Usage:
