@@ -107,3 +107,46 @@ The decision made in discussion (recall hit, not yet filed): **monorepo is the d
 - **Do not start the migration until current in-flight work on `engram-ai-rust/` is checkpointed.** Specifically, let ISS-021 re-benchmark (LoCoMo conv-26 re-run) complete first so we have a clean baseline from the pre-consolidation world.
 - After migration, `cogmembench` config is correct by construction — no path change needed.
 - Consider whether to keep the RustClaw workspace's `engram-memory.db` path stable (`/Users/potato/rustclaw/engram-memory.db`) independent of repo location. It should not be affected since DB is at runtime path, not repo path.
+
+## Post-Mortem (added 2026-04-23 00:15 EDT)
+
+Consolidation was executed on 2026-04-22 at 18:30 EDT (commit `3132194`). Several problems emerged afterward that this section documents. Full cleanup plan is in **ISS-025**.
+
+### Issue 1: Data loss during consolidation
+
+Three example files present in `engram-ai-rust/examples/` were **not copied** to `engram/crates/engramai/examples/`:
+- `iss019_smoke_pilot.rs`
+- `kc_e2e_real.rs`
+- `synthesis_bench.rs`
+
+These are recovered by Phase A of ISS-025. No prevention design yet — future consolidations should use `diff -rq` to verify file-level completeness.
+
+### Issue 2: Deprecated repo continued accepting commits
+
+After 18:30 consolidation, the deprecated `engram-ai-rust/` repo received:
+- `71f3654` at 23:11 — clippy lint cleanup (31 files)
+- Uncommitted ISS-024 work at ~22:00–23:30 (5 files modified, 2 new)
+- Three ritual state files at 23:26 (wasted ritual runs, see Issue 3)
+
+**Cause:** no marker or git hook preventing commits after deprecation. The repo remained fully writable.
+
+**Fix:** ISS-025 Phase B adds `DEPRECATED.md` + `.gid/DEPRECATED_DO_NOT_RITUAL` + renames remote to `deprecated-origin`.
+
+### Issue 3: Ritual launched against deprecated repo
+
+On 2026-04-22 at 23:26 EDT, two rituals for ISS-022 were launched against `engram-ai-rust/` instead of `engram/`. Ritual state JSON hardcoded `target_root: /Users/potato/clawd/projects/engram-ai-rust`. Rituals ran for ~1m45s, marked themselves Done, produced essentially no effective work. The canonical monorepo ISS-022 task was not addressed.
+
+**Root cause:** ritual launcher has no validation that `target_root` is a current/canonical workspace.
+
+**Fix:** **ISS-027** designs a multi-layered guard (marker file check, dirty-tree refusal, workspace allowlist, remote signature).
+
+### Issue 4: Lint commit not propagated
+
+`71f3654` (clippy cleanup) was made on deprecated repo after consolidation. Cherry-pick is not viable (path mapping `src/` → `crates/engramai/src/`). **Decision:** abandon this commit; rerun clippy fresh on monorepo. See **ISS-026**.
+
+### Lessons
+
+1. Consolidations need a "cutover moment" — something that prevents writes to the old path afterward (not just social agreement).
+2. File-level completeness verification (`diff -rq`) should be mandatory before declaring consolidation done.
+3. Any automation system that accepts a workspace path parameter must validate it against a known-good registry.
+4. When marking a repo deprecated, do it loud and physical: marker file, renamed remote, README change. Silent deprecation will be ignored by future sessions.
