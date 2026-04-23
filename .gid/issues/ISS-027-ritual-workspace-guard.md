@@ -1,6 +1,11 @@
-# ISS-027: Ritual Workspace Guard — Prevent Rituals on Deprecated/Wrong Repos
+# ISS-027 (v1, SUPERSEDED): Ritual Workspace Guard — Prevent Rituals on Deprecated/Wrong Repos
 
-**Status:** open (process bug / safety)
+> **⚠️ SUPERSEDED 2026-04-23 by `ISS-027-ritual-workspace-derivation.md`.**
+> v1 was patch-level (4 layers of guards around a bad architecture). v2 reframes as root fix: ritual derives workspace from the work unit (issue/task), eliminating the bad-path class entirely. v1's guards are demoted to "defense in depth" in v2.
+> Kept for historical reference. Do not implement from this file.
+
+**Status:** superseded
+**Original severity:** medium
 **Severity:** medium — caused 3 wasted ritual runs on 2026-04-22 and real risk of future corruption
 **Related:** ISS-025 (cleanup), ISS-023 (consolidation that triggered the bug)
 **Filed:** 2026-04-23 00:15 EDT
