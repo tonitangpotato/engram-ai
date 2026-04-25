@@ -10,3 +10,7 @@ node_modules/
 dist/
 __pycache__/
 *.pyc
+
+# .gid-v03-context graph.db is the v0.3 working graph — version it
+!.gid-v03-context/graph.db
+!.gid-v03-context/extract-meta.json

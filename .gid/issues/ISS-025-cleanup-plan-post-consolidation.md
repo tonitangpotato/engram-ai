@@ -1,9 +1,22 @@
 # ISS-025: Port Post-Consolidation Changes from `engram-ai-rust/` to `engram/`
 
-**Status:** open
+**Status:** closed (2026-04-23 — all changes ported, old repo deprecated)
 **Severity:** medium — straightforward porting work, but must not drop changes
 **Related:** ISS-023 (consolidation), ISS-024 (WIP), ISS-026 (lint), ISS-027 (ritual guard)
 **Filed:** 2026-04-23 00:29 EDT
+**Closed:** 2026-04-23
+
+## Resolution
+
+All post-consolidation changes ported via 4 commits in monorepo:
+- `eeb889f` chore(lint): port 71f3654 allow-directives to monorepo-specific paths
+- `28fc379` chore(iss-025): port uncommitted work from deprecated engram-ai-rust
+- `319c15c` chore(iss-025): port ISS-021 smoke pilot artifacts
+- `df3c3cc` docs(issues): add ISS-025, ISS-026 (closed), ISS-027
+
+Old repo (`engram-ai-rust/`) now contains only `DEPRECATED.md` + `.gid/DEPRECATED_DO_NOT_RITUAL` markers. Working tree otherwise clean.
+
+---
 
 ## Summary
 

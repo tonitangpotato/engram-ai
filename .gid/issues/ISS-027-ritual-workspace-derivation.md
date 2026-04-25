@@ -1,10 +1,32 @@
 # ISS-027: Ritual Workspace Derivation — Ritual Must Know Where It Works
 
-**Status:** open (design bug / safety)
+**Status:** closed (2026-04-23 — root-fix library work completed in gid-rs as ISS-029, commit `ffbedbc`)
 **Severity:** high — caused 3 wasted ritual runs on 2026-04-22, and the root cause is architectural, not a missed check
-**Related:** ISS-023 (consolidation that triggered the bug), ISS-025 (cleanup)
+**Related:** ISS-023 (consolidation that triggered the bug), ISS-025 (cleanup), **gid-rs ISS-029** (actual implementation)
 **Filed:** 2026-04-23 00:15 EDT
 **Rewritten:** 2026-04-23 01:02 EDT — v1 was patch-level (4 layers of guards); v2 reframes as root fix
+**Closed:** 2026-04-23 — library fix landed in `gid-core` via gid-rs ISS-029
+
+## Resolution
+
+Root-fix implemented in `gid-rs` repo under its own issue number (ISS-029), commit `ffbedbc feat(iss-029): ritual launcher accepts WorkUnit, project_registry module` (2026-04-23 01:54 EDT). Implementation matches v2 design in this document:
+
+- `gid-core/src/project_registry.rs` (699 lines, 22 tests) — YAML registry, XDG-compliant, resolve by name/alias with collision detection
+- `gid-core/src/ritual/work_unit.rs` (269 lines, 8 tests) — `WorkUnit::{Issue, Feature, Task}` enum + `WorkUnitResolver` trait + `RegistryResolver` + `reject_target_root()` guard
+- `gid-core/src/ritual/state_machine.rs` — `RitualState.work_unit: Option<WorkUnit>` (serde default for backwards compat)
+
+**Library layer: done.** Issue closed.
+
+### Remaining (follow-up, tracked separately)
+
+rustclaw is a gid-core consumer and still calls the old `workspace`-argument path in its `start_ritual` tool handler. Migrating rustclaw to the `WorkUnit` API is an adopter-side task, not part of the root fix. Tracked in a separate rustclaw-side issue.
+
+### Why this was confusing
+
+- engram repo filed this as ISS-027; gid-rs repo implemented it as ISS-029. No cross-reference between the two numbers.
+- The fix lives in the library (`gid-core` crate in gid-rs), not in engram (which is the repo where the bug manifested). Searching engram's tree for `WorkUnit` / `project_registry` / `resolver.rs` returns nothing because the code isn't there — it's in the dependency.
+
+---
 
 ## Problem Statement
 
