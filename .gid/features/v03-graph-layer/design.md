@@ -95,7 +95,10 @@ pub enum EntityKind {
 ///  - `id` is stable for the entity's lifetime; never reassigned on merge
 ///    (the loser's id is preserved in `entity_aliases`, §3.4; GOAL-1.6).
 ///  - `canonical_name` may be updated by later, more confident observations,
-///    but the change is logged in `attributes.history` (audit, not overwrite).
+///    but the change is logged in the typed `history` field (audit, not
+///    overwrite). `history` is a first-class column on `graph_entities`, not
+///    an `attributes` JSON key — see design-r1 #51-52 for the promotion
+///    rationale (caller writes to `attributes` cannot clobber audit state).
 ///  - `first_seen <= last_seen`. Both are real-world (episode) times.
 ///  - `somatic_fingerprint`, when present, is an aggregate over episode-level
 ///    fingerprints (GOAL-1.13). Recomputed by v03-resolution; stored here.
@@ -401,7 +404,7 @@ pub struct EntityAlias {
 
 Step 4 can fan out; it runs inside a single SQLite transaction (§4.3). For large merges (>1000 edges), `GraphStore::merge_entities(winner, loser, batch_size)` paginates with resumable semantics.
 
-**Identity confidence.** After merge, winner's `identity_confidence` is recomputed (formula owned by v03-resolution). This feature guarantees only that the pre-merge value is preserved in `attributes.history`.
+**Identity confidence.** After merge, winner's `identity_confidence` is recomputed (formula owned by v03-resolution). This feature guarantees only that the pre-merge value is preserved in the winner's typed `history` field (a first-class column on `graph_entities`, not an `attributes` JSON key — see §3.1 and design-r1 #51-52).
 
 
 ## 4. Storage Layer
@@ -429,6 +432,8 @@ CREATE TABLE IF NOT EXISTS graph_entities (
     identity_confidence REAL NOT NULL DEFAULT 0.5,
     somatic_fingerprint BLOB,                                  -- 8 * f32 little-endian, or NULL; see blob format note below
     namespace           TEXT NOT NULL DEFAULT 'default',
+    history             TEXT NOT NULL DEFAULT '[]',            -- JSON: Vec<HistoryEntry>; typed first-class field (§3.1, design-r1 #51-52)
+    merged_into         BLOB REFERENCES graph_entities(id) ON DELETE RESTRICT, -- merge-loser redirect; typed first-class field (§3.1)
     CHECK (activation          BETWEEN 0.0 AND 1.0),
     CHECK (arousal             BETWEEN 0.0 AND 1.0),
     CHECK (importance          BETWEEN 0.0 AND 1.0),
@@ -1211,7 +1216,7 @@ pub enum GraphError {
 
 **Reader semantics during merge.** For large merges that span multiple batch transactions, the single-transaction illusion does not hold — but the following contract does:
 
-1. **Redirect signal lands first.** The loser's `attributes.merged_into = winner.id` is set in the merge's **first** batch transaction. Readers doing entity-level lookups on the loser id MUST check `attributes.merged_into` and transparently follow the redirect; `get_entity` in this trait does this automatically. The loser row itself is filtered from `list_entities_by_kind` and from default traversals.
+1. **Redirect signal lands first.** The loser's typed `merged_into = Some(winner.id)` field (a first-class column on `graph_entities`, not an `attributes` JSON key — see §3.1 and design-r1 #51-52) is set in the merge's **first** batch transaction. Readers doing entity-level lookups on the loser id MUST check `merged_into` and transparently follow the redirect; `get_entity` in this trait does this automatically. The loser row itself is filtered from `list_entities_by_kind` and from default traversals.
 2. **Edges are transiently double-visible by design.** Between batches, un-superseded loser edges remain live (they have not yet been rewritten), *and* the already-rewritten batches appear under the winner. A naïve `edges_of(loser, include_invalidated=false) ∪ edges_of(winner, include_invalidated=false)` can therefore return the same *fact* twice during a merge — once keyed by loser, once by winner.
 3. **De-duplication is the reader's responsibility.** Any consumer that aggregates across subject ids during a merge window MUST de-duplicate by `(predicate, object)` after redirecting loser → winner via rule 1. v03-retrieval's Associative plan applies this de-dup unconditionally; ranking contract tests treat any `(predicate, object)` collision as a single piece of evidence.
 4. **No missing-edge window.** The design guarantees no edge is *invisible* at any intermediate point: a loser edge is only marked `invalidated_at` in the same batch transaction that inserts its winner-side successor, so one or the other is always live and queryable.

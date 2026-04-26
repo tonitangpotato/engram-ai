@@ -1,0 +1,15 @@
+[package]
+name = "engramai-migrate"
+version = "0.1.0"
+edition = "2021"
+description = "Migration tooling for engramai v0.2.x → v0.3 schema upgrades."
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+thiserror = "2.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[lib]
+name = "engramai_migrate"
+path = "src/lib.rs"

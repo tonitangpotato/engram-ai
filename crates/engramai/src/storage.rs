@@ -284,7 +284,15 @@ impl Storage {
             Err(e) if e.to_string().contains("duplicate column name") => {},
             Err(e) => return Err(e),
         }
-        
+
+        // v0.3 graph layer schema (additive; never touches v0.2 tables).
+        // Maps GraphError back to rusqlite::Error to keep this constructor's
+        // return type stable.
+        crate::graph::init_graph_tables(&conn).map_err(|e| match e {
+            crate::graph::GraphError::Sqlite(inner) => inner,
+            other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
+        })?;
+
         Ok(Self { conn })
     }
     
