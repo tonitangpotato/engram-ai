@@ -35,6 +35,8 @@ pub mod schema;
 pub mod storage_graph;
 pub mod store;
 pub mod telemetry;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 pub mod topic;
 pub use affect::SomaticFingerprint;
 pub use audit::{ExtractionFailure, PipelineKind, PipelineRun, ResolutionTrace, RunStatus};
@@ -48,8 +50,8 @@ pub use error::GraphError;
 pub use schema::{CanonicalPredicate, Directionality, Predicate};
 pub use storage_graph::init_graph_tables;
 pub use store::{
-    EntityMentions, GraphStore, MergeReport, ProposedPredicateStats, SqliteGraphStore,
-    GRAPH_TABLES,
+    EntityMentions, GraphStore, MergeReport, PipelineRunRow, ProposedPredicateStats,
+    SqliteGraphStore, GRAPH_TABLES,
 };
 pub use telemetry::{
     emit_operational_load, emit_pressure_if_crossed, NoopSink, TelemetrySink, WatermarkTracker,

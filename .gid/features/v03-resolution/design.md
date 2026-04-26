@@ -304,6 +304,8 @@ For each `(mention, candidate)` pair, compute eight signals per master DESIGN §
 
 **Why s1 / s4 come pre-computed from `search_candidates`.** Recomputing cosine similarity and recency in the fusion loop would mean an extra round-trip per candidate (fetch `entity.embedding` blob, decode, dot-product) and duplicate the recency formula across the store and the fusion module — exactly the kind of two-place logic that ISS-033 is preventing. `search_candidates` already has the embedding blob in scan range; computing the cosine there is one extra multiply-add per candidate, free relative to the SQL fetch. Fusion still owns *weighting and combination*; the store just produces clean numeric inputs.
 
+**Layer 3 driver scope (ISS-033, `resolution::candidate_retrieval`).** The §3.4.1 driver implemented in Layer 3 emits only the measurements it has primary inputs for: **s1** (from `embedding_score` after `0.5 * (cos + 1)` normalization), **s2** (only the discrete `1.0` when `alias_match=true`; the continuous Jaro-Winkler path needs candidate aliases that `CandidateMatch` does not project — reserved for a future driver that already holds an `Entity`), and **s4** (from `recency_score`, which is already in `[0, 1]`). Signals s3, s5, s6, s7, s8 are intentionally absent from this driver's output and become *missing* in fusion (weight redistribution, §3.4.2) until later drivers (graph-context walker, Hebbian aggregator, affect snapshot reader, session/source metadata join, somatic fingerprint reader) supply them. This is correct by construction — the fusion module's missing-signal redistribution makes partial-information resolution well-defined; we are not approximating absent signals as `0.0`, which would systematically miscalibrate the score.
+
 Fusion:
 
 ```rust
@@ -351,22 +353,122 @@ pub struct EntityResolution {
 
 #### 3.4.4 Edge Decision (GOAL-2.9, GOAL-2.10, GOAL-2.12)
 
-For each extracted `Triple`, map subject and object to canonical entity IDs using the per-mention resolutions from §3.4.3. (If object is a literal — no matching mention — keep it as `EdgeEnd::Literal`.) Then for each `(subject_id, predicate, object)` lookup existing edges in the graph:
+For each extracted `Triple`, map subject and object to canonical entity IDs using the per-mention resolutions from §3.4.3. (If object is a literal — no matching mention — keep it as `EdgeEnd::Literal`.) Then for each `(subject_id, predicate)` slot lookup the live edges currently occupying it, and route the decision based on what the slot contains:
 
 ```rust
-let existing = graph_store.find_edges(subject_id, &predicate, &object, /*valid_only=*/ true)?;
-let decision = match (existing.as_slice(), new_edge_confidence) {
-    ([], _)                      => EdgeDecision::Add,
-    ([prior], conf)
-        if prior.object == object && conf > prior.confidence + ε
-                                 => EdgeDecision::Update { supersedes: prior.id },
-    ([prior], _) if prior.object != object
-                                 => EdgeDecision::Update { supersedes: prior.id },
-    ([prior], _) if equals_within_tolerance(prior, triple)
-                                 => EdgeDecision::None,      // redundant
-    (_many, _)                   => EdgeDecision::DeferToLlm, // mem0 prompt, master §4.4
+// Slot lookup (ISS-035): pass `object = None` so `find_edges` returns every
+// live edge sharing the (subject, predicate) slot regardless of object. The
+// match arms below differentiate by Cardinality first, then by slot state.
+// Using a full triple lookup here would silently hide the object-different
+// case — see ISS-035 for the bug it caused.
+let cardinality = catalog.cardinality(&predicate);
+let existing = graph_store.find_edges(
+    subject_id,
+    &predicate,
+    /*object=*/ None,
+    /*valid_only=*/ true,
+)?;
+
+let decision = match cardinality {
+    // ═══════════════════════════════════════════════════════════════════
+    // BRANCH 1 — Functional predicates (OneToOne: lives_in, works_at …)
+    // At most one live edge per (subject, predicate) slot is expected.
+    // ═══════════════════════════════════════════════════════════════════
+    Cardinality::OneToOne => match (existing.as_slice(), new_edge_confidence) {
+        // Slot empty. Add a fresh edge.
+        ([], _) => EdgeDecision::Add,
+
+        // Single live edge, same object, higher confidence by margin ε.
+        // Confidence-driven version bump (supersede so the change is
+        // auditable, never destructive).
+        ([prior], conf)
+            if prior.object == new_object && conf > prior.confidence + EPS
+            => EdgeDecision::Update { supersedes: prior.id },
+
+        // Single live edge, same object, no meaningful confidence delta.
+        // Redundant; do not write.
+        ([prior], _)
+            if equals_within_tolerance(prior, &new_triple)
+            => EdgeDecision::None,
+
+        // Single live edge, DIFFERENT object. Fact has changed
+        // (e.g. "Alice works at Google" → "Alice works at Microsoft").
+        // Supersede the prior (GOAL-2.10, GUARD-3).
+        ([prior], _)
+            if prior.object != new_object
+            => EdgeDecision::Update { supersedes: prior.id },
+
+        // Defensive catch-all for the single-prior shape.
+        ([_prior], _) => EdgeDecision::None,
+
+        // Multiple live edges in a functional slot is anomalous (legacy
+        // data, race, or a literal-object ambiguity). Defer to LLM.
+        (_many, _) => EdgeDecision::DeferToLlm,
+    },
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BRANCH 2 — Multi-valued predicates (OneToMany / ManyToMany:
+    //            knows, likes, member_of …)
+    // Multiple live edges per slot is the NORMAL state. The decision is
+    // per-object: if this exact object already exists in the slot, it is
+    // a no-op (or confidence bump); if not, Add. Removal of multi-valued
+    // edges requires an explicit contradicting observation or agent
+    // curation — it is out of scope for the write-path decision here.
+    //
+    // This branch is deterministic — no DeferToLlm — satisfying
+    // GOAL-2.9 ("cheap-path short-circuit before LLM") and keeping
+    // multi-valued predicates within the avg ≤ 3 LLM call budget
+    // (GUARD-12).
+    // ═══════════════════════════════════════════════════════════════════
+    Cardinality::OneToMany | Cardinality::ManyToMany => {
+        match existing.iter().find(|e| e.object == new_object) {
+            // Exact (subject, predicate, object) match exists and is
+            // within tolerance — redundant, skip.
+            Some(prior) if equals_within_tolerance(prior, &new_triple)
+                => EdgeDecision::None,
+
+            // Exact match exists but new confidence is meaningfully
+            // higher — confidence-driven supersede.
+            Some(prior) if new_edge_confidence > prior.confidence + EPS
+                => EdgeDecision::Update { supersedes: prior.id },
+
+            // Exact match exists, no meaningful delta — skip.
+            Some(_) => EdgeDecision::None,
+
+            // New object not in the existing set — this is a normal Add
+            // for a multi-valued predicate (e.g. "Alice knows Dave").
+            None => EdgeDecision::Add,
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BRANCH 3 — Temporal predicates (visited, attended …)
+    // Multiple instances are allowed across time; always Add regardless
+    // of whether the same (subject, predicate, object) triple already
+    // exists. Each occurrence records a distinct temporal interval via
+    // `valid_from` / `valid_to` on the Edge. Dedup of truly identical
+    // temporal edges (same object + same time bounds) is handled by the
+    // idempotence key in §8.2, not by this decision logic.
+    // ═══════════════════════════════════════════════════════════════════
+    // NOTE: `Temporal` is not yet a Cardinality variant — when it is
+    // added, uncomment the arm below. Until then, temporal predicates
+    // should be modeled as ManyToMany with the understanding that the
+    // multi-valued branch produces Add for new objects. True always-Add
+    // semantics (same object, different time) requires the Temporal
+    // variant.
+    // Cardinality::Temporal => EdgeDecision::Add,
 };
 ```
+
+The match arms are exhaustive and branch first on `Cardinality`:
+
+- **Functional (`OneToOne`):** existing arms — slot returns 0-1 live edges. 0 → `Add`; 1 same object → `None` or confidence bump `Update`; 1 different object → `Update` (supersede); anomalous multiple → `DeferToLlm`.
+- **Multi-valued (`OneToMany` / `ManyToMany`):** slot returns 0-N live edges. New object NOT in result set → `Add`. Object IS in result set → `None` (or confidence bump `Update`). Removal requires an explicit contradicting observation or agent curation (out of scope for this section). **No `DeferToLlm`** — these cases are deterministic.
+- **Temporal** (future `Cardinality::Temporal` variant): always `Add` (multiple instances allowed across time). Modeled as `ManyToMany` until the variant exists.
+
+`equals_within_tolerance(prior, new_triple)` returns true iff `prior.predicate == new.predicate && prior.object == new.object && (new.conf - prior.conf).abs() < EPS`; any richer notion of "redundant" is a future ISS. For `Proposed` predicates (not in catalog), the default cardinality is `ManyToMany` — safer to assume multi-valued than functional for unknown predicates (see v03-graph-layer §3.3).
+
+**Why slot lookup, not triple lookup.** The decision is fundamentally about the *state of the (subject, predicate) slot* — empty, occupied by the same fact, occupied by a different fact, or branched. Filtering the lookup by `object` would discard the "different fact" case before the match arms see it, collapsing UPDATE-supersede into ADD and producing parallel live edges instead of a supersession chain. The `find_edges` contract (v03-graph-layer §4.2) explicitly supports both modes; this driver uses slot lookup. (ISS-035.)
 
 **UPDATE is non-destructive (GOAL-2.10, GUARD-3).** "Update" never mutates the prior row. It produces a new `Edge` row with a fresh `id`, sets `supersedes = Some(prior.id)`, and calls `GraphStore::invalidate_edge(prior.id, new.id, now)` which sets `prior.invalidated_at = now` and `prior.invalidated_by = Some(new.id)`. The invalidation is the *only* permitted mutation on a prior edge, and it is itself append-only in audit metadata.
 
@@ -418,7 +520,7 @@ The re-extraction run executes §3.1–§3.5 with these differences:
 | -------------- | --------------------------------------- | -------------------------- | ----------------------------------------------------------------------- |
 | present        | present, identical                      | present, valid, identical  | **Skip** — no-op, no new row, no invalidation. Idempotent.              |
 | present        | present, `method = AgentCurated`        | any                        | **Preserve** — keep the curated edge; record `trace.preserved_curated`. Do NOT create a new edge. |
-| present        | present, automatic, different conf > ε | any                        | **Supersede** (reason = `confidence_changed`): emit a *new* edge row with `supersedes = prior.id`; set `prior.superseded_by = new.id`. Both rows remain in storage (append-only per GUARD-3). Only applied when new conf strictly exceeds prior conf by a configurable margin; otherwise skip. |
+| present        | present, automatic, different conf > ε | any                        | **Supersede** (reason = `confidence_changed`): emit a *new* edge row with `supersedes = prior.id`; set `prior.invalidated_by = new.id` and `prior.invalidated_at = now`. Both rows remain in storage (append-only per GUARD-3). Only applied when new conf strictly exceeds prior conf by a configurable margin; otherwise skip. |
 | present        | absent                                  | absent                     | **Add** — normal §3.4.4 insert.                                         |
 | present        | absent                                  | present elsewhere, valid   | **Link** — insert a new `Edge` row with the same `(subject, predicate, object)` but a fresh `id` and `source_memory_id = this.memory_id`. Does not invalidate the other edge; just adds independent provenance. |
 | absent         | present                                 | present, valid             | **Preserve** — do not invalidate. The extractor's silence is not evidence of contradiction. Record `trace.extractor_silent_on = [prior.id]`. |
@@ -437,7 +539,7 @@ The re-extraction run executes §3.1–§3.5 with these differences:
 
 **(e) Deletion is out of scope.** The resolution pipeline *cannot* delete entities or edges. Deletion is an explicit API call (`GraphStore::hard_delete_entity`, `hard_delete_edge`) that lives in v03-graph-layer §5 and is guarded by an agent-tool contract. Re-extraction may only *add rows* or *mark prior rows invalidated* (and even the latter only in the "contradicting" rows of the decision table above).
 
-**Legend — supersede semantics.** "Supersede" creates a new edge row with `supersedes = prior_edge.id` and sets `prior_edge.superseded_by = new_edge.id`. Both edges remain in storage (append-only per GUARD-3). Older edges are filterable via bi-temporal queries (`valid_only = true`) but are never silently dropped from persistent storage.
+**Legend — supersede semantics.** "Supersede" creates a new edge row with `supersedes = prior_edge.id` and sets `prior_edge.invalidated_by = new_edge.id` and `prior_edge.invalidated_at = now`. Both edges remain in storage (append-only per GUARD-3). Older edges are filterable via bi-temporal queries (`valid_only = true`) but are never silently dropped from persistent storage.
 
 ### 4.2.1 Tradeoff: Silence Is Not Delete
 

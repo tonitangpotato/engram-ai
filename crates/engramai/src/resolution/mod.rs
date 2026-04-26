@@ -54,11 +54,21 @@
 //!   redistribution)
 //! - [x] §3.4.3 entity decision (MergeInto / DeferToLlm / CreateNew)
 //! - [x] resolution trace (per-candidate score breakdown for §7)
-//! - [ ] §3.1 ingestion driver (queue + idempotence — pending)
-//! - [ ] §3.2/§3.3 stage drivers (pending)
-//! - [ ] §3.4.1 candidate retrieval driver (needs `GraphStore::search_candidates`)
-//! - [ ] §3.4.4 edge decision (ADD / UPDATE / Preserve / Supersede — pending)
-//! - [ ] §3.5 atomic persist (pending)
+//! - [x] §3.4.1 candidate retrieval driver (`candidate_retrieval` module —
+//!   bridges `GraphStore::search_candidates` to fusion `Measurement`s)
+//! - [~] §3.1 ingestion driver — Steps A, B, C done. Step A: `PipelineJob`
+//!   + `JobQueue` trait + `BoundedJobQueue` (in-memory bounded FIFO,
+//!   non-droppable `ReExtract` per §5.2). Step B: `extraction_status`
+//!   reader (`GraphStore::latest_pipeline_run_for_memory` + indexed
+//!   `memory_id` / `episode_id` columns on `graph_pipeline_runs`).
+//!   Step C: `ExtractionStatus` enum + `Memory::store_raw` enqueue
+//!   hook (this commit). Pending: Step C-bis (`Pending` RunStatus
+//!   variant for queue-full tracking) and Step D (worker pool).
+//! - [x] §3.2/§3.3 stage drivers (`stage_extract`, `stage_edge_extract`)
+//! - [x] §3.4.4 edge decision (ADD / UPDATE / Preserve / Supersede)
+//! - [x] §3.5 atomic persist (pure `build_delta` + `drive_persist`
+//!   wired to `GraphStore::apply_graph_delta` via the narrow `ApplyDelta`
+//!   trait — production impl awaits v03-graph-layer Phase 4)
 //! - [ ] §4 preserve-plus-resynthesize (pending)
 //!
 //! ## Boundary rules
@@ -74,20 +84,33 @@
 //!   fetch live in the (future) driver layer that calls into them.
 
 pub mod adapters;
+pub mod candidate_retrieval;
 pub mod context;
 pub mod decision;
+pub mod edge_decision;
 pub mod fusion;
+pub mod queue;
 pub mod signals;
+pub mod stage_edge_extract;
+pub mod stage_extract;
+pub mod stage_persist;
+pub mod status;
 pub mod trace;
 
 pub use adapters::{
     draft_entity_from_mention, map_entity_kind, map_predicate, normalize_predicate_str,
 };
+pub use candidate_retrieval::{retrieve_candidates, RetrievalParams, ScoredCandidate};
 pub use context::{DraftEdge, DraftEntity, PipelineContext, PipelineStage, StageFailure};
 pub use decision::{decide, Decision, DecisionThresholds, ResolutionOutcome};
 pub use fusion::{fuse, FusionResult, Measurement, SignalWeights};
+pub use queue::{BoundedJobQueue, EnqueueError, JobMode, JobQueue, PipelineJob};
 pub use signals::{
     affective_continuity, cooccurrence, graph_context, identity_hint, name_match, recency,
     semantic_similarity, somatic_match, Signal, DEFAULT_RECENCY_HALF_LIFE,
 };
+pub use stage_persist::{
+    build_delta, drive_persist, ApplyDelta, EdgeResolution, EntityResolution, PersistOutcome,
+};
+pub use status::{ExtractionStatus, FailureKind, ResolutionTraceSummary};
 pub use trace::{CandidateScore, SignalContribution};

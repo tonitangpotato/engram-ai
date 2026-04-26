@@ -224,3 +224,57 @@ A `crates/engramai/src/resolution/` module skeleton was also written in this ses
 - Wiring `assemble_context → search_candidates → score signals → fuse → decide → upsert/merge`.
 - Backfill code path for legacy `graph_entities` rows missing embeddings (Layer 1 record flagged this).
 - Integration test exercising end-to-end `store_raw → graph entities + edges` with both alias-matched and embedding-matched resolution paths (Acceptance Criterion #4 — currently unverified end-to-end; only unit-tested per layer).
+
+---
+
+## Layer 3 Implementation Record (2026-04-26)
+
+**Layer 3 = §3.4.1 candidate retrieval driver.** Bridges `GraphStore::search_candidates` raw output to fusion-ready `Measurement` values. Pure, deterministic, no IO of its own.
+
+**Files:**
+- `crates/engramai/src/resolution/candidate_retrieval.rs` (new) — driver module, ~330 LOC including tests.
+- `crates/engramai/src/resolution/mod.rs` — module re-export + status checklist update.
+- `crates/engramai/src/graph/test_helpers.rs` (new) — `pub(crate)` `fresh_conn` + `insert_test_entity` promoted from `graph::store::tests` so the resolution-side E2E tests can build a real `SqliteGraphStore` without duplicating schema-seed code (single source of truth).
+- `crates/engramai/src/graph/mod.rs` — registers `test_helpers` under `#[cfg(test)]`.
+- `.gid/features/v03-resolution/design.md` — added a "Layer 3 driver scope" paragraph after the §3.4.1 signal-source table, documenting which signals this driver emits (s1, s2-discrete, s4) and which are deferred to later drivers (s3, s5, s6, s7, s8 → fusion missing-signal redistribution).
+
+**Public surface added:**
+- `pub fn retrieve_candidates<S: GraphStore + ?Sized>(...)` — driver entry point. Takes `mention_text`, `mention_embedding: Option<&[f32]>`, `namespace`, `now: f64`, `&RetrievalParams`. Returns `Vec<ScoredCandidate>`.
+- `pub struct ScoredCandidate { match_row: CandidateMatch, measurements: Vec<Measurement> }` — driver output unit.
+- `pub struct RetrievalParams { top_k, recency_window, kind_filter }` with `Default` (16, 30d, no kind filter).
+- `pub(crate) fn measurements_for(&CandidateMatch) -> Vec<Measurement>` — pure transform, exposed for table tests independent of any store.
+
+**Bridge contract (recorded in module doc-comments):**
+- **s1 (semantic_similarity):** only emitted when `embedding_score = Some(cos)`. Normalized `0.5 * (cos + 1)` to map cosine `[-1, 1]` → `[0, 1]`. Mirrors `signals::semantic_similarity` exactly. Negative cosine → 0.0; aligned vectors → 1.0; orthogonal → 0.5. Defensive `clamp(0.0, 1.0)` for floating-point drift.
+- **s2 (name_match):** discrete only — `Measurement{ value: 1.0 }` when `alias_match=true`; **NOT emitted** when false (absence is *missing data*, not 0.0). Continuous Jaro-Winkler scoring via `signals::name_match` is reserved for the future driver that holds the full `Entity` + alias list.
+- **s4 (recency):** always emitted; `recency_score: f32` from store is already in `[0, 1]`, promoted to f64 with defensive clamp.
+- **s3, s5, s6, s7, s8:** intentionally absent. Rationale: `CandidateMatch` does not carry the inputs (no neighborhood walk, no Hebbian strengths, no affect snapshot, no session metadata, no fingerprint). Fusion's missing-signal weight redistribution makes this correct by construction.
+- **`identity_confidence`:** projected by the store onto `CandidateMatch` for trace/decision use, but **not** mapped to s7. s7 in `signals.rs` is structural-hint match rate (a vector of bools), not the candidate's own confidence scalar. The two should not be conflated.
+
+**Tests added:**
+- 8 unit tests on `measurements_for` (alias-only, embedding-only, both, alias-false, recency clamp, cosine→unit normalization, default params).
+- 7 E2E driver-against-real-`SqliteGraphStore` tests (alias-only emits s2+s4; embedding-only emits s1+s4 with correct numeric values; both-signals emits all three; empty store returns empty; namespace isolation; kind filter; top_k capped at MAX_TOP_K).
+
+**Test results:** `cargo test -p engramai --lib` → **1287 passed, 0 failed, 4 ignored** (was 1280 → +7 new E2E tests; the 8 unit tests on `measurements_for` were folded into the suite without affecting baseline).
+
+**Clippy:** `cargo clippy -p engramai --lib --tests` → **0 new warnings on Layer 3 surface** (4 pre-existing warnings in `graph/edge.rs` and `graph/telemetry.rs` are untouched).
+
+**Layer 3 acceptance criteria met:**
+- ✅ `retrieve_candidates` calls `GraphStore::search_candidates` and bridges output to fusion-ready `Measurement`s.
+- ✅ Cosine→`[0, 1]` normalization matches `signals::semantic_similarity` (verified by hand-checked numeric test).
+- ✅ Missing signals stay missing; no `0.0` substitution that would miscalibrate fusion.
+- ✅ Determinism preserved: driver does no clock reads; `now` is caller-supplied.
+- ✅ Namespace isolation, kind filter, MAX_TOP_K ceiling all verified through real-`SqliteGraphStore` E2E tests.
+- ✅ Test-helper duplication root-fixed (single source of truth in `graph::test_helpers`).
+
+**Deferred to Layer 4 / future ISSes:**
+- §3.4.4 edge decision driver (ADD/UPDATE/Preserve/Supersede) — needs `find_edges` (ISS-034 trait gap) and Triple→Edge mapping. Out of scope for ISS-033.
+- §3.5 atomic persist (single SQLite transaction wrapping memory + entities + edges).
+- §3.1 ingestion driver (queue + idempotence).
+- §3.2 / §3.3 stage drivers (entity / triple extraction wiring).
+- §4 preserve-plus-resynthesize.
+- ANN / sqlite-vec swap-in (transparent to the trait surface — performance only).
+- Continuous Jaro-Winkler s2 path: needs a follow-up driver that already has the candidate `Entity` + aliases in hand.
+- Populate s3/s5/s6/s7/s8 from their respective sources (graph walker, Hebbian aggregator, affect reader, session metadata, somatic fingerprint reader).
+
+**Status:** ISS-033 closed. End-to-end pipeline is now `store_raw → extraction → resolution::retrieve_candidates → fusion::fuse → decision::decide → (Layer 4 persist)`. The Layer 4 persist step is a separate concern with its own design hooks.

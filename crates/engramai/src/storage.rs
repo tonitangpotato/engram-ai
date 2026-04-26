@@ -301,6 +301,18 @@ impl Storage {
         &self.conn
     }
 
+    /// Get a mutable reference to the underlying database connection.
+    ///
+    /// Required by callers that build a `&mut`-borrowing helper around
+    /// the connection — notably `SqliteGraphStore::new(&'a mut Connection)`,
+    /// which the v0.3 read paths invoke from `Memory::extraction_status`
+    /// and friends. Direct SQL mutation outside that pattern is
+    /// discouraged; prefer the higher-level methods on `Storage` /
+    /// `GraphStore`.
+    pub fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
     fn create_schema(conn: &Connection) -> SqlResult<()> {
         conn.execute_batch(
             r#"

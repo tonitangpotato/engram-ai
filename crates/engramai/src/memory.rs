@@ -118,6 +118,24 @@ pub struct Memory {
     /// and `write_stats()` returns `None` — callers with custom
     /// sinks read counters via their own handle.
     counting_sink: Option<std::sync::Arc<crate::write_stats::CountingSink>>,
+    /// v0.3 §3.1 ingestion queue (Step C).
+    ///
+    /// `None` → v0.2-compat mode: `store_raw` runs the existing
+    /// admission path and returns. No graph-extraction work is
+    /// scheduled. This is the default for callers that haven't opted
+    /// into v0.3 graph features.
+    ///
+    /// `Some(queue)` → after a successful `store_raw` admission, a
+    /// `PipelineJob::initial(memory_id, episode_id)` is enqueued for
+    /// each stored fact. Enqueue failures (`QueueFull`, `Closed`)
+    /// are **non-fatal** to admission per GUARD-1: the L1/L2 write
+    /// stays committed and the failure is recorded via
+    /// `StoreEvent` telemetry. The recoverable memories are
+    /// surfaceable via `extraction_status` once Step C-bis lands.
+    ///
+    /// Held as `Arc<dyn JobQueue>` so producers (this struct) and
+    /// consumers (the worker pool, Step D) can share one instance.
+    job_queue: Option<std::sync::Arc<dyn crate::resolution::JobQueue>>,
 }
 
 impl Memory {
@@ -156,6 +174,109 @@ impl Memory {
     pub fn install_default_write_stats(&mut self) {
         self.install_default_counting_sink();
     }
+
+    // -----------------------------------------------------------------
+    // v0.3 §3.1 ingestion queue (Step C)
+    // -----------------------------------------------------------------
+
+    /// Install the v0.3 resolution-pipeline job queue. After this is
+    /// set, every successful `store_raw` admission enqueues a
+    /// `PipelineJob::initial` so the (Step-D) worker pool can run
+    /// graph extraction asynchronously.
+    ///
+    /// Calling this with the same queue arc the worker pool dequeues
+    /// from is the only wiring required on the producer side.
+    /// Re-installing replaces the previous queue; in-flight jobs on
+    /// the old queue are unaffected.
+    ///
+    /// Per GUARD-1, enqueue failures (`QueueFull`, `Closed`) never
+    /// abort `store_raw` — the L1/L2 write remains committed and the
+    /// memory surfaces as `Pending(queue_full)` once Step C-bis
+    /// adds the `Pending` run-status row at enqueue time.
+    pub fn set_job_queue(&mut self, queue: std::sync::Arc<dyn crate::resolution::JobQueue>) {
+        self.job_queue = Some(queue);
+    }
+
+    /// Builder-style variant of [`Memory::set_job_queue`]. Returns
+    /// `self` so test/setup code can chain.
+    pub fn with_job_queue(mut self, queue: std::sync::Arc<dyn crate::resolution::JobQueue>) -> Self {
+        self.set_job_queue(queue);
+        self
+    }
+
+    /// Borrow the currently-installed job queue, if any. Test-only
+    /// hook so assertions can read queue depth without keeping a
+    /// separate handle around.
+    #[doc(hidden)]
+    pub fn job_queue_ref(&self) -> Option<&std::sync::Arc<dyn crate::resolution::JobQueue>> {
+        self.job_queue.as_ref()
+    }
+
+    /// §6.3 introspection: current `ExtractionStatus` for `memory_id`.
+    ///
+    /// Reads `graph_pipeline_runs` for the latest row scoped to the
+    /// memory and maps it via [`ExtractionStatus::from_run_row`].
+    /// Memories that have never been enqueued (legacy v0.2 rows or —
+    /// pre-Step-C-bis — newly-enqueued ones whose pending row is not
+    /// yet written) return [`ExtractionStatus::NotStarted`].
+    ///
+    /// Takes `&mut self` because the underlying `SqliteGraphStore`
+    /// holds `&mut Connection`. The query itself is read-only — no
+    /// rows are mutated — but the borrow signature follows the graph
+    /// store's existing constructor shape.
+    ///
+    /// Errors are surfaced as `Box<dyn Error>` to match the
+    /// established Memory error convention; callers that want the
+    /// structured `GraphError` can downcast.
+    pub fn extraction_status(
+        &mut self,
+        memory_id: &str,
+    ) -> Result<crate::resolution::ExtractionStatus, Box<dyn std::error::Error>> {
+        use crate::graph::store::{GraphStore, SqliteGraphStore};
+        let conn = self.storage.connection_mut();
+        let store = SqliteGraphStore::new(conn);
+        let row = store.latest_pipeline_run_for_memory(memory_id)?;
+        Ok(crate::resolution::ExtractionStatus::from_run_row(row))
+    }
+
+    /// Enqueue a `PipelineJob::initial` for `memory_id` after a
+    /// successful `store_raw` admission. **Must not fail
+    /// `store_raw`** per GUARD-1 — we record telemetry on enqueue
+    /// rejection but always return `Ok(())` semantically (the L1/L2
+    /// write is already committed by the time we get here).
+    ///
+    /// `episode_id` is generated fresh per call: every `store_raw`
+    /// admission is a distinct episodic write event. Persisting the
+    /// id back onto the `memories.episode_id` column is graph-layer
+    /// integration (deferred); for Step C the id only flows through
+    /// the queue to the (future) worker, which begins the pipeline
+    /// run with it via `begin_pipeline_run_for_memory`.
+    ///
+    /// Returns the generated `episode_id` so callers can correlate
+    /// follow-up reads with the enqueued job; `None` when no queue
+    /// is installed (v0.2-compat mode).
+    fn enqueue_pipeline_job(&self, memory_id: &str) -> Option<uuid::Uuid> {
+        let queue = self.job_queue.as_ref()?;
+        let episode_id = uuid::Uuid::new_v4();
+        let job = crate::resolution::PipelineJob::initial(memory_id.to_string(), episode_id);
+        match queue.try_enqueue(job) {
+            Ok(()) => Some(episode_id),
+            Err(err) => {
+                // GUARD-1: never propagate. Log and let admission stand.
+                // Step C-bis will write a `pending(queue_full)` row to
+                // graph_pipeline_runs so this surfaces in
+                // `extraction_status`; until then the memory reads as
+                // `NotStarted` and is recoverable via `reextract`.
+                log::warn!(
+                    "store_raw: pipeline enqueue failed for memory {} ({}); admission preserved",
+                    memory_id,
+                    err
+                );
+                Some(episode_id)
+            }
+        }
+    }
+
 
     /// Snapshot the current write-path counters.
     ///
@@ -245,6 +366,7 @@ impl Memory {
             intent_classifier: None,
             event_sink: default_event_sink_placeholder(),
             counting_sink: None,
+            job_queue: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -311,6 +433,7 @@ impl Memory {
             intent_classifier: None,
             event_sink: default_event_sink_placeholder(),
             counting_sink: None,
+            job_queue: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -375,6 +498,7 @@ impl Memory {
             intent_classifier: None,
             event_sink: default_event_sink_placeholder(),
             counting_sink: None,
+            job_queue: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -444,6 +568,7 @@ impl Memory {
             intent_classifier: None,
             event_sink: default_event_sink_placeholder(),
             counting_sink: None,
+            job_queue: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -2094,6 +2219,21 @@ impl Memory {
                             merged_count,
                             ms_elapsed: duration_to_ms(t0.elapsed()),
                         });
+
+                        // v0.3 §3.1 Step C: enqueue resolution job for
+                        // each newly-inserted memory. Merged outcomes
+                        // skip — the underlying memory was already
+                        // extracted on its first ingest; re-extraction
+                        // is operator-driven via `reextract` (§6.2).
+                        // GUARD-1: enqueue failures NEVER abort
+                        // admission; `enqueue_pipeline_job` swallows
+                        // and logs.
+                        for outcome in &outcomes {
+                            if let crate::store_api::StoreOutcome::Inserted { id } = outcome {
+                                let _ = self.enqueue_pipeline_job(id);
+                            }
+                        }
+
                         return Ok(RawStoreOutcome::Stored(outcomes));
                     }
 
@@ -2192,6 +2332,15 @@ impl Memory {
             merged_count,
             ms_elapsed: duration_to_ms(t0.elapsed()),
         });
+
+        // v0.3 §3.1 Step C: enqueue resolution job on Inserted
+        // outcomes only — Merged means the underlying memory was
+        // extracted on its first ingest. Same GUARD-1 contract as
+        // Path A: enqueue failures don't abort admission.
+        if let crate::store_api::StoreOutcome::Inserted { id } = &outcome {
+            let _ = self.enqueue_pipeline_job(id);
+        }
+
         Ok(RawStoreOutcome::Stored(vec![outcome]))
     }
 

@@ -353,9 +353,39 @@ pub enum Directionality {
     Symmetric,
 }
 
-/// Cardinality hint — purely advisory; not enforced at write time. Used by
-/// consolidation/audit (out of scope for this feature) to flag suspicious
-/// fan-out.
+/// Cardinality declaration — **normative; write-time consulted by the
+/// resolution pipeline.** The resolution pipeline MUST query cardinality
+/// (via `PredicateCatalog::cardinality`) before computing `EdgeDecision`
+/// (v03-resolution §3.4.4). `OneToOne` predicates route through the
+/// functional match arms (at most one live edge per slot); `OneToMany` /
+/// `ManyToMany` predicates route through the multi-valued arms (multiple
+/// live edges per slot is the normal state). Consolidation/audit also
+/// consults cardinality to flag suspicious fan-out, but that is a
+/// secondary use. For `Proposed` predicates (not in catalog), the default
+/// cardinality is `ManyToMany` — safer to assume multi-valued than
+/// functional for unknown predicates.
+///
+/// **Cardinality mapping for `CanonicalPredicate` variants:**
+///
+/// | Predicate      | Cardinality   | Rationale                                      |
+/// |----------------|---------------|-------------------------------------------------|
+/// | `IsA`          | `ManyToMany`  | An entity can be many kinds; kinds have many members |
+/// | `PartOf`       | `ManyToMany`  | Parts can belong to multiple wholes              |
+/// | `WorksAt`      | `OneToOne`    | Functional: one current employer per entity      |
+/// | `MemberOf`     | `OneToMany`   | One entity, many memberships                     |
+/// | `MarriedTo`    | `OneToOne`    | Functional (current spouse)                      |
+/// | `ParentOf`     | `OneToMany`   | One parent, many children                        |
+/// | `DependsOn`    | `ManyToMany`  | Many-to-many dependency graph                    |
+/// | `Uses`         | `OneToMany`   | One entity uses many tools/technologies          |
+/// | `Implements`   | `ManyToMany`  | Many-to-many                                     |
+/// | `CausedBy`     | `ManyToMany`  | Multiple causes, multiple effects                |
+/// | `LeadsTo`      | `OneToMany`   | One cause, many consequences                     |
+/// | `PrecededBy`   | `OneToOne`    | Functional in a sequence                         |
+/// | `CreatedBy`    | `OneToOne`    | Functional: one creator                          |
+/// | `MentionedIn`  | `ManyToMany`  | Many mentions across many sources                |
+/// | `Contradicts`  | `ManyToMany`  | Many-to-many                                     |
+/// | `Supports`     | `ManyToMany`  | Many-to-many                                     |
+/// | `RelatedTo`    | `ManyToMany`  | Generic fallback, assumed multi-valued           |
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Cardinality {
     OneToOne,
@@ -531,15 +561,23 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_live
 -- excluding historical rows (unlike idx_graph_edges_live).
 CREATE INDEX IF NOT EXISTS idx_graph_edges_subject_pred_recorded
     ON graph_edges(subject_id, predicate_label, recorded_at DESC);
--- Supports `find_edges` (§4.2, ISS-034): per-triple lookup keyed on the full
--- (subject, predicate, object) tuple. The resolution driver (v03-resolution
--- §3.4.4) calls this once per extracted edge to pick CREATE / UPDATE / NONE,
--- so it must be O(log n) per call. The index covers both entity-object and
--- literal-object edges by including `object_kind` and `object_entity_id`;
--- literal-object lookups (where `object_entity_id IS NULL`) still hit the
--- index via the `object_kind` discriminator. `invalidated_at` is the trailing
--- column so the partial-index optimizer can short-circuit `valid_only=true`
--- queries (`WHERE invalidated_at IS NULL`) without table access.
+-- Supports `find_edges` (§4.2, ISS-034 + ISS-035): two lookup modes share
+-- this single index.
+--   1. **Triple lookup** (`object = Some(...)`): full `(subject, predicate,
+--      object_kind, object_entity_id)` point — answers "does this exact
+--      edge already exist?".
+--   2. **Slot lookup** (`object = None`, ISS-035): leftmost prefix
+--      `(subject, predicate)` — answers "what currently occupies this
+--      (subject, predicate) slot?", which is the question the resolution
+--      driver §3.4.4 actually needs to route ADD vs UPDATE-supersede vs
+--      NONE vs DeferToLlm. SQLite uses the leftmost-prefix scan rule, so
+--      the same index serves both modes; no separate index is needed.
+-- The index covers both entity-object and literal-object edges by including
+-- `object_kind` and `object_entity_id`; literal-object lookups (where
+-- `object_entity_id IS NULL`) still hit the index via the `object_kind`
+-- discriminator. `invalidated_at` is the trailing column so the partial-
+-- index optimizer can short-circuit `valid_only=true` queries
+-- (`WHERE invalidated_at IS NULL`) without table access.
 CREATE INDEX IF NOT EXISTS idx_graph_edges_spo
     ON graph_edges(subject_id, predicate_label, object_kind, object_entity_id, invalidated_at);
 
@@ -781,39 +819,79 @@ pub trait GraphStore {
     // Edge
     fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
     fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError>;
-    /// Per-triple edge lookup (ISS-034). Returns existing edges matching the
-    /// full `(subject, predicate, object)` triple, used by the resolution
-    /// driver (v03-resolution §3.4.4) to pick CREATE / UPDATE / NONE.
+    /// Edge lookup keyed on (subject, predicate) with optional object filter
+    /// (ISS-034 + ISS-035). Returns existing edges, used by the resolution
+    /// driver (v03-resolution §3.4.4) to route ADD / UPDATE-supersede /
+    /// NONE / DeferToLlm.
+    ///
+    /// **Two lookup modes** distinguished by the `object` argument:
+    ///
+    /// 1. **Triple lookup** (`object = Some(...)`): full
+    ///    `(subject, predicate, object)` exact match. Answers "does this
+    ///    exact edge already exist?". Used by trace / audit code paths
+    ///    that want a specific triple.
+    /// 2. **Slot lookup** (`object = None`): all live edges sharing the
+    ///    `(subject, predicate)` slot regardless of object. Answers
+    ///    "what currently occupies this slot?" — the question the
+    ///    resolution driver §3.4.4 actually needs. Without this mode the
+    ///    decision logic cannot detect fact change (same `(subject,
+    ///    predicate)`, different object) and would silently emit parallel
+    ///    live edges instead of supersession (ISS-035 root cause).
     ///
     /// **Inputs.**
     /// - `subject_id`: subject entity. Required (every edge has a subject).
     /// - `predicate`: canonical or proposed predicate. Both `kind` and
     ///   `label` participate in the match (canonical `Knows` and a
     ///   proposed `"knows"` are distinct triples by GOAL-1.9 / §3.3).
-    /// - `object`: `EdgeEnd::Entity(uuid)` or `EdgeEnd::Literal(json)`.
-    ///   For literals the index narrows by `object_kind='literal'` and the
-    ///   match is completed by an in-row `object_literal` equality scan
-    ///   (see "Literal-object semantics" below). v0 caps the literal-scan
-    ///   fanout via the result cap; richer literal indexing is deferred to
-    ///   a future ISS without changing this signature.
+    /// - `object`:
+    ///   - `Some(EdgeEnd::Entity(uuid))` → triple lookup, entity-object.
+    ///   - `Some(EdgeEnd::Literal(json))` → triple lookup, literal-object;
+    ///     index narrows by `object_kind='literal'` and the match is
+    ///     completed by an in-row `object_literal` equality scan (see
+    ///     "Literal-object semantics" below). v0 caps the literal-scan
+    ///     fanout via the result cap; richer literal indexing is deferred
+    ///     to a future ISS without changing this signature.
+    ///   - `None` → slot lookup, returns both entity-object and literal-
+    ///     object edges sharing `(subject, predicate)`.
     /// - `valid_only`: when `true`, only edges with `invalidated_at IS NULL`
     ///   are returned — the resolver's normal mode. When `false`, historical
     ///   (invalidated) edges are included for trace / audit reads.
     ///
     /// **Output.** `Vec<Edge>` (full hydration, same shape as `get_edge`),
-    /// ordered by `recorded_at DESC` (most recent first). Hard-capped at
-    /// `MAX_FIND_EDGES_RESULTS = 64` rows. The cap protects against
-    /// pathological histories (subject+predicate+object with hundreds of
-    /// supersession versions); §3.4.4 only ever inspects the head of the
-    /// list. If the cap is hit the `Vec` is silently truncated — callers
-    /// needing exhaustive history must use `edges_as_of` or `edges_of`.
+    /// ordered by `recorded_at DESC` (most recent first).
     ///
-    /// **Index.** Backed by `idx_graph_edges_spo` (§4.1). `EXPLAIN QUERY
-    /// PLAN` for the `valid_only=true` form must show
-    /// `SEARCH ... USING INDEX idx_graph_edges_spo`; this is asserted in
-    /// integration tests.
+    /// **Result cap — mode-dependent (ISS-035 r2).**
+    /// - **Slot lookup** (`object = None`): **no cap**. The whole point of
+    ///   slot lookup is "give me everything for `(S, P)`" so the
+    ///   resolution pipeline can make a correct per-object decision
+    ///   (v03-resolution §3.4.4 multi-valued branch scans the full
+    ///   result set). Truncating would cause false `Add` for objects
+    ///   beyond the cap (e.g., an entity with 200 `likes` edges would
+    ///   silently miss existing objects past the cutoff).
+    /// - **Triple lookup** (`object = Some(...)`) retains a small cap
+    ///   (`MAX_FIND_EDGES_RESULTS = 64`) since the result is logically
+    ///   0-1 live edges (plus historical supersession versions). The cap
+    ///   protects against pathological supersession chains; §3.4.4 only
+    ///   ever inspects the head of the list for triple lookups. If the
+    ///   cap is hit the `Vec` is silently truncated — callers needing
+    ///   exhaustive history must use `edges_as_of` or `edges_of`.
     ///
-    /// **Literal-object semantics.** When `object = EdgeEnd::Literal(json)`,
+    /// **Index.** Two indexes serve the two modes (§4.1):
+    /// - **Triple lookup** (`object = Some(...)`) uses `idx_graph_edges_spo`,
+    ///   whose column order `(subject_id, predicate_label, object_kind,
+    ///   object_entity_id, invalidated_at)` gives a point lookup matching
+    ///   all five columns.
+    /// - **Slot lookup** (`object = None`) with `valid_only = true` uses
+    ///   `idx_graph_edges_live` — the partial index on
+    ///   `(subject_id, predicate_label) WHERE invalidated_at IS NULL` —
+    ///   which is a tighter fit for the active-edges-only query the
+    ///   resolver normally issues. When `valid_only = false`, the planner
+    ///   falls back to the leading two columns of `idx_graph_edges_spo`.
+    /// `EXPLAIN QUERY PLAN` integration tests assert `SEARCH ... USING
+    /// INDEX idx_graph_edges_spo` for triple lookup and `SEARCH ... USING
+    /// INDEX idx_graph_edges_live` for slot lookup with `valid_only=true`.
+    ///
+    /// **Literal-object semantics.** When `object = Some(EdgeEnd::Literal(json))`,
     /// equality is JSON-canonical (the same canonicalization used by
     /// `insert_edge` to write `object_literal`); two literal values that
     /// differ only in whitespace or key order are treated as the same
@@ -829,7 +907,7 @@ pub trait GraphStore {
         &self,
         subject_id: Uuid,
         predicate: &Predicate,
-        object: &EdgeEnd,
+        object: Option<&EdgeEnd>,
         valid_only: bool,
     ) -> Result<Vec<Edge>, GraphError>;
     /// Mark `prior` as invalidated by `successor` (ISS-034). The atomic
@@ -1314,7 +1392,7 @@ pub struct EntityMerge {
 pub struct EdgeInvalidation {
     pub edge_id: Uuid,
     pub invalidated_at: f64,            // unix seconds
-    pub superseded_by: Option<Uuid>,    // optional pointer to replacement
+    pub invalidated_by: Option<Uuid>,   // optional pointer to replacement edge
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

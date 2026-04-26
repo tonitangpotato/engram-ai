@@ -45,6 +45,22 @@ impl Predicate {
         let normalized = lowered.split_whitespace().collect::<Vec<_>>().join(" ");
         Predicate::Proposed(normalized)
     }
+
+    /// Returns the cardinality of this predicate.
+    ///
+    /// - For `Canonical(p)`: looks up the registered cardinality (see
+    ///   [`cardinality`]).
+    /// - For `Proposed(_)`: defaults to `ManyToMany` — safer than
+    ///   assuming functional for unknown predicates (a wrong
+    ///   `OneToOne` guess would cause spurious supersession).
+    ///
+    /// References: v03-graph-layer/design.md §3.3, ISS-035.
+    pub fn cardinality(&self) -> Cardinality {
+        match self {
+            Predicate::Canonical(p) => cardinality(p),
+            Predicate::Proposed(_) => Cardinality::ManyToMany,
+        }
+    }
 }
 
 /// Canonical predicates seeded with known semantics. This list is the
@@ -87,6 +103,38 @@ pub enum Directionality {
     Symmetric,
 }
 
+/// Cardinality declaration — **normative; write-time consulted by the
+/// resolution pipeline.** The resolution pipeline MUST query
+/// [`cardinality`] before computing `EdgeDecision` (v03-resolution §3.4.4):
+///
+/// - `OneToOne` predicates route through the **functional** match arms:
+///   at most one live edge per `(subject, predicate)` slot. A new edge
+///   with a different object supersedes the existing one (Replace).
+/// - `OneToMany` / `ManyToMany` predicates route through the
+///   **multi-valued** match arms: multiple live edges per slot is the
+///   normal state. Slot lookup returns 0-N edges; new objects route to
+///   Add, existing objects route to None (no-op).
+///
+/// For `Predicate::Proposed` (not in canonical catalog), the default is
+/// `ManyToMany` — safer to assume multi-valued than functional for
+/// unknown predicates (avoids spurious supersession).
+///
+/// See [`cardinality`] for the per-variant mapping table.
+///
+/// References: v03-graph-layer/design.md §3.3, ISS-035.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cardinality {
+    /// At most one live edge per `(subject, predicate)` slot.
+    /// New object supersedes the existing edge.
+    OneToOne,
+    /// Many live edges per `(subject, predicate)` slot, but each subject
+    /// has a structural fan-out (one parent → many children).
+    OneToMany,
+    /// Many live edges per `(subject, predicate)` slot, fully unconstrained.
+    ManyToMany,
+}
+
 /// Returns the [`Directionality`] for a canonical predicate.
 ///
 /// This is the static lookup table backing `GraphStore::traverse`.
@@ -119,6 +167,62 @@ pub fn directionality(p: &CanonicalPredicate) -> Directionality {
         CreatedBy => Directionality::Directed { inverse: None },
         MentionedIn => Directionality::Directed { inverse: None },
         Supports => Directionality::Directed { inverse: None },
+    }
+}
+
+/// Returns the [`Cardinality`] for a canonical predicate (ISS-035).
+///
+/// This is the static lookup table backing the resolution pipeline's
+/// `EdgeDecision` (v03-resolution §3.4.4). Exhaustive over all
+/// [`CanonicalPredicate`] variants — adding a variant requires updating
+/// this match (the compiler will enforce it).
+///
+/// **Cardinality mapping (v0.3 baseline, design §3.3):**
+///
+/// | Predicate      | Cardinality   | Rationale                                            |
+/// |----------------|---------------|------------------------------------------------------|
+/// | `IsA`          | `ManyToMany`  | An entity can be many kinds; kinds have many members |
+/// | `PartOf`       | `ManyToMany`  | Parts can belong to multiple wholes                  |
+/// | `WorksAt`      | `OneToOne`    | Functional: one current employer per entity          |
+/// | `MemberOf`     | `OneToMany`   | One entity, many memberships                         |
+/// | `MarriedTo`    | `OneToOne`    | Functional (current spouse)                          |
+/// | `ParentOf`     | `OneToMany`   | One parent, many children                            |
+/// | `DependsOn`    | `ManyToMany`  | Many-to-many dependency graph                        |
+/// | `Uses`         | `OneToMany`   | One entity uses many tools/technologies              |
+/// | `Implements`   | `ManyToMany`  | Many-to-many                                         |
+/// | `CausedBy`     | `ManyToMany`  | Multiple causes, multiple effects                    |
+/// | `LeadsTo`      | `OneToMany`   | One cause, many consequences                         |
+/// | `PrecededBy`   | `OneToOne`    | Functional in a sequence                             |
+/// | `CreatedBy`    | `OneToOne`    | Functional: one creator                              |
+/// | `MentionedIn`  | `ManyToMany`  | Many mentions across many sources                    |
+/// | `Contradicts`  | `ManyToMany`  | Many-to-many                                         |
+/// | `Supports`     | `ManyToMany`  | Many-to-many                                         |
+/// | `RelatedTo`    | `ManyToMany`  | Generic fallback, assumed multi-valued               |
+pub fn cardinality(p: &CanonicalPredicate) -> Cardinality {
+    use CanonicalPredicate::*;
+    match p {
+        // OneToOne — functional, at most one live edge per slot.
+        WorksAt => Cardinality::OneToOne,
+        MarriedTo => Cardinality::OneToOne,
+        PrecededBy => Cardinality::OneToOne,
+        CreatedBy => Cardinality::OneToOne,
+
+        // OneToMany — structural fan-out from subject.
+        MemberOf => Cardinality::OneToMany,
+        ParentOf => Cardinality::OneToMany,
+        Uses => Cardinality::OneToMany,
+        LeadsTo => Cardinality::OneToMany,
+
+        // ManyToMany — fully unconstrained.
+        IsA => Cardinality::ManyToMany,
+        PartOf => Cardinality::ManyToMany,
+        DependsOn => Cardinality::ManyToMany,
+        Implements => Cardinality::ManyToMany,
+        CausedBy => Cardinality::ManyToMany,
+        MentionedIn => Cardinality::ManyToMany,
+        Contradicts => Cardinality::ManyToMany,
+        Supports => Cardinality::ManyToMany,
+        RelatedTo => Cardinality::ManyToMany,
     }
 }
 
@@ -228,6 +332,108 @@ mod tests {
             Directionality::Symmetric => {
                 panic!("IsA must be Directed, not Symmetric");
             }
+        }
+    }
+
+    // ----- ISS-035: cardinality lookup -----
+
+    #[test]
+    fn cardinality_covers_all_canonical() {
+        use CanonicalPredicate::*;
+        // Exhaustive enumeration — if a variant is added to
+        // CanonicalPredicate, this test must be extended (and
+        // `cardinality`'s match too — the compiler will enforce that).
+        let all = [
+            IsA, PartOf, WorksAt, MemberOf, MarriedTo, ParentOf, DependsOn,
+            Uses, Implements, CausedBy, LeadsTo, PrecededBy, CreatedBy,
+            MentionedIn, Contradicts, Supports, RelatedTo,
+        ];
+        assert_eq!(all.len(), 17, "CanonicalPredicate should have 17 variants");
+        for p in &all {
+            // Must not panic.
+            let _ = cardinality(p);
+        }
+    }
+
+    #[test]
+    fn cardinality_one_to_one_predicates() {
+        use CanonicalPredicate::*;
+        // Functional predicates per design §3.3 table.
+        assert_eq!(cardinality(&WorksAt), Cardinality::OneToOne);
+        assert_eq!(cardinality(&MarriedTo), Cardinality::OneToOne);
+        assert_eq!(cardinality(&PrecededBy), Cardinality::OneToOne);
+        assert_eq!(cardinality(&CreatedBy), Cardinality::OneToOne);
+    }
+
+    #[test]
+    fn cardinality_one_to_many_predicates() {
+        use CanonicalPredicate::*;
+        // Structural fan-out from subject.
+        assert_eq!(cardinality(&MemberOf), Cardinality::OneToMany);
+        assert_eq!(cardinality(&ParentOf), Cardinality::OneToMany);
+        assert_eq!(cardinality(&Uses), Cardinality::OneToMany);
+        assert_eq!(cardinality(&LeadsTo), Cardinality::OneToMany);
+    }
+
+    #[test]
+    fn cardinality_many_to_many_predicates() {
+        use CanonicalPredicate::*;
+        // Fully unconstrained relations.
+        assert_eq!(cardinality(&IsA), Cardinality::ManyToMany);
+        assert_eq!(cardinality(&PartOf), Cardinality::ManyToMany);
+        assert_eq!(cardinality(&DependsOn), Cardinality::ManyToMany);
+        assert_eq!(cardinality(&Implements), Cardinality::ManyToMany);
+        assert_eq!(cardinality(&CausedBy), Cardinality::ManyToMany);
+        assert_eq!(cardinality(&MentionedIn), Cardinality::ManyToMany);
+        assert_eq!(cardinality(&Contradicts), Cardinality::ManyToMany);
+        assert_eq!(cardinality(&Supports), Cardinality::ManyToMany);
+        assert_eq!(cardinality(&RelatedTo), Cardinality::ManyToMany);
+    }
+
+    #[test]
+    fn predicate_cardinality_canonical_dispatches() {
+        // The `Predicate::cardinality()` method should delegate to the
+        // free-function lookup for canonical variants.
+        let p = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        assert_eq!(p.cardinality(), Cardinality::OneToOne);
+
+        let p = Predicate::Canonical(CanonicalPredicate::MemberOf);
+        assert_eq!(p.cardinality(), Cardinality::OneToMany);
+
+        let p = Predicate::Canonical(CanonicalPredicate::IsA);
+        assert_eq!(p.cardinality(), Cardinality::ManyToMany);
+    }
+
+    #[test]
+    fn predicate_cardinality_proposed_defaults_many_to_many() {
+        // Per design §3.3: unknown/proposed predicates default to
+        // ManyToMany — wrong OneToOne guess would cause spurious
+        // supersession in the resolution pipeline.
+        let p = Predicate::proposed("collaborates_with");
+        assert_eq!(p.cardinality(), Cardinality::ManyToMany);
+
+        let p = Predicate::proposed("anything_else");
+        assert_eq!(p.cardinality(), Cardinality::ManyToMany);
+    }
+
+    #[test]
+    fn cardinality_serde_roundtrip() {
+        // Snake_case wire format.
+        let c = Cardinality::OneToOne;
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(json, "\"one_to_one\"");
+        let decoded: Cardinality = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, c);
+
+        for (variant, expected) in [
+            (Cardinality::OneToOne, "\"one_to_one\""),
+            (Cardinality::OneToMany, "\"one_to_many\""),
+            (Cardinality::ManyToMany, "\"many_to_many\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected);
+            let decoded: Cardinality = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, variant);
         }
     }
 }

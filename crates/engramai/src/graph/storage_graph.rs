@@ -77,6 +77,22 @@ pub fn init_graph_tables(conn: &Connection) -> Result<(), GraphError> {
         }
     }
 
+    // Step 3b: additive ALTERs on `graph_pipeline_runs` for the §3.1
+    // (memory_id, episode_id) lookup columns — same idempotent pattern.
+    // Fresh DBs already get them via GRAPH_DDL; ALTERs are for legacy DBs
+    // created before the columns existed.
+    for (col, ddl) in GRAPH_PIPELINE_RUNS_ALTERS {
+        match conn.execute(ddl, []) {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => {
+                return Err(GraphError::Migration(format!(
+                    "ALTER TABLE graph_pipeline_runs ADD COLUMN {col}: {e}"
+                )));
+            }
+        }
+    }
+
     // Step 4: indexes that depend on columns added in Step 3 must be created
     // *after* the ALTERs (otherwise legacy DBs that don't yet have the column
     // would fail when GRAPH_DDL ran in Step 1). On fresh DBs this is a harmless
@@ -135,6 +151,27 @@ const GRAPH_ENTITIES_ALTERS: &[(&str, &str)] = &[
     (
         "embedding",
         "ALTER TABLE graph_entities ADD COLUMN embedding BLOB",
+    ),
+];
+
+/// Additive columns on `graph_pipeline_runs` for §3.1 ingestion.
+///
+/// Fresh DBs get these via `GRAPH_DDL`; the ALTERs upgrade legacy DBs
+/// (those created before v0.3 §3.1 Step B landed). Both columns are
+/// nullable because `kind = 'knowledge_compile'` runs are not memory-
+/// scoped — only `Resolution` and `Reextract` runs populate `memory_id`.
+///
+/// The corresponding partial index lives in `GRAPH_POST_ALTER_INDEXES`
+/// because it references `memory_id`, which on a legacy DB doesn't exist
+/// until this ALTER runs.
+const GRAPH_PIPELINE_RUNS_ALTERS: &[(&str, &str)] = &[
+    (
+        "memory_id",
+        "ALTER TABLE graph_pipeline_runs ADD COLUMN memory_id TEXT",
+    ),
+    (
+        "episode_id",
+        "ALTER TABLE graph_pipeline_runs ADD COLUMN episode_id BLOB",
     ),
 ];
 
@@ -322,10 +359,19 @@ CREATE TABLE IF NOT EXISTS graph_pipeline_runs (
     input_summary   TEXT,
     output_summary  TEXT,
     error_detail    TEXT,
-    namespace       TEXT NOT NULL DEFAULT 'default'
+    namespace       TEXT NOT NULL DEFAULT 'default',
+    -- §3.1 / §6.3: indexed lookup of the latest run per memory so
+    -- `extraction_status(memory_id)` is a primary-key-driven query, not a
+    -- JSON scan over `input_summary`. Both columns are nullable because
+    -- `kind = 'knowledge_compile'` runs are not memory-scoped.
+    memory_id       TEXT REFERENCES memories(id) ON DELETE CASCADE,
+    episode_id      BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_kind   ON graph_pipeline_runs(kind, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_status ON graph_pipeline_runs(status) WHERE status != 'succeeded';
+-- NOTE: idx_graph_pipeline_runs_memory (partial on memory_id) lives in
+-- GRAPH_POST_ALTER_INDEXES because legacy DBs don't have the memory_id
+-- column until the §3.1 ALTER runs.
 
 -- Per-decision resolution traces (GOAL-1.7 provenance).
 CREATE TABLE IF NOT EXISTS graph_resolution_traces (
@@ -371,6 +417,12 @@ CREATE INDEX IF NOT EXISTS idx_graph_entities_merged_into
 -- is the dominant ordering for the bounded scan window).
 CREATE INDEX IF NOT EXISTS idx_graph_entities_embed_scan
     ON graph_entities(namespace, last_seen DESC) WHERE embedding IS NOT NULL;
+-- §3.1 / §6.3: latest-run-by-memory lookup for `extraction_status`.
+-- Partial because `knowledge_compile` rows have NULL memory_id. Lives
+-- here (not GRAPH_DDL) because legacy DBs don't have the memory_id
+-- column until GRAPH_PIPELINE_RUNS_ALTERS has run.
+CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_memory
+    ON graph_pipeline_runs(memory_id, started_at DESC) WHERE memory_id IS NOT NULL;
 "#;
 
 // ---------------------------------------------------------------------------

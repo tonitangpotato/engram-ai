@@ -108,6 +108,30 @@ pub struct ProposedPredicateStats {
     pub usage_count: u64,
 }
 
+/// Projection of one `graph_pipeline_runs` row, returned by
+/// [`GraphStore::latest_pipeline_run_for_memory`] (§3.1 / §6.3 introspection).
+///
+/// All fields are decoded from SQLite into their canonical Rust types:
+/// `started_at` / `finished_at` are converted from REAL unix-seconds back to
+/// `DateTime<Utc>`, and `kind` / `status` are parsed back into the `audit`
+/// enums. Decoding errors surface as `GraphError::Storage`.
+///
+/// `error_detail` is the raw text the writer passed to
+/// `finish_pipeline_run`. The resolution layer wraps a `StageFailure` JSON
+/// blob in there for `Failed` runs; callers that don't care about the
+/// structured form (e.g. operator dashboards) can ignore the JSON shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineRunRow {
+    pub run_id: Uuid,
+    pub kind: PipelineKind,
+    pub status: RunStatus,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub memory_id: Option<String>,
+    pub episode_id: Option<Uuid>,
+    pub error_detail: Option<String>,
+}
+
 /// Hard ceiling enforced by [`GraphStore::search_candidates`] regardless of
 /// the caller's `top_k`. Bounds memory and latency for the v0 brute-force
 /// scan over `graph_entities.embedding` (§4.2, ISS-033). The limit applies
@@ -288,16 +312,33 @@ pub trait GraphStore {
     // -------------------------------------------------------------- Edge
     fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
     fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError>;
-    /// Per-triple edge lookup (ISS-034, design §4.2). Returns existing
-    /// edges matching the full `(subject, predicate, object)` triple,
-    /// ordered by `recorded_at DESC`, hard-capped at
-    /// [`MAX_FIND_EDGES_RESULTS`]. When `valid_only=true` only edges with
-    /// `invalidated_at IS NULL` are returned.
+    /// Edge lookup with two query modes (ISS-034 + ISS-035, design §4.2):
+    ///
+    /// - **Slot lookup** (`object = None`): returns all live edges
+    ///   matching `(subject, predicate)` — i.e. every active object the
+    ///   subject is attached to via this predicate. Used by the
+    ///   resolution pipeline (v03-resolution §3.4.4) to compute
+    ///   `EdgeDecision`. **No row cap** — slot semantics requires the
+    ///   complete set; truncation would cause spurious `Add` decisions
+    ///   for objects already known. Uses `idx_graph_edges_live` (partial
+    ///   index over active edges) when `valid_only=true`, falling back
+    ///   to `idx_graph_edges_spo` otherwise.
+    ///
+    /// - **Triple lookup** (`object = Some(_)`): returns existing edges
+    ///   matching the full `(subject, predicate, object)` triple. Used
+    ///   for exact-match queries and consolidation. Hard-capped at
+    ///   [`MAX_FIND_EDGES_RESULTS`] (logically 0-1 live edges; the cap
+    ///   is a safety net against degenerate state). Uses
+    ///   `idx_graph_edges_spo`.
+    ///
+    /// In both modes results are ordered by `recorded_at DESC`. When
+    /// `valid_only=true` only edges with `invalidated_at IS NULL` are
+    /// returned.
     fn find_edges(
         &self,
         subject_id: Uuid,
         predicate: &Predicate,
-        object: &EdgeEnd,
+        object: Option<&EdgeEnd>,
         valid_only: bool,
     ) -> Result<Vec<Edge>, GraphError>;
     /// Mark `prior_id` as invalidated by `successor_id` at `now` (ISS-034,
@@ -392,6 +433,18 @@ pub trait GraphStore {
         kind: PipelineKind,
         input_summary: Json,
     ) -> Result<Uuid, GraphError>;
+    /// §3.1 ingestion variant: same as `begin_pipeline_run` but additionally
+    /// stores `(memory_id, episode_id)` in indexed columns so the latest run
+    /// can be looked up directly via `latest_pipeline_run_for_memory`. Use
+    /// this for `Resolution` and `Reextract` runs; use `begin_pipeline_run`
+    /// for memory-scope-less runs (`KnowledgeCompile`).
+    fn begin_pipeline_run_for_memory(
+        &mut self,
+        kind: PipelineKind,
+        memory_id: &str,
+        episode_id: Uuid,
+        input_summary: Json,
+    ) -> Result<Uuid, GraphError>;
     fn finish_pipeline_run(
         &mut self,
         run_id: Uuid,
@@ -399,6 +452,13 @@ pub trait GraphStore {
         output_summary: Option<Json>,
         error_detail: Option<&str>,
     ) -> Result<(), GraphError>;
+    /// §6.3: latest pipeline run for `memory_id` (any kind, by `started_at`
+    /// DESC). Returns `None` if no run has ever been recorded for that
+    /// memory. The row is the projection consumed by `extraction_status`.
+    fn latest_pipeline_run_for_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<PipelineRunRow>, GraphError>;
     fn record_resolution_trace(
         &mut self,
         t: &ResolutionTrace,
@@ -599,6 +659,56 @@ impl<'a> SqliteGraphStore<'a> {
         let cos = dot / (a_norm * b_norm);
         // Clamp against floating-point drift just outside [-1, 1].
         cos.clamp(-1.0, 1.0)
+    }
+
+    // ---- §3.1 / §6.3 — pipeline-run-row writer (private) ----------------
+    //
+    // Single source of truth for every `INSERT INTO graph_pipeline_runs`
+    // path. The two trait dispatchers (`begin_pipeline_run` for non-memory-
+    // scoped runs, `begin_pipeline_run_for_memory` for ingestion / re-extract)
+    // both delegate here so the kind/status string encoding, the
+    // `audit::PipelineRun::start` invariant, and the column ordering stay
+    // exactly aligned with `finish_pipeline_run`'s atomic-update guard.
+    fn begin_pipeline_run_inner(
+        &mut self,
+        kind: PipelineKind,
+        memory_id: Option<&str>,
+        episode_id: Option<Uuid>,
+        input_summary: serde_json::Value,
+    ) -> Result<Uuid, GraphError> {
+        // Construct a fresh PipelineRun in `Running` state via the canonical
+        // helper (`audit::PipelineRun::start`). This guarantees the id, status
+        // string, and started_at all use the same source of truth as the
+        // pure-Rust state machine — when `finish_pipeline_run` later validates
+        // a transition it reads what `start` wrote, not a divergent encoding.
+        let run = crate::graph::audit::PipelineRun::start(
+            kind,
+            input_summary.clone(),
+            dt_to_unix(Utc::now()),
+        );
+        let kind_str = serde_json::to_string(&kind)?;
+        let kind_label = kind_str.trim_matches('"').to_string();
+        let status_str = serde_json::to_string(&run.status)?;
+        let status_label = status_str.trim_matches('"').to_string();
+        let input_json = serde_json::to_string(&input_summary)?;
+        self.conn.execute(
+            "INSERT INTO graph_pipeline_runs (
+                run_id, kind, started_at, finished_at, status,
+                input_summary, output_summary, error_detail,
+                namespace, memory_id, episode_id
+            ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL, NULL, ?6, ?7, ?8)",
+            rusqlite::params![
+                run.id.as_bytes().to_vec(),
+                kind_label,
+                run.started_at,
+                status_label,
+                input_json,
+                self.namespace,
+                memory_id,
+                episode_id.map(|u| u.as_bytes().to_vec()),
+            ],
+        )?;
+        Ok(run.id)
     }
 }
 
@@ -1875,22 +1985,88 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         &self,
         subject_id: Uuid,
         predicate: &Predicate,
-        object: &EdgeEnd,
+        object: Option<&EdgeEnd>,
         valid_only: bool,
     ) -> Result<Vec<Edge>, GraphError> {
-        // ISS-034: per-triple lookup. Backed by `idx_graph_edges_spo`
-        // (subject_id, predicate_label, object_kind, object_entity_id,
-        // invalidated_at). Two SQL shapes: entity-object and literal-object.
-        // For entity-object the index narrows to a single point lookup; for
-        // literal-object the index narrows on (subject, predicate, 'literal',
-        // NULL) and the literal-string equality is an in-row filter (the
-        // result cap bounds the worst case).
+        // ISS-034 + ISS-035: dual-mode lookup.
+        //
+        // - **Triple lookup** (`object = Some(_)`): per-triple match,
+        //   `idx_graph_edges_spo`-backed, hard-capped at
+        //   `MAX_FIND_EDGES_RESULTS` (logically 0-1 live edges).
+        // - **Slot lookup** (`object = None`): all live/historical edges
+        //   for `(subject, predicate)`. Required by the resolution
+        //   pipeline (v03-resolution §3.4.4) to detect object change for
+        //   functional predicates and to identify already-known objects
+        //   for multi-valued predicates. **No row cap** — slot semantics
+        //   demands the complete set; truncation would cause spurious
+        //   `Add` decisions.
         let (predicate_kind, predicate_label) = predicate_to_columns(predicate)?;
-        let (object_kind, object_entity_blob, object_literal) = edge_end_to_columns(object)?;
         let subject_blob = subject_id.as_bytes().to_vec();
-        let cap = MAX_FIND_EDGES_RESULTS as i64;
 
-        let cols: Vec<EdgeRowColumns> = match (&object_entity_blob, &object_literal) {
+        let cols: Vec<EdgeRowColumns> = match object {
+            None => {
+                // ----- Slot lookup: (subject, predicate) -----
+                //
+                // Index: when `valid_only=true`, SQLite picks
+                // `idx_graph_edges_live` (partial index over active edges
+                // ordered by `(subject_id, predicate_kind, predicate_label,
+                // recorded_at DESC)`). When `valid_only=false`, falls back
+                // to `idx_graph_edges_spo`. No `LIMIT` — slot lookup must
+                // return the complete set (ISS-035).
+                let sql_live = "SELECT id, subject_id,
+                                       predicate_kind, predicate_label,
+                                       object_kind, object_entity_id, object_literal,
+                                       summary,
+                                       valid_from, valid_to, recorded_at, invalidated_at,
+                                       invalidated_by, supersedes,
+                                       episode_id, memory_id,
+                                       resolution_method,
+                                       activation, confidence,
+                                       agent_affect,
+                                       created_at
+                                FROM graph_edges
+                                WHERE subject_id = ?1 AND namespace = ?2
+                                  AND predicate_kind = ?3 AND predicate_label = ?4
+                                  AND invalidated_at IS NULL
+                                ORDER BY recorded_at DESC, id ASC";
+                let sql_all = "SELECT id, subject_id,
+                                      predicate_kind, predicate_label,
+                                      object_kind, object_entity_id, object_literal,
+                                      summary,
+                                      valid_from, valid_to, recorded_at, invalidated_at,
+                                      invalidated_by, supersedes,
+                                      episode_id, memory_id,
+                                      resolution_method,
+                                      activation, confidence,
+                                      agent_affect,
+                                      created_at
+                               FROM graph_edges
+                               WHERE subject_id = ?1 AND namespace = ?2
+                                 AND predicate_kind = ?3 AND predicate_label = ?4
+                               ORDER BY recorded_at DESC, id ASC";
+                let mut stmt = self
+                    .conn
+                    .prepare_cached(if valid_only { sql_live } else { sql_all })?;
+                let v: Vec<EdgeRowColumns> = stmt
+                    .query_map(
+                        rusqlite::params![
+                            subject_blob,
+                            self.namespace,
+                            predicate_kind,
+                            predicate_label,
+                        ],
+                        row_to_edge_columns,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            Some(obj) => {
+                // ----- Triple lookup: (subject, predicate, object) -----
+                let (object_kind, object_entity_blob, object_literal) =
+                    edge_end_to_columns(obj)?;
+                let cap = MAX_FIND_EDGES_RESULTS as i64;
+
+                match (&object_entity_blob, &object_literal) {
             (Some(obj_blob), None) => {
                 // Entity-object: full index hit.
                 let sql_live = "SELECT id, subject_id,
@@ -2008,6 +2184,8 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
             // edge_end_to_columns produces exactly one of (Some, None) or
             // (None, Some); this match arm is unreachable in practice.
             _ => return Err(GraphError::Invariant("EdgeEnd encoded with neither entity nor literal")),
+                }
+            }
         };
 
         cols.into_iter().map(decode_edge_row).collect()
@@ -2951,37 +3129,99 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
 
     // -------------------------------------------- Pipeline runs (Phase 2)
     fn begin_pipeline_run(&mut self, kind: PipelineKind, input_summary: Json) -> Result<Uuid, GraphError> {
-        // Construct a fresh PipelineRun in `Running` state via the canonical
-        // helper (`audit::PipelineRun::start`). This guarantees the id, status
-        // string, and started_at all use the same source of truth as the
-        // pure-Rust state machine — when `finish_pipeline_run` later validates
-        // a transition it reads what `start` wrote, not a divergent encoding.
-        let run = crate::graph::audit::PipelineRun::start(
-            kind,
-            input_summary.clone(),
-            dt_to_unix(Utc::now()),
-        );
-        let kind_str = serde_json::to_string(&kind)?;
-        let kind_label = kind_str.trim_matches('"').to_string();
-        let status_str = serde_json::to_string(&run.status)?;
-        let status_label = status_str.trim_matches('"').to_string();
-        let input_json = serde_json::to_string(&input_summary)?;
-        self.conn.execute(
-            "INSERT INTO graph_pipeline_runs (
-                run_id, kind, started_at, finished_at, status,
-                input_summary, output_summary, error_detail,
-                namespace
-            ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL, NULL, ?6)",
-            rusqlite::params![
-                run.id.as_bytes().to_vec(),
-                kind_label,
-                run.started_at,
-                status_label,
-                input_json,
-                self.namespace,
-            ],
+        self.begin_pipeline_run_inner(kind, None, None, input_summary)
+    }
+    fn begin_pipeline_run_for_memory(
+        &mut self,
+        kind: PipelineKind,
+        memory_id: &str,
+        episode_id: Uuid,
+        input_summary: Json,
+    ) -> Result<Uuid, GraphError> {
+        // §3.1 / §6.3: only Resolution / Reextract are memory-scoped.
+        // KnowledgeCompile callers must use `begin_pipeline_run` instead so
+        // we don't index a "memory" that isn't one.
+        if matches!(kind, PipelineKind::KnowledgeCompile) {
+            return Err(GraphError::Invariant(
+                "begin_pipeline_run_for_memory: KnowledgeCompile is not memory-scoped; use begin_pipeline_run",
+            ));
+        }
+        self.begin_pipeline_run_inner(kind, Some(memory_id), Some(episode_id), input_summary)
+    }
+    fn latest_pipeline_run_for_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<PipelineRunRow>, GraphError> {
+        // Latest-by-started_at over the partial index `idx_graph_pipeline_runs_memory`.
+        // Bound the result to a single row — `LIMIT 1` keeps the planner on
+        // the index seek even on legacy DBs that may have additional runs
+        // for the same memory id.
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, kind, status, started_at, finished_at,
+                    memory_id, episode_id, error_detail
+             FROM graph_pipeline_runs
+             WHERE memory_id = ?1 AND namespace = ?2
+             ORDER BY started_at DESC
+             LIMIT 1",
         )?;
-        Ok(run.id)
+        let row = stmt
+            .query_row(
+                rusqlite::params![memory_id, self.namespace],
+                |row| {
+                    let run_id_blob: Vec<u8> = row.get(0)?;
+                    let kind_str: String = row.get(1)?;
+                    let status_str: String = row.get(2)?;
+                    let started_at: f64 = row.get(3)?;
+                    let finished_at: Option<f64> = row.get(4)?;
+                    let memory_id_opt: Option<String> = row.get(5)?;
+                    let episode_id_blob: Option<Vec<u8>> = row.get(6)?;
+                    let error_detail: Option<String> = row.get(7)?;
+                    Ok((
+                        run_id_blob,
+                        kind_str,
+                        status_str,
+                        started_at,
+                        finished_at,
+                        memory_id_opt,
+                        episode_id_blob,
+                        error_detail,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((run_id_blob, kind_str, status_str, started_at, finished_at, memory_id_opt, episode_id_blob, error_detail)) = row else {
+            return Ok(None);
+        };
+        // Decode all SQLite-side encodings to canonical Rust types. Each
+        // failure surfaces as `GraphError::Invariant` with a precise context
+        // string — never silently default.
+        if run_id_blob.len() != 16 {
+            return Err(GraphError::Invariant(
+                "graph_pipeline_runs.run_id length != 16",
+            ));
+        }
+        let run_id = Uuid::from_slice(&run_id_blob).unwrap();
+        // serde_json reads enum variants only when the input is a JSON
+        // string (i.e. wrapped in quotes), matching the encoding done in
+        // `begin_pipeline_run_inner` via `serde_json::to_string(&kind)`.
+        let kind: PipelineKind = serde_json::from_str(&format!("\"{kind_str}\""))?;
+        let status: RunStatus = serde_json::from_str(&format!("\"{status_str}\""))?;
+        let started_at = unix_to_dt(started_at)?;
+        let finished_at = match finished_at {
+            Some(f) => Some(unix_to_dt(f)?),
+            None => None,
+        };
+        let episode_id = opt_blob_to_uuid(episode_id_blob)?;
+        Ok(Some(PipelineRunRow {
+            run_id,
+            kind,
+            status,
+            started_at,
+            finished_at,
+            memory_id: memory_id_opt,
+            episode_id,
+            error_detail,
+        }))
     }
     fn finish_pipeline_run(
         &mut self, run_id: Uuid, status: RunStatus, output_summary: Option<Json>, error_detail: Option<&str>,
@@ -4060,7 +4300,7 @@ mod tests {
 
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
         let object = EdgeEnd::Entity { id: obj };
-        let found = store.find_edges(subj, &pred, &object, true).unwrap();
+        let found = store.find_edges(subj, &pred, Some(&object), true).unwrap();
         assert_eq!(found.len(), 3, "all three live edges returned");
         assert_eq!(found[0].id, e3.id, "newest first");
         assert_eq!(found[2].id, e1.id, "oldest last");
@@ -4082,13 +4322,13 @@ mod tests {
 
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
         let found_acme = store
-            .find_edges(subj, &pred, &EdgeEnd::Entity { id: acme }, true)
+            .find_edges(subj, &pred, Some(&EdgeEnd::Entity { id: acme }), true)
             .unwrap();
         assert_eq!(found_acme.len(), 1);
         assert_eq!(found_acme[0].id, e_acme.id);
 
         let found_other = store
-            .find_edges(subj, &pred, &EdgeEnd::Entity { id: other }, true)
+            .find_edges(subj, &pred, Some(&EdgeEnd::Entity { id: other }), true)
             .unwrap();
         assert_eq!(found_other.len(), 1);
         assert_eq!(found_other[0].id, e_other.id);
@@ -4110,11 +4350,11 @@ mod tests {
 
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
         let object = EdgeEnd::Entity { id: obj };
-        let live_only = store.find_edges(subj, &pred, &object, true).unwrap();
+        let live_only = store.find_edges(subj, &pred, Some(&object), true).unwrap();
         assert_eq!(live_only.len(), 1, "only live edge with valid_only=true");
         assert_eq!(live_only[0].id, live.id);
 
-        let all = store.find_edges(subj, &pred, &object, false).unwrap();
+        let all = store.find_edges(subj, &pred, Some(&object), false).unwrap();
         assert_eq!(all.len(), 2, "both edges with valid_only=false");
     }
 
@@ -4146,11 +4386,11 @@ mod tests {
         store.insert_edge(&e_b).unwrap();
 
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
-        let found_a = store.find_edges(subj, &pred, &lit_a, true).unwrap();
+        let found_a = store.find_edges(subj, &pred, Some(&lit_a), true).unwrap();
         assert_eq!(found_a.len(), 1);
         assert_eq!(found_a[0].id, e_a.id);
 
-        let found_b = store.find_edges(subj, &pred, &lit_b, true).unwrap();
+        let found_b = store.find_edges(subj, &pred, Some(&lit_b), true).unwrap();
         assert_eq!(found_b.len(), 1);
         assert_eq!(found_b[0].id, e_b.id);
     }
@@ -4164,7 +4404,7 @@ mod tests {
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
         let object = EdgeEnd::Entity { id: obj };
 
-        let found = store.find_edges(subj, &pred, &object, true).unwrap();
+        let found = store.find_edges(subj, &pred, Some(&object), true).unwrap();
         assert!(found.is_empty());
     }
 
@@ -4183,7 +4423,7 @@ mod tests {
         }
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
         let object = EdgeEnd::Entity { id: obj };
-        let found = store.find_edges(subj, &pred, &object, true).unwrap();
+        let found = store.find_edges(subj, &pred, Some(&object), true).unwrap();
         assert_eq!(found.len(), MAX_FIND_EDGES_RESULTS, "result cap honored");
     }
 
@@ -4225,6 +4465,144 @@ mod tests {
             "EXPLAIN QUERY PLAN should use idx_graph_edges_spo, got:\n{}",
             plan_text
         );
+    }
+
+    // ----- ISS-035: slot lookup tests (object = None) -----
+
+    #[test]
+    fn find_edges_slot_returns_all_objects_for_subject_predicate() {
+        // Slot lookup `(subject, predicate)` should return every active
+        // object the subject is attached to via that predicate. This is
+        // the v03-resolution §3.4.4 use case: "what does Alice work at?"
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t0 = Utc::now();
+        let alice = insert_subject_entity(&mut store, "Alice");
+        let acme = insert_subject_entity(&mut store, "Acme");
+        let beta = insert_subject_entity(&mut store, "Beta");
+        let gamma = insert_subject_entity(&mut store, "Gamma");
+
+        // Three live edges with different objects (multi-valued case for
+        // testing — semantically WorksAt is functional, but we're testing
+        // the SQL retrieval, not the resolution decision).
+        store.insert_edge(&make_edge(alice, acme, t0)).unwrap();
+        store
+            .insert_edge(&make_edge(alice, beta, t0 + chrono::Duration::seconds(10)))
+            .unwrap();
+        store
+            .insert_edge(&make_edge(alice, gamma, t0 + chrono::Duration::seconds(20)))
+            .unwrap();
+
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let found = store.find_edges(alice, &pred, None, true).unwrap();
+        assert_eq!(found.len(), 3, "slot lookup returns all live objects");
+
+        // Returned edges, ordered by recorded_at DESC.
+        let returned_objects: Vec<EdgeEnd> = found.iter().map(|e| e.object.clone()).collect();
+        assert_eq!(returned_objects[0], EdgeEnd::Entity { id: gamma });
+        assert_eq!(returned_objects[1], EdgeEnd::Entity { id: beta });
+        assert_eq!(returned_objects[2], EdgeEnd::Entity { id: acme });
+    }
+
+    #[test]
+    fn find_edges_slot_valid_only_filter() {
+        // valid_only=true must skip invalidated edges in slot mode (same
+        // contract as triple mode).
+        let mut conn = fresh_conn();
+        let t0 = Utc::now();
+        let (alice, acme, beta, e1_id) = {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            let alice = insert_subject_entity(&mut store, "Alice");
+            let acme = insert_subject_entity(&mut store, "Acme");
+            let beta = insert_subject_entity(&mut store, "Beta");
+            let e1 = make_edge(alice, acme, t0);
+            let e2 = make_edge(alice, beta, t0 + chrono::Duration::seconds(10));
+            let e1_id = e1.id;
+            store.insert_edge(&e1).unwrap();
+            store.insert_edge(&e2).unwrap();
+            // Invalidate e1 (Alice no longer at Acme).
+            store
+                .invalidate_edge(e1_id, e2.id, t0 + chrono::Duration::seconds(20))
+                .unwrap();
+            (alice, acme, beta, e1_id)
+        };
+
+        let store = SqliteGraphStore::new(&mut conn);
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+
+        // valid_only=true: only the live edge.
+        let live = store.find_edges(alice, &pred, None, true).unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].object, EdgeEnd::Entity { id: beta });
+
+        // valid_only=false: both edges.
+        let all = store.find_edges(alice, &pred, None, false).unwrap();
+        assert_eq!(all.len(), 2);
+        // Sanity: the invalidated edge is in the result set.
+        assert!(all.iter().any(|e| e.id == e1_id && e.object == EdgeEnd::Entity { id: acme }));
+    }
+
+    #[test]
+    fn find_edges_slot_empty_result() {
+        // No edges for the (subject, predicate) slot → empty Vec, no error.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let alice = insert_subject_entity(&mut store, "Alice");
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let found = store.find_edges(alice, &pred, None, true).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn find_edges_slot_uncapped_above_max_results() {
+        // ISS-035 critical guarantee: slot lookup must NOT cap results.
+        // The whole point of slot mode is "give me everything for (S,P)";
+        // truncation would cause spurious Add decisions in the resolution
+        // pipeline (already-known objects missing from the result set get
+        // re-Added). Verify by inserting MAX_FIND_EDGES_RESULTS + 10 edges
+        // with distinct objects.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t0 = Utc::now();
+        let alice = insert_subject_entity(&mut store, "Alice");
+
+        let n = MAX_FIND_EDGES_RESULTS + 10;
+        for i in 0..n {
+            // Distinct object per edge — slot lookup should return all of them.
+            let obj = insert_subject_entity(&mut store, &format!("Obj{}", i));
+            let e = make_edge(alice, obj, t0 + chrono::Duration::seconds(i as i64));
+            store.insert_edge(&e).unwrap();
+        }
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let found = store.find_edges(alice, &pred, None, true).unwrap();
+        assert_eq!(
+            found.len(),
+            n,
+            "slot lookup must be uncapped (got {}, expected {})",
+            found.len(),
+            n
+        );
+    }
+
+    #[test]
+    fn find_edges_slot_namespace_isolation() {
+        // Slot lookup must respect namespace just like triple lookup.
+        let mut conn = fresh_conn();
+        let t0 = Utc::now();
+
+        let (alice_a, _) = {
+            let mut store_a = SqliteGraphStore::new(&mut conn);
+            let alice = insert_subject_entity(&mut store_a, "Alice");
+            let acme = insert_subject_entity(&mut store_a, "Acme");
+            store_a.insert_edge(&make_edge(alice, acme, t0)).unwrap();
+            (alice, acme)
+        };
+
+        // Same UUID, different namespace → no spillover.
+        let store_b = SqliteGraphStore::new(&mut conn).with_namespace("other");
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let found = store_b.find_edges(alice_a, &pred, None, true).unwrap();
+        assert!(found.is_empty(), "slot lookup must respect namespace");
     }
 
     #[test]
@@ -4356,7 +4734,7 @@ mod tests {
 
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
         let object = EdgeEnd::Entity { id: obj };
-        let live = store.find_edges(subj, &pred, &object, true).unwrap();
+        let live = store.find_edges(subj, &pred, Some(&object), true).unwrap();
         assert_eq!(live.len(), 1, "prior must be excluded");
         assert_eq!(live[0].id, successor.id);
     }
@@ -4376,7 +4754,7 @@ mod tests {
         let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
         let object = EdgeEnd::Entity { id: obj_a };
-        let found = store_b.find_edges(subj_a, &pred, &object, true).unwrap();
+        let found = store_b.find_edges(subj_a, &pred, Some(&object), true).unwrap();
         assert!(found.is_empty(), "ns_b cannot see edge {} in ns_a", edge_a);
     }
 
@@ -6061,6 +6439,222 @@ mod tests {
             }
             other => panic!("expected not-found invariant, got {:?}", other),
         }
+    }
+
+    // ---- §3.1 / §6.3 — memory-scoped runs + extraction_status -----
+
+    /// Insert a row into the test `memories` table so FK references on
+    /// `graph_pipeline_runs.memory_id` resolve. Returns the id used.
+    fn insert_test_memory(store: &mut SqliteGraphStore<'_>, id: &str) {
+        store
+            .conn()
+            .execute(
+                "INSERT INTO memories (id, content) VALUES (?1, ?2)",
+                rusqlite::params![id, "test content"],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn begin_pipeline_run_for_memory_writes_indexed_columns() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        insert_test_memory(&mut store, "mem-1");
+        let episode_id = Uuid::new_v4();
+        let run_id = store
+            .begin_pipeline_run_for_memory(
+                PipelineKind::Resolution,
+                "mem-1",
+                episode_id,
+                json!({"episodes": 1}),
+            )
+            .unwrap();
+        // Verify memory_id and episode_id were persisted into their
+        // dedicated columns (not just buried in input_summary JSON).
+        let (memory_id, episode_blob): (Option<String>, Option<Vec<u8>>) = store
+            .conn()
+            .query_row(
+                "SELECT memory_id, episode_id FROM graph_pipeline_runs WHERE run_id = ?1",
+                rusqlite::params![run_id.as_bytes().to_vec()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(memory_id.as_deref(), Some("mem-1"));
+        assert_eq!(
+            episode_blob.unwrap(),
+            episode_id.as_bytes().to_vec(),
+        );
+    }
+
+    #[test]
+    fn begin_pipeline_run_for_memory_rejects_knowledge_compile() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        insert_test_memory(&mut store, "mem-1");
+        // KnowledgeCompile is not memory-scoped — this method must reject it
+        // so we don't index a non-existent semantic relationship.
+        match store.begin_pipeline_run_for_memory(
+            PipelineKind::KnowledgeCompile,
+            "mem-1",
+            Uuid::new_v4(),
+            Json::Null,
+        ) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("not memory-scoped"));
+            }
+            other => panic!("expected invariant rejection, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn begin_pipeline_run_does_not_set_memory_columns() {
+        // The non-memory variant must leave memory_id / episode_id NULL —
+        // otherwise `latest_pipeline_run_for_memory` would surface
+        // KnowledgeCompile rows when callers query for resolution status.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let run_id = store
+            .begin_pipeline_run(PipelineKind::KnowledgeCompile, Json::Null)
+            .unwrap();
+        let (memory_id, episode_id): (Option<String>, Option<Vec<u8>>) = store
+            .conn()
+            .query_row(
+                "SELECT memory_id, episode_id FROM graph_pipeline_runs WHERE run_id = ?1",
+                rusqlite::params![run_id.as_bytes().to_vec()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(memory_id.is_none(), "memory_id must be NULL");
+        assert!(episode_id.is_none(), "episode_id must be NULL");
+    }
+
+    #[test]
+    fn latest_pipeline_run_for_memory_returns_none_for_unknown() {
+        let conn = fresh_conn();
+        let mut owned = conn;
+        let store = SqliteGraphStore::new(&mut owned);
+        let got = store.latest_pipeline_run_for_memory("never-seen").unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn latest_pipeline_run_for_memory_returns_running_row() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        insert_test_memory(&mut store, "mem-A");
+        let episode_id = Uuid::new_v4();
+        let run_id = store
+            .begin_pipeline_run_for_memory(
+                PipelineKind::Resolution,
+                "mem-A",
+                episode_id,
+                Json::Null,
+            )
+            .unwrap();
+        let row = store
+            .latest_pipeline_run_for_memory("mem-A")
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(row.run_id, run_id);
+        assert_eq!(row.kind, PipelineKind::Resolution);
+        assert_eq!(row.status, RunStatus::Running);
+        assert!(row.finished_at.is_none());
+        assert_eq!(row.memory_id.as_deref(), Some("mem-A"));
+        assert_eq!(row.episode_id, Some(episode_id));
+        assert!(row.error_detail.is_none());
+    }
+
+    #[test]
+    fn latest_pipeline_run_for_memory_picks_latest_by_started_at() {
+        // Two runs for the same memory: the index ORDER BY started_at DESC
+        // must surface the most-recent run (post-reextract scenario).
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        insert_test_memory(&mut store, "mem-B");
+        let first = store
+            .begin_pipeline_run_for_memory(
+                PipelineKind::Resolution,
+                "mem-B",
+                Uuid::new_v4(),
+                Json::Null,
+            )
+            .unwrap();
+        store
+            .finish_pipeline_run(first, RunStatus::Succeeded, None, None)
+            .unwrap();
+        // Sleep an instant so the second `started_at` is strictly greater.
+        // SQLite REAL has microsecond resolution from `Utc::now()`; the
+        // monotonic gap on macOS is well under 1ms but the kernel-clock
+        // call below makes the ordering deterministic.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = store
+            .begin_pipeline_run_for_memory(
+                PipelineKind::Reextract,
+                "mem-B",
+                Uuid::new_v4(),
+                Json::Null,
+            )
+            .unwrap();
+        let row = store
+            .latest_pipeline_run_for_memory("mem-B")
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(row.run_id, second);
+        assert_eq!(row.kind, PipelineKind::Reextract);
+    }
+
+    #[test]
+    fn latest_pipeline_run_for_memory_decodes_failed_status() {
+        // Failed runs carry an `error_detail` string. Verify the decoder
+        // round-trips it intact — `extraction_status` callers parse it
+        // back into a `StageFailure` JSON.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        insert_test_memory(&mut store, "mem-C");
+        let run_id = store
+            .begin_pipeline_run_for_memory(
+                PipelineKind::Resolution,
+                "mem-C",
+                Uuid::new_v4(),
+                Json::Null,
+            )
+            .unwrap();
+        let detail = r#"{"stage":"edge_extract","kind":"llm_timeout"}"#;
+        store
+            .finish_pipeline_run(run_id, RunStatus::Failed, None, Some(detail))
+            .unwrap();
+        let row = store
+            .latest_pipeline_run_for_memory("mem-C")
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(row.status, RunStatus::Failed);
+        assert_eq!(row.error_detail.as_deref(), Some(detail));
+        assert!(row.finished_at.is_some());
+    }
+
+    #[test]
+    fn latest_pipeline_run_for_memory_ignores_other_namespaces() {
+        // The store's namespace acts as a hard filter: a run written under
+        // namespace "default" is invisible to a store scoped to "alt".
+        // Without this guarantee, `extraction_status` could leak across
+        // tenant boundaries (master §1 / NG1).
+        let mut conn = fresh_conn();
+        // Both stores share the connection but disagree on namespace.
+        {
+            let mut store_a = SqliteGraphStore::new(&mut conn);
+            insert_test_memory(&mut store_a, "mem-D");
+            store_a
+                .begin_pipeline_run_for_memory(
+                    PipelineKind::Resolution,
+                    "mem-D",
+                    Uuid::new_v4(),
+                    Json::Null,
+                )
+                .unwrap();
+        }
+        let store_b = SqliteGraphStore::new(&mut conn).with_namespace("alt");
+        let got = store_b.latest_pipeline_run_for_memory("mem-D").unwrap();
+        assert!(got.is_none(), "alt namespace must not see default's runs");
     }
 
     // ---- resolution traces ----------------------------------------
