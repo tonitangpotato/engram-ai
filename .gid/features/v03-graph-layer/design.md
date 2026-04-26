@@ -531,6 +531,17 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_live
 -- excluding historical rows (unlike idx_graph_edges_live).
 CREATE INDEX IF NOT EXISTS idx_graph_edges_subject_pred_recorded
     ON graph_edges(subject_id, predicate_label, recorded_at DESC);
+-- Supports `find_edges` (§4.2, ISS-034): per-triple lookup keyed on the full
+-- (subject, predicate, object) tuple. The resolution driver (v03-resolution
+-- §3.4.4) calls this once per extracted edge to pick CREATE / UPDATE / NONE,
+-- so it must be O(log n) per call. The index covers both entity-object and
+-- literal-object edges by including `object_kind` and `object_entity_id`;
+-- literal-object lookups (where `object_entity_id IS NULL`) still hit the
+-- index via the `object_kind` discriminator. `invalidated_at` is the trailing
+-- column so the partial-index optimizer can short-circuit `valid_only=true`
+-- queries (`WHERE invalidated_at IS NULL`) without table access.
+CREATE INDEX IF NOT EXISTS idx_graph_edges_spo
+    ON graph_edges(subject_id, predicate_label, object_kind, object_entity_id, invalidated_at);
 
 -- Predicate registry (§3.3). One row per distinct (kind, label) ever seen.
 -- Canonical rows are pre-seeded at migration time; proposed rows accrete.
@@ -770,9 +781,121 @@ pub trait GraphStore {
     // Edge
     fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
     fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError>;
+    /// Per-triple edge lookup (ISS-034). Returns existing edges matching the
+    /// full `(subject, predicate, object)` triple, used by the resolution
+    /// driver (v03-resolution §3.4.4) to pick CREATE / UPDATE / NONE.
+    ///
+    /// **Inputs.**
+    /// - `subject_id`: subject entity. Required (every edge has a subject).
+    /// - `predicate`: canonical or proposed predicate. Both `kind` and
+    ///   `label` participate in the match (canonical `Knows` and a
+    ///   proposed `"knows"` are distinct triples by GOAL-1.9 / §3.3).
+    /// - `object`: `EdgeEnd::Entity(uuid)` or `EdgeEnd::Literal(json)`.
+    ///   For literals the index narrows by `object_kind='literal'` and the
+    ///   match is completed by an in-row `object_literal` equality scan
+    ///   (see "Literal-object semantics" below). v0 caps the literal-scan
+    ///   fanout via the result cap; richer literal indexing is deferred to
+    ///   a future ISS without changing this signature.
+    /// - `valid_only`: when `true`, only edges with `invalidated_at IS NULL`
+    ///   are returned — the resolver's normal mode. When `false`, historical
+    ///   (invalidated) edges are included for trace / audit reads.
+    ///
+    /// **Output.** `Vec<Edge>` (full hydration, same shape as `get_edge`),
+    /// ordered by `recorded_at DESC` (most recent first). Hard-capped at
+    /// `MAX_FIND_EDGES_RESULTS = 64` rows. The cap protects against
+    /// pathological histories (subject+predicate+object with hundreds of
+    /// supersession versions); §3.4.4 only ever inspects the head of the
+    /// list. If the cap is hit the `Vec` is silently truncated — callers
+    /// needing exhaustive history must use `edges_as_of` or `edges_of`.
+    ///
+    /// **Index.** Backed by `idx_graph_edges_spo` (§4.1). `EXPLAIN QUERY
+    /// PLAN` for the `valid_only=true` form must show
+    /// `SEARCH ... USING INDEX idx_graph_edges_spo`; this is asserted in
+    /// integration tests.
+    ///
+    /// **Literal-object semantics.** When `object = EdgeEnd::Literal(json)`,
+    /// equality is JSON-canonical (the same canonicalization used by
+    /// `insert_edge` to write `object_literal`); two literal values that
+    /// differ only in whitespace or key order are treated as the same
+    /// triple. v0 does this in-row after the index narrows on
+    /// `object_kind='literal'`; this is acceptable because (a) the result
+    /// cap bounds work and (b) literal-object edges are rare relative to
+    /// entity-object edges (master DESIGN §3.3).
+    ///
+    /// **Namespace.** Lookup is scoped to `self.namespace` (set on the
+    /// `Memory` builder). Cross-namespace edges are disallowed by §4.1, so
+    /// scoping cannot miss a "real" match.
+    fn find_edges(
+        &self,
+        subject_id: Uuid,
+        predicate: &Predicate,
+        object: &EdgeEnd,
+        valid_only: bool,
+    ) -> Result<Vec<Edge>, GraphError>;
+    /// Mark `prior` as invalidated by `successor` (ISS-034). The atomic
+    /// primitive behind GUARD-3 (no erasure on invalidation): sets
+    /// `prior.invalidated_at = now` and `prior.invalidated_by = Some(successor)`.
+    /// Never deletes; never touches any other column.
+    ///
+    /// **Inputs.**
+    /// - `prior_id`: edge to close out. Must exist; otherwise
+    ///   `GraphError::NotFound`.
+    /// - `successor_id`: edge id that supersedes the prior. Must exist
+    ///   (FK on `invalidated_by`); resolution §3.5 step 2 inserts the
+    ///   successor *before* calling this method to satisfy the FK.
+    /// - `now`: caller-supplied real-world timestamp (testability:
+    ///   resolution uses `ctx.now`).
+    ///
+    /// **Behavior.**
+    /// - If `prior.invalidated_at IS NULL`: a single SQL `UPDATE` sets
+    ///   `invalidated_at = now` and `invalidated_by = successor_id`. Atomic;
+    ///   under SQLite WAL the update is serializable (§8).
+    /// - If `prior.invalidated_at IS NOT NULL` *and*
+    ///   `prior.invalidated_by = Some(successor_id)`: **idempotent no-op**;
+    ///   returns `Ok(())`. Supports retry semantics for §3.5.
+    /// - If `prior.invalidated_at IS NOT NULL` and `invalidated_by` differs
+    ///   (or is `NULL`): returns `GraphError::Invariant("edge already
+    ///   invalidated by another successor")`. Double-supersede with
+    ///   different successors is a caller bug — the resolver is expected to
+    ///   call `find_edges(valid_only=true)` first and skip already-closed
+    ///   priors.
+    ///
+    /// **Concurrency.** Two transactions racing to close the same prior
+    /// with different successors: SQLite's `BEGIN IMMEDIATE` (used by
+    /// `with_graph_tx`, §4.3) serializes the writers; whichever commits
+    /// first wins, the second observes the post-commit state and returns
+    /// the `Invariant` error. Determinism of the ordering is not
+    /// guaranteed — callers must not depend on which one wins, only that
+    /// exactly one does.
+    ///
+    /// **Relationship to `supersede_edge`.** `supersede_edge` is a
+    /// convenience wrapper that calls `insert_edge(successor)` then
+    /// `invalidate_edge(prior, successor.id, at)` inside a single
+    /// `with_graph_tx`. `invalidate_edge` is the lower-level primitive that
+    /// resolution §3.5 uses directly so it can batch the new edges (step 2
+    /// inserts all successors first, then invalidates all priors) under
+    /// the §3.5 outer transaction. Both APIs are supported; new code in
+    /// the resolution path uses the decomposed form to match §3.5's
+    /// ordering, while ad-hoc callers can keep using `supersede_edge`.
+    fn invalidate_edge(
+        &mut self,
+        prior_id: Uuid,
+        successor_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<(), GraphError>;
     /// Invalidate `old` pointing at `successor`; mark `successor.supersedes = old`.
     /// Single transaction; atomic rollback if any invariant breaks.
-    fn supersede_edge(&mut self, old: Uuid, successor: &Edge, at: f64) -> Result<(), GraphError>;
+    ///
+    /// **Implementation.** Convenience wrapper composing
+    /// `insert_edge(successor)` + `invalidate_edge(old, successor.id, at)`
+    /// inside `with_graph_tx` (§4.3). Prefer the decomposed primitives in
+    /// new code that needs to batch (e.g. v03-resolution §3.5).
+    fn supersede_edge(
+        &mut self,
+        old: Uuid,
+        successor: &Edge,
+        at: DateTime<Utc>,
+    ) -> Result<(), GraphError>;
     fn edges_of(&self, subject: Uuid, predicate: Option<&Predicate>, include_invalidated: bool)
         -> Result<Vec<Edge>, GraphError>;
     /// As-of query (GOAL-1.5). Edges "believed true" for `subject` at real-world time `at`.
@@ -1426,7 +1549,7 @@ Option (a) — a DB-level read lock for the merge duration — was considered an
 | GOAL-1.3   | P0       | §3.1 (`episode_mentions`/`memory_mentions`); §4.1 `graph_memory_entity_mentions`; §4.2 `entities_in_episode`, `mentions_of_entity`, `link_memory_to_entities`, `entities_linked_to_memory`, `memories_mentioning_entity` | Bidirectional queries exposed on `GraphStore`; memory↔entity join is the source of truth for retrieval's Associative plan (v03-retrieval §4.3) |
 | GOAL-1.4   | P0       | §3.2 (Edge struct, EdgeEnd, cognitive fields)    | Literal-or-entity object, typed predicate, activation/confidence/affect                 |
 | GOAL-1.5   | P0       | §3.2 (bi-temporal fields); §4.2 `edges_as_of`    | `valid_from`, `valid_to`, `recorded_at`, `invalidated_at`                                |
-| GOAL-1.6   | P0       | §3.2 invariants; §3.4 merge; §4.2 `supersede_edge`; §4.1 (no `ON DELETE CASCADE` on edges) | Invalidation non-destructive; chain traversable via `invalidated_by` / `supersedes`     |
+| GOAL-1.6   | P0       | §3.2 invariants; §3.4 merge; §4.2 `supersede_edge` / `invalidate_edge` / `find_edges` (ISS-034); §4.1 (`idx_graph_edges_spo` index; no `ON DELETE CASCADE` on edges) | Invalidation non-destructive; chain traversable via `invalidated_by` / `supersedes`     |
 | GOAL-1.7   | P1       | §3.2 (`episode_id`, `memory_id`, `resolution_method`); §4.1 `graph_memory_entity_mentions`, `graph_resolution_traces`; §4.2 `edges_in_episode`, `edges_sourced_from_memory`, `record_resolution_trace` | Provenance queryable both directions at episode, memory, and decision granularity |
 | GOAL-1.8   | P0       | §3.3 (Predicate enum with Canonical vs Proposed); §4.1 `graph_predicates` | Verbatim preservation via `raw_first_seen`; distinguishable in all queries via `kind`   |
 | GOAL-1.9   | P1       | §3.3 evolution rule #1; §4.2 `traverse` docstring | `traverse` accepts canonical predicates only; proposed never enter structural logic     |
