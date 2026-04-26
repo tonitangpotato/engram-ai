@@ -824,13 +824,54 @@ pub trait GraphStore {
     // These back the `graph_memory_entity_mentions` join table (§4.1) and are the
     // sole write/read path for the memory-level provenance consumed by
     // v03-retrieval §4.3 (Associative plan seed→entity lookup).
+    //
+    // **Upsert semantics for `link_memory_to_entities`** (GOAL-1.3 dedup):
+    //   The PK `(memory_id, entity_id)` means re-linking the same pair must be
+    //   well-defined. A single batch may also contain duplicate `entity_id`s
+    //   (resolution may surface the same entity from two mention spans). Rules:
+    //     1. **Within-batch dedup**: if the same `entity_id` appears more than
+    //        once in `entity_ids`, fold them in input order using the same
+    //        rules as cross-batch (below) before issuing SQL. This guarantees
+    //        the SQL layer sees one row per `entity_id`.
+    //     2. **Cross-batch dedup (`ON CONFLICT(memory_id, entity_id)` DO UPDATE)**:
+    //          - `confidence` ← `max(existing, new)` (monotone — re-extraction can only
+    //            raise certainty; never silently lower it. If a caller needs to
+    //            *lower* confidence, they must explicitly delete the row first;
+    //            no public API for that in v0.3).
+    //          - `mention_span` ← `COALESCE(new, existing)` (prefer the latest
+    //            non-NULL span; an explicit NULL never erases a previously
+    //            recorded span).
+    //          - `recorded_at` ← `max(existing, new)` (latest observation wins;
+    //            this row's `recorded_at` is "most recently seen", not "first
+    //            seen". If first-seen timing is needed in the future, add a
+    //            separate `first_seen_at` column — out of scope for v0.3).
+    //          - `namespace` is **not** updatable via this path; the existing
+    //            row's namespace is preserved. A namespace mismatch between
+    //            the conflicting row's stored namespace and the store's
+    //            current namespace returns `GraphError::Invariant(
+    //            "cross-namespace memory↔entity link")` and aborts the whole
+    //            batch (no partial commit).
+    //   The whole batch executes inside a single transaction: either every
+    //   pair is linked (with the rules above) or none is (atomicity is
+    //   required by v03-resolution §3.5 step 4, which commits this alongside
+    //   `memories.entity_ids` JSON).
     fn link_memory_to_entities(
         &mut self,
         memory_id: &str,
         entity_ids: &[(Uuid, f64, Option<String>)],   // (entity, confidence, mention_span)
         at: f64,
     ) -> Result<(), GraphError>;
+    /// Returns entities linked to `memory_id` **filtered to the store's current
+    /// namespace** (rows with a different `namespace` are skipped — they belong
+    /// to a sibling tenant and must not leak across). Order: ascending
+    /// `recorded_at` (oldest first), then `entity_id` for stable tie-break.
     fn entities_linked_to_memory(&self, memory_id: &str) -> Result<Vec<Uuid>, GraphError>;
+    /// Returns memory ids mentioning `entity`, **filtered to the store's
+    /// current namespace**. Ordered by `recorded_at DESC` (most-recently-linked
+    /// first — matches the Associative-plan recency bias in v03-retrieval
+    /// §4.3); ties broken by `memory_id` for determinism. `limit == 0` is
+    /// treated as "no rows" (caller bug guard, not an error — same convention
+    /// as `search_candidates`).
     fn memories_mentioning_entity(&self, entity: Uuid, limit: usize) -> Result<Vec<String>, GraphError>;
     fn edges_sourced_from_memory(&self, memory_id: &str) -> Result<Vec<Edge>, GraphError>;
 

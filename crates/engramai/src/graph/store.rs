@@ -1971,15 +1971,174 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         unimplemented!("Phase 2: mentions_of_entity")
     }
     fn link_memory_to_entities(
-        &mut self, _memory_id: &str, _entity_ids: &[(Uuid, f64, Option<String>)], _at: DateTime<Utc>,
+        &mut self,
+        memory_id: &str,
+        entity_ids: &[(Uuid, f64, Option<String>)],
+        at: DateTime<Utc>,
     ) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: link_memory_to_entities")
+        // §4.2 Memory↔Entity provenance — atomic batch with within-batch dedup
+        // and `ON CONFLICT DO UPDATE` cross-batch dedup. See design §4.2 for
+        // the upsert-rule contract.
+
+        // (1) Validate inputs up front so we never open a transaction we'd
+        //     then have to roll back for a trivially detectable bug.
+        for (_eid, conf, _span) in entity_ids {
+            if !conf.is_finite() || !(0.0..=1.0).contains(conf) {
+                return Err(GraphError::Invariant(
+                    "link_memory_to_entities: confidence out of [0,1]",
+                ));
+            }
+        }
+
+        // (2) Within-batch dedup. Fold duplicate `entity_id`s in input order
+        //     using the same rules as cross-batch (max confidence, latest
+        //     non-NULL span). This guarantees the SQL layer sees one row per
+        //     entity_id and removes a class of "ON CONFLICT applied twice
+        //     within the same statement" footguns.
+        use std::collections::HashMap;
+        let mut folded: HashMap<Uuid, (f64, Option<String>)> =
+            HashMap::with_capacity(entity_ids.len());
+        // Preserve first-seen order for deterministic iteration (HashMap
+        // iteration order is randomized — that's fine for SQL, but tests want
+        // determinism. Track order in a separate Vec).
+        let mut order: Vec<Uuid> = Vec::with_capacity(entity_ids.len());
+        for (eid, conf, span) in entity_ids {
+            match folded.get_mut(eid) {
+                Some((existing_conf, existing_span)) => {
+                    if *conf > *existing_conf {
+                        *existing_conf = *conf;
+                    }
+                    if span.is_some() {
+                        *existing_span = span.clone();
+                    }
+                }
+                None => {
+                    folded.insert(*eid, (*conf, span.clone()));
+                    order.push(*eid);
+                }
+            }
+        }
+
+        let recorded_at = dt_to_unix(at);
+        let ns = self.namespace.clone();
+
+        // (3) Atomic batch: cross-namespace check + upsert in one transaction.
+        let tx = self.conn.transaction()?;
+        {
+            // Namespace pre-check. The PK `(memory_id, entity_id)` does NOT
+            // include namespace; a pre-existing row with a different namespace
+            // would silently be "stolen" by a naive upsert. Detect and fail
+            // loud (design §4.2: cross-namespace memory↔entity link is an
+            // invariant violation).
+            let mut ns_check = tx.prepare_cached(
+                "SELECT namespace FROM graph_memory_entity_mentions
+                 WHERE memory_id = ?1 AND entity_id = ?2",
+            )?;
+            for eid in &order {
+                let existing_ns: Option<String> = ns_check
+                    .query_row(
+                        rusqlite::params![memory_id, eid.as_bytes().to_vec()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(existing) = existing_ns {
+                    if existing != ns {
+                        // tx is dropped → automatic rollback. We surface a
+                        // structured invariant for the caller.
+                        return Err(GraphError::Invariant(
+                            "cross-namespace memory↔entity link",
+                        ));
+                    }
+                }
+            }
+            drop(ns_check);
+
+            // Upsert. The DO UPDATE clause encodes the design §4.2 rules:
+            //   confidence    ← max(existing, new)        (monotone)
+            //   mention_span  ← COALESCE(new, existing)   (latest non-NULL)
+            //   recorded_at   ← max(existing, new)        (latest wins)
+            //   namespace     ← (preserved; not in DO UPDATE)
+            let mut upsert = tx.prepare_cached(
+                "INSERT INTO graph_memory_entity_mentions
+                    (memory_id, entity_id, mention_span, confidence,
+                     recorded_at, namespace)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(memory_id, entity_id) DO UPDATE SET
+                    confidence   = MAX(confidence, excluded.confidence),
+                    mention_span = COALESCE(excluded.mention_span, mention_span),
+                    recorded_at  = MAX(recorded_at, excluded.recorded_at)",
+            )?;
+            for eid in &order {
+                let (conf, span) = &folded[eid];
+                upsert.execute(rusqlite::params![
+                    memory_id,
+                    eid.as_bytes().to_vec(),
+                    span.as_deref(),
+                    conf,
+                    recorded_at,
+                    ns,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
-    fn entities_linked_to_memory(&self, _memory_id: &str) -> Result<Vec<Uuid>, GraphError> {
-        unimplemented!("Phase 2: entities_linked_to_memory")
+
+    fn entities_linked_to_memory(&self, memory_id: &str) -> Result<Vec<Uuid>, GraphError> {
+        // Namespace-scoped: rows from sibling namespaces never leak. Order:
+        // recorded_at ASC, entity_id ASC (design §4.2 — stable, deterministic).
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT entity_id FROM graph_memory_entity_mentions
+             WHERE memory_id = ?1 AND namespace = ?2
+             ORDER BY recorded_at ASC, entity_id ASC",
+        )?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![memory_id, self.namespace],
+                |row| {
+                    let blob: Vec<u8> = row.get(0)?;
+                    Ok(blob)
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|blob| {
+                Uuid::from_slice(&blob).map_err(|_| {
+                    GraphError::Invariant(
+                        "entities_linked_to_memory: entity_id blob is not a valid UUID",
+                    )
+                })
+            })
+            .collect()
     }
-    fn memories_mentioning_entity(&self, _entity: Uuid, _limit: usize) -> Result<Vec<String>, GraphError> {
-        unimplemented!("Phase 2: memories_mentioning_entity")
+
+    fn memories_mentioning_entity(
+        &self,
+        entity: Uuid,
+        limit: usize,
+    ) -> Result<Vec<String>, GraphError> {
+        // limit == 0 is a "give me nothing" sentinel (caller-bug guard, not an
+        // error — same convention as `search_candidates`, design §4.2).
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        // SQLite LIMIT is i64. usize → i64 saturates at i64::MAX, which is
+        // larger than any plausible row count; values above i64::MAX would be
+        // a 128-PiB result set we'd never materialize anyway.
+        let limit_i64: i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT memory_id FROM graph_memory_entity_mentions
+             WHERE entity_id = ?1 AND namespace = ?2
+             ORDER BY recorded_at DESC, memory_id ASC
+             LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![entity.as_bytes().to_vec(), self.namespace, limit_i64],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
     fn edges_sourced_from_memory(&self, memory_id: &str) -> Result<Vec<Edge>, GraphError> {
         let mut stmt = self.conn.prepare_cached(
@@ -3602,5 +3761,414 @@ mod tests {
         assert_eq!(got.len(), 1);
         // dot product = 0, b_norm > 0, a_norm = guarded to 1.0 → cosine = 0.
         assert_eq!(got[0].embedding_score, Some(0.0));
+    }
+
+    // ===================================================================
+    // Memory ↔ Entity provenance (link_memory_to_entities,
+    // entities_linked_to_memory, memories_mentioning_entity)
+    // ===================================================================
+    //
+    // These tests cover the §4.2 contract:
+    //   - within-batch dedup (max conf, latest-non-NULL span)
+    //   - cross-batch upsert (max conf, COALESCE span, max recorded_at)
+    //   - namespace isolation (read + write)
+    //   - cross-namespace conflict → Invariant
+    //   - confidence range validation
+    //   - limit semantics (0 → empty, ordering)
+
+    /// Insert a stub `memories` row so FKs from `graph_memory_entity_mentions`
+    /// resolve. `init_graph_tables` provides the join table; `fresh_conn`
+    /// already created the stub `memories` table.
+    fn insert_stub_memory(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO memories (id, content) VALUES (?1, ?2)",
+            rusqlite::params![id, format!("content-{}", id)],
+        )
+        .expect("insert stub memory");
+    }
+
+    fn ts(secs: f64) -> DateTime<Utc> {
+        chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
+            .expect("valid timestamp")
+    }
+
+    #[test]
+    fn link_memory_to_entities_happy_path_inserts_all() {
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+        let b = insert_test_entity(&mut store, "B", EntityKind::Person, now, None);
+        let c = insert_test_entity(&mut store, "C", EntityKind::Person, now, None);
+
+        store
+            .link_memory_to_entities(
+                "mem-1",
+                &[
+                    (a.id, 0.9, Some("A-mention".into())),
+                    (b.id, 0.7, None),
+                    (c.id, 1.0, Some("C-mention".into())),
+                ],
+                ts(1000.0),
+            )
+            .expect("link ok");
+
+        let got = store.entities_linked_to_memory("mem-1").unwrap();
+        assert_eq!(got.len(), 3);
+        // Order: recorded_at ASC, entity_id ASC. All share recorded_at=1000,
+        // so order is by entity_id ascending — sort our expected for the check.
+        let mut want = vec![a.id, b.id, c.id];
+        want.sort();
+        assert_eq!(got, want, "namespace-scoped read returns all three");
+    }
+
+    #[test]
+    fn link_memory_to_entities_within_batch_dedup_max_confidence_and_latest_span() {
+        // Same entity appears 3x in one call: confidence ought to fold to the
+        // max (0.9), span ought to be the latest non-NULL ("third", set after
+        // a NULL erase attempt that must not erase).
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+
+        store
+            .link_memory_to_entities(
+                "mem-1",
+                &[
+                    (a.id, 0.4, Some("first".into())),
+                    (a.id, 0.9, None),                  // null does NOT erase span
+                    (a.id, 0.6, Some("third".into())), // latest non-NULL wins
+                ],
+                ts(1000.0),
+            )
+            .expect("link ok");
+
+        // Inspect the row directly — confidence + span are not exposed by the
+        // current trait reader, so we use the conn escape hatch (test-only).
+        let (conf, span): (f64, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT confidence, mention_span
+                 FROM graph_memory_entity_mentions
+                 WHERE memory_id = ?1 AND entity_id = ?2",
+                rusqlite::params!["mem-1", a.id.as_bytes().to_vec()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!((conf - 0.9).abs() < 1e-9, "max(conf) = 0.9, got {}", conf);
+        assert_eq!(span.as_deref(), Some("third"), "latest non-NULL span wins");
+    }
+
+    #[test]
+    fn link_memory_to_entities_cross_batch_upsert_is_monotone() {
+        // First batch sets conf=0.5, span="initial", recorded_at=1000.
+        // Second batch with conf=0.3 must NOT lower the stored confidence.
+        // Second batch with NULL span must NOT erase "initial".
+        // recorded_at must advance to the larger value.
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+
+        store
+            .link_memory_to_entities(
+                "mem-1",
+                &[(a.id, 0.5, Some("initial".into()))],
+                ts(1000.0),
+            )
+            .unwrap();
+        store
+            .link_memory_to_entities(
+                "mem-1",
+                &[(a.id, 0.3, None)],
+                ts(2000.0),
+            )
+            .unwrap();
+
+        let (conf, span, rec_at): (f64, Option<String>, f64) = store
+            .conn
+            .query_row(
+                "SELECT confidence, mention_span, recorded_at
+                 FROM graph_memory_entity_mentions
+                 WHERE memory_id = ?1 AND entity_id = ?2",
+                rusqlite::params!["mem-1", a.id.as_bytes().to_vec()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert!((conf - 0.5).abs() < 1e-9, "max(0.5, 0.3) = 0.5");
+        assert_eq!(span.as_deref(), Some("initial"), "NULL did not erase span");
+        assert!((rec_at - 2000.0).abs() < 1e-9, "recorded_at = max = 2000");
+    }
+
+    #[test]
+    fn link_memory_to_entities_cross_batch_advances_confidence() {
+        // Mirror image of the monotone test: when the new confidence IS
+        // higher, the stored row must move up.
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+
+        store
+            .link_memory_to_entities("mem-1", &[(a.id, 0.4, None)], ts(1000.0))
+            .unwrap();
+        store
+            .link_memory_to_entities(
+                "mem-1",
+                &[(a.id, 0.95, Some("better".into()))],
+                ts(900.0), // earlier timestamp — recorded_at must NOT regress
+            )
+            .unwrap();
+
+        let (conf, span, rec_at): (f64, Option<String>, f64) = store
+            .conn
+            .query_row(
+                "SELECT confidence, mention_span, recorded_at
+                 FROM graph_memory_entity_mentions
+                 WHERE memory_id = ?1 AND entity_id = ?2",
+                rusqlite::params!["mem-1", a.id.as_bytes().to_vec()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert!((conf - 0.95).abs() < 1e-9, "max(0.4, 0.95) = 0.95");
+        assert_eq!(span.as_deref(), Some("better"), "non-NULL replaces NULL");
+        assert!((rec_at - 1000.0).abs() < 1e-9, "recorded_at never regresses");
+    }
+
+    #[test]
+    fn link_memory_to_entities_rejects_confidence_out_of_range() {
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+
+        for bad in &[-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let err = store
+                .link_memory_to_entities("mem-1", &[(a.id, *bad, None)], ts(1.0))
+                .expect_err("must reject");
+            match err {
+                GraphError::Invariant(msg) => {
+                    assert!(msg.contains("confidence"), "msg: {}", msg);
+                }
+                other => panic!("expected Invariant for {}, got {:?}", bad, other),
+            }
+        }
+        // Sanity: nothing was written for any of those calls.
+        assert!(store.entities_linked_to_memory("mem-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn link_memory_to_entities_atomic_on_failure() {
+        // FK violation on the second pair must roll back the whole batch — the
+        // first pair, even though its INSERT would have succeeded standalone,
+        // must not be visible. (Atomicity is a design §4.2 requirement.)
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let real = insert_test_entity(&mut store, "Real", EntityKind::Person, now, None);
+        let phantom = Uuid::new_v4(); // not inserted into graph_entities → FK fail
+
+        let err = store.link_memory_to_entities(
+            "mem-1",
+            &[(real.id, 0.9, None), (phantom, 0.5, None)],
+            ts(1000.0),
+        );
+        assert!(err.is_err(), "FK violation must surface");
+
+        let got = store.entities_linked_to_memory("mem-1").unwrap();
+        assert!(got.is_empty(), "rolled back: real was not committed either");
+    }
+
+    #[test]
+    fn entities_linked_to_memory_namespace_scoped() {
+        // Write through ns_a; read from ns_b → empty.
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let now = Utc::now();
+        let a_id = {
+            let mut store_a =
+                SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let a =
+                insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
+            store_a
+                .link_memory_to_entities("mem-1", &[(a.id, 0.5, None)], ts(1.0))
+                .unwrap();
+            a.id
+        };
+
+        let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+        assert!(
+            store_b.entities_linked_to_memory("mem-1").unwrap().is_empty(),
+            "ns_b must not see ns_a's link"
+        );
+        // Confirm ns_a still sees it (sanity).
+        let store_a2 = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+        assert_eq!(
+            store_a2.entities_linked_to_memory("mem-1").unwrap(),
+            vec![a_id]
+        );
+    }
+
+    #[test]
+    fn link_memory_to_entities_cross_namespace_returns_invariant() {
+        // Pre-existing row in ns_a; ns_b tries to link the same (memory,
+        // entity) — must fail with Invariant, must NOT update the ns_a row.
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let now = Utc::now();
+        let a_id = {
+            let mut store_a =
+                SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let a =
+                insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
+            store_a
+                .link_memory_to_entities(
+                    "mem-1",
+                    &[(a.id, 0.5, Some("ns_a span".into()))],
+                    ts(1000.0),
+                )
+                .unwrap();
+            a.id
+        };
+
+        let mut store_b =
+            SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+        let err = store_b.link_memory_to_entities(
+            "mem-1",
+            &[(a_id, 0.99, Some("ns_b span".into()))],
+            ts(2000.0),
+        );
+        match err {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("cross-namespace"), "msg: {}", msg);
+            }
+            other => panic!("expected Invariant, got {:?}", other),
+        }
+
+        // ns_a row must be unchanged.
+        let (conf, span): (f64, Option<String>) = conn
+            .query_row(
+                "SELECT confidence, mention_span
+                 FROM graph_memory_entity_mentions
+                 WHERE memory_id = ?1 AND entity_id = ?2",
+                rusqlite::params!["mem-1", a_id.as_bytes().to_vec()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!((conf - 0.5).abs() < 1e-9, "ns_a confidence preserved");
+        assert_eq!(span.as_deref(), Some("ns_a span"), "ns_a span preserved");
+    }
+
+    #[test]
+    fn entities_linked_to_memory_orders_by_recorded_at_then_entity_id() {
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-1");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+        let b = insert_test_entity(&mut store, "B", EntityKind::Person, now, None);
+        let c = insert_test_entity(&mut store, "C", EntityKind::Person, now, None);
+
+        // c at t=1, a at t=2, b at t=2 — expected order: c, then min(a,b),
+        // then max(a,b) by uuid.
+        store
+            .link_memory_to_entities("mem-1", &[(c.id, 0.5, None)], ts(1.0))
+            .unwrap();
+        store
+            .link_memory_to_entities(
+                "mem-1",
+                &[(a.id, 0.5, None), (b.id, 0.5, None)],
+                ts(2.0),
+            )
+            .unwrap();
+
+        let got = store.entities_linked_to_memory("mem-1").unwrap();
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0], c.id, "earliest recorded_at first");
+        let (lo, hi) = if a.id < b.id { (a.id, b.id) } else { (b.id, a.id) };
+        assert_eq!(got[1], lo);
+        assert_eq!(got[2], hi);
+    }
+
+    #[test]
+    fn memories_mentioning_entity_orders_recent_first_with_limit() {
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-old");
+        insert_stub_memory(&conn, "mem-mid");
+        insert_stub_memory(&conn, "mem-new");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+
+        store
+            .link_memory_to_entities("mem-old", &[(a.id, 0.5, None)], ts(100.0))
+            .unwrap();
+        store
+            .link_memory_to_entities("mem-mid", &[(a.id, 0.5, None)], ts(200.0))
+            .unwrap();
+        store
+            .link_memory_to_entities("mem-new", &[(a.id, 0.5, None)], ts(300.0))
+            .unwrap();
+
+        // Full read: DESC by recorded_at.
+        let got = store.memories_mentioning_entity(a.id, 10).unwrap();
+        assert_eq!(got, vec!["mem-new", "mem-mid", "mem-old"]);
+
+        // Limit truncates to most-recent N.
+        let got_top2 = store.memories_mentioning_entity(a.id, 2).unwrap();
+        assert_eq!(got_top2, vec!["mem-new", "mem-mid"]);
+
+        // limit == 0 returns empty (caller-bug guard, NOT an error).
+        let got_zero = store.memories_mentioning_entity(a.id, 0).unwrap();
+        assert!(got_zero.is_empty());
+    }
+
+    #[test]
+    fn memories_mentioning_entity_namespace_scoped() {
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-a");
+        insert_stub_memory(&conn, "mem-b");
+        let now = Utc::now();
+        let entity_id = {
+            // Insert the entity once in ns_a; link mem-a in ns_a.
+            let mut store_a =
+                SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let a =
+                insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
+            store_a
+                .link_memory_to_entities("mem-a", &[(a.id, 0.5, None)], ts(1.0))
+                .unwrap();
+            a.id
+        };
+        {
+            // Insert the same entity again in ns_b (separate namespace =
+            // separate row in graph_entities), then link mem-b. The trait's
+            // current PK on graph_entities is `id`, so writing the same UUID
+            // into ns_b would actually conflict — instead, use a fresh entity
+            // for ns_b. The important thing for *this* test is that the
+            // mention from ns_a does not surface when reading from ns_b.
+            let mut store_b =
+                SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+            let b =
+                insert_test_entity(&mut store_b, "B", EntityKind::Person, now, None);
+            store_b
+                .link_memory_to_entities("mem-b", &[(b.id, 0.5, None)], ts(2.0))
+                .unwrap();
+            // From ns_b, querying the ns_a entity must return nothing.
+            assert!(
+                store_b
+                    .memories_mentioning_entity(entity_id, 10)
+                    .unwrap()
+                    .is_empty(),
+                "ns_b must not see ns_a's mentions"
+            );
+        }
     }
 }
