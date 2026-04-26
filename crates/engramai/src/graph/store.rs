@@ -744,6 +744,43 @@ fn columns_to_predicate(kind: &str, label: &str) -> Result<Predicate, GraphError
     }
 }
 
+/// Validate `(stage, error_category)` against the closed sets defined in
+/// `crate::graph::audit` (`STAGE_*` / `CATEGORY_*` constants). Surfaces a
+/// clean invariant string if either is unknown — same pattern as
+/// `predicate_to_columns` (closure enforced in code, not in the schema, so
+/// extending the set in v0.4 is a no-migration change).
+fn validate_failure_closed_sets(stage: &str, category: &str) -> Result<(), GraphError> {
+    use crate::graph::audit::{
+        CATEGORY_BUDGET_EXHAUSTED, CATEGORY_DB_ERROR, CATEGORY_INTERNAL,
+        CATEGORY_LLM_INVALID_OUTPUT, CATEGORY_LLM_TIMEOUT, STAGE_DEDUP, STAGE_EDGE_EXTRACT,
+        STAGE_ENTITY_EXTRACT, STAGE_PERSIST,
+    };
+    const STAGES: &[&str] = &[
+        STAGE_ENTITY_EXTRACT,
+        STAGE_EDGE_EXTRACT,
+        STAGE_DEDUP,
+        STAGE_PERSIST,
+    ];
+    const CATEGORIES: &[&str] = &[
+        CATEGORY_LLM_TIMEOUT,
+        CATEGORY_LLM_INVALID_OUTPUT,
+        CATEGORY_BUDGET_EXHAUSTED,
+        CATEGORY_DB_ERROR,
+        CATEGORY_INTERNAL,
+    ];
+    if !STAGES.contains(&stage) {
+        return Err(GraphError::Invariant(
+            "record_extraction_failure: unknown stage label (see audit::STAGE_*)",
+        ));
+    }
+    if !CATEGORIES.contains(&category) {
+        return Err(GraphError::Invariant(
+            "record_extraction_failure: unknown error_category (see audit::CATEGORY_*)",
+        ));
+    }
+    Ok(())
+}
+
 /// Encode `ResolutionMethod` for the `graph_edges.resolution_method` TEXT
 /// column. Re-uses serde to keep the wire/disk forms in lockstep.
 fn resolution_method_to_text(m: &ResolutionMethod) -> Result<String, GraphError> {
@@ -1941,8 +1978,41 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
     }
 
     // ---------------------------------------------- Provenance (Phase 2)
-    fn entities_in_episode(&self, _episode: Uuid) -> Result<Vec<Uuid>, GraphError> {
-        unimplemented!("Phase 2: entities_in_episode")
+    fn entities_in_episode(&self, episode: Uuid) -> Result<Vec<Uuid>, GraphError> {
+        // §4.2 / GOAL-1.3 / GOAL-1.7 — episode → entity rollup.
+        //
+        // The link table (`graph_memory_entity_mentions`) holds memory↔entity
+        // edges; the episode lives on `memories.episode_id` (additive column,
+        // §4.1). Joining is the only correct way to roll up — duplicating
+        // `episode_id` onto the mention rows would create a two-source-of-
+        // truth invariant we'd then have to maintain on every update.
+        //
+        // DISTINCT: a single entity may be mentioned across many memories
+        // within the episode; callers want the entity set, not the mention
+        // multiset. Order: entity_id ASC for deterministic output (callers
+        // that want recency rebuild from `mentions_of_entity`).
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT m.entity_id
+             FROM graph_memory_entity_mentions AS m
+             JOIN memories AS mem ON mem.id = m.memory_id
+             WHERE mem.episode_id = ?1 AND m.namespace = ?2
+             ORDER BY m.entity_id ASC",
+        )?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![episode.as_bytes().to_vec(), self.namespace],
+                |row| row.get::<_, Vec<u8>>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|b| {
+                Uuid::from_slice(&b).map_err(|_| {
+                    GraphError::Invariant(
+                        "entities_in_episode: entity_id blob is not a valid UUID",
+                    )
+                })
+            })
+            .collect()
     }
     fn edges_in_episode(&self, episode: Uuid) -> Result<Vec<Uuid>, GraphError> {
         // Returns just edge ids (not full Edge rows). Callers that want
@@ -1967,8 +2037,61 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
             })
             .collect()
     }
-    fn mentions_of_entity(&self, _entity: Uuid) -> Result<EntityMentions, GraphError> {
-        unimplemented!("Phase 2: mentions_of_entity")
+    fn mentions_of_entity(&self, entity: Uuid) -> Result<EntityMentions, GraphError> {
+        // §4.2 / GOAL-1.3 / GOAL-1.7 — entity → (episodes, memories) rollup.
+        //
+        // Doc contract on `EntityMentions`: episodes and memories are
+        // de-duplicated and ordered by ascending recorded_at (oldest first).
+        // We compute both in a single pass: project (memory_id, recorded_at,
+        // episode_id) sorted by recorded_at ASC, then de-dupe each output
+        // vector while preserving first-seen order. This costs O(n) extra
+        // memory but avoids two passes over the join table for one query.
+        //
+        // Episode hydration: `memories.episode_id` is `BLOB` (nullable —
+        // additive column, ALTER TABLE in §4.1). Memories with NULL
+        // episode_id contribute to `memory_ids` but not `episode_ids`.
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT m.memory_id, m.recorded_at, mem.episode_id
+             FROM graph_memory_entity_mentions AS m
+             JOIN memories AS mem ON mem.id = m.memory_id
+             WHERE m.entity_id = ?1 AND m.namespace = ?2
+             ORDER BY m.recorded_at ASC, m.memory_id ASC",
+        )?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![entity.as_bytes().to_vec(), self.namespace],
+                |row| {
+                    let mem_id: String = row.get(0)?;
+                    let _rec_at: f64 = row.get(1)?;
+                    let ep: Option<Vec<u8>> = row.get(2)?;
+                    Ok((mem_id, ep))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Preserve first-seen order while de-duping. HashSet for O(1) seen
+        // tracking; Vec for output.
+        use std::collections::HashSet;
+        let mut memory_ids: Vec<String> = Vec::with_capacity(rows.len());
+        let mut episode_ids: Vec<Uuid> = Vec::new();
+        let mut seen_mem: HashSet<String> = HashSet::with_capacity(rows.len());
+        let mut seen_ep: HashSet<Uuid> = HashSet::new();
+        for (mem_id, ep_blob) in rows {
+            if seen_mem.insert(mem_id.clone()) {
+                memory_ids.push(mem_id);
+            }
+            if let Some(blob) = ep_blob {
+                let ep = Uuid::from_slice(&blob).map_err(|_| {
+                    GraphError::Invariant(
+                        "mentions_of_entity: episode_id blob is not a valid UUID",
+                    )
+                })?;
+                if seen_ep.insert(ep) {
+                    episode_ids.push(ep);
+                }
+            }
+        }
+        Ok(EntityMentions { episode_ids, memory_ids })
     }
     fn link_memory_to_entities(
         &mut self,
@@ -2167,49 +2290,688 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
     }
 
     // ------------------------------------------------- Topics (Phase 2)
-    fn upsert_topic(&mut self, _t: &KnowledgeTopic) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: upsert_topic")
+    fn upsert_topic(&mut self, t: &KnowledgeTopic) -> Result<(), GraphError> {
+        // §4.1 `knowledge_topics` is mirrored against `graph_entities` (the
+        // PK is also a FK into entities). Caller MUST insert the mirror
+        // entity before upserting the topic — surfacing the FK error here
+        // is correct: it forces the integrity invariant at the seam.
+        //
+        // Embedding dim: §4.1 says topic embeddings share the system-wide
+        // `embedding_dim` with entities. Reuse the same encoder so a single
+        // change in dim policy propagates to both writers without per-call
+        // duplication.
+        t.validate_embedding_dim(self.embedding_dim)?;
+        let embedding_blob =
+            entity_embedding_to_blob(t.embedding.as_deref(), self.embedding_dim)?;
+
+        // Vec<String>/Vec<Uuid> persist as JSON TEXT (column default '[]').
+        // Serializing here keeps the SQL statement uniform; the schema stores
+        // these as TEXT to avoid a third-table normalization that buys us
+        // nothing for v0.3 (callers always read the full topic).
+        let source_memories = serde_json::to_string(&t.source_memories)?;
+        // Persist Uuids as their canonical hyphenated string form inside the
+        // JSON array — matches how serde does Uuid by default and keeps the
+        // text-blob roundtrip stable across `bytes`/`hyphenated` choices.
+        let contributing_json = serde_json::to_string(
+            &t.contributing_entities
+                .iter()
+                .map(|u| u.to_string())
+                .collect::<Vec<_>>(),
+        )?;
+
+        let cluster_weights_json = match &t.cluster_weights {
+            Some(v) => Some(serde_json::to_string(v)?),
+            None => None,
+        };
+
+        // Upsert. PK is `topic_id`. On conflict update every mutable column
+        // (everything except topic_id and namespace — namespace is part of
+        // identity per §4.1 and changing it via an upsert would be a stealth
+        // namespace move; reject by virtue of WHERE-pinning identity).
+        let sql = "INSERT INTO knowledge_topics (
+                topic_id, title, summary, embedding,
+                source_memories, contributing_entities, cluster_weights,
+                synthesis_run_id, synthesized_at,
+                superseded_by, superseded_at,
+                namespace
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ON CONFLICT(topic_id) DO UPDATE SET
+                title = excluded.title,
+                summary = excluded.summary,
+                embedding = excluded.embedding,
+                source_memories = excluded.source_memories,
+                contributing_entities = excluded.contributing_entities,
+                cluster_weights = excluded.cluster_weights,
+                synthesis_run_id = excluded.synthesis_run_id,
+                synthesized_at = excluded.synthesized_at,
+                superseded_by = excluded.superseded_by,
+                superseded_at = excluded.superseded_at
+            WHERE knowledge_topics.namespace = excluded.namespace";
+        let n = self.conn.execute(
+            sql,
+            rusqlite::params![
+                t.topic_id.as_bytes().to_vec(),
+                t.title,
+                t.summary,
+                embedding_blob,
+                source_memories,
+                contributing_json,
+                cluster_weights_json,
+                t.synthesis_run_id.map(|u| u.as_bytes().to_vec()),
+                t.synthesized_at,
+                t.superseded_by.map(|u| u.as_bytes().to_vec()),
+                t.superseded_at,
+                t.namespace,
+            ],
+        )?;
+        // n == 0 means the WHERE clause filtered out the conflict row,
+        // i.e. an attempt to upsert across namespaces. Surface as an
+        // invariant — same shape as `link_memory_to_entities`.
+        if n == 0 {
+            return Err(GraphError::Invariant(
+                "upsert_topic: cross-namespace topic upsert rejected",
+            ));
+        }
+        Ok(())
     }
-    fn get_topic(&self, _id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError> {
-        unimplemented!("Phase 2: get_topic")
+    fn get_topic(&self, id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT topic_id, title, summary, embedding,
+                    source_memories, contributing_entities, cluster_weights,
+                    synthesis_run_id, synthesized_at,
+                    superseded_by, superseded_at,
+                    namespace
+             FROM knowledge_topics WHERE topic_id = ?1 AND namespace = ?2",
+        )?;
+        let row = stmt
+            .query_row(
+                rusqlite::params![id.as_bytes().to_vec(), self.namespace],
+                |row| {
+                    let topic_blob: Vec<u8> = row.get(0)?;
+                    let title: String = row.get(1)?;
+                    let summary: String = row.get(2)?;
+                    let emb_blob: Option<Vec<u8>> = row.get(3)?;
+                    let source_mem_json: String = row.get(4)?;
+                    let contrib_json: String = row.get(5)?;
+                    let cluster_weights_json: Option<String> = row.get(6)?;
+                    let run_blob: Option<Vec<u8>> = row.get(7)?;
+                    let synthesized_at: f64 = row.get(8)?;
+                    let superseded_by_blob: Option<Vec<u8>> = row.get(9)?;
+                    let superseded_at: Option<f64> = row.get(10)?;
+                    let namespace: String = row.get(11)?;
+                    Ok((
+                        topic_blob,
+                        title,
+                        summary,
+                        emb_blob,
+                        source_mem_json,
+                        contrib_json,
+                        cluster_weights_json,
+                        run_blob,
+                        synthesized_at,
+                        superseded_by_blob,
+                        superseded_at,
+                        namespace,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            topic_blob,
+            title,
+            summary,
+            emb_blob,
+            source_mem_json,
+            contrib_json,
+            cluster_weights_json,
+            run_blob,
+            synthesized_at,
+            superseded_by_blob,
+            superseded_at,
+            namespace,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        let topic_id = Uuid::from_slice(&topic_blob)
+            .map_err(|_| GraphError::Invariant("topic_id blob is not a valid UUID"))?;
+        let embedding = entity_embedding_from_blob(emb_blob, self.embedding_dim)?;
+        let source_memories: Vec<String> = serde_json::from_str(&source_mem_json)?;
+        let contributing_strs: Vec<String> = serde_json::from_str(&contrib_json)?;
+        let contributing_entities: Vec<Uuid> = contributing_strs
+            .into_iter()
+            .map(|s| {
+                Uuid::parse_str(&s).map_err(|_| {
+                    GraphError::Invariant(
+                        "contributing_entities entry is not a valid UUID",
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let cluster_weights = match cluster_weights_json {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        };
+        let synthesis_run_id = match run_blob {
+            None => None,
+            Some(b) => Some(Uuid::from_slice(&b).map_err(|_| {
+                GraphError::Invariant("synthesis_run_id blob is not a valid UUID")
+            })?),
+        };
+        let superseded_by = match superseded_by_blob {
+            None => None,
+            Some(b) => Some(Uuid::from_slice(&b).map_err(|_| {
+                GraphError::Invariant("superseded_by blob is not a valid UUID")
+            })?),
+        };
+        Ok(Some(KnowledgeTopic {
+            topic_id,
+            title,
+            summary,
+            embedding,
+            source_memories,
+            contributing_entities,
+            cluster_weights,
+            synthesis_run_id,
+            synthesized_at,
+            superseded_by,
+            superseded_at,
+            namespace,
+        }))
     }
-    fn list_topics(&self, _namespace: &str, _include_superseded: bool, _limit: usize) -> Result<Vec<KnowledgeTopic>, GraphError> {
-        unimplemented!("Phase 2: list_topics")
+    fn list_topics(&self, namespace: &str, include_superseded: bool, limit: usize) -> Result<Vec<KnowledgeTopic>, GraphError> {
+        // Caller-supplied namespace overrides the store's default. This is
+        // intentional: `list_topics` is a cross-cutting query (knowledge
+        // synthesis tooling) that may want to walk all namespaces a user
+        // owns, not just the one bound at construction time. Single-row
+        // CRUD (`get_topic`, `upsert_topic`) stays pinned to `self.namespace`
+        // because identity-bearing operations should not silently slide.
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit_i64: i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+        // Filter and ordering: most-recent synthesized_at first, ties broken
+        // by topic_id ASC for determinism.
+        let sql = if include_superseded {
+            "SELECT topic_id FROM knowledge_topics
+             WHERE namespace = ?1
+             ORDER BY synthesized_at DESC, topic_id ASC
+             LIMIT ?2"
+        } else {
+            "SELECT topic_id FROM knowledge_topics
+             WHERE namespace = ?1 AND superseded_at IS NULL
+             ORDER BY synthesized_at DESC, topic_id ASC
+             LIMIT ?2"
+        };
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let ids: Vec<Uuid> = stmt
+            .query_map(rusqlite::params![namespace, limit_i64], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .map(|r| {
+                r.map_err(GraphError::from).and_then(|b| {
+                    Uuid::from_slice(&b).map_err(|_| {
+                        GraphError::Invariant("list_topics: topic_id blob is not a valid UUID")
+                    })
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // Hydrate via `get_topic` (with caller's namespace, not self's).
+        // We re-bind `self.namespace` only for this hydration loop to avoid
+        // duplicating the column-decode logic. The bind/restore pattern is
+        // simpler and more honest than threading a namespace argument
+        // through the private decoder.
+        let mut topics = Vec::with_capacity(ids.len());
+        let mut hydrate_stmt = self.conn.prepare_cached(
+            "SELECT topic_id, title, summary, embedding,
+                    source_memories, contributing_entities, cluster_weights,
+                    synthesis_run_id, synthesized_at,
+                    superseded_by, superseded_at,
+                    namespace
+             FROM knowledge_topics WHERE topic_id = ?1 AND namespace = ?2",
+        )?;
+        for id in ids {
+            // Same decode logic as `get_topic`. Inlined to avoid the extra
+            // `prepare_cached` re-parse and to keep the FK-namespace pin.
+            let row = hydrate_stmt
+                .query_row(
+                    rusqlite::params![id.as_bytes().to_vec(), namespace],
+                    |row| {
+                        let topic_blob: Vec<u8> = row.get(0)?;
+                        let title: String = row.get(1)?;
+                        let summary: String = row.get(2)?;
+                        let emb_blob: Option<Vec<u8>> = row.get(3)?;
+                        let source_mem_json: String = row.get(4)?;
+                        let contrib_json: String = row.get(5)?;
+                        let cluster_weights_json: Option<String> = row.get(6)?;
+                        let run_blob: Option<Vec<u8>> = row.get(7)?;
+                        let synthesized_at: f64 = row.get(8)?;
+                        let superseded_by_blob: Option<Vec<u8>> = row.get(9)?;
+                        let superseded_at: Option<f64> = row.get(10)?;
+                        let namespace_col: String = row.get(11)?;
+                        Ok((
+                            topic_blob,
+                            title,
+                            summary,
+                            emb_blob,
+                            source_mem_json,
+                            contrib_json,
+                            cluster_weights_json,
+                            run_blob,
+                            synthesized_at,
+                            superseded_by_blob,
+                            superseded_at,
+                            namespace_col,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((
+                topic_blob,
+                title,
+                summary,
+                emb_blob,
+                source_mem_json,
+                contrib_json,
+                cluster_weights_json,
+                run_blob,
+                synthesized_at,
+                superseded_by_blob,
+                superseded_at,
+                ns_col,
+            )) = row
+            else {
+                continue;
+            };
+            let topic_id = Uuid::from_slice(&topic_blob)
+                .map_err(|_| GraphError::Invariant("topic_id blob is not a valid UUID"))?;
+            let embedding = entity_embedding_from_blob(emb_blob, self.embedding_dim)?;
+            let source_memories: Vec<String> = serde_json::from_str(&source_mem_json)?;
+            let contributing_strs: Vec<String> = serde_json::from_str(&contrib_json)?;
+            let contributing_entities: Vec<Uuid> = contributing_strs
+                .into_iter()
+                .map(|s| {
+                    Uuid::parse_str(&s).map_err(|_| {
+                        GraphError::Invariant("contributing_entities entry is not a valid UUID")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let cluster_weights = match cluster_weights_json {
+                Some(s) => Some(serde_json::from_str(&s)?),
+                None => None,
+            };
+            let synthesis_run_id = match run_blob {
+                None => None,
+                Some(b) => Some(Uuid::from_slice(&b).map_err(|_| {
+                    GraphError::Invariant("synthesis_run_id blob is not a valid UUID")
+                })?),
+            };
+            let superseded_by = match superseded_by_blob {
+                None => None,
+                Some(b) => Some(Uuid::from_slice(&b).map_err(|_| {
+                    GraphError::Invariant("superseded_by blob is not a valid UUID")
+                })?),
+            };
+            topics.push(KnowledgeTopic {
+                topic_id,
+                title,
+                summary,
+                embedding,
+                source_memories,
+                contributing_entities,
+                cluster_weights,
+                synthesis_run_id,
+                synthesized_at,
+                superseded_by,
+                superseded_at,
+                namespace: ns_col,
+            });
+        }
+        Ok(topics)
     }
-    fn supersede_topic(&mut self, _old: Uuid, _successor: Uuid, _at: DateTime<Utc>) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: supersede_topic")
+    fn supersede_topic(&mut self, old: Uuid, successor: Uuid, at: DateTime<Utc>) -> Result<(), GraphError> {
+        // §4.1 GUARD-3: supersede is monotonic, never erase. Mirror
+        // `KnowledgeTopic::supersede` semantics — error if the row is already
+        // superseded by a *different* successor; idempotent if same successor.
+        //
+        // Single transaction so the read/decide/write is atomic against a
+        // concurrent supersede racing on the same `old` topic.
+        let now_secs = dt_to_unix(at);
+        let tx = self.conn.transaction()?;
+        let existing: Option<(Option<Vec<u8>>, Option<f64>)> = tx
+            .query_row(
+                "SELECT superseded_by, superseded_at FROM knowledge_topics
+                 WHERE topic_id = ?1 AND namespace = ?2",
+                rusqlite::params![old.as_bytes().to_vec(), self.namespace],
+                |row| Ok((row.get::<_, Option<Vec<u8>>>(0)?, row.get::<_, Option<f64>>(1)?)),
+            )
+            .optional()?;
+        let Some((cur_by, _cur_at)) = existing else {
+            // §4.1: caller must verify the topic exists. Surface a stable
+            // invariant so the resolution driver can decide whether to log
+            // a "stale supersede target" trace and continue, or escalate.
+            return Err(GraphError::Invariant("supersede_topic: old topic not found"));
+        };
+        if let Some(blob) = cur_by {
+            let existing_succ = Uuid::from_slice(&blob).map_err(|_| {
+                GraphError::Invariant("supersede_topic: superseded_by blob is not a valid UUID")
+            })?;
+            if existing_succ == successor {
+                // Idempotent: same successor, accept.
+                return Ok(());
+            } else {
+                return Err(GraphError::Invariant("topic already superseded"));
+            }
+        }
+        // Verify the successor exists in the same namespace before pointing
+        // at it. Without this check a misuse would create a dangling FK
+        // reference that the schema's `superseded_by REFERENCES
+        // knowledge_topics(topic_id)` partially catches, but not on the
+        // namespace dimension.
+        let succ_present: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM knowledge_topics
+                 WHERE topic_id = ?1 AND namespace = ?2",
+                rusqlite::params![successor.as_bytes().to_vec(), self.namespace],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if succ_present.is_none() {
+            return Err(GraphError::Invariant(
+                "supersede_topic: successor topic not found in same namespace",
+            ));
+        }
+        tx.execute(
+            "UPDATE knowledge_topics
+             SET superseded_by = ?1, superseded_at = ?2
+             WHERE topic_id = ?3 AND namespace = ?4",
+            rusqlite::params![
+                successor.as_bytes().to_vec(),
+                now_secs,
+                old.as_bytes().to_vec(),
+                self.namespace,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     // -------------------------------------------- Pipeline runs (Phase 2)
-    fn begin_pipeline_run(&mut self, _kind: PipelineKind, _input_summary: Json) -> Result<Uuid, GraphError> {
-        unimplemented!("Phase 2: begin_pipeline_run")
+    fn begin_pipeline_run(&mut self, kind: PipelineKind, input_summary: Json) -> Result<Uuid, GraphError> {
+        // Construct a fresh PipelineRun in `Running` state via the canonical
+        // helper (`audit::PipelineRun::start`). This guarantees the id, status
+        // string, and started_at all use the same source of truth as the
+        // pure-Rust state machine — when `finish_pipeline_run` later validates
+        // a transition it reads what `start` wrote, not a divergent encoding.
+        let run = crate::graph::audit::PipelineRun::start(
+            kind,
+            input_summary.clone(),
+            dt_to_unix(Utc::now()),
+        );
+        let kind_str = serde_json::to_string(&kind)?;
+        let kind_label = kind_str.trim_matches('"').to_string();
+        let status_str = serde_json::to_string(&run.status)?;
+        let status_label = status_str.trim_matches('"').to_string();
+        let input_json = serde_json::to_string(&input_summary)?;
+        self.conn.execute(
+            "INSERT INTO graph_pipeline_runs (
+                run_id, kind, started_at, finished_at, status,
+                input_summary, output_summary, error_detail,
+                namespace
+            ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, NULL, NULL, ?6)",
+            rusqlite::params![
+                run.id.as_bytes().to_vec(),
+                kind_label,
+                run.started_at,
+                status_label,
+                input_json,
+                self.namespace,
+            ],
+        )?;
+        Ok(run.id)
     }
     fn finish_pipeline_run(
-        &mut self, _run_id: Uuid, _status: RunStatus, _output_summary: Option<Json>, _error_detail: Option<&str>,
+        &mut self, run_id: Uuid, status: RunStatus, output_summary: Option<Json>, error_detail: Option<&str>,
     ) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: finish_pipeline_run")
+        // §4.2 audit: terminal statuses only (Succeeded | Failed | Cancelled).
+        // Reject `Running` — it would silently re-enter the unfinished state
+        // and break the "append-only state machine" invariant
+        // (`audit::PipelineRun::transition`).
+        if matches!(status, RunStatus::Running) {
+            return Err(GraphError::Invariant(
+                "finish_pipeline_run: cannot transition to Running",
+            ));
+        }
+        let status_str = serde_json::to_string(&status)?;
+        let status_label = status_str.trim_matches('"').to_string();
+        let now = dt_to_unix(Utc::now());
+        let output_json = match output_summary {
+            Some(v) => Some(serde_json::to_string(&v)?),
+            None => None,
+        };
+
+        // Atomic guard: read the current status and only finish if it's
+        // `running`. This makes finish idempotent under race (two workers
+        // can never both succeed), and rejects double-finish at the SQL
+        // layer — same shape as the in-memory `transition` check.
+        let tx = self.conn.transaction()?;
+        let cur: Option<String> = tx
+            .query_row(
+                "SELECT status FROM graph_pipeline_runs
+                 WHERE run_id = ?1 AND namespace = ?2",
+                rusqlite::params![run_id.as_bytes().to_vec(), self.namespace],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(cur_status) = cur else {
+            return Err(GraphError::Invariant(
+                "finish_pipeline_run: run not found",
+            ));
+        };
+        if cur_status != "running" {
+            return Err(GraphError::Invariant(
+                "finish_pipeline_run: run is already terminal",
+            ));
+        }
+        tx.execute(
+            "UPDATE graph_pipeline_runs
+             SET status = ?1, finished_at = ?2,
+                 output_summary = ?3, error_detail = ?4
+             WHERE run_id = ?5 AND namespace = ?6",
+            rusqlite::params![
+                status_label,
+                now,
+                output_json,
+                error_detail,
+                run_id.as_bytes().to_vec(),
+                self.namespace,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
-    fn record_resolution_trace(&mut self, _t: &ResolutionTrace) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: record_resolution_trace")
+    fn record_resolution_trace(&mut self, t: &ResolutionTrace) -> Result<(), GraphError> {
+        // §4.1 CHECK constraint requires (edge_id IS NOT NULL OR
+        // entity_id IS NOT NULL). Surface the violation client-side with a
+        // typed invariant so we don't rely on the SQLite error text.
+        if t.edge_id.is_none() && t.entity_id.is_none() {
+            return Err(GraphError::Invariant(
+                "record_resolution_trace: at least one of edge_id/entity_id must be set",
+            ));
+        }
+        let candidates_json = match &t.candidates {
+            Some(v) => Some(serde_json::to_string(v)?),
+            None => None,
+        };
+        // INSERT OR IGNORE: trace_id is the PK; replaying the same
+        // resolution must be a no-op, not a duplicate-row error. Same
+        // contract `apply_graph_delta` will rely on for idempotent retries.
+        self.conn.execute(
+            "INSERT OR IGNORE INTO graph_resolution_traces (
+                trace_id, run_id, edge_id, entity_id,
+                stage, decision, reason, candidates,
+                recorded_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                t.trace_id.as_bytes().to_vec(),
+                t.run_id.as_bytes().to_vec(),
+                t.edge_id.map(|u| u.as_bytes().to_vec()),
+                t.entity_id.map(|u| u.as_bytes().to_vec()),
+                t.stage,
+                t.decision,
+                t.reason,
+                candidates_json,
+                t.recorded_at,
+            ],
+        )?;
+        Ok(())
     }
 
     // -------------------------------------------- Predicates (Phase 2)
-    fn record_predicate_use(&mut self, _p: &Predicate, _raw: &str, _at: DateTime<Utc>) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: record_predicate_use")
+    fn record_predicate_use(&mut self, p: &Predicate, raw: &str, at: DateTime<Utc>) -> Result<(), GraphError> {
+        // Single-call variant per design §4.2 — for tests / callers that
+        // bypass `apply_graph_delta`. Production hot path uses the in-tx
+        // batched counter (`predicate_use_buffer`).
+        //
+        // Upsert keyed on (kind, label). On first sight: insert with
+        // first_seen=last_seen=at, usage_count=1 and the caller's `raw`
+        // string. On repeat: increment usage_count, push last_seen forward,
+        // keep first_seen and raw_first_seen unchanged.
+        let (kind_text, label) = predicate_to_columns(p)?;
+        let now = dt_to_unix(at);
+        self.conn.execute(
+            "INSERT INTO graph_predicates (
+                kind, label, raw_first_seen,
+                usage_count, first_seen, last_seen
+            ) VALUES (?1, ?2, ?3, 1, ?4, ?4)
+            ON CONFLICT(kind, label) DO UPDATE SET
+                usage_count = usage_count + 1,
+                last_seen = max(graph_predicates.last_seen, excluded.last_seen)",
+            rusqlite::params![kind_text, label, raw, now],
+        )?;
+        Ok(())
     }
-    fn list_proposed_predicates(&self, _min_usage: u64) -> Result<Vec<ProposedPredicateStats>, GraphError> {
-        unimplemented!("Phase 2: list_proposed_predicates")
+    fn list_proposed_predicates(&self, min_usage: u64) -> Result<Vec<ProposedPredicateStats>, GraphError> {
+        // GOAL-1.10: surface drift candidates only — canonical predicates
+        // are operator-curated and not "proposed". Filter both by `kind`
+        // and `min_usage`. SQLite stores `usage_count` as INTEGER (i64);
+        // saturate u64 → i64 to avoid silently overflowing high counts.
+        let threshold: i64 = i64::try_from(min_usage).unwrap_or(i64::MAX);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT label, usage_count FROM graph_predicates
+             WHERE kind = 'proposed' AND usage_count >= ?1
+             ORDER BY usage_count DESC, label ASC",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![threshold], |row| {
+                let label: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((label, count))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(label, count)| ProposedPredicateStats {
+                label,
+                usage_count: count.max(0) as u64,
+            })
+            .collect())
     }
 
     // ------------------------------------------- Failures (Phase 2)
-    fn record_extraction_failure(&mut self, _f: &ExtractionFailure) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: record_extraction_failure")
+    fn record_extraction_failure(&mut self, f: &ExtractionFailure) -> Result<(), GraphError> {
+        // §4.1 invariant: closed-set `stage` and `error_category` strings.
+        // We enforce closure in code (not in the DB CHECK clause, which
+        // would freeze the set forever — adding a stage in v0.4 would
+        // require a migration) — same approach as the audit module's
+        // `STAGE_*` / `CATEGORY_*` constants.
+        validate_failure_closed_sets(&f.stage, &f.error_category)?;
+        // INSERT OR IGNORE: id is PK; replays from the same pipeline run
+        // must not double-count a failure. Same idempotence shape as
+        // `record_resolution_trace`.
+        self.conn.execute(
+            "INSERT OR IGNORE INTO graph_extraction_failures (
+                id, episode_id, stage, error_category,
+                error_detail, occurred_at, retry_count, resolved_at,
+                namespace
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)",
+            rusqlite::params![
+                f.id.as_bytes().to_vec(),
+                f.episode_id.as_bytes().to_vec(),
+                f.stage,
+                f.error_category,
+                f.error_detail,
+                f.occurred_at,
+                f.resolved_at,
+                self.namespace,
+            ],
+        )?;
+        Ok(())
     }
-    fn list_failed_episodes(&self, _unresolved_only: bool) -> Result<Vec<Uuid>, GraphError> {
-        unimplemented!("Phase 2: list_failed_episodes")
+    fn list_failed_episodes(&self, unresolved_only: bool) -> Result<Vec<Uuid>, GraphError> {
+        // Distinct episode ids — many failures may target the same episode
+        // (e.g. resolution + persist both fail on the same input). Callers
+        // care about the episode set, not the failure multiset.
+        let sql = if unresolved_only {
+            "SELECT DISTINCT episode_id FROM graph_extraction_failures
+             WHERE namespace = ?1 AND resolved_at IS NULL
+             ORDER BY episode_id ASC"
+        } else {
+            "SELECT DISTINCT episode_id FROM graph_extraction_failures
+             WHERE namespace = ?1
+             ORDER BY episode_id ASC"
+        };
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let blobs = stmt
+            .query_map(rusqlite::params![self.namespace], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        blobs
+            .into_iter()
+            .map(|b| {
+                Uuid::from_slice(&b).map_err(|_| {
+                    GraphError::Invariant(
+                        "list_failed_episodes: episode_id blob is not a valid UUID",
+                    )
+                })
+            })
+            .collect()
     }
-    fn mark_failure_resolved(&mut self, _failure_id: Uuid, _at: DateTime<Utc>) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: mark_failure_resolved")
+    fn mark_failure_resolved(&mut self, failure_id: Uuid, at: DateTime<Utc>) -> Result<(), GraphError> {
+        // GOAL-1.12: failures are append-only; `resolved_at` is the only
+        // mutable field, and it is monotone — once set, never cleared.
+        // Refuse to over-write a non-NULL `resolved_at` to make the
+        // operator-visible status survive replays / merges.
+        let now = dt_to_unix(at);
+        let tx = self.conn.transaction()?;
+        let cur: Option<Option<f64>> = tx
+            .query_row(
+                "SELECT resolved_at FROM graph_extraction_failures
+                 WHERE id = ?1 AND namespace = ?2",
+                rusqlite::params![failure_id.as_bytes().to_vec(), self.namespace],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(prev) = cur else {
+            return Err(GraphError::Invariant(
+                "mark_failure_resolved: failure not found",
+            ));
+        };
+        if prev.is_some() {
+            // Idempotent: already resolved. Ignore. The semantics are
+            // "resolved at *some* time" — we don't claim the original
+            // resolution moment can be updated.
+            return Ok(());
+        }
+        tx.execute(
+            "UPDATE graph_extraction_failures
+             SET resolved_at = ?1
+             WHERE id = ?2 AND namespace = ?3",
+            rusqlite::params![now, failure_id.as_bytes().to_vec(), self.namespace],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     // ------------------------------------------ Namespaces (Phase 2)
@@ -4169,6 +4931,807 @@ mod tests {
                     .is_empty(),
                 "ns_b must not see ns_a's mentions"
             );
+        }
+    }
+
+    // ============================================================
+    // Phase 2 Batch B — episode rollups, topics, pipeline, predicates,
+    // failures.
+    //
+    // Test conventions follow Batch A:
+    //   * one `fresh_conn` per test (in-memory)
+    //   * `insert_stub_memory` / `insert_test_entity` for FK satisfaction
+    //   * timestamps via `ts(secs)` for deterministic ordering
+    // ============================================================
+
+    fn set_memory_episode(conn: &Connection, memory_id: &str, episode: Uuid) {
+        // Helper: tag a stub `memories` row with an episode_id so the
+        // `entities_in_episode` / `mentions_of_entity` joins resolve.
+        conn.execute(
+            "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
+            rusqlite::params![episode.as_bytes().to_vec(), memory_id],
+        )
+        .expect("set memory episode");
+    }
+
+    // ---- entities_in_episode --------------------------------------
+
+    #[test]
+    fn entities_in_episode_aggregates_distinct_across_memories() {
+        let mut conn = fresh_conn();
+        let ep = Uuid::new_v4();
+        insert_stub_memory(&conn, "mem-1");
+        insert_stub_memory(&conn, "mem-2");
+        insert_stub_memory(&conn, "mem-3");
+        set_memory_episode(&conn, "mem-1", ep);
+        set_memory_episode(&conn, "mem-2", ep);
+        // mem-3 belongs to a different episode and must NOT contribute.
+        let other_ep = Uuid::new_v4();
+        set_memory_episode(&conn, "mem-3", other_ep);
+
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+        let b = insert_test_entity(&mut store, "B", EntityKind::Person, now, None);
+        let c = insert_test_entity(&mut store, "C", EntityKind::Person, now, None);
+
+        // a + b mentioned in mem-1 (in-episode)
+        store
+            .link_memory_to_entities(
+                "mem-1",
+                &[(a.id, 1.0, None), (b.id, 1.0, None)],
+                ts(1.0),
+            )
+            .unwrap();
+        // b again in mem-2 (in-episode) — distinct rollup must dedup
+        store
+            .link_memory_to_entities("mem-2", &[(b.id, 1.0, None)], ts(2.0))
+            .unwrap();
+        // c only in mem-3 (other episode) — must NOT appear
+        store
+            .link_memory_to_entities("mem-3", &[(c.id, 1.0, None)], ts(3.0))
+            .unwrap();
+
+        let got = store.entities_in_episode(ep).unwrap();
+        let mut want = vec![a.id, b.id];
+        want.sort();
+        assert_eq!(got, want, "rollup must dedup b across mem-1 and mem-2");
+        assert!(!got.contains(&c.id));
+    }
+
+    #[test]
+    fn entities_in_episode_namespace_scoped() {
+        let mut conn = fresh_conn();
+        let ep = Uuid::new_v4();
+        insert_stub_memory(&conn, "mem-shared");
+        set_memory_episode(&conn, "mem-shared", ep);
+        let now = Utc::now();
+        let a_id;
+        {
+            let mut store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let a =
+                insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
+            a_id = a.id;
+            store_a
+                .link_memory_to_entities("mem-shared", &[(a.id, 1.0, None)], ts(1.0))
+                .unwrap();
+        }
+        // ns_b doesn't see ns_a's mentions.
+        {
+            let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+            let got = store_b.entities_in_episode(ep).unwrap();
+            assert!(got.is_empty());
+        }
+        // ns_a does.
+        let store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+        assert_eq!(store_a.entities_in_episode(ep).unwrap(), vec![a_id]);
+    }
+
+    #[test]
+    fn entities_in_episode_unknown_episode_returns_empty() {
+        let mut conn = fresh_conn();
+        let store = SqliteGraphStore::new(&mut conn);
+        let got = store.entities_in_episode(Uuid::new_v4()).unwrap();
+        assert!(got.is_empty());
+    }
+
+    // ---- mentions_of_entity --------------------------------------
+
+    #[test]
+    fn mentions_of_entity_aggregates_episodes_and_memories() {
+        let mut conn = fresh_conn();
+        let ep1 = Uuid::new_v4();
+        let ep2 = Uuid::new_v4();
+        insert_stub_memory(&conn, "mem-1");
+        insert_stub_memory(&conn, "mem-2");
+        insert_stub_memory(&conn, "mem-3");
+        set_memory_episode(&conn, "mem-1", ep1);
+        set_memory_episode(&conn, "mem-2", ep1); // same episode as mem-1
+        set_memory_episode(&conn, "mem-3", ep2);
+
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+
+        store
+            .link_memory_to_entities("mem-1", &[(a.id, 1.0, None)], ts(1.0))
+            .unwrap();
+        store
+            .link_memory_to_entities("mem-2", &[(a.id, 1.0, None)], ts(2.0))
+            .unwrap();
+        store
+            .link_memory_to_entities("mem-3", &[(a.id, 1.0, None)], ts(3.0))
+            .unwrap();
+
+        let m = store.mentions_of_entity(a.id).unwrap();
+        assert_eq!(m.memory_ids, vec!["mem-1", "mem-2", "mem-3"]);
+        // Episodes: ep1 first (mem-1 at ts=1), then ep2 (mem-3 at ts=3).
+        // ep1 dedup'd (mem-2 also belongs to ep1).
+        assert_eq!(m.episode_ids, vec![ep1, ep2]);
+    }
+
+    #[test]
+    fn mentions_of_entity_skips_memories_with_null_episode() {
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-no-ep");
+        // No `set_memory_episode` call → episode_id stays NULL.
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+        store
+            .link_memory_to_entities("mem-no-ep", &[(a.id, 1.0, None)], ts(1.0))
+            .unwrap();
+        let m = store.mentions_of_entity(a.id).unwrap();
+        assert_eq!(m.memory_ids, vec!["mem-no-ep"]);
+        assert!(
+            m.episode_ids.is_empty(),
+            "memory with NULL episode_id must not contribute"
+        );
+    }
+
+    #[test]
+    fn mentions_of_entity_orders_by_recorded_at_ascending() {
+        let mut conn = fresh_conn();
+        insert_stub_memory(&conn, "mem-late");
+        insert_stub_memory(&conn, "mem-early");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
+        // Insert "late" first by SQL order, with a later recorded_at, then
+        // "early" with an earlier recorded_at — output must be early-first.
+        store
+            .link_memory_to_entities("mem-late", &[(a.id, 1.0, None)], ts(10.0))
+            .unwrap();
+        store
+            .link_memory_to_entities("mem-early", &[(a.id, 1.0, None)], ts(1.0))
+            .unwrap();
+        let m = store.mentions_of_entity(a.id).unwrap();
+        assert_eq!(m.memory_ids, vec!["mem-early", "mem-late"]);
+    }
+
+    // ---- topic CRUD ----------------------------------------------
+
+    fn fresh_topic(ns: &str) -> KnowledgeTopic {
+        KnowledgeTopic::new(
+            Uuid::new_v4(),
+            "Title".into(),
+            "Summary".into(),
+            ns.into(),
+            100.0,
+        )
+    }
+
+    fn insert_mirror_entity(store: &mut SqliteGraphStore<'_>, id: Uuid) {
+        // Topic rows reference graph_entities(id) via FK. Insert a Topic
+        // entity with the same id to satisfy.
+        let now = Utc::now();
+        let mut e = Entity::new("mirror".into(), EntityKind::Topic, now);
+        e.id = id;
+        store.insert_entity(&e).expect("insert mirror");
+    }
+
+    #[test]
+    fn upsert_topic_roundtrips_basic_fields() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let mut t = fresh_topic("default");
+        insert_mirror_entity(&mut store, t.topic_id);
+        t.source_memories = vec!["m1".into(), "m2".into()];
+        t.contributing_entities = vec![Uuid::new_v4(), Uuid::new_v4()];
+        t.cluster_weights = Some(json!({"a": 1, "b": 0.5}));
+        store.upsert_topic(&t).unwrap();
+
+        let got = store.get_topic(t.topic_id).unwrap().expect("present");
+        assert_eq!(got.topic_id, t.topic_id);
+        assert_eq!(got.title, t.title);
+        assert_eq!(got.summary, t.summary);
+        assert_eq!(got.source_memories, t.source_memories);
+        assert_eq!(got.contributing_entities, t.contributing_entities);
+        assert_eq!(got.cluster_weights, t.cluster_weights);
+        assert_eq!(got.namespace, t.namespace);
+        assert!(got.embedding.is_none());
+        assert!(got.is_live());
+    }
+
+    #[test]
+    fn upsert_topic_is_idempotent_and_updates_mutable_fields() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let mut t = fresh_topic("default");
+        insert_mirror_entity(&mut store, t.topic_id);
+        store.upsert_topic(&t).unwrap();
+
+        // Repeat with a new title and summary; topic_id stable.
+        t.title = "Updated".into();
+        t.summary = "v2".into();
+        t.synthesized_at = 200.0;
+        store.upsert_topic(&t).unwrap();
+        let got = store.get_topic(t.topic_id).unwrap().expect("present");
+        assert_eq!(got.title, "Updated");
+        assert_eq!(got.summary, "v2");
+        assert_eq!(got.synthesized_at, 200.0);
+    }
+
+    #[test]
+    fn upsert_topic_rejects_cross_namespace_clobber() {
+        let mut conn = fresh_conn();
+        // ns_a creates a topic
+        let topic_id = Uuid::new_v4();
+        {
+            let mut store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            insert_mirror_entity(&mut store_a, topic_id);
+            let mut t = fresh_topic("ns_a");
+            t.topic_id = topic_id;
+            store_a.upsert_topic(&t).unwrap();
+        }
+        // ns_b tries to upsert the same topic_id with a different namespace
+        let mut store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+        let mut t_b = fresh_topic("ns_b");
+        t_b.topic_id = topic_id;
+        match store_b.upsert_topic(&t_b) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("cross-namespace"));
+            }
+            other => panic!("expected cross-namespace invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn upsert_topic_rejects_embedding_dim_mismatch() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(8);
+        let mut t = fresh_topic("default");
+        insert_mirror_entity(&mut store, t.topic_id);
+        t.embedding = Some(vec![0.0; 16]); // wrong dim
+        match store.upsert_topic(&t) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "knowledge topic embedding dim mismatch");
+            }
+            other => panic!("expected dim mismatch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn upsert_topic_persists_embedding_blob() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
+        let mut t = fresh_topic("default");
+        insert_mirror_entity(&mut store, t.topic_id);
+        t.embedding = Some(vec![1.0, -2.0, 3.0, -4.0]);
+        store.upsert_topic(&t).unwrap();
+        let got = store.get_topic(t.topic_id).unwrap().unwrap();
+        assert_eq!(got.embedding, t.embedding);
+    }
+
+    #[test]
+    fn get_topic_missing_returns_none() {
+        let mut conn = fresh_conn();
+        let store = SqliteGraphStore::new(&mut conn);
+        assert!(store.get_topic(Uuid::new_v4()).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_topic_namespace_scoped() {
+        let mut conn = fresh_conn();
+        let topic_id = Uuid::new_v4();
+        {
+            let mut store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            insert_mirror_entity(&mut store_a, topic_id);
+            let mut t = fresh_topic("ns_a");
+            t.topic_id = topic_id;
+            store_a.upsert_topic(&t).unwrap();
+        }
+        let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+        assert!(store_b.get_topic(topic_id).unwrap().is_none());
+        let store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+        assert!(store_a.get_topic(topic_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn list_topics_orders_by_synthesized_at_desc_and_filters_superseded() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        // Three topics with distinct synthesized_at; one will be superseded.
+        let mut t1 = fresh_topic("default");
+        t1.synthesized_at = 100.0;
+        let mut t2 = fresh_topic("default");
+        t2.synthesized_at = 200.0;
+        let mut t3 = fresh_topic("default");
+        t3.synthesized_at = 300.0;
+        for t in [&t1, &t2, &t3] {
+            insert_mirror_entity(&mut store, t.topic_id);
+            store.upsert_topic(t).unwrap();
+        }
+        // Supersede t2 → t3.
+        store.supersede_topic(t2.topic_id, t3.topic_id, ts(400.0)).unwrap();
+
+        // include_superseded=false: only t1, t3 (t2 filtered out).
+        let live = store.list_topics("default", false, 10).unwrap();
+        let live_ids: Vec<Uuid> = live.iter().map(|t| t.topic_id).collect();
+        assert_eq!(live_ids, vec![t3.topic_id, t1.topic_id]);
+
+        // include_superseded=true: all three, t3 first.
+        let all = store.list_topics("default", true, 10).unwrap();
+        let all_ids: Vec<Uuid> = all.iter().map(|t| t.topic_id).collect();
+        assert_eq!(all_ids, vec![t3.topic_id, t2.topic_id, t1.topic_id]);
+    }
+
+    #[test]
+    fn list_topics_zero_limit_returns_empty() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t = fresh_topic("default");
+        insert_mirror_entity(&mut store, t.topic_id);
+        store.upsert_topic(&t).unwrap();
+        let got = store.list_topics("default", true, 0).unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn list_topics_namespace_filter() {
+        let mut conn = fresh_conn();
+        // Same physical conn, two namespaces. Topics from ns_a must not
+        // appear in `list_topics("ns_b", ...)`.
+        {
+            let mut store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let mut t = fresh_topic("ns_a");
+            insert_mirror_entity(&mut store_a, t.topic_id);
+            t.synthesized_at = 100.0;
+            store_a.upsert_topic(&t).unwrap();
+        }
+        {
+            let mut store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+            let mut t = fresh_topic("ns_b");
+            insert_mirror_entity(&mut store_b, t.topic_id);
+            t.synthesized_at = 200.0;
+            store_b.upsert_topic(&t).unwrap();
+        }
+        let store = SqliteGraphStore::new(&mut conn);
+        // Cross-cutting: caller chooses namespace.
+        let a_topics = store.list_topics("ns_a", true, 10).unwrap();
+        let b_topics = store.list_topics("ns_b", true, 10).unwrap();
+        assert_eq!(a_topics.len(), 1);
+        assert_eq!(b_topics.len(), 1);
+        assert_eq!(a_topics[0].namespace, "ns_a");
+        assert_eq!(b_topics[0].namespace, "ns_b");
+    }
+
+    #[test]
+    fn supersede_topic_idempotent_for_same_successor() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t1 = fresh_topic("default");
+        let t2 = fresh_topic("default");
+        insert_mirror_entity(&mut store, t1.topic_id);
+        insert_mirror_entity(&mut store, t2.topic_id);
+        store.upsert_topic(&t1).unwrap();
+        store.upsert_topic(&t2).unwrap();
+        store.supersede_topic(t1.topic_id, t2.topic_id, ts(10.0)).unwrap();
+        // Second call w/ same successor: no-op, no error.
+        store.supersede_topic(t1.topic_id, t2.topic_id, ts(20.0)).unwrap();
+        let got = store.get_topic(t1.topic_id).unwrap().unwrap();
+        assert_eq!(got.superseded_by, Some(t2.topic_id));
+    }
+
+    #[test]
+    fn supersede_topic_rejects_double_supersede_with_different_successor() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t1 = fresh_topic("default");
+        let t2 = fresh_topic("default");
+        let t3 = fresh_topic("default");
+        for t in [&t1, &t2, &t3] {
+            insert_mirror_entity(&mut store, t.topic_id);
+            store.upsert_topic(t).unwrap();
+        }
+        store.supersede_topic(t1.topic_id, t2.topic_id, ts(10.0)).unwrap();
+        match store.supersede_topic(t1.topic_id, t3.topic_id, ts(20.0)) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "topic already superseded");
+            }
+            other => panic!("expected double-supersede invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn supersede_topic_missing_old_errors() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t = fresh_topic("default");
+        insert_mirror_entity(&mut store, t.topic_id);
+        store.upsert_topic(&t).unwrap();
+        match store.supersede_topic(Uuid::new_v4(), t.topic_id, ts(1.0)) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("old topic not found"));
+            }
+            other => panic!("expected not-found invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn supersede_topic_missing_successor_errors() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t = fresh_topic("default");
+        insert_mirror_entity(&mut store, t.topic_id);
+        store.upsert_topic(&t).unwrap();
+        match store.supersede_topic(t.topic_id, Uuid::new_v4(), ts(1.0)) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("successor topic not found"));
+            }
+            other => panic!("expected successor-not-found invariant, got {:?}", other),
+        }
+    }
+
+    // ---- pipeline runs --------------------------------------------
+
+    #[test]
+    fn begin_pipeline_run_inserts_running_row() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let id = store
+            .begin_pipeline_run(
+                PipelineKind::Resolution,
+                json!({"episodes": 1}),
+            )
+            .unwrap();
+        let (kind, status, finished, ns): (String, String, Option<f64>, String) = store
+            .conn()
+            .query_row(
+                "SELECT kind, status, finished_at, namespace
+                 FROM graph_pipeline_runs WHERE run_id = ?1",
+                rusqlite::params![id.as_bytes().to_vec()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "resolution");
+        assert_eq!(status, "running");
+        assert!(finished.is_none());
+        assert_eq!(ns, "default");
+    }
+
+    #[test]
+    fn finish_pipeline_run_succeeds_then_rejects_double_finish() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let id = store
+            .begin_pipeline_run(PipelineKind::Resolution, Json::Null)
+            .unwrap();
+        store
+            .finish_pipeline_run(id, RunStatus::Succeeded, Some(json!({"n": 5})), None)
+            .unwrap();
+        // Re-finish must fail.
+        match store.finish_pipeline_run(id, RunStatus::Failed, None, Some("retry")) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("terminal"));
+            }
+            other => panic!("expected double-finish invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn finish_pipeline_run_rejects_running_status() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let id = store
+            .begin_pipeline_run(PipelineKind::Resolution, Json::Null)
+            .unwrap();
+        match store.finish_pipeline_run(id, RunStatus::Running, None, None) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("Running"));
+            }
+            other => panic!("expected reject-Running invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn finish_pipeline_run_unknown_run_errors() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        match store.finish_pipeline_run(
+            Uuid::new_v4(),
+            RunStatus::Succeeded,
+            None,
+            None,
+        ) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("not found"));
+            }
+            other => panic!("expected not-found invariant, got {:?}", other),
+        }
+    }
+
+    // ---- resolution traces ----------------------------------------
+
+    #[test]
+    fn record_resolution_trace_persists_and_is_idempotent() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        // FK target: entity_id references graph_entities(id). Insert a real
+        // entity so the trace's entity_id resolves.
+        let ent = insert_test_entity(&mut store, "X", EntityKind::Person, now, None);
+        let run_id = store
+            .begin_pipeline_run(PipelineKind::Resolution, Json::Null)
+            .unwrap();
+        let trace_id = Uuid::new_v4();
+        let t = ResolutionTrace {
+            trace_id,
+            run_id,
+            edge_id: None,
+            entity_id: Some(ent.id),
+            stage: crate::graph::audit::STAGE_DEDUP.to_string(),
+            decision: crate::graph::audit::DECISION_MATCHED_EXISTING.to_string(),
+            reason: Some("alias hit".into()),
+            candidates: Some(json!([{"id": "x", "score": 0.9}])),
+            recorded_at: 1.0,
+        };
+        store.record_resolution_trace(&t).unwrap();
+        // Replay must not error nor duplicate.
+        store.record_resolution_trace(&t).unwrap();
+        let count: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM graph_resolution_traces WHERE trace_id = ?1",
+                rusqlite::params![trace_id.as_bytes().to_vec()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn record_resolution_trace_rejects_both_targets_null() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let run_id = store
+            .begin_pipeline_run(PipelineKind::Resolution, Json::Null)
+            .unwrap();
+        let t = ResolutionTrace {
+            trace_id: Uuid::new_v4(),
+            run_id,
+            edge_id: None,
+            entity_id: None,
+            stage: crate::graph::audit::STAGE_DEDUP.to_string(),
+            decision: crate::graph::audit::DECISION_NEW.to_string(),
+            reason: None,
+            candidates: None,
+            recorded_at: 1.0,
+        };
+        match store.record_resolution_trace(&t) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("at least one"));
+            }
+            other => panic!("expected null-target invariant, got {:?}", other),
+        }
+    }
+
+    // ---- predicates -----------------------------------------------
+
+    #[test]
+    fn record_predicate_use_inserts_then_increments() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let p = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        store.record_predicate_use(&p, "works_at", ts(1.0)).unwrap();
+        store.record_predicate_use(&p, "works_at", ts(2.0)).unwrap();
+        store.record_predicate_use(&p, "works_at", ts(3.0)).unwrap();
+        let (count, first, last): (i64, f64, f64) = store
+            .conn()
+            .query_row(
+                "SELECT usage_count, first_seen, last_seen FROM graph_predicates
+                 WHERE kind = 'canonical' AND label = 'works_at'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(first, 1.0);
+        assert_eq!(last, 3.0);
+    }
+
+    #[test]
+    fn list_proposed_predicates_filters_by_min_usage_and_kind() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        // canonical (must NOT show up regardless of usage)
+        let canon = Predicate::Canonical(CanonicalPredicate::DependsOn);
+        for _ in 0..10 {
+            store.record_predicate_use(&canon, "depends_on", ts(1.0)).unwrap();
+        }
+        // proposed: "advises" ×3, "knows" ×1
+        let advises = Predicate::proposed("advises");
+        let knows = Predicate::proposed("knows");
+        for _ in 0..3 {
+            store.record_predicate_use(&advises, "advises", ts(2.0)).unwrap();
+        }
+        store.record_predicate_use(&knows, "knows", ts(3.0)).unwrap();
+
+        let got = store.list_proposed_predicates(2).unwrap();
+        // Only "advises" passes min_usage=2; canonical never appears.
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].label, "advises");
+        assert_eq!(got[0].usage_count, 3);
+    }
+
+    // ---- extraction failures --------------------------------------
+
+    fn fresh_failure(stage: &str, category: &str, episode: Uuid, secs: f64) -> ExtractionFailure {
+        ExtractionFailure {
+            id: Uuid::new_v4(),
+            episode_id: episode,
+            stage: stage.to_string(),
+            error_category: category.to_string(),
+            error_detail: Some("boom".into()),
+            occurred_at: secs,
+            resolved_at: None,
+        }
+    }
+
+    #[test]
+    fn record_extraction_failure_persists_and_is_idempotent() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let ep = Uuid::new_v4();
+        let f = fresh_failure(
+            crate::graph::audit::STAGE_ENTITY_EXTRACT,
+            crate::graph::audit::CATEGORY_LLM_TIMEOUT,
+            ep,
+            1.0,
+        );
+        store.record_extraction_failure(&f).unwrap();
+        // Idempotent replay.
+        store.record_extraction_failure(&f).unwrap();
+        let count: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM graph_extraction_failures WHERE id = ?1",
+                rusqlite::params![f.id.as_bytes().to_vec()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn record_extraction_failure_rejects_unknown_stage() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let f = fresh_failure(
+            "not_a_real_stage",
+            crate::graph::audit::CATEGORY_LLM_TIMEOUT,
+            Uuid::new_v4(),
+            1.0,
+        );
+        match store.record_extraction_failure(&f) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("stage"));
+            }
+            other => panic!("expected unknown-stage invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn record_extraction_failure_rejects_unknown_category() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let f = fresh_failure(
+            crate::graph::audit::STAGE_ENTITY_EXTRACT,
+            "not_a_real_category",
+            Uuid::new_v4(),
+            1.0,
+        );
+        match store.record_extraction_failure(&f) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("error_category"));
+            }
+            other => panic!("expected unknown-category invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn list_failed_episodes_dedups_and_filters_unresolved() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let ep1 = Uuid::new_v4();
+        let ep2 = Uuid::new_v4();
+        // Two failures on ep1 (one resolved), one on ep2 (unresolved).
+        let mut f1a = fresh_failure(
+            crate::graph::audit::STAGE_ENTITY_EXTRACT,
+            crate::graph::audit::CATEGORY_LLM_TIMEOUT,
+            ep1,
+            1.0,
+        );
+        f1a.resolved_at = Some(50.0);
+        let f1b = fresh_failure(
+            crate::graph::audit::STAGE_PERSIST,
+            crate::graph::audit::CATEGORY_DB_ERROR,
+            ep1,
+            2.0,
+        );
+        let f2 = fresh_failure(
+            crate::graph::audit::STAGE_DEDUP,
+            crate::graph::audit::CATEGORY_INTERNAL,
+            ep2,
+            3.0,
+        );
+        store.record_extraction_failure(&f1a).unwrap();
+        store.record_extraction_failure(&f1b).unwrap();
+        store.record_extraction_failure(&f2).unwrap();
+
+        // unresolved_only=true: ep1 (still has unresolved f1b) + ep2.
+        let mut got = store.list_failed_episodes(true).unwrap();
+        got.sort();
+        let mut want = vec![ep1, ep2];
+        want.sort();
+        assert_eq!(got, want);
+
+        // Resolve f1b too; now only ep2 remains unresolved.
+        store.mark_failure_resolved(f1b.id, ts(100.0)).unwrap();
+        let unresolved = store.list_failed_episodes(true).unwrap();
+        assert_eq!(unresolved, vec![ep2]);
+
+        // unresolved_only=false: both episodes always.
+        let mut all = store.list_failed_episodes(false).unwrap();
+        all.sort();
+        assert_eq!(all, want);
+    }
+
+    #[test]
+    fn mark_failure_resolved_is_monotone_and_idempotent() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let ep = Uuid::new_v4();
+        let f = fresh_failure(
+            crate::graph::audit::STAGE_PERSIST,
+            crate::graph::audit::CATEGORY_DB_ERROR,
+            ep,
+            1.0,
+        );
+        store.record_extraction_failure(&f).unwrap();
+        store.mark_failure_resolved(f.id, ts(50.0)).unwrap();
+        // Second call: idempotent, no error, no overwrite of the resolved_at.
+        store.mark_failure_resolved(f.id, ts(99.0)).unwrap();
+        let resolved_at: Option<f64> = store
+            .conn()
+            .query_row(
+                "SELECT resolved_at FROM graph_extraction_failures WHERE id = ?1",
+                rusqlite::params![f.id.as_bytes().to_vec()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved_at, Some(50.0), "resolved_at must be monotone");
+    }
+
+    #[test]
+    fn mark_failure_resolved_unknown_failure_errors() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        match store.mark_failure_resolved(Uuid::new_v4(), ts(1.0)) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("not found"));
+            }
+            other => panic!("expected not-found invariant, got {:?}", other),
         }
     }
 }
