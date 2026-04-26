@@ -72,7 +72,7 @@ The decision made in discussion (recall hit, not yet filed): **monorepo is the d
 ### `engram/` (destination, to receive migration)
 - Keep current monorepo structure (crate split)
 - Replace Rust source under core crate with `engram-ai-rust/src/`
-- Merge `.gid/issues/` (engram currently only has ISS-001-synthesis-perf + reviews)
+- Merge `.gid/issues/` (engram currently only has ISS-001-synthesis-perf + reviews) <!-- historical: ISS-001-synthesis-perf was renumbered to ISS-036-synthesis-perf to avoid collision with ISS-001-fts-concurrent-corruption -->
 
 ### Downstream (needs config update)
 - `/Users/potato/clawd/projects/cogmembench/benchmarks/locomo/config.py` — line: `ENGRAM_BINARY = Path("/Users/potato/clawd/projects/engram/target/release/engram")` — already points at `engram/`, just needs the binary to actually exist there after consolidation.

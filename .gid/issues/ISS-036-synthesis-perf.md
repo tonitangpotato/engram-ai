@@ -1,4 +1,4 @@
-# ISS-001: Synthesis Engine O(n²) Performance Bottleneck
+# ISS-036: Synthesis Engine O(n²) Performance Bottleneck
 
 **Status:** Open  
 **Priority:** High  
