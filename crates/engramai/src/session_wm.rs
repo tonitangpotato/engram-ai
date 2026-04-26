@@ -1,8 +1,14 @@
-//! Session Working Memory — Miller's Law-constrained active memory buffer.
+//! Active Context — Miller's Law-constrained active memory buffer.
 //!
 //! Based on George Miller's 7±2 rule: human working memory has limited capacity.
 //! This module manages what's "currently active" in a session to avoid redundant
 //! full-database searches when topic is continuous.
+//!
+//! **Naming note (v0.3):** previously called `SessionWorkingMemory`. Renamed to
+//! `ActiveContext` to disambiguate from L2 `working_strength` (the r1 trace in
+//! the dual-trace consolidation model). A deprecated type alias
+//! `SessionWorkingMemory = ActiveContext` is re-exported from `lib.rs` for
+//! transition; it will be removed in v0.4. See DESIGN-v0.3 §2 and review r1 / A1.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -22,7 +28,7 @@ pub struct CachedScore {
 
 /// A single session's working memory state.
 #[derive(Debug, Clone)]
-pub struct SessionWorkingMemory {
+pub struct ActiveContext {
     /// Maximum number of items in working memory
     capacity: usize,
     /// Decay time for items
@@ -35,13 +41,13 @@ pub struct SessionWorkingMemory {
     last_query: Option<String>,
 }
 
-impl Default for SessionWorkingMemory {
+impl Default for ActiveContext {
     fn default() -> Self {
         Self::new(DEFAULT_CAPACITY, DEFAULT_DECAY_SECS)
     }
 }
 
-impl SessionWorkingMemory {
+impl ActiveContext {
     /// Create a new session working memory with specified capacity and decay.
     pub fn new(capacity: usize, decay_secs: u64) -> Self {
         Self {
@@ -197,7 +203,7 @@ impl SessionWorkingMemory {
 /// Manages multiple sessions, each with their own working memory.
 #[derive(Debug, Default)]
 pub struct SessionRegistry {
-    sessions: HashMap<String, SessionWorkingMemory>,
+    sessions: HashMap<String, ActiveContext>,
     /// Default capacity for new sessions
     default_capacity: usize,
     /// Default decay seconds for new sessions
@@ -224,14 +230,14 @@ impl SessionRegistry {
     }
     
     /// Get or create a session's working memory.
-    pub fn get_session(&mut self, session_id: &str) -> &mut SessionWorkingMemory {
+    pub fn get_session(&mut self, session_id: &str) -> &mut ActiveContext {
         self.sessions.entry(session_id.to_string()).or_insert_with(|| {
-            SessionWorkingMemory::new(self.default_capacity, self.default_decay_secs)
+            ActiveContext::new(self.default_capacity, self.default_decay_secs)
         })
     }
     
     /// Get a session's working memory if it exists.
-    pub fn get_session_if_exists(&self, session_id: &str) -> Option<&SessionWorkingMemory> {
+    pub fn get_session_if_exists(&self, session_id: &str) -> Option<&ActiveContext> {
         self.sessions.get(session_id)
     }
     
@@ -286,7 +292,7 @@ mod tests {
     
     #[test]
     fn test_basic_activation() {
-        let mut wm = SessionWorkingMemory::new(7, 300);
+        let mut wm = ActiveContext::new(7, 300);
         
         assert!(wm.is_empty());
         
@@ -300,7 +306,7 @@ mod tests {
     
     #[test]
     fn test_capacity_pruning() {
-        let mut wm = SessionWorkingMemory::new(3, 300);
+        let mut wm = ActiveContext::new(3, 300);
         
         // Activate more than capacity
         wm.activate(&["a".to_string(), "b".to_string(), "c".to_string()]);
@@ -313,7 +319,7 @@ mod tests {
     
     #[test]
     fn test_overlap_calculation() {
-        let mut wm = SessionWorkingMemory::new(7, 300);
+        let mut wm = ActiveContext::new(7, 300);
         wm.activate(&["a".to_string(), "b".to_string(), "c".to_string()]);
         
         // 2 out of 3 overlap -> ratio = 2 / (3 + 3 - 2) = 0.5
@@ -326,7 +332,7 @@ mod tests {
     
     #[test]
     fn test_topic_continuity() {
-        let mut wm = SessionWorkingMemory::new(7, 300);
+        let mut wm = ActiveContext::new(7, 300);
         wm.activate(&["a".to_string(), "b".to_string(), "c".to_string()]);
         
         // High overlap -> continuous
@@ -357,7 +363,7 @@ mod tests {
     #[test]
     fn test_decay_pruning() {
         // Use a very short decay for testing
-        let mut wm = SessionWorkingMemory::new(7, 0); // 0 seconds = immediate decay
+        let mut wm = ActiveContext::new(7, 0); // 0 seconds = immediate decay
         
         wm.items.insert("a".to_string(), Instant::now() - Duration::from_secs(1));
         

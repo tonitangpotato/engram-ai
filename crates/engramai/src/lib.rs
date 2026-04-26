@@ -143,7 +143,18 @@ pub use types::{AclEntry, CrossLink, HebbianLink, MemoryLayer, MergeOutcome, Mem
 pub use anomaly::{BaselineTracker, Baseline, AnomalyResult};
 pub use confidence::{confidence_score, confidence_label, confidence_detail, content_reliability, retrieval_salience, ConfidenceDetail};
 pub use hybrid_search::{hybrid_search, adaptive_hybrid_search, reciprocal_rank_fusion, HybridSearchResult, HybridSearchOpts};
-pub use session_wm::{SessionWorkingMemory, SessionRegistry, SessionRecallResult, CachedScore};
+pub use session_wm::{ActiveContext, SessionRegistry, SessionRecallResult, CachedScore};
+
+/// Deprecated alias for [`ActiveContext`].
+///
+/// Renamed in v0.3 to disambiguate from L2 `working_strength` (the r1 trace in
+/// the dual-trace consolidation model). `ActiveContext` clearly refers to the
+/// session-level active-items buffer (Miller's Law), not the L2 episodic trace
+/// strength. See DESIGN-v0.3 review r1 / finding A1.
+///
+/// Will be removed in v0.4.
+#[deprecated(since = "0.3.0", note = "renamed to `ActiveContext` in v0.3; will be removed in v0.4")]
+pub type SessionWorkingMemory = ActiveContext;
 pub use synthesis::types::{
     SynthesisSettings, SynthesisReport, SynthesisError, SynthesisEngine,
     SynthesisLlmProvider, MemoryCluster, GateDecision, GateResult,

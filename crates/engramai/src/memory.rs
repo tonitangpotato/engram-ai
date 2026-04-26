@@ -15,7 +15,7 @@ use crate::models::{effective_strength, retrieval_activation, run_consolidation_
 use crate::storage::{Storage, EmbeddingStats};
 use crate::bus::{SubscriptionManager, Subscription, Notification};
 use crate::models::hebbian::{MemoryWithNamespace, record_cross_namespace_coactivation};
-use crate::session_wm::{SessionWorkingMemory, SessionRecallResult};
+use crate::session_wm::{ActiveContext, SessionRecallResult};
 use crate::synthesis::types::SynthesisEngine;
 use crate::lifecycle::{DecayReport, ForgetReport, LifecycleError, ReconcileCandidate, ReconcileReport, PhaseReport};
 use crate::types::{AclEntry, CrossLink, HebbianLink, LayerStats, MemoryLayer, MemoryRecord, MemoryStats, MemoryType, Permission, RecallResult, RecallWithAssociationsResult, TypeStats};
@@ -634,7 +634,7 @@ impl Memory {
     pub fn broadcast_admission(
         &mut self,
         memory_ids: &[String],
-        session_wm: &mut SessionWorkingMemory,
+        session_wm: &mut ActiveContext,
     ) -> Vec<String> {
         use crate::interoceptive::InteroceptiveSignal;
 
@@ -4217,7 +4217,7 @@ impl Memory {
     pub fn session_recall(
         &mut self,
         query: &str,
-        session_wm: &mut SessionWorkingMemory,
+        session_wm: &mut ActiveContext,
         limit: usize,
         context: Option<Vec<String>>,
         min_confidence: Option<f64>,
@@ -4229,7 +4229,7 @@ impl Memory {
     pub fn session_recall_ns(
         &mut self,
         query: &str,
-        session_wm: &mut SessionWorkingMemory,
+        session_wm: &mut ActiveContext,
         limit: usize,
         context: Option<Vec<String>>,
         min_confidence: Option<f64>,
@@ -5981,7 +5981,7 @@ mod confidence_tests {
     #[test]
     fn test_broadcast_admission_generates_confidence_signals() {
         let mut mem = Memory::new(":memory:", None).unwrap();
-        let mut wm = SessionWorkingMemory::default();
+        let mut wm = ActiveContext::default();
 
         // Store a memory so we have something to broadcast.
         let id = mem
@@ -6006,7 +6006,7 @@ mod confidence_tests {
     #[test]
     fn test_broadcast_admission_multiple_memories() {
         let mut mem = Memory::new(":memory:", None).unwrap();
-        let mut wm = SessionWorkingMemory::default();
+        let mut wm = ActiveContext::default();
 
         let id1 = mem
             .add("First memory about coding", MemoryType::Factual, Some(0.5), None, None)
@@ -6031,7 +6031,7 @@ mod confidence_tests {
     #[test]
     fn test_broadcast_with_nonexistent_memory_is_safe() {
         let mut mem = Memory::new(":memory:", None).unwrap();
-        let mut wm = SessionWorkingMemory::default();
+        let mut wm = ActiveContext::default();
 
         // Broadcast a memory that doesn't exist — should not panic.
         let neighbors = mem.broadcast_admission(&["nonexistent-id".to_string()], &mut wm);
@@ -6042,7 +6042,7 @@ mod confidence_tests {
     #[test]
     fn test_broadcast_updates_hub_domain_state() {
         let mut mem = Memory::new(":memory:", None).unwrap();
-        let mut wm = SessionWorkingMemory::default();
+        let mut wm = ActiveContext::default();
 
         // Store multiple memories and broadcast them.
         let id1 = mem
@@ -6066,7 +6066,7 @@ mod confidence_tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("broadcast_hebb.db");
         let mut mem = Memory::new(db.to_str().unwrap(), None).unwrap();
-        let mut wm = SessionWorkingMemory::default();
+        let mut wm = ActiveContext::default();
 
         // Store two memories.
         let id_a = mem
