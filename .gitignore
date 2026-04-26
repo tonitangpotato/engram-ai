@@ -14,3 +14,22 @@ __pycache__/
 # .gid-v03-context graph.db is the v0.3 working graph — version it
 !.gid-v03-context/graph.db
 !.gid-v03-context/extract-meta.json
+
+# Ritual-derived ephemeral state — never commit
+.gid/lsp-daemon.pid
+.gid/lsp-daemon.sock
+.gid/graph.db.before-*
+.gid/graph.db.wrong-*
+.gid/extract-meta.json
+**/.gid/lsp-daemon.pid
+**/.gid/lsp-daemon.sock
+**/.gid/extract-meta.json
+.gid-v03-context/graph.db.before-*
+.gid-v03-context/graph.db.checkpoint-*
+.gid-v03-context/*-build-plan.md
+.gid-v03-context/*-execution-plan.md
+.gid-v03-context/v03-task-review-*.md
+
+# Pilot run logs — derived from runs, not source
+.gid/issues/**/pilot/*.log
+.gid/issues/**/pilot/nohup*.log
