@@ -102,6 +102,7 @@ pub mod config;
 pub mod embeddings;
 pub mod extractor;
 pub mod graph;
+pub mod resolution;
 pub mod hybrid_search;
 pub mod interoceptive;
 pub mod lifecycle;

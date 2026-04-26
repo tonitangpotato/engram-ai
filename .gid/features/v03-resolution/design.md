@@ -27,7 +27,7 @@ The resolution pipeline is the **write path**. It converts an ingested `MemoryRe
 
 - **Data model.** `Entity`, `Edge`, `Predicate`, `EdgeEnd`, `ResolutionMethod`, `EntityAlias` are defined in `v03-graph-layer/design.md` §3 and are referenced, not redefined.
 - **Storage / SQL.** The `graph_entities`, `graph_edges`, `graph_entity_aliases`, `graph_predicates`, `graph_extraction_failures` tables and the `GraphStore` trait live in `v03-graph-layer/design.md` §4. The resolution pipeline is a *caller* of `GraphStore`, never a direct SQL writer for graph tables.
-- **CRUD API.** `GraphStore::upsert_entity`, `insert_edge`, `invalidate_edge`, `merge_entities`, `record_extraction_failure` are defined in `v03-graph-layer/design.md` §5. This document specifies the *call sequence*, not the method signatures.
+- **CRUD API.** `GraphStore::insert_entity`, `update_entity_cognitive`, `update_entity_embedding`, `touch_entity_last_seen`, `insert_edge`, `invalidate_edge`, `merge_entities`, `link_memory_to_entities`, `record_extraction_failure` are defined in `v03-graph-layer/design.md` §4.2 (trait surface) and §5 (high-level `Memory` accessors). `GraphStore::search_candidates` (§4.2, ISS-033) is the candidate retrieval primitive consumed by §3.4.1. This document specifies the *call sequence*, not the method signatures. Note: there is no convenience `upsert_entity` — entity create-vs-update is dispatched at the call site based on `EntityResolution::action` (`CreateNew` → `insert_entity`, `MergeInto` → `update_entity_cognitive` + `touch_entity_last_seen` + optional `update_entity_embedding`).
 - **Read path.** Dual-level retrieval, mood-congruent recall, query classification → `v03-retrieval` (GOAL-3.X).
 - **Migration backfill.** v0.2 → v0.3 backfill uses this pipeline but is orchestrated by `v03-migration` (GOAL-4.X).
 - **Consolidation-time edge audit.** The §6 audit step in master DESIGN is a *consolidation* concern, not a write-path concern. The resolution pipeline is forward-only.
@@ -260,17 +260,32 @@ This is the heart of the pipeline and the most subtle stage. It has four sub-ste
 For each `ExtractedEntity` mention:
 
 ```rust
-let candidates: Vec<Entity> = graph_store.search_candidates(
-    &mention.normalized,
-    mention_kind,                      // restricts to same EntityKind
-    top_k,                             // config, default 10
-    ctx.memory.session_id.as_deref(),
-)?;
+// Embed the mention up-front so the store can perform similarity scan in one pass.
+// `None` means the embedder failed for this mention; fusion will treat the
+// embedding signal as missing (proportional redistribution per §3.4.2).
+let mention_embedding: Option<Vec<f32>> =
+    embedder.embed_mention(&mention).ok();
+
+let candidates: Vec<CandidateMatch> = graph_store.search_candidates(&CandidateQuery {
+    mention_text:      mention.normalized.clone(),
+    mention_embedding,
+    kind_filter:       Some(mention_kind),     // restricts to same EntityKind
+    namespace:         ctx.memory.namespace.clone(),
+    top_k:             config.candidate_top_k,    // default 10
+    recency_window:    Some(config.recency_window),
+    now:               ctx.memory.occurred_at,
+})?;
 ```
 
-`search_candidates` is defined in `v03-graph-layer/design.md` §5 and uses: (a) exact alias match on `graph_entity_aliases`, (b) embedding similarity over `Entity.canonical_name + summary`, (c) recency boost for entities with `last_seen` in the current session. The K is bounded (`config.candidate_top_k`, default 10, hard cap 50).
+`search_candidates` (defined in `v03-graph-layer/design.md` §4.2 and supporting types `CandidateQuery` / `CandidateMatch` near the trait) returns **raw multi-signal results** — alias-exact match flag, embedding cosine score, recency-decay score — and does **not** rank them. Ranking is the fusion module's job (§3.4.2); putting it in the store would duplicate the missing-signal weight-redistribution logic in two places. The store also returns small projected fields (`canonical_name`, `kind`, `last_seen`, `identity_confidence`) so fusion can score without a follow-up `get_entity` round-trip per candidate.
 
-**Cap enforcement.** `candidate_top_k` is clamped at runtime: `top_k = min(config.candidate_top_k, 50)`. A warning is logged (once per process) if the user-configured value exceeded the cap. Config validation does NOT fail on over-cap values — this is forward-compatible (future versions may raise the cap), and silent clamping is preferable to boot failure on a tunable parameter.
+**Signal-channel invariants.**
+
+- `embedding_score` distinguishes "missing" (`None`) from "zero similarity" (`Some(0.0)`). Fusion treats them differently (weight redistribution vs. zero-valued signal). The store MUST preserve this distinction — collapsing both into `0.0` would systematically miscalibrate fusion weights and is a hard error.
+- A single `CandidateMatch` may carry both `alias_match: true` and a non-`None` `embedding_score`. The two signals are independent; alias hits do not short-circuit embedding scoring.
+- `namespace` is a hard filter inside `search_candidates`. Cross-namespace resolution is out of scope here and at the store layer (NG, master §3).
+
+**Cap enforcement.** `candidate_top_k` is clamped at runtime by the store (`MAX_TOP_K = 50` in `v03-graph-layer` §4.2 supporting types). A warning is logged (once per process) if the user-configured value exceeded the cap. Config validation does NOT fail on over-cap values — this is forward-compatible (future versions may raise the cap), and silent clamping is preferable to boot failure on a tunable parameter.
 
 #### 3.4.2 Multi-Signal Fusion (GOAL-2.6, GOAL-2.8)
 
@@ -278,14 +293,16 @@ For each `(mention, candidate)` pair, compute eight signals per master DESIGN §
 
 | signal | name                | source                                                              |
 | ------ | ------------------- | ------------------------------------------------------------------- |
-| s1     | semantic_similarity | cosine(mention_embedding, candidate.embedding)                      |
-| s2     | name_match          | Jaro-Winkler / normalized exact-match over aliases                  |
+| s1     | semantic_similarity | `candidate.embedding_score` from `CandidateMatch` (cosine pre-computed by §3.4.1; `None` ⇒ signal missing) |
+| s2     | name_match          | Jaro-Winkler on aliases; OR `1.0` if `candidate.alias_match` is true |
 | s3     | graph_context       | overlap of co-mentioned entities between this memory and candidate  |
-| s4     | recency             | decayed `candidate.last_seen` relative to `memory.occurred_at`      |
+| s4     | recency             | `candidate.recency_score` from `CandidateMatch` (linear decay over `recency_window`, pre-computed by §3.4.1) |
 | s5     | cooccurrence        | Hebbian link strength from v0.2 `hebbian_links` for cand's entities |
 | s6     | affective_continuity| distance between this memory's valence and cand's aggregate valence |
 | s7     | identity_hint       | structural hints (same session speaker, same file path)             |
 | s8     | somatic_match       | 1 − euclidean(ctx.affect_snapshot, candidate.somatic_fingerprint)   |
+
+**Why s1 / s4 come pre-computed from `search_candidates`.** Recomputing cosine similarity and recency in the fusion loop would mean an extra round-trip per candidate (fetch `entity.embedding` blob, decode, dot-product) and duplicate the recency formula across the store and the fusion module — exactly the kind of two-place logic that ISS-033 is preventing. `search_candidates` already has the embedding blob in scan range; computing the cosine there is one extra multiply-add per candidate, free relative to the SQL fetch. Fusion still owns *weighting and combination*; the store just produces clean numeric inputs.
 
 Fusion:
 
@@ -359,7 +376,13 @@ let decision = match (existing.as_slice(), new_edge_confidence) {
 
 Single transaction via `Storage::with_graph_tx` (defined in v03-graph-layer §4.3). Writes, in order:
 
-1. All `EntityResolution` rows → `GraphStore::upsert_entity(...)` for `MergeInto` (updates `last_seen`, `activation`, optionally refreshes `somatic_fingerprint`) or `GraphStore::insert_entity(...)` for `CreateNew`. Alias rows inserted in bulk.
+1. All `EntityResolution` rows → dispatched by `action`:
+    - `CreateNew` → `GraphStore::insert_entity(&entity)` (the `Entity` struct constructed in §3.4.3 already carries the freshly computed `embedding`, `somatic_fingerprint`, `activation`, `identity_confidence`, and `last_seen = ctx.memory.occurred_at`).
+    - `MergeInto(canonical_id)` → in this order:
+        1. `GraphStore::update_entity_cognitive(canonical_id, activation, importance, identity_confidence, agent_affect)` — recomputed activation from §3.4.3 fusion, refreshed identity confidence, optionally a new `agent_affect` snapshot derived from this episode's somatic delta.
+        2. `GraphStore::touch_entity_last_seen(canonical_id, ctx.memory.occurred_at)` — bumps `last_seen` and increments `mention_count`.
+        3. *(Conditional)* `GraphStore::update_entity_embedding(canonical_id, &new_embedding)` — only when this mention triggers a `canonical_name` or `summary` change (per v03-graph-layer §3.1 lifecycle rule), in which case the embedder is re-run on the new canonical text and the new vector is persisted. Skipped on the common path where the merge does not change canonical text.
+   Alias rows inserted in bulk after the entity dispatch completes.
 2. All `EdgeDecision::Update` → `GraphStore::insert_edge(new)` then `GraphStore::invalidate_edge(prior_id, new.id, now)`. Order matters — successor row must exist before prior is marked invalidated so foreign-key `invalidated_by` is satisfiable.
 3. All `EdgeDecision::Add` → `GraphStore::insert_edge`.
 4. Memory-row back-linking: `GraphStore::link_memory_to_entities(memory_id, &assigned_entity_ids)` writes provenance rows in `graph_memory_entity_mentions`.
@@ -946,7 +969,7 @@ Pipeline re-runs are safe because:
 - `graph_pipeline_runs` tracks `(memory_id, run_id)`. A duplicate enqueue for a completed memory is dropped at dequeue.
 - Re-extract is explicitly a new `run_id` and follows §4 additive-merge rules.
 - `insert_edge` relies on `Edge.id = Uuid::new_v4()` so two runs that produce the "same" edge produce distinct rows (both valid provenance anchors), but §4.2 "present/identical" skip rule prevents that at the pipeline level for the re-extract case.
-- `upsert_entity` is keyed on canonical id, so repeated upserts converge.
+- `insert_entity` uses `INSERT OR IGNORE` on canonical id; `update_entity_cognitive` / `touch_entity_last_seen` / `update_entity_embedding` are idempotent per-row updates keyed on canonical id, so repeated runs converge.
 
 ### 8.3 Concurrency
 
@@ -995,7 +1018,7 @@ This design depends on and coordinates with:
   - §3.3 `Predicate`, `CanonicalPredicate` — consumed by §3.3.1 adapter and §3.3.2 proposed-predicate path.
   - §3.4 `EntityAlias` and merge semantics — consumed by §3.4.3 when a deferred tie-breaker concludes MERGE.
   - §4.1 SQLite tables (`graph_entities`, `graph_edges`, `graph_entity_aliases`, `graph_predicates`, `graph_extraction_failures`, plus the pipeline-owned `graph_pipeline_runs`, `graph_resolution_traces`, `graph_memory_entity_mentions` tables defined there) — written by §3.5 via `GraphStore`.
-  - §4.2 `GraphStore` trait (`search_candidates`, `upsert_entity`, `insert_edge`, `invalidate_edge`, `merge_entities`, `link_memory_to_entities`, `record_extraction_failure`) — the sole write interface for §3.5.
+  - §4.2 `GraphStore` trait (`search_candidates`, `insert_entity`, `update_entity_cognitive`, `update_entity_embedding`, `touch_entity_last_seen`, `insert_edge`, `invalidate_edge`, `merge_entities`, `link_memory_to_entities`, `record_extraction_failure`) — the sole write interface for §3.5. Entity create-vs-update is dispatched at the call site (no convenience `upsert_entity`).
   - §4.3 transaction boundaries — §3.5 uses `Storage::with_graph_tx` directly.
   - §6 telemetry body-signal bus — §7 metrics emit into this bus; the boundary is one-way.
   - §7 error model (`GraphError`) — mapped into `StageFailure.kind` in §8.

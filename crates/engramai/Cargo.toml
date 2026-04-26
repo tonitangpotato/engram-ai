@@ -46,6 +46,10 @@ jieba-rs = "0.8.1"
 # Unicode normalization (NFKC) for EntityKind::Other folding (graph design §3.1)
 unicode-normalization = "0.1"
 
+# String similarity (Jaro-Winkler) for s2 name_match in v0.3 resolution fusion
+# (.gid/features/v03-resolution/design.md §3.4.2).
+strsim = "0.11"
+
 # BLAKE3 hashing for GraphDelta canonical hash (graph design §5bis).
 blake3 = "1"
 
