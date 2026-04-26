@@ -69,7 +69,7 @@ use crate::graph::{
     delta::{ApplyReport, GraphDelta},
     edge::{Edge, EdgeEnd, ResolutionMethod},
     affect::SomaticFingerprint,
-    entity::{validate_attributes, Entity, EntityKind, HistoryEntry},
+    entity::{normalize_alias, validate_attributes, Entity, EntityKind, HistoryEntry},
     error::GraphError,
     schema::Predicate,
     telemetry::{NoopSink, TelemetrySink, WatermarkTracker},
@@ -108,6 +108,78 @@ pub struct ProposedPredicateStats {
     pub usage_count: u64,
 }
 
+/// Hard ceiling enforced by [`GraphStore::search_candidates`] regardless of
+/// the caller's `top_k`. Bounds memory and latency for the v0 brute-force
+/// scan over `graph_entities.embedding` (§4.2, ISS-033). The limit applies
+/// after the alias and embedding signals are unioned, before recency scoring.
+pub const MAX_TOP_K: usize = 50;
+
+/// Input to [`GraphStore::search_candidates`] (§3.4.1 driver, ISS-033).
+///
+/// **Construction.** `mention_text` and `namespace` are mandatory; everything
+/// else is optional. The store does NOT re-embed `mention_text` if
+/// `mention_embedding` is `None` — embedding is the caller's responsibility
+/// (see contract on `search_candidates`).
+#[derive(Debug, Clone)]
+pub struct CandidateQuery {
+    /// The mention text as it appears in the source memory. Normalized
+    /// internally for the alias-exact lookup (`normalize_alias`); the raw
+    /// form is kept for diagnostics in returned `CandidateMatch` rows.
+    pub mention_text: String,
+    /// Optional pre-computed embedding of the mention (in the system-wide
+    /// embedding dim). When `None`, the embedding signal is omitted — no
+    /// implicit re-embedding inside the store.
+    pub mention_embedding: Option<Vec<f32>>,
+    /// When `Some`, restricts both alias and embedding scans to this kind.
+    pub kind_filter: Option<EntityKind>,
+    /// Hard filter; cross-namespace candidates are never returned.
+    pub namespace: String,
+    /// Caller's requested cap; the store enforces a hard ceiling
+    /// ([`MAX_TOP_K`]) regardless of this value.
+    pub top_k: usize,
+    /// Window for the linear recency-decay score. `None` ⇒ unbounded window
+    /// (all entities get a positive recency score, scaled against the oldest
+    /// `last_seen` in the candidate set).
+    pub recency_window: Option<std::time::Duration>,
+    /// "Now" reference for recency scoring (unix seconds). Passed in (not
+    /// read from the system clock) so tests are deterministic.
+    pub now: f64,
+}
+
+/// One row of [`GraphStore::search_candidates`] output.
+///
+/// **Signal semantics — `None` vs `Some(0.0)`.**
+/// - `embedding_score = None`  ⇒ signal *missing* (no embedding to compare).
+///   Fusion redistributes this signal's weight across present signals.
+/// - `embedding_score = Some(0.0)` ⇒ signal *present, value zero*. Fusion
+///   keeps the embedding weight allocated; the candidate just scored 0.
+///
+/// Collapsing both into `0.0` would systematically miscalibrate the
+/// fusion module's weight redistribution — load-bearing distinction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CandidateMatch {
+    pub entity_id: Uuid,
+    pub kind: EntityKind,
+    pub canonical_name: String,
+    /// True iff reached via exact alias hit on the normalized
+    /// `mention_text`. Mutually independent of the embedding signal — a
+    /// single candidate may have `alias_match = true` AND a non-`None`
+    /// `embedding_score`.
+    pub alias_match: bool,
+    /// Cosine similarity in `[-1.0, 1.0]`, or `None` when the signal is
+    /// missing (caller had no `mention_embedding` *or* candidate has no
+    /// `embedding` blob).
+    pub embedding_score: Option<f32>,
+    /// Linear decay in `[0.0, 1.0]` over `recency_window`; 0 outside window.
+    pub recency_score: f32,
+    /// Last-seen unix seconds — projected so fusion doesn't need a follow-up
+    /// `get_entity` round-trip.
+    pub last_seen: f64,
+    /// Identity confidence at the time of the read — projected for the same
+    /// reason.
+    pub identity_confidence: f64,
+}
+
 // ---------------------------------------------------------------------------
 // GraphStore trait — full §4.2 surface
 // ---------------------------------------------------------------------------
@@ -138,6 +210,57 @@ pub trait GraphStore {
         kind: &EntityKind,
         limit: usize,
     ) -> Result<Vec<Entity>, GraphError>;
+
+    // ------------------------------------ Candidate retrieval (ISS-033)
+    /// Update the embedding blob for an existing entity (ISS-033).
+    /// Separated from `update_entity_cognitive` because embedding is not a
+    /// cognitive scalar and validation rules differ — length-validated,
+    /// not range-validated.
+    ///
+    /// On dim mismatch returns `GraphError::Invariant("entity embedding
+    /// dim mismatch")`. Passing `None` clears the embedding (used by
+    /// v03-migration during cross-dim rewrites; not a normal operational
+    /// path). Returns `GraphError::EntityNotFound(id)` if the row does not
+    /// exist in the current namespace.
+    fn update_entity_embedding(
+        &mut self,
+        id: Uuid,
+        embedding: Option<&[f32]>,
+    ) -> Result<(), GraphError>;
+
+    /// Raw multi-signal candidate lookup for v03-resolution §3.4.1.
+    ///
+    /// **Contract.** Returns *unranked* raw signals — the caller (fusion
+    /// module) combines them into a final score. The store does NOT rank;
+    /// putting ranking here would duplicate the fusion module's
+    /// missing-signal weight redistribution logic in two places. This
+    /// method is a pure retrieval primitive.
+    ///
+    /// **Inputs.** See [`CandidateQuery`] field docs. Highlights:
+    /// - `mention_embedding = None` ⇒ no implicit re-embedding; the
+    ///   embedding signal is simply omitted from results.
+    /// - `namespace` is a hard filter; cross-namespace candidates are
+    ///   never returned.
+    /// - `top_k` is capped at [`MAX_TOP_K`] regardless of caller value.
+    /// - `recency_window = None` ⇒ unbounded window (recency scaled
+    ///   against the oldest `last_seen` in the candidate set).
+    /// - `now` is passed in (not read from system clock) for deterministic
+    ///   tests.
+    ///
+    /// **Outputs.** A `Vec<CandidateMatch>` ordered by ascending
+    /// `entity_id` only — callers MUST NOT rely on the order being
+    /// meaningful for ranking. See [`CandidateMatch`] for field semantics
+    /// (in particular the `None` vs `Some(0.0)` distinction on
+    /// `embedding_score`).
+    ///
+    /// **Performance.** v0 uses brute-force scan over the partial index
+    /// `idx_graph_entities_embed_scan`. Acceptable while entity counts
+    /// per namespace stay below ~10⁵. ANN / sqlite-vec integration is a
+    /// future ISS — the trait signature does not change when that lands.
+    fn search_candidates(
+        &self,
+        query: &CandidateQuery,
+    ) -> Result<Vec<CandidateMatch>, GraphError>;
 
     // -------------------------------------------------- Alias / identity
     fn upsert_alias(
@@ -327,7 +450,23 @@ pub struct SqliteGraphStore<'a> {
     /// `apply_graph_delta` at commit time (§4.2 batched-counter clause).
     /// Empty outside `apply_graph_delta`.
     pub(crate) predicate_use_buffer: HashMap<String, u64>,
+    /// System-wide embedding dim (ISS-033). All `graph_entities.embedding`
+    /// blobs MUST decode to a vector of this length; mismatch is a hard
+    /// `GraphError::Invariant("entity embedding dim mismatch")`. Same value
+    /// as `EmbeddingClient::config.dimensions` and `KnowledgeTopic` write
+    /// path — single source of truth lives in the embedding provider config,
+    /// not duplicated here. Defaulted to [`DEFAULT_ENTITY_EMBEDDING_DIM`] for
+    /// fresh stores; override via [`Self::with_embedding_dim`].
+    pub(crate) embedding_dim: usize,
 }
+
+/// Default embedding dim for `SqliteGraphStore` (ISS-033). 768 matches the
+/// nomic-embed-text Ollama default declared in
+/// `crate::embeddings::EmbeddingConfig::default()`. Production code that
+/// uses a different provider (OpenAI 1536, etc.) MUST call
+/// [`SqliteGraphStore::with_embedding_dim`] with the matching value before
+/// any write touches `graph_entities.embedding`.
+pub const DEFAULT_ENTITY_EMBEDDING_DIM: usize = 768;
 
 impl<'a> SqliteGraphStore<'a> {
     /// Construct a new store with default namespace `"default"` and a
@@ -340,6 +479,7 @@ impl<'a> SqliteGraphStore<'a> {
             sink: Box::new(NoopSink),
             watermark: WatermarkTracker::new(1000),
             predicate_use_buffer: HashMap::new(),
+            embedding_dim: DEFAULT_ENTITY_EMBEDDING_DIM,
         }
     }
 
@@ -353,12 +493,80 @@ impl<'a> SqliteGraphStore<'a> {
         self
     }
 
+    /// Override the system-wide embedding dim (ISS-033). Must match the dim
+    /// of the embedding provider that produces `Entity::embedding` vectors;
+    /// see [`DEFAULT_ENTITY_EMBEDDING_DIM`].
+    pub fn with_embedding_dim(mut self, dim: usize) -> Self {
+        self.embedding_dim = dim;
+        self
+    }
+
     /// Borrow the underlying connection. Tests use this to inspect rows
     /// directly; production code should not.
     #[cfg(test)]
     #[allow(dead_code)] // Used by Phase 2 CRUD tests.
     pub(crate) fn conn(&self) -> &rusqlite::Connection {
         self.conn
+    }
+
+    // ---------------------------------- ISS-033 internal helpers
+    //
+    // Kept on the impl rather than free functions so they can borrow
+    // `&self` if a future refactor needs configurable scoring (e.g.
+    // weight-blending tuned per-store). Today they only take primitive
+    // refs but the impl placement is forward-compatible.
+
+    /// Row mapper used by `search_candidates` for the alias-hit point
+    /// lookup. Returns the raw projected columns; semantic conversion
+    /// (text→`EntityKind`, blob→`Vec<f32>`, etc.) happens after the
+    /// rusqlite closure to keep the closure infallible w.r.t.
+    /// `GraphError`.
+    fn map_candidate_row(
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<CandidateRowProjection> {
+        Ok((
+            row.get::<_, String>(1)?,                      // kind
+            row.get::<_, String>(2)?,                      // canonical_name
+            row.get::<_, f64>(3)?,                         // last_seen
+            row.get::<_, f64>(4)?,                         // identity_confidence
+            row.get::<_, Option<Vec<u8>>>(5)?,             // embedding blob
+        ))
+    }
+
+    /// L2 norm of a vector. Used to amortize the mention embedding's norm
+    /// across the per-candidate cosine computation. Pure function; no
+    /// state. Returns `1.0` for an all-zero input to avoid divide-by-zero
+    /// downstream — a zero-vector mention embedding is meaningless input
+    /// but not an error worth halting on (cosine becomes 0/1 = 0, which
+    /// is the right "no signal" semantics).
+    fn l2_norm(v: &[f32]) -> f32 {
+        let s: f32 = v.iter().map(|x| x * x).sum();
+        let n = s.sqrt();
+        if n == 0.0 {
+            1.0
+        } else {
+            n
+        }
+    }
+
+    /// Cosine similarity between `a` and `b`, given a precomputed `a_norm`.
+    /// Caller MUST ensure `a.len() == b.len()` (we don't re-check here —
+    /// `search_candidates` validates dim before this hot loop). Returns a
+    /// value in `[-1.0, 1.0]`; an all-zero `b` produces `0.0` (no signal).
+    fn cosine(a: &[f32], b: &[f32], a_norm: f32) -> f32 {
+        let mut dot: f32 = 0.0;
+        let mut b_sq: f32 = 0.0;
+        for i in 0..a.len() {
+            dot += a[i] * b[i];
+            b_sq += b[i] * b[i];
+        }
+        let b_norm = b_sq.sqrt();
+        if b_norm == 0.0 {
+            return 0.0;
+        }
+        let cos = dot / (a_norm * b_norm);
+        // Clamp against floating-point drift just outside [-1, 1].
+        cos.clamp(-1.0, 1.0)
     }
 }
 
@@ -424,6 +632,58 @@ fn opt_blob_to_uuid(blob: Option<Vec<u8>>) -> Result<Option<Uuid>, GraphError> {
         Some(b) if b.len() == 16 => Ok(Some(Uuid::from_slice(&b).unwrap())),
         Some(_) => Err(GraphError::Invariant("uuid blob length != 16")),
     }
+}
+
+/// Encode an `Entity::embedding` (or any `&[f32]` of the system embedding
+/// dim) as the SQLite blob format used in `graph_entities.embedding` and
+/// `knowledge_topics.embedding` (§4.1, ISS-033): `dim * f32` little-endian,
+/// `4 * dim` bytes total.
+///
+/// Validates `embedding.len() == expected_dim` first; on mismatch returns
+/// `GraphError::Invariant("entity embedding dim mismatch")` (verbatim, locks
+/// with the read-path message in [`entity_embedding_from_blob`]).
+///
+/// `None` ⇒ `None` blob (NULL column), trivially valid: an entity that has
+/// not been embedded yet is a normal lifecycle state, not an error.
+pub(crate) fn entity_embedding_to_blob(
+    embedding: Option<&[f32]>,
+    expected_dim: usize,
+) -> Result<Option<Vec<u8>>, GraphError> {
+    let Some(v) = embedding else { return Ok(None) };
+    if v.len() != expected_dim {
+        return Err(GraphError::Invariant("entity embedding dim mismatch"));
+    }
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for f in v {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+    Ok(Some(out))
+}
+
+/// Inverse of [`entity_embedding_to_blob`]. Decodes a SQLite blob into a
+/// `Vec<f32>` of length `expected_dim`. NULL ⇒ `None`. A non-NULL blob whose
+/// length is not exactly `4 * expected_dim` is rejected as
+/// `GraphError::Invariant("entity embedding dim mismatch")` — same message
+/// as the writer, so callers can pattern-match a single string regardless of
+/// which side detected the inconsistency.
+///
+/// (No "shorter blob is fine, longer is error" tolerance: a stale dim is a
+/// migration bug, and silently truncating would corrupt similarity scores.)
+pub(crate) fn entity_embedding_from_blob(
+    blob: Option<Vec<u8>>,
+    expected_dim: usize,
+) -> Result<Option<Vec<f32>>, GraphError> {
+    let Some(b) = blob else { return Ok(None) };
+    if b.len() != expected_dim * 4 {
+        return Err(GraphError::Invariant("entity embedding dim mismatch"));
+    }
+    let mut out = Vec::with_capacity(expected_dim);
+    let mut buf = [0u8; 4];
+    for chunk in b.chunks_exact(4) {
+        buf.copy_from_slice(chunk);
+        out.push(f32::from_le_bytes(buf));
+    }
+    Ok(Some(out))
 }
 
 /// Optional DateTime → REAL unix-seconds. NULL when `None`.
@@ -567,6 +827,34 @@ type EdgeRowColumns = (
     f64,             // 20: created_at
 );
 
+/// Row layout for the embedding-cohort scan inside `search_candidates`
+/// (ISS-033 §3.4.1). Mirrors the `SELECT id, kind, canonical_name,
+/// last_seen, identity_confidence, embedding FROM graph_entities` shape.
+/// Lifted to a type alias to keep the scan loop body readable and to
+/// silence `clippy::type_complexity`.
+#[allow(clippy::type_complexity)]
+type CandidateScanRow = (
+    Vec<u8>,         // 0: id
+    String,          // 1: kind
+    String,          // 2: canonical_name
+    f64,             // 3: last_seen
+    f64,             // 4: identity_confidence
+    Option<Vec<u8>>, // 5: embedding
+);
+
+/// Row layout for the alias-hit single-row lookup inside
+/// `search_candidates` — same columns as [`CandidateScanRow`] minus the
+/// id (already known from the alias resolution). Returned by
+/// [`SqliteGraphStore::map_candidate_row`].
+#[allow(clippy::type_complexity)]
+type CandidateRowProjection = (
+    String,          // 0: kind
+    String,          // 1: canonical_name
+    f64,             // 2: last_seen
+    f64,             // 3: identity_confidence
+    Option<Vec<u8>>, // 4: embedding
+);
+
 /// Row mapper closure body: pulls every column straight off the row in
 /// the canonical order. Infallible at the storage layer (any
 /// type-coercion error bubbles as `rusqlite::Error`); semantic decoding
@@ -680,6 +968,10 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
             .map(|fp| fp.to_le_bytes().to_vec());
         let merged_into_blob: Option<Vec<u8>> =
             e.merged_into.map(|u| u.as_bytes().to_vec());
+        // ISS-033: validate + encode embedding before INSERT. Dim mismatch is
+        // a hard error; see `entity_embedding_to_blob` for the contract.
+        let embedding_blob: Option<Vec<u8>> =
+            entity_embedding_to_blob(e.embedding.as_deref(), self.embedding_dim)?;
 
         // Single-statement INSERT runs in SQLite autocommit; FK + CHECK
         // failures bubble up as `GraphError::Sqlite`.
@@ -689,13 +981,13 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
                 first_seen, last_seen, created_at, updated_at,
                 activation, agent_affect, arousal, importance,
                 identity_confidence, somatic_fingerprint, namespace,
-                history, merged_into
+                history, merged_into, embedding
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9,
                 ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16,
-                ?17, ?18
+                ?17, ?18, ?19
             )",
             rusqlite::params![
                 e.id.as_bytes().to_vec(),
@@ -716,6 +1008,7 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
                 self.namespace,
                 history_json,
                 merged_into_blob,
+                embedding_blob,
             ],
         )?;
         Ok(())
@@ -727,7 +1020,7 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
                     first_seen, last_seen, created_at, updated_at,
                     activation, agent_affect, arousal, importance,
                     identity_confidence, somatic_fingerprint,
-                    history, merged_into
+                    history, merged_into, embedding
              FROM graph_entities
              WHERE id = ?1 AND namespace = ?2",
         )?;
@@ -755,6 +1048,7 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
                     let fp_blob: Option<Vec<u8>> = row.get(14)?;
                     let history_json: String = row.get(15)?;
                     let merged_into_blob: Option<Vec<u8>> = row.get(16)?;
+                    let embedding_blob: Option<Vec<u8>> = row.get(17)?;
                     Ok((
                         id_blob,
                         canonical_name,
@@ -773,6 +1067,7 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
                         fp_blob,
                         history_json,
                         merged_into_blob,
+                        embedding_blob,
                     ))
                 },
             )
@@ -793,6 +1088,10 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         };
         let history: Vec<HistoryEntry> = serde_json::from_str(&r.15)?;
         let merged_into = opt_blob_to_uuid(r.16)?;
+        // ISS-033: decode embedding blob if present. Dim mismatch on read =
+        // stale data from a dim-change that wasn't migrated; surface as
+        // `Invariant` so the caller can decide (re-embed vs. abort).
+        let embedding = entity_embedding_from_blob(r.17, self.embedding_dim)?;
 
         Ok(Some(Entity {
             id: id_decoded,
@@ -818,6 +1117,7 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
             importance: r.12,
             identity_confidence: r.13,
             somatic_fingerprint,
+            embedding,
         }))
     }
 
@@ -939,16 +1239,461 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         Ok(out)
     }
 
-    // -------------------------------------------------- Alias (Phase 2)
-    fn upsert_alias(
-        &mut self, _normalized: &str, _alias_raw: &str,
-        _canonical_id: Uuid, _source_episode: Option<Uuid>,
+    // ---------------------------------- Candidate retrieval (ISS-033)
+
+    fn update_entity_embedding(
+        &mut self,
+        id: Uuid,
+        embedding: Option<&[f32]>,
     ) -> Result<(), GraphError> {
-        unimplemented!("Phase 2: upsert_alias")
+        // Validate + encode through the same codec as `insert_entity` so the
+        // dim mismatch error message ("entity embedding dim mismatch") is
+        // identical regardless of code path. `None` clears the column,
+        // which is a legitimate path used by v03-migration cross-dim
+        // rewrites — not an operational anti-pattern.
+        let blob: Option<Vec<u8>> =
+            entity_embedding_to_blob(embedding, self.embedding_dim)?;
+        let now = dt_to_unix(Utc::now());
+
+        let rows = self.conn.execute(
+            "UPDATE graph_entities
+             SET embedding = ?1,
+                 updated_at = ?2
+             WHERE id = ?3 AND namespace = ?4",
+            rusqlite::params![
+                blob,
+                now,
+                id.as_bytes().to_vec(),
+                self.namespace,
+            ],
+        )?;
+        if rows == 0 {
+            return Err(GraphError::EntityNotFound(id));
+        }
+        Ok(())
     }
-    fn resolve_alias(&self, _normalized: &str) -> Result<Option<Uuid>, GraphError> {
-        unimplemented!("Phase 2: resolve_alias")
+
+    fn search_candidates(
+        &self,
+        query: &CandidateQuery,
+    ) -> Result<Vec<CandidateMatch>, GraphError> {
+        // ---- Stage 1: hard cap on top_k. Caller-side `top_k` may be huge;
+        // we always bound at MAX_TOP_K to keep memory and latency bounded
+        // (§4.2 contract). top_k = 0 is a degenerate but legal request →
+        // return empty quickly.
+        let cap = query.top_k.min(MAX_TOP_K);
+        if cap == 0 {
+            return Ok(vec![]);
+        }
+
+        // ---- Stage 2: validate caller-supplied embedding dim before any
+        // SQL work. Mismatch is the same `Invariant` everywhere — the
+        // caller cannot ever supply a wrong-dim mention embedding without
+        // a system-wide misconfiguration.
+        if let Some(emb) = query.mention_embedding.as_deref() {
+            if emb.len() != self.embedding_dim {
+                return Err(GraphError::Invariant(
+                    "entity embedding dim mismatch",
+                ));
+            }
+        }
+
+        // ---- Stage 3: candidate-id collection.
+        //
+        // We perform a single namespace-scoped SELECT that pulls every
+        // entity (matching kind_filter, if any) along with the columns we
+        // need for scoring. This is intentionally a brute-force scan — the
+        // partial index `idx_graph_entities_embed_scan` (namespace,
+        // last_seen DESC WHERE embedding IS NOT NULL) is the v0 strategy;
+        // ANN / sqlite-vec is deferred (see trait doc).
+        //
+        // Why a single scan instead of two queries (alias-exact UNION
+        // embedding-scan)?
+        //   1. The two signal sets overlap heavily — an alias-matched
+        //      entity often has an embedding too. UNION-ing forces a
+        //      post-merge dedup pass.
+        //   2. Recency is independent of both — we'd re-fetch `last_seen`
+        //      for either path anyway.
+        //   3. SQLite's planner picks the right index automatically; the
+        //      WHERE-clause filter on namespace + (optional) kind is
+        //      cheap.
+        //
+        // Stale-dim safety: if a row's embedding blob length doesn't match
+        // `self.embedding_dim`, the codec returns `Invariant`. We
+        // deliberately propagate that rather than skipping the row —
+        // silently dropping stale rows would mask a migration bug. v03
+        // migration's job is to sweep stale blobs before they reach this
+        // path.
+
+        let kind_filter_text: Option<String> = match &query.kind_filter {
+            Some(k) => Some(kind_to_text(k)?),
+            None => None,
+        };
+
+        // Normalized mention for the alias-exact path. We resolve aliases
+        // in a second, indexed query rather than joining in SQL so the
+        // single-row alias hit doesn't force the planner into a join over
+        // the full entity scan.
+        let alias_norm = normalize_alias(&query.mention_text);
+
+        // Step 3a: alias-exact lookup — at most one entity per call (in v0
+        // `resolve_alias` returns a single canonical_id). Multi-canonical
+        // ambiguity is left to v03-resolution to detect (a future signal).
+        let alias_hit_id: Option<Uuid> = {
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT canonical_id FROM graph_entity_aliases
+                 WHERE namespace = ?1 AND normalized = ?2
+                 ORDER BY canonical_id ASC
+                 LIMIT 1",
+            )?;
+            let blob: Option<Vec<u8>> = stmt
+                .query_row(
+                    rusqlite::params![&query.namespace, &alias_norm],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .optional()?;
+            match blob {
+                Some(b) => Some(
+                    Uuid::from_slice(&b).map_err(|_| {
+                        GraphError::Invariant("uuid blob length != 16")
+                    })?,
+                ),
+                None => None,
+            }
+        };
+
+        // Step 3b: scan candidate entities. We pull two cohorts:
+        //   - The alias hit (if any) — always included regardless of
+        //     embedding presence.
+        //   - All entities in the same namespace (+ kind filter) that
+        //     carry an embedding, IF the caller supplied
+        //     `mention_embedding`. Without a mention embedding the
+        //     embedding cohort is empty (no signal to compute).
+        //
+        // Skipping the embedding scan when `mention_embedding = None` is
+        // an important optimization: it reduces a query that would
+        // otherwise scan every entity to a single point lookup for the
+        // alias hit.
+
+        struct RawCandidate {
+            id: Uuid,
+            kind: EntityKind,
+            canonical_name: String,
+            last_seen: f64,
+            identity_confidence: f64,
+            embedding: Option<Vec<f32>>,
+        }
+
+        let mut raw: Vec<RawCandidate> = Vec::new();
+        let mut seen_ids: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::new();
+
+        // Alias hit fetch (if any).
+        if let Some(aid) = alias_hit_id {
+            let sql = match &kind_filter_text {
+                Some(_) => {
+                    "SELECT id, kind, canonical_name, last_seen,
+                            identity_confidence, embedding
+                     FROM graph_entities
+                     WHERE id = ?1 AND namespace = ?2 AND kind = ?3"
+                }
+                None => {
+                    "SELECT id, kind, canonical_name, last_seen,
+                            identity_confidence, embedding
+                     FROM graph_entities
+                     WHERE id = ?1 AND namespace = ?2"
+                }
+            };
+            let mut stmt = self.conn.prepare_cached(sql)?;
+            let row_opt = if let Some(kt) = &kind_filter_text {
+                stmt.query_row(
+                    rusqlite::params![
+                        aid.as_bytes().to_vec(),
+                        &query.namespace,
+                        kt
+                    ],
+                    Self::map_candidate_row,
+                )
+                .optional()?
+            } else {
+                stmt.query_row(
+                    rusqlite::params![
+                        aid.as_bytes().to_vec(),
+                        &query.namespace
+                    ],
+                    Self::map_candidate_row,
+                )
+                .optional()?
+            };
+            if let Some((kind_text, name, ls, ic, eb)) = row_opt {
+                let kind = text_to_kind(&kind_text)?;
+                let embedding =
+                    entity_embedding_from_blob(eb, self.embedding_dim)?;
+                raw.push(RawCandidate {
+                    id: aid,
+                    kind,
+                    canonical_name: name,
+                    last_seen: ls,
+                    identity_confidence: ic,
+                    embedding,
+                });
+                seen_ids.insert(aid);
+            }
+            // If the alias points at a row that doesn't exist (FK-broken)
+            // or fails the kind filter, we silently drop it — not our
+            // concern here; v03-migration / merge_entities own integrity.
+        }
+
+        // Embedding-cohort fetch (only when caller supplied mention_embedding).
+        if query.mention_embedding.is_some() {
+            // We over-fetch (no LIMIT here): top_k is applied AFTER scoring,
+            // so the SQL layer can't safely truncate without the cosine
+            // computation. This is the brute-force step the future ANN
+            // index will replace.
+            let sql = match &kind_filter_text {
+                Some(_) => {
+                    "SELECT id, kind, canonical_name, last_seen,
+                            identity_confidence, embedding
+                     FROM graph_entities
+                     WHERE namespace = ?1 AND kind = ?2
+                       AND embedding IS NOT NULL"
+                }
+                None => {
+                    "SELECT id, kind, canonical_name, last_seen,
+                            identity_confidence, embedding
+                     FROM graph_entities
+                     WHERE namespace = ?1
+                       AND embedding IS NOT NULL"
+                }
+            };
+            let mut stmt = self.conn.prepare_cached(sql)?;
+            let rows: Vec<CandidateScanRow> =
+                if let Some(kt) = &kind_filter_text {
+                    stmt.query_map(
+                        rusqlite::params![&query.namespace, kt],
+                        |row| {
+                            Ok((
+                                row.get::<_, Vec<u8>>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, f64>(3)?,
+                                row.get::<_, f64>(4)?,
+                                row.get::<_, Option<Vec<u8>>>(5)?,
+                            ))
+                        },
+                    )?
+                    .collect::<Result<_, _>>()?
+                } else {
+                    stmt.query_map(
+                        rusqlite::params![&query.namespace],
+                        |row| {
+                            Ok((
+                                row.get::<_, Vec<u8>>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, f64>(3)?,
+                                row.get::<_, f64>(4)?,
+                                row.get::<_, Option<Vec<u8>>>(5)?,
+                            ))
+                        },
+                    )?
+                    .collect::<Result<_, _>>()?
+                };
+
+            for (id_blob, kind_text, name, ls, ic, eb) in rows {
+                let id = Uuid::from_slice(&id_blob).map_err(|_| {
+                    GraphError::Invariant("uuid blob length != 16")
+                })?;
+                if seen_ids.contains(&id) {
+                    continue;
+                }
+                let kind = text_to_kind(&kind_text)?;
+                let embedding =
+                    entity_embedding_from_blob(eb, self.embedding_dim)?;
+                raw.push(RawCandidate {
+                    id,
+                    kind,
+                    canonical_name: name,
+                    last_seen: ls,
+                    identity_confidence: ic,
+                    embedding,
+                });
+                seen_ids.insert(id);
+            }
+        }
+
+        if raw.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // ---- Stage 4: score each candidate.
+        //
+        // - alias_match: was this candidate fetched via the alias path?
+        //   (`alias_hit_id == Some(c.id)` semantics, but we recorded it
+        //   inline as the first row — index 0 of `raw`, *iff* alias_hit_id
+        //   was set and the row was actually fetched.)
+        // - embedding_score: cosine vs mention_embedding, or None.
+        // - recency_score: linear decay over recency_window, clamped 0..=1.
+
+        let mention_emb_norm = query
+            .mention_embedding
+            .as_ref()
+            .map(|v| Self::l2_norm(v));
+
+        // Recency window seconds; None = unbounded (we use the candidate
+        // set's own (max_last_seen - min_last_seen) span as the scale).
+        let recency_window_secs: Option<f64> =
+            query.recency_window.map(|d| d.as_secs_f64());
+
+        // For unbounded windows, derive the scale from the candidate set.
+        let (min_ls, max_ls) = raw.iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(lo, hi), c| (lo.min(c.last_seen), hi.max(c.last_seen)),
+        );
+        let unbounded_span = (max_ls - min_ls).max(1.0); // guard /0
+
+        let mut scored: Vec<CandidateMatch> = raw
+            .into_iter()
+            .map(|c| {
+                let alias_match = alias_hit_id == Some(c.id);
+                let embedding_score = match (
+                    query.mention_embedding.as_ref(),
+                    c.embedding.as_ref(),
+                ) {
+                    (Some(mq), Some(ce)) => {
+                        // Defensive dim check. Already guarded at decode,
+                        // but if someone reuses these structs across stores
+                        // configured for different dims, a runtime check
+                        // here is cheap and prevents nonsense scores.
+                        if mq.len() != ce.len() {
+                            return Err(GraphError::Invariant(
+                                "entity embedding dim mismatch",
+                            ));
+                        }
+                        let mq_norm = mention_emb_norm.unwrap_or(1.0);
+                        Some(Self::cosine(mq, ce, mq_norm))
+                    }
+                    _ => None,
+                };
+                let recency_score = match recency_window_secs {
+                    Some(window) => {
+                        let age = (query.now - c.last_seen).max(0.0);
+                        if age >= window {
+                            0.0_f32
+                        } else {
+                            (1.0 - age / window) as f32
+                        }
+                    }
+                    None => {
+                        // Unbounded: linear scale across the candidate-set
+                        // span. Newest = 1.0, oldest = 0.0.
+                        ((c.last_seen - min_ls) / unbounded_span) as f32
+                    }
+                };
+                Ok(CandidateMatch {
+                    entity_id: c.id,
+                    kind: c.kind,
+                    canonical_name: c.canonical_name,
+                    alias_match,
+                    embedding_score,
+                    recency_score,
+                    last_seen: c.last_seen,
+                    identity_confidence: c.identity_confidence,
+                })
+            })
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        // ---- Stage 5: bound output at `cap` and sort by entity_id for
+        // determinism. Note: we do NOT sort by any signal — the contract
+        // says callers must not rely on order being meaningful. Sorting
+        // by id ascending is the cheapest stable deterministic order.
+        scored.sort_by_key(|c| c.entity_id);
+        if scored.len() > cap {
+            scored.truncate(cap);
+        }
+        Ok(scored)
     }
+    //
+    // Phase 2 originally deferred these to a later slice; ISS-033 needs the
+    // alias-exact lookup wired into `search_candidates`, so the stubs are
+    // replaced with real impls here. Same write/read normalization
+    // contract as v03-resolution: alias rows are keyed on
+    // `entity::normalize_alias` output (lowercase + trim + NFKC), and
+    // resolve_alias normalizes its argument identically. Asymmetric
+    // normalization between writer and reader silently breaks the lookup,
+    // so the entry points BOTH go through `normalize_alias`.
+    //
+    // The schema's PRIMARY KEY is (namespace, normalized, canonical_id):
+    // - Same alias text (after normalization) pointing at the same canonical
+    //   entity in the same namespace deduplicates on conflict (the alias
+    //   surface form may have varied — we keep the most recent raw form via
+    //   `ON CONFLICT DO UPDATE`).
+    // - Same normalized form pointing at *different* canonical entities is
+    //   permitted and represents an ambiguous alias — `resolve_alias` returns
+    //   the first such row deterministically (lowest canonical_id), and
+    //   v03-resolution treats this as a "needs disambiguation" signal.
+    fn upsert_alias(
+        &mut self,
+        normalized: &str,
+        alias_raw: &str,
+        canonical_id: Uuid,
+        source_episode: Option<Uuid>,
+    ) -> Result<(), GraphError> {
+        // Idempotent re-normalization: even if the caller already
+        // normalized, doing it again is cheap and protects against caller
+        // bugs (the index lookup is the single source of truth here).
+        let norm = normalize_alias(normalized);
+        let now = dt_to_unix(Utc::now());
+        let canonical_blob = canonical_id.as_bytes().to_vec();
+        let source_blob: Option<Vec<u8>> =
+            source_episode.map(|u| u.as_bytes().to_vec());
+
+        // ON CONFLICT: the row already exists for this (namespace,
+        // normalized, canonical_id) triple. Refresh `alias` (raw form may
+        // have varied across mentions) and leave `first_seen` /
+        // `source_episode` alone (audit fields — first observation wins).
+        self.conn.execute(
+            "INSERT INTO graph_entity_aliases (
+                normalized, canonical_id, alias,
+                former_canonical_id, first_seen, source_episode, namespace
+            ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)
+            ON CONFLICT(namespace, normalized, canonical_id) DO UPDATE SET
+                alias = excluded.alias",
+            rusqlite::params![
+                norm,
+                canonical_blob,
+                alias_raw,
+                now,
+                source_blob,
+                self.namespace,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn resolve_alias(
+        &self,
+        normalized: &str,
+    ) -> Result<Option<Uuid>, GraphError> {
+        let norm = normalize_alias(normalized);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT canonical_id FROM graph_entity_aliases
+             WHERE namespace = ?1 AND normalized = ?2
+             ORDER BY canonical_id ASC
+             LIMIT 1",
+        )?;
+        let blob: Option<Vec<u8>> = stmt
+            .query_row(
+                rusqlite::params![self.namespace, norm],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?;
+        let Some(b) = blob else { return Ok(None) };
+        let id = Uuid::from_slice(&b)
+            .map_err(|_| GraphError::Invariant("uuid blob length != 16"))?;
+        Ok(Some(id))
+    }
+
     fn merge_entities(&mut self, _winner: Uuid, _loser: Uuid, _batch_size: usize) -> Result<MergeReport, GraphError> {
         unimplemented!("Phase 3: merge_entities")
     }
@@ -1433,6 +2178,7 @@ mod tests {
             got.somatic_fingerprint, want.somatic_fingerprint,
             "somatic_fingerprint"
         );
+        assert_eq!(got.embedding, want.embedding, "embedding"); // ISS-033
         // Timestamps round-trip through f64 so equality is approximate at the
         // nanosecond level; assert sub-millisecond agreement.
         let dt_close = |a: chrono::DateTime<chrono::Utc>, b: chrono::DateTime<chrono::Utc>| {
@@ -1552,6 +2298,162 @@ mod tests {
             Err(GraphError::EntityNotFound(u)) => assert_eq!(u, missing),
             other => panic!("expected EntityNotFound, got {:?}", other),
         }
+    }
+
+    // ----- ISS-033: embedding column + blob roundtrip -----------------
+
+    /// Helper: build a deterministic embedding vector of `dim` floats.
+    fn make_embedding(dim: usize, seed: f32) -> Vec<f32> {
+        (0..dim).map(|i| seed + (i as f32) * 0.001).collect()
+    }
+
+    #[test]
+    fn entity_embedding_blob_roundtrip_helper() {
+        // Direct test of the blob codec, independent of SQLite — pins the
+        // little-endian convention before the storage layer round-trips it.
+        let v = make_embedding(384, 0.1);
+        let blob = entity_embedding_to_blob(Some(&v), 384).unwrap().unwrap();
+        assert_eq!(blob.len(), 384 * 4, "4 bytes per f32, 384 floats");
+        let back = entity_embedding_from_blob(Some(blob), 384)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn entity_embedding_blob_none_roundtrip() {
+        // None ⇒ None on both sides — entity not yet embedded.
+        assert!(entity_embedding_to_blob(None, 384).unwrap().is_none());
+        assert!(entity_embedding_from_blob(None, 384).unwrap().is_none());
+    }
+
+    #[test]
+    fn entity_embedding_blob_writer_rejects_dim_mismatch() {
+        let v = make_embedding(100, 0.0);
+        match entity_embedding_to_blob(Some(&v), 384) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "entity embedding dim mismatch")
+            }
+            other => panic!("expected Invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn entity_embedding_blob_reader_rejects_corrupt_length() {
+        // 1023 bytes is not a multiple of 4 AND not 384*4 — both ways wrong.
+        let bad = vec![0u8; 1023];
+        match entity_embedding_from_blob(Some(bad), 384) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "entity embedding dim mismatch")
+            }
+            other => panic!("expected Invariant, got {:?}", other),
+        }
+
+        // Wrong-but-aligned length (e.g. shipped under dim=100, read under
+        // dim=384) — must still be rejected, not silently truncated.
+        let wrong_dim = vec![0u8; 100 * 4];
+        match entity_embedding_from_blob(Some(wrong_dim), 384) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "entity embedding dim mismatch")
+            }
+            other => panic!("expected Invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn insert_and_get_roundtrip_with_embedding() {
+        // End-to-end: write entity with embedding, read back, embedding
+        // matches bit-for-bit. This is the integration version of the
+        // codec test above — proves the SqliteGraphStore wires the codec
+        // into both INSERT and SELECT paths under the configured dim.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(384);
+        let now = Utc::now();
+        let mut e = Entity::new("Topic".into(), EntityKind::Topic, now);
+        e.embedding = Some(make_embedding(384, 0.05));
+
+        store.insert_entity(&e).expect("insert ok");
+        let got = store.get_entity(e.id).expect("get ok").expect("found");
+        assert_eq!(got.embedding, e.embedding);
+    }
+
+    #[test]
+    fn insert_entity_rejects_dim_mismatch_at_write() {
+        // Store configured for dim=384 but caller hands us a 100-dim vector.
+        // Must fail before any SQL is executed.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(384);
+        let now = Utc::now();
+        let mut e = Entity::new("X".into(), EntityKind::Concept, now);
+        e.embedding = Some(make_embedding(100, 0.0));
+        match store.insert_entity(&e) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "entity embedding dim mismatch")
+            }
+            other => panic!("expected Invariant, got {:?}", other),
+        }
+        // And the row must NOT have been inserted. Even though the same
+        // store didn't run an INSERT, a separate read must see no row —
+        // proves the failure is pre-INSERT, not post-INSERT.
+        assert!(store.get_entity(e.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn insert_entity_with_no_embedding_works() {
+        // The fresh-entity case (Entity::new produces None) must keep
+        // working without any embedding-related behavior change.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(384);
+        let now = Utc::now();
+        let e = Entity::new("X".into(), EntityKind::Concept, now);
+        assert!(e.embedding.is_none());
+        store.insert_entity(&e).expect("insert ok");
+        let got = store.get_entity(e.id).expect("get ok").expect("found");
+        assert!(got.embedding.is_none());
+    }
+
+    #[test]
+    fn get_entity_rejects_stale_dim_blob() {
+        // Simulate a dim-change without migration: a row written under dim=100
+        // is read under dim=384. Reader must surface Invariant rather than
+        // returning a corrupted vector or silently truncating.
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+        // Write under dim=100.
+        let id;
+        {
+            let mut store_old = SqliteGraphStore::new(&mut conn).with_embedding_dim(100);
+            let mut e = Entity::new("Stale".into(), EntityKind::Concept, now);
+            e.embedding = Some(make_embedding(100, 0.0));
+            id = e.id;
+            store_old.insert_entity(&e).expect("insert ok at dim=100");
+        }
+        // Read under dim=384 — must reject.
+        {
+            let store_new = SqliteGraphStore::new(&mut conn).with_embedding_dim(384);
+            match store_new.get_entity(id) {
+                Err(GraphError::Invariant(msg)) => {
+                    assert_eq!(msg, "entity embedding dim mismatch")
+                }
+                other => panic!("expected Invariant, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn embed_scan_partial_index_exists() {
+        // The §3.4.1 candidate-retrieval scan relies on a partial index
+        // keyed by (namespace, last_seen DESC) WHERE embedding IS NOT NULL.
+        // Pin its existence so no future schema cleanup silently drops it.
+        let conn = fresh_conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master \
+                 WHERE type='index' AND name='idx_graph_entities_embed_scan'",
+            )
+            .unwrap();
+        let exists: bool = stmt.exists([]).unwrap();
+        assert!(exists, "ISS-033: idx_graph_entities_embed_scan must be present");
     }
 
     #[test]
@@ -2153,5 +3055,552 @@ mod tests {
             EdgeEnd::Entity { id: got } => assert_eq!(got, id),
             other => panic!("expected Entity, got {:?}", other),
         }
+    }
+
+    // ====================================================================
+    // ISS-033 Layer 2 — alias / update_entity_embedding / search_candidates
+    // ====================================================================
+
+    /// Helper: insert an entity with a specified last_seen and optional
+    /// embedding into the test store. Returns the persisted entity.
+    fn insert_test_entity(
+        store: &mut SqliteGraphStore<'_>,
+        name: &str,
+        kind: EntityKind,
+        last_seen: DateTime<Utc>,
+        embedding: Option<Vec<f32>>,
+    ) -> Entity {
+        let mut e = Entity::new(name.into(), kind, last_seen);
+        e.last_seen = last_seen;
+        e.embedding = embedding;
+        store.insert_entity(&e).expect("insert ok");
+        e
+    }
+
+    // -------------------------- Alias upsert/resolve --------------------
+
+    #[test]
+    fn upsert_and_resolve_alias_basic() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let e = insert_test_entity(&mut store, "Mel", EntityKind::Person, now, None);
+
+        store.upsert_alias("mel", "Mel", e.id, None).unwrap();
+        let got = store.resolve_alias("Mel").unwrap();
+        assert_eq!(got, Some(e.id));
+    }
+
+    #[test]
+    fn resolve_alias_normalizes_caller_input() {
+        // Writer wrote "café" (NFC), reader queries "Café  " (mixed case +
+        // trailing whitespace) — must hit because both go through
+        // normalize_alias. This is the symmetry property search_candidates
+        // depends on.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let e = insert_test_entity(&mut store, "Café", EntityKind::Place, now, None);
+
+        store.upsert_alias("café", "Café", e.id, None).unwrap();
+        let got = store.resolve_alias("Café  ").unwrap();
+        assert_eq!(got, Some(e.id));
+    }
+
+    #[test]
+    fn upsert_alias_is_idempotent_on_repeat() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let e = insert_test_entity(&mut store, "Mel", EntityKind::Person, now, None);
+
+        store.upsert_alias("mel", "Mel", e.id, None).unwrap();
+        // Second call with a different raw form: should update `alias`
+        // (raw surface) but not duplicate the row.
+        store.upsert_alias("mel", "MEL", e.id, None).unwrap();
+
+        let cnt: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM graph_entity_aliases WHERE normalized = 'mel'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cnt, 1, "idempotent upsert should not duplicate");
+
+        let raw: String = store
+            .conn
+            .query_row(
+                "SELECT alias FROM graph_entity_aliases WHERE normalized = 'mel'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, "MEL", "raw surface form refreshed by latest upsert");
+    }
+
+    #[test]
+    fn resolve_alias_namespace_isolated() {
+        let mut conn = fresh_conn();
+        // Default namespace store inserts a row.
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            let now = Utc::now();
+            let e = insert_test_entity(&mut store, "Mel", EntityKind::Person, now, None);
+            store.upsert_alias("mel", "Mel", e.id, None).unwrap();
+        }
+        // A different-namespace store on the SAME connection must not see it.
+        let store2 = SqliteGraphStore::new(&mut conn).with_namespace("other");
+        assert_eq!(store2.resolve_alias("mel").unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_alias_missing_returns_none() {
+        let mut conn = fresh_conn();
+        let store = SqliteGraphStore::new(&mut conn);
+        assert_eq!(store.resolve_alias("nope").unwrap(), None);
+    }
+
+    // -------------------------- update_entity_embedding -----------------
+
+    #[test]
+    fn update_entity_embedding_writes_blob() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
+        let now = Utc::now();
+        let e = insert_test_entity(&mut store, "X", EntityKind::Concept, now, None);
+
+        let v = vec![0.1, -0.2, 0.3, 0.4];
+        store.update_entity_embedding(e.id, Some(&v)).unwrap();
+
+        let got = store.get_entity(e.id).unwrap().unwrap();
+        assert_eq!(got.embedding, Some(v));
+    }
+
+    #[test]
+    fn update_entity_embedding_clears_when_none() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
+        let now = Utc::now();
+        let e = insert_test_entity(
+            &mut store, "X", EntityKind::Concept, now,
+            Some(vec![0.1, 0.2, 0.3, 0.4]),
+        );
+
+        store.update_entity_embedding(e.id, None).unwrap();
+        let got = store.get_entity(e.id).unwrap().unwrap();
+        assert!(got.embedding.is_none());
+    }
+
+    #[test]
+    fn update_entity_embedding_rejects_dim_mismatch() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
+        let now = Utc::now();
+        let e = insert_test_entity(&mut store, "X", EntityKind::Concept, now, None);
+
+        let wrong = vec![0.1, 0.2, 0.3]; // 3 != 4
+        match store.update_entity_embedding(e.id, Some(&wrong)) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "entity embedding dim mismatch");
+            }
+            other => panic!("expected Invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn update_entity_embedding_missing_entity_errors() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
+        let v = vec![0.1, 0.2, 0.3, 0.4];
+        match store.update_entity_embedding(Uuid::new_v4(), Some(&v)) {
+            Err(GraphError::EntityNotFound(_)) => {}
+            other => panic!("expected EntityNotFound, got {:?}", other),
+        }
+    }
+
+    // -------------------------- search_candidates ------------------------
+
+    fn make_query(
+        text: &str,
+        emb: Option<Vec<f32>>,
+        top_k: usize,
+        now_dt: DateTime<Utc>,
+    ) -> CandidateQuery {
+        CandidateQuery {
+            mention_text: text.into(),
+            mention_embedding: emb,
+            kind_filter: None,
+            namespace: "default".into(),
+            top_k,
+            recency_window: None,
+            now: dt_to_unix(now_dt),
+        }
+    }
+
+    #[test]
+    fn search_candidates_alias_only_hit() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
+        let now = Utc::now();
+        let e = insert_test_entity(&mut store, "Mel", EntityKind::Person, now, None);
+        store.upsert_alias("mel", "Mel", e.id, None).unwrap();
+        // A second entity with no alias and no embedding — should not appear.
+        insert_test_entity(&mut store, "Bob", EntityKind::Person, now, None);
+
+        let q = make_query("Mel", None, 10, now);
+        let got = store.search_candidates(&q).unwrap();
+
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].entity_id, e.id);
+        assert!(got[0].alias_match, "alias path");
+        assert!(got[0].embedding_score.is_none(), "no mention emb → None");
+    }
+
+    #[test]
+    fn search_candidates_embedding_only_hit() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        let _e1 = insert_test_entity(
+            &mut store, "A", EntityKind::Concept, now,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let _e2 = insert_test_entity(
+            &mut store, "B", EntityKind::Concept, now,
+            Some(vec![0.0, 1.0, 0.0]),
+        );
+        // No aliases anywhere; pure embedding cohort.
+        let q = make_query("anything", Some(vec![1.0, 0.0, 0.0]), 10, now);
+        let got = store.search_candidates(&q).unwrap();
+
+        assert_eq!(got.len(), 2);
+        for c in &got {
+            assert!(!c.alias_match);
+            assert!(c.embedding_score.is_some());
+        }
+        // The vec aligned with [1,0,0] must score 1.0 cosine; the orthogonal
+        // one must score 0.0.
+        let scores: Vec<(String, f32)> = got
+            .iter()
+            .map(|c| (c.canonical_name.clone(), c.embedding_score.unwrap()))
+            .collect();
+        let s_a = scores.iter().find(|(n, _)| n == "A").unwrap().1;
+        let s_b = scores.iter().find(|(n, _)| n == "B").unwrap().1;
+        assert!((s_a - 1.0).abs() < 1e-6, "cosine of (1,0,0) with itself = 1");
+        assert!(s_b.abs() < 1e-6, "cosine of orthogonal = 0");
+    }
+
+    #[test]
+    fn search_candidates_alias_and_embedding_combined() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        let e = insert_test_entity(
+            &mut store, "Mel", EntityKind::Person, now,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        store.upsert_alias("mel", "Mel", e.id, None).unwrap();
+
+        let q = make_query("Mel", Some(vec![1.0, 0.0, 0.0]), 10, now);
+        let got = store.search_candidates(&q).unwrap();
+
+        assert_eq!(got.len(), 1);
+        let c = &got[0];
+        assert!(c.alias_match, "alias path");
+        assert!(c.embedding_score.is_some(), "embedding signal present");
+        assert!((c.embedding_score.unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn search_candidates_namespace_isolated() {
+        let mut conn = fresh_conn();
+        // Insert in namespace "alpha".
+        {
+            let mut store = SqliteGraphStore::new(&mut conn)
+                .with_namespace("alpha")
+                .with_embedding_dim(3);
+            let now = Utc::now();
+            insert_test_entity(
+                &mut store, "Alpha", EntityKind::Concept, now,
+                Some(vec![1.0, 0.0, 0.0]),
+            );
+        }
+        // Query in namespace "beta" — must not see the alpha entity.
+        let store = SqliteGraphStore::new(&mut conn)
+            .with_namespace("beta")
+            .with_embedding_dim(3);
+        let q = CandidateQuery {
+            mention_text: "Alpha".into(),
+            mention_embedding: Some(vec![1.0, 0.0, 0.0]),
+            kind_filter: None,
+            namespace: "beta".into(),
+            top_k: 10,
+            recency_window: None,
+            now: dt_to_unix(Utc::now()),
+        };
+        let got = store.search_candidates(&q).unwrap();
+        assert!(got.is_empty(), "namespace hard filter");
+    }
+
+    #[test]
+    fn search_candidates_kind_filter() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        let _person = insert_test_entity(
+            &mut store, "Mel", EntityKind::Person, now,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let _concept = insert_test_entity(
+            &mut store, "Mel", EntityKind::Concept, now,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+
+        let mut q = make_query("Mel", Some(vec![1.0, 0.0, 0.0]), 10, now);
+        q.kind_filter = Some(EntityKind::Person);
+        let got = store.search_candidates(&q).unwrap();
+
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, EntityKind::Person);
+    }
+
+    #[test]
+    fn search_candidates_empty_table_returns_empty() {
+        let mut conn = fresh_conn();
+        let store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 10, Utc::now());
+        let got = store.search_candidates(&q).unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn search_candidates_skips_null_embedding_in_embedding_scan() {
+        // An entity with no embedding must NOT appear in the embedding
+        // cohort. It can still appear via the alias path.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        let _has = insert_test_entity(
+            &mut store, "WithEmb", EntityKind::Concept, now,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let _none = insert_test_entity(
+            &mut store, "NoEmb", EntityKind::Concept, now, None,
+        );
+
+        let q = make_query("noalias", Some(vec![1.0, 0.0, 0.0]), 10, now);
+        let got = store.search_candidates(&q).unwrap();
+        assert_eq!(got.len(), 1, "only the embedded entity appears");
+        assert_eq!(got[0].canonical_name, "WithEmb");
+    }
+
+    #[test]
+    fn search_candidates_top_k_truncates() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        for i in 0..5 {
+            insert_test_entity(
+                &mut store,
+                &format!("E{}", i),
+                EntityKind::Concept,
+                now,
+                Some(vec![1.0, 0.0, 0.0]),
+            );
+        }
+        let q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 3, now);
+        let got = store.search_candidates(&q).unwrap();
+        assert_eq!(got.len(), 3);
+    }
+
+    #[test]
+    fn search_candidates_max_top_k_ceiling_enforced() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        // Insert > MAX_TOP_K to verify the ceiling actually clamps.
+        for i in 0..(MAX_TOP_K + 10) {
+            insert_test_entity(
+                &mut store,
+                &format!("E{}", i),
+                EntityKind::Concept,
+                now,
+                Some(vec![1.0, 0.0, 0.0]),
+            );
+        }
+        let q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 1000, now);
+        let got = store.search_candidates(&q).unwrap();
+        assert_eq!(got.len(), MAX_TOP_K, "MAX_TOP_K hard cap");
+    }
+
+    #[test]
+    fn search_candidates_top_k_zero_returns_empty() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        insert_test_entity(
+            &mut store, "E", EntityKind::Concept, now,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 0, now);
+        let got = store.search_candidates(&q).unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn search_candidates_recency_window_decay() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        // Two entities at different last_seen offsets.
+        let recent = now;
+        let old = now - chrono::Duration::seconds(100);
+        let very_old = now - chrono::Duration::seconds(10_000);
+
+        let e_recent = insert_test_entity(
+            &mut store, "Recent", EntityKind::Concept, recent,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let e_old = insert_test_entity(
+            &mut store, "Old", EntityKind::Concept, old,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let e_outside = insert_test_entity(
+            &mut store, "Outside", EntityKind::Concept, very_old,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+
+        let mut q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 50, now);
+        q.recency_window = Some(std::time::Duration::from_secs(1000));
+        let got = store.search_candidates(&q).unwrap();
+
+        // Map by id for assertions.
+        let by_id: std::collections::HashMap<Uuid, &CandidateMatch> =
+            got.iter().map(|c| (c.entity_id, c)).collect();
+
+        let recent_score = by_id[&e_recent.id].recency_score;
+        let old_score = by_id[&e_old.id].recency_score;
+        let outside_score = by_id[&e_outside.id].recency_score;
+
+        assert!((recent_score - 1.0).abs() < 1e-3, "recent ≈ 1.0");
+        // age=100, window=1000 → 1 - 0.1 = 0.9
+        assert!((old_score - 0.9).abs() < 1e-2, "old ≈ 0.9, got {}", old_score);
+        assert_eq!(outside_score, 0.0, "outside window clamps to 0");
+    }
+
+    #[test]
+    fn search_candidates_unbounded_recency_uses_set_span() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        let recent = now;
+        let oldest = now - chrono::Duration::seconds(100);
+
+        let e_recent = insert_test_entity(
+            &mut store, "Recent", EntityKind::Concept, recent,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let e_old = insert_test_entity(
+            &mut store, "Old", EntityKind::Concept, oldest,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 10, now);
+        let got = store.search_candidates(&q).unwrap();
+
+        let by_id: std::collections::HashMap<Uuid, &CandidateMatch> =
+            got.iter().map(|c| (c.entity_id, c)).collect();
+        // Newest in set → 1.0, oldest in set → 0.0.
+        assert!((by_id[&e_recent.id].recency_score - 1.0).abs() < 1e-6);
+        assert!(by_id[&e_old.id].recency_score.abs() < 1e-6);
+    }
+
+    #[test]
+    fn search_candidates_rejects_caller_dim_mismatch() {
+        let mut conn = fresh_conn();
+        let store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
+        // Caller supplies a 3-dim embedding to a store configured for 4-dim.
+        let q = make_query("x", Some(vec![0.1, 0.2, 0.3]), 10, Utc::now());
+        match store.search_candidates(&q) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "entity embedding dim mismatch");
+            }
+            other => panic!("expected Invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn search_candidates_signal_distinction_none_vs_zero() {
+        // The fusion module relies on the distinction between
+        // embedding_score = None (signal missing) and Some(0.0) (zero
+        // similarity). Verify both branches occur for the right inputs.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        let e = insert_test_entity(
+            &mut store, "Mel", EntityKind::Person, now,
+            Some(vec![0.0, 1.0, 0.0]),
+        );
+        store.upsert_alias("mel", "Mel", e.id, None).unwrap();
+
+        // Branch 1: caller has NO mention embedding → score = None even
+        // though candidate has one.
+        let q1 = make_query("Mel", None, 10, now);
+        let got1 = store.search_candidates(&q1).unwrap();
+        assert_eq!(got1.len(), 1);
+        assert!(got1[0].embedding_score.is_none(), "missing-signal = None");
+
+        // Branch 2: caller has an orthogonal embedding → score = Some(0.0).
+        let q2 = make_query("Mel", Some(vec![1.0, 0.0, 0.0]), 10, now);
+        let got2 = store.search_candidates(&q2).unwrap();
+        assert_eq!(got2.len(), 1);
+        match got2[0].embedding_score {
+            Some(s) => assert!(s.abs() < 1e-6, "zero similarity = Some(0.0)"),
+            None => panic!("present-signal-zero must be Some(0.0), not None"),
+        }
+    }
+
+    #[test]
+    fn search_candidates_deterministic_order_by_id() {
+        // Contract: order is by entity_id ASC, not by any signal.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        let mut ids = vec![];
+        for i in 0..5 {
+            let e = insert_test_entity(
+                &mut store,
+                &format!("E{}", i),
+                EntityKind::Concept,
+                now,
+                Some(vec![1.0, 0.0, 0.0]),
+            );
+            ids.push(e.id);
+        }
+        let q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 10, now);
+        let got = store.search_candidates(&q).unwrap();
+        let got_ids: Vec<Uuid> = got.iter().map(|c| c.entity_id).collect();
+        let mut sorted = got_ids.clone();
+        sorted.sort();
+        assert_eq!(got_ids, sorted, "ascending entity_id order");
+    }
+
+    #[test]
+    fn search_candidates_mention_embedding_zero_vector_is_safe() {
+        // A pathological caller feeding an all-zero mention embedding must
+        // not panic or div-by-zero; cosine should be 0.0 (no signal value).
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
+        let now = Utc::now();
+        insert_test_entity(
+            &mut store, "E", EntityKind::Concept, now,
+            Some(vec![1.0, 0.0, 0.0]),
+        );
+        let q = make_query("x", Some(vec![0.0, 0.0, 0.0]), 10, now);
+        let got = store.search_candidates(&q).unwrap();
+        assert_eq!(got.len(), 1);
+        // dot product = 0, b_norm > 0, a_norm = guarded to 1.0 → cosine = 0.
+        assert_eq!(got[0].embedding_score, Some(0.0));
     }
 }

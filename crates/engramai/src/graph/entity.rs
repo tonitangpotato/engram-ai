@@ -125,6 +125,20 @@ pub struct Entity {
 
     /// Entity-level somatic fingerprint (GOAL-1.13). None until first pass.
     pub somatic_fingerprint: Option<SomaticFingerprint>,
+
+    /// Semantic embedding of `canonical_name + summary`, used by §3.4.1
+    /// candidate retrieval (`GraphStore::search_candidates`) as the
+    /// embedding-similarity signal fed into v03-resolution's fusion module
+    /// (ISS-033). Same dim as memory / `knowledge_topics.embedding` — the
+    /// embedding-channel invariant is system-wide single dim, not per-table
+    /// (see graph design §4.1 blob format note for `graph_entities.embedding`).
+    ///
+    /// `None` until the first resolution pass writes it; recomputed only when
+    /// the merge path changes `canonical_name` or `summary` (the inputs to
+    /// the embed). Validated application-side on write and on read; SQL has
+    /// no CHECK because the dim is a runtime config value.
+    #[serde(default)]
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl Entity {
@@ -151,6 +165,7 @@ impl Entity {
             importance: 0.0,
             identity_confidence: 0.0,
             somatic_fingerprint: None,
+            embedding: None,
         }
     }
 
@@ -178,6 +193,43 @@ pub fn validate_attributes(attrs: &serde_json::Value) -> Result<(), crate::graph
             if map.contains_key(*key) {
                 return Err(crate::graph::GraphError::Invariant("reserved attribute key"));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Normalize a surface alias for the `graph_entity_aliases.normalized`
+/// column. Same convention as `EntityKind::other`: trim surrounding
+/// whitespace, lowercase, NFKC-fold. Used by both `upsert_alias` (write
+/// path) and `search_candidates` (read path) so the alias-exact lookup
+/// is symmetric — the writer and the reader MUST normalize identically
+/// or the index lookup silently misses (§3.4).
+///
+/// This is a pure function: no allocation reuse, no caching. Cheap enough
+/// to call per-mention; if it ever becomes a hot-path issue, the caller
+/// can hoist the result.
+pub fn normalize_alias(s: &str) -> String {
+    let trimmed = s.trim().to_lowercase();
+    trimmed.nfkc().collect()
+}
+
+/// Validate that `embedding` length matches the expected dim. Used by storage
+/// write path before persisting the blob (ISS-033). Mirrors
+/// [`crate::graph::topic::KnowledgeTopic::validate_embedding_dim`] —
+/// system-wide single-dim invariant.
+///
+/// Returns `Err(GraphError::Invariant("entity embedding dim mismatch"))` if
+/// the embedding is `Some` and its length does not equal `expected_dim`.
+/// `None` (not yet embedded) is always accepted.
+pub fn validate_embedding_dim(
+    embedding: Option<&[f32]>,
+    expected_dim: usize,
+) -> Result<(), crate::graph::GraphError> {
+    if let Some(v) = embedding {
+        if v.len() != expected_dim {
+            return Err(crate::graph::GraphError::Invariant(
+                "entity embedding dim mismatch",
+            ));
         }
     }
     Ok(())
@@ -350,5 +402,92 @@ mod tests {
         validate_attributes(&json!([1, 2, 3])).unwrap();
         validate_attributes(&json!(42)).unwrap();
         validate_attributes(&json!("string")).unwrap();
+    }
+
+    // ----- ISS-033 -------------------------------------------------------
+
+    #[test]
+    fn new_entity_has_no_embedding() {
+        let now = Utc::now();
+        let e = Entity::new("Alice".into(), EntityKind::Person, now);
+        assert!(e.embedding.is_none());
+    }
+
+    #[test]
+    fn validate_embedding_dim_none_ok() {
+        // None is always valid regardless of expected_dim — the entity simply
+        // hasn't been embedded yet.
+        validate_embedding_dim(None, 384).unwrap();
+        validate_embedding_dim(None, 0).unwrap();
+        validate_embedding_dim(None, 768).unwrap();
+    }
+
+    #[test]
+    fn validate_embedding_dim_match_ok() {
+        let v = vec![0.0f32; 384];
+        validate_embedding_dim(Some(&v), 384).unwrap();
+    }
+
+    #[test]
+    fn validate_embedding_dim_mismatch_errors() {
+        let v = vec![0.0f32; 100];
+        match validate_embedding_dim(Some(&v), 384) {
+            Err(GraphError::Invariant(msg)) => {
+                assert_eq!(msg, "entity embedding dim mismatch")
+            }
+            other => panic!("expected Invariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn serde_roundtrip_entity_with_embedding() {
+        // The full `serde_roundtrip_entity` test above doesn't exercise
+        // `embedding`; this test pins the new field's wire format.
+        let now = Utc::now();
+        let mut e = Entity::new("Topic".into(), EntityKind::Topic, now);
+        e.embedding = Some(vec![0.1, -0.2, 0.3, 0.4]);
+
+        let s = serde_json::to_string(&e).unwrap();
+        let back: Entity = serde_json::from_str(&s).unwrap();
+        assert_eq!(e.embedding, back.embedding);
+
+        // Also verify backward-compat: a JSON blob without the `embedding`
+        // field at all (older serialized form) must still deserialize, with
+        // embedding defaulting to None.
+        let s_no_embed = serde_json::to_string(&{
+            let mut x = e.clone();
+            x.embedding = None;
+            x
+        })
+        .unwrap();
+        let back2: Entity = serde_json::from_str(&s_no_embed).unwrap();
+        assert!(back2.embedding.is_none());
+    }
+
+    #[test]
+    fn normalize_alias_basic_cases() {
+        // Lowercase + trim are obvious; NFKC is the load-bearing piece.
+        assert_eq!(normalize_alias("Mel"), "mel");
+        assert_eq!(normalize_alias("  Mel  "), "mel");
+        assert_eq!(normalize_alias("MELANIE SMITH"), "melanie smith");
+    }
+
+    #[test]
+    fn normalize_alias_is_nfkc_folded() {
+        // U+FB03 LATIN SMALL LIGATURE FFI → NFKC folds to "ffi".
+        // Without NFKC the alias "Oﬃce" would never match a writer-side
+        // "office" lookup, breaking alias-exact resolution silently.
+        let folded = normalize_alias("O\u{FB03}ce");
+        assert_eq!(folded, "office");
+    }
+
+    #[test]
+    fn normalize_alias_writer_reader_symmetric() {
+        // Property the alias index relies on: writer normalizes, reader
+        // normalizes the same way. If this test fails, search_candidates'
+        // alias-exact path silently misses every NFKC-distinguishable form.
+        let writer_form = normalize_alias("  Café  ");
+        let reader_form = normalize_alias("café");
+        assert_eq!(writer_form, reader_form);
     }
 }

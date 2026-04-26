@@ -125,6 +125,17 @@ const GRAPH_ENTITIES_ALTERS: &[(&str, &str)] = &[
         "merged_into",
         "ALTER TABLE graph_entities ADD COLUMN merged_into BLOB",
     ),
+    // ISS-033: semantic embedding for §3.4.1 candidate retrieval. NULL until
+    // the first resolution pass writes it; recomputed on canonical_name /
+    // summary change. No SQL CHECK on length — the dim is a runtime config
+    // value, validated application-side at write and on decode (see
+    // `entity_embedding_to_blob` / `entity_embedding_from_blob` in
+    // `graph::store`). Same blob convention as `knowledge_topics.embedding`
+    // (system-wide single dim — design §4.1 blob format note).
+    (
+        "embedding",
+        "ALTER TABLE graph_entities ADD COLUMN embedding BLOB",
+    ),
 ];
 
 /// Full DDL batch for graph-layer tables. Mirrors design §4.1.
@@ -155,6 +166,7 @@ CREATE TABLE IF NOT EXISTS graph_entities (
     importance          REAL NOT NULL DEFAULT 0.3,
     identity_confidence REAL NOT NULL DEFAULT 0.5,
     somatic_fingerprint BLOB,                                  -- 8 * f32 LE, or NULL
+    embedding           BLOB,                                  -- ISS-033: f32 array, system-wide embedding dim, or NULL; validated app-side
     namespace           TEXT NOT NULL DEFAULT 'default',
     history             TEXT NOT NULL DEFAULT '[]',            -- JSON: Vec<HistoryEntry>; typed field, see entity.rs §3.1
     merged_into         BLOB REFERENCES graph_entities(id) ON DELETE RESTRICT, -- merge-loser redirect; typed field
@@ -164,6 +176,9 @@ CREATE TABLE IF NOT EXISTS graph_entities (
     CHECK (identity_confidence BETWEEN 0.0 AND 1.0),
     CHECK (first_seen <= last_seen),
     CHECK (somatic_fingerprint IS NULL OR length(somatic_fingerprint) = 32)
+    -- NOTE: no CHECK on `embedding` length. Dim is runtime config (see
+    -- §4.1 blob format note for `embedding`), so we validate in the writer
+    -- (`entity_embedding_to_blob`) and on decode (`entity_embedding_from_blob`).
 );
 CREATE INDEX IF NOT EXISTS idx_graph_entities_namespace ON graph_entities(namespace);
 CREATE INDEX IF NOT EXISTS idx_graph_entities_kind      ON graph_entities(kind);
@@ -344,6 +359,12 @@ CREATE INDEX IF NOT EXISTS idx_applied_deltas_memory ON graph_applied_deltas(mem
 const GRAPH_POST_ALTER_INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_graph_entities_merged_into
     ON graph_entities(merged_into) WHERE merged_into IS NOT NULL;
+-- ISS-033: bound the §3.4.1 candidate-retrieval scan to entities that
+-- actually carry an embedding. Partial index keyed on (namespace, last_seen DESC)
+-- because both are filters in `search_candidates` (namespace is hard, recency
+-- is the dominant ordering for the bounded scan window).
+CREATE INDEX IF NOT EXISTS idx_graph_entities_embed_scan
+    ON graph_entities(namespace, last_seen DESC) WHERE embedding IS NOT NULL;
 "#;
 
 // ---------------------------------------------------------------------------

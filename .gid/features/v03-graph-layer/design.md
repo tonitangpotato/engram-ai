@@ -8,9 +8,9 @@
 
 ## 1. Scope & Non-Scope
 
-**In scope.** The at-rest shape of v0.3's semantic graph (L4): the `Entity` node type, the `Edge` relationship type, the hybrid predicate schema registry, the SQLite tables that persist them, the memory↔entity provenance join (`graph_memory_entity_mentions`), the L5 knowledge-topics table and its bridge to `EntityKind::Topic`, the pipeline-run / resolution-trace audit tables, the `GraphStore` CRUD trait, and body-signal telemetry hooks emitted when graph state mutates. Minimal extensions to `MemoryRecord` (provenance links per GOAL-1.11), visible-failure recording for graph extraction stages (GOAL-1.12), the layer-classification derivation rule (GOAL-1.14), and the structural hook for L5 knowledge topics (GOAL-1.15).
+**In scope.** The at-rest shape of v0.3's semantic graph (L4): the `Entity` node type, the `Edge` relationship type, the hybrid predicate schema registry, the SQLite tables that persist them, the memory↔entity provenance join (`graph_memory_entity_mentions`), the L5 knowledge-topics table and its bridge to `EntityKind::Topic`, the pipeline-run / resolution-trace audit tables, the `GraphStore` CRUD trait *and the `search_candidates` retrieval primitive consumed by v03-resolution §3.4.1* (ISS-033), and body-signal telemetry hooks emitted when graph state mutates. Minimal extensions to `MemoryRecord` (provenance links per GOAL-1.11), visible-failure recording for graph extraction stages (GOAL-1.12), the layer-classification derivation rule (GOAL-1.14), and the structural hook for L5 knowledge topics (GOAL-1.15).
 
-**Out of scope.** The write pipeline (Stages 3–5) → **v03-resolution**. Query classification, dual-level retrieval, mood-congruent recall → **v03-retrieval**. v0.2 → v0.3 migration SQL, backfill, rollback → **v03-migration** (this doc declares the target schema, not migration ordering). Benchmark corpora and LOCOMO harness → **v03-benchmarks**. Automatic predicate promotion is deferred to v0.4 per master §3.5; only the drift-monitoring query surface (GOAL-1.10) is in scope here.
+**Out of scope.** The write pipeline (Stages 3–5) → **v03-resolution**. Query classification, dual-level retrieval, mood-congruent recall → **v03-retrieval**. v0.2 → v0.3 migration SQL, backfill, rollback → **v03-migration** (this doc declares the target schema, not migration ordering). Benchmark corpora and LOCOMO harness → **v03-benchmarks**. Automatic predicate promotion is deferred to v0.4 per master §3.5; only the drift-monitoring query surface (GOAL-1.10) is in scope here. ANN / sqlite-vec acceleration of `search_candidates` is deferred to a future ISS — the v0 implementation uses brute-force scan over the partial index `idx_graph_entities_embed_scan` (§4.1); the trait signature does not change when ANN lands.
 
 ## 2. Architecture Overview
 
@@ -102,6 +102,12 @@ pub enum EntityKind {
 ///  - `first_seen <= last_seen`. Both are real-world (episode) times.
 ///  - `somatic_fingerprint`, when present, is an aggregate over episode-level
 ///    fingerprints (GOAL-1.13). Recomputed by v03-resolution; stored here.
+///  - `embedding`, when present, is `embedding_dim * f32` matching the memory /
+///    topic embedding dim (system-wide invariant, §4.1 blob format note).
+///    Validated on write (writer rejects on length mismatch) and on read
+///    (`GraphError::Invariant("entity embedding dim mismatch")`). NULL means
+///    "not yet embedded" — a transient state cleared by the first resolution
+///    pass that touches the entity.
 ///  - `activation`, `importance`, `identity_confidence` are in [0.0, 1.0].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entity {
@@ -148,10 +154,21 @@ pub struct Entity {
 
     /// Entity-level somatic fingerprint (GOAL-1.13). None until first pass.
     pub somatic_fingerprint: Option<SomaticFingerprint>,
+
+    /// Semantic embedding of `canonical_name + summary`, used by §3.4.1 candidate
+    /// retrieval (`GraphStore::search_candidates`) as one of the raw signals fed
+    /// to v03-resolution's fusion module. Same dim as memory/topic embeddings —
+    /// the embedding-channel invariant is **system-wide single dim**, not
+    /// per-table (see §4.1 blob format note for `graph_entities.embedding`).
+    ///
+    /// `None` until the first resolution pass writes it; recomputed on
+    /// `canonical_name`/`summary` change. Validated application-side on write
+    /// and read (no SQL CHECK — dim is runtime config; see §4.1).
+    #[serde(default)] pub embedding: Option<Vec<f32>>,
 }
 ```
 
-**Lifecycle.** Created by v03-resolution when Stage 4 decides an incoming mention cannot fuse with any existing canonical id. Updated on every subsequent mention (last_seen, activation, fingerprint recompute). **Never deleted** — a merge loser is retained as an alias pointing to the winner (§3.4, GOAL-1.6). Consolidation (out of scope) decays `activation` and `importance`.
+**Lifecycle.** Created by v03-resolution when Stage 4 decides an incoming mention cannot fuse with any existing canonical id. Updated on every subsequent mention (last_seen, activation, fingerprint recompute, embedding recompute when `canonical_name` or `summary` changes). **Never deleted** — a merge loser is retained as an alias pointing to the winner (§3.4, GOAL-1.6). Consolidation (out of scope) decays `activation` and `importance`.
 
 **Why a new type, not an extension of `ExtractedEntity`.** `ExtractedEntity` is a surface match from Aho-Corasick / regex scans — one-write lifespan, no identity beyond `(normalized, entity_type)`. Forcing UUID, bi-temporal state, affect, and fingerprint into it would break every v0.2 consumer. The v0.3 `Entity` subsumes it conceptually but coexists; v03-resolution adapts between them.
 
@@ -431,6 +448,7 @@ CREATE TABLE IF NOT EXISTS graph_entities (
     importance          REAL NOT NULL DEFAULT 0.3,
     identity_confidence REAL NOT NULL DEFAULT 0.5,
     somatic_fingerprint BLOB,                                  -- 8 * f32 little-endian, or NULL; see blob format note below
+    embedding           BLOB,                                  -- f32 array, same dim as memory/topic embeddings, or NULL; see blob format note below
     namespace           TEXT NOT NULL DEFAULT 'default',
     history             TEXT NOT NULL DEFAULT '[]',            -- JSON: Vec<HistoryEntry>; typed first-class field (§3.1, design-r1 #51-52)
     merged_into         BLOB REFERENCES graph_entities(id) ON DELETE RESTRICT, -- merge-loser redirect; typed first-class field (§3.1)
@@ -440,12 +458,19 @@ CREATE TABLE IF NOT EXISTS graph_entities (
     CHECK (identity_confidence BETWEEN 0.0 AND 1.0),
     CHECK (first_seen <= last_seen),
     CHECK (somatic_fingerprint IS NULL OR length(somatic_fingerprint) = 32)
+    -- NOTE: no CHECK on `embedding` length — see blob format note for `embedding` below.
 );
 CREATE INDEX IF NOT EXISTS idx_graph_entities_namespace   ON graph_entities(namespace);
 CREATE INDEX IF NOT EXISTS idx_graph_entities_kind        ON graph_entities(kind);
 CREATE INDEX IF NOT EXISTS idx_graph_entities_last_seen   ON graph_entities(last_seen);
+-- Partial index for §3.4.1 candidate retrieval: bound the embedding scan to
+-- entities that actually carry an embedding, scoped by namespace and recency.
+CREATE INDEX IF NOT EXISTS idx_graph_entities_embed_scan
+    ON graph_entities(namespace, last_seen DESC) WHERE embedding IS NOT NULL;
 
 **Blob format note — `somatic_fingerprint`.** The blob is `8 * f32` little-endian (32 bytes exactly). The CHECK constraint above rejects any other length at write time, so a corrupted / truncated blob fails SQLite's constraint before the application sees it. The fixed length is cross-locked with master §3.7 `SomaticFingerprint` (GUARD-7 dimensional lock). If the fingerprint dimension ever changes (e.g., 8 → 10), this is a coordinated change: (a) GUARD-7 is relaxed in master, (b) the CHECK constant is updated here, (c) v03-migration adds a forward pass that re-derives every existing blob under the new dim — old blobs are **not** parseable under a new dim, by design (there is no dimension header; the schema row count + table-level constant is the dimensional oracle). Reader code validates `blob.len() == N * 4` before `from_le_bytes` decoding and returns `GraphError::Invariant("somatic fingerprint dim mismatch")` on mismatch.
+
+**Blob format note — `embedding`.** The blob is `current_embedding_dim * f32` little-endian (4 × dim bytes), matching the memory / `knowledge_topics.embedding` convention (system-wide single embedding dim — see master config). Dimension check is enforced application-side at write time (not via CHECK, because SQLite CHECK cannot reference a runtime configuration value; a compile-time literal would fossilize the dim — see the analogous note on `knowledge_topics.embedding` for the same rationale). The writer validates `blob.len() == current_embedding_dim * 4` before INSERT/UPDATE; reader validates on decode and returns `GraphError::Invariant("entity embedding dim mismatch")` if a stale blob survives a dim change. If/when the memory embedding dim is ever changed, v03-migration runs a forward pass rewriting every entity blob under the new dim — same approach as `knowledge_topics.embedding` and the `somatic_fingerprint` blob. The single-dim invariant is **cross-locked** between `memories.embedding`, `knowledge_topics.embedding`, and `graph_entities.embedding`: a dim change is a coordinated migration touching all three.
 
 -- Aliases (§3.4). Composite PK allows many aliases per entity.
 CREATE TABLE IF NOT EXISTS graph_entity_aliases (
@@ -677,6 +702,71 @@ pub trait GraphStore {
     fn merge_entities(&mut self, winner: Uuid, loser: Uuid, batch_size: usize)
         -> Result<MergeReport, GraphError>;
 
+    // Candidate retrieval (§3.4.1 driver support, ISS-033).
+    /// Update the embedding blob for an existing entity. Separated from
+    /// `update_entity_cognitive` because embedding is not a cognitive scalar
+    /// and validation rules differ (length-validated, not range-validated).
+    /// Writer MUST validate `blob.len() == current_embedding_dim * 4` before
+    /// calling; on dim mismatch returns `GraphError::Invariant("entity embedding dim mismatch")`.
+    /// Passing `None` clears the embedding (used by v03-migration during
+    /// cross-dim rewrites; not a normal operational path).
+    fn update_entity_embedding(
+        &mut self, id: Uuid, embedding: Option<&[f32]>,
+    ) -> Result<(), GraphError>;
+
+    /// Raw multi-signal candidate lookup for v03-resolution §3.4.1.
+    ///
+    /// **Contract.** Returns *unranked* raw signals — the caller (fusion
+    /// module, v03-resolution §3.4) combines them into a final score.
+    /// Putting ranking here would duplicate the fusion module's responsibility
+    /// and re-introduce missing-signal weight-redistribution logic in two
+    /// places. This method is a pure retrieval primitive.
+    ///
+    /// **Inputs.**
+    /// - `query.mention_text` (always present): used for alias-exact lookup
+    ///   via the normalized form (`graph_entity_aliases.normalized`).
+    /// - `query.mention_embedding` (`Option`): when present, drives the
+    ///   embedding-similarity scan over `graph_entities.embedding WHERE embedding IS NOT NULL`.
+    ///   When absent, the embedding signal is simply omitted from results
+    ///   (no implicit re-embedding here — embedding is the caller's job).
+    /// - `query.kind_filter` (`Option`): when present, restricts both the
+    ///   alias and embedding scans to entities of that `EntityKind`.
+    /// - `query.namespace` (always present): hard filter; no cross-namespace
+    ///   candidates are ever returned. Cross-namespace resolution is a
+    ///   distinct design problem and is **not** in scope here.
+    /// - `query.top_k`: requested cap on returned candidates. The
+    ///   implementation MUST also enforce a hard ceiling (`MAX_TOP_K = 50`)
+    ///   even if the caller asks for more, to bound memory and latency.
+    /// - `query.recency_window`: optional duration; entities with
+    ///   `last_seen` older than `now - recency_window` get `recency_score = 0.0`.
+    ///   When `None`, recency is computed against an unbounded window.
+    ///
+    /// **Outputs.** A `Vec<CandidateMatch>` ordered by a deterministic
+    /// implementation-internal tiebreaker only (ascending `entity_id`) —
+    /// callers MUST NOT rely on the order being meaningful. Each
+    /// `CandidateMatch` carries:
+    /// - `entity_id` and `kind` — what was matched.
+    /// - `alias_match: bool` — true iff the entity was reached via an exact
+    ///   alias hit on the normalized `mention_text`.
+    /// - `embedding_score: Option<f32>` — cosine similarity in `[-1.0, 1.0]`,
+    ///   or `None` when (a) the caller didn't supply `mention_embedding` or
+    ///   (b) the candidate has no `embedding` blob. **`None` is structurally
+    ///   distinct from `Some(0.0)`** — fusion treats them differently
+    ///   (missing-signal weight redistribution vs. zero-similarity hit).
+    /// - `recency_score: f32` in `[0.0, 1.0]` — linear decay over
+    ///   `recency_window`, clamped to 0 outside the window.
+    /// - `last_seen` and a few small projected fields the fusion module reads
+    ///   without a follow-up `get_entity` round-trip (see `CandidateMatch`).
+    ///
+    /// **Performance.** v0 uses brute-force scan over the partial index
+    /// `idx_graph_entities_embed_scan` (`namespace, last_seen DESC WHERE embedding IS NOT NULL`).
+    /// Acceptable while entity counts per namespace stay below ~10⁵.
+    /// ANN / sqlite-vec integration is deferred to a future ISS — the trait
+    /// signature does not change when that lands; only the implementation does.
+    fn search_candidates(
+        &self, query: &CandidateQuery,
+    ) -> Result<Vec<CandidateMatch>, GraphError>;
+
     // Edge
     fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
     fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError>;
@@ -801,6 +891,65 @@ pub trait GraphStore {
 
 #[derive(Debug, Clone)]
 pub struct MergeReport { pub edges_superseded: u64, pub aliases_repointed: u64 }
+
+/// Input to `GraphStore::search_candidates` (§3.4.1 driver, ISS-033).
+#[derive(Debug, Clone)]
+pub struct CandidateQuery {
+    /// The mention text as it appears in the source memory. The store
+    /// normalizes this internally for the alias-exact lookup; the raw form
+    /// is kept for diagnostics in returned `CandidateMatch` rows.
+    pub mention_text: String,
+    /// Optional pre-computed embedding of the mention (in the system-wide
+    /// embedding dim). When `None`, the embedding signal is omitted — no
+    /// implicit re-embedding inside the store.
+    pub mention_embedding: Option<Vec<f32>>,
+    /// When `Some`, restricts both alias and embedding scans to this kind.
+    pub kind_filter: Option<EntityKind>,
+    /// Hard filter; cross-namespace candidates are never returned.
+    pub namespace: String,
+    /// Caller's requested cap; the store enforces a hard ceiling
+    /// (`MAX_TOP_K = 50`) regardless of this value.
+    pub top_k: usize,
+    /// Window for the linear recency-decay score. `None` ⇒ unbounded window
+    /// (all entities get a positive recency score, scaled against the oldest
+    /// `last_seen` in the candidate set).
+    pub recency_window: Option<std::time::Duration>,
+    /// "Now" reference for recency scoring. Passed in (not read from system
+    /// clock) so tests are deterministic.
+    pub now: f64,
+}
+
+/// One row of `GraphStore::search_candidates` output.
+///
+/// **Signal semantics — `None` vs `Some(0.0)`.**
+/// - `embedding_score = None`  ⇒ signal *missing* (no embedding to compare).
+///   Fusion redistributes this signal's weight across present signals.
+/// - `embedding_score = Some(0.0)` ⇒ signal *present, value zero*. Fusion
+///   keeps the embedding weight allocated; the candidate just scored 0.
+/// This distinction is load-bearing — collapsing both into `0.0` would
+/// systematically miscalibrate fusion weights.
+#[derive(Debug, Clone)]
+pub struct CandidateMatch {
+    pub entity_id: Uuid,
+    pub kind: EntityKind,
+    pub canonical_name: String,
+    /// True iff reached via exact alias hit on the normalized `mention_text`.
+    /// Mutually independent of the embedding signal — a single candidate may
+    /// have `alias_match = true` AND a non-`None` `embedding_score`.
+    pub alias_match: bool,
+    /// Cosine similarity in `[-1.0, 1.0]`, or `None` when the signal is
+    /// missing (caller had no `mention_embedding` *or* candidate has no
+    /// `embedding` blob).
+    pub embedding_score: Option<f32>,
+    /// Linear decay in `[0.0, 1.0]` over `recency_window`; 0 outside window.
+    pub recency_score: f32,
+    pub last_seen: f64,
+    pub identity_confidence: f64,
+}
+
+/// Hard ceiling enforced by `search_candidates` regardless of caller's
+/// `top_k`. Bounds memory and latency for the v0 brute-force scan.
+pub const MAX_TOP_K: usize = 50;
 
 #[derive(Debug, Clone)]
 pub struct EntityMentions { pub episode_ids: Vec<Uuid>, pub memory_ids: Vec<String> }
