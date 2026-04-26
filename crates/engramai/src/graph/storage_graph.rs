@@ -243,6 +243,12 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_live
     ON graph_edges(subject_id, predicate_label) WHERE invalidated_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_graph_edges_subject_pred_recorded
     ON graph_edges(subject_id, predicate_label, recorded_at DESC);
+-- ISS-034: per-triple lookup for `find_edges` (§4.2). The leading 4 columns
+-- narrow on the (subject, predicate, object) triple; trailing
+-- `invalidated_at` allows the partial-index optimizer to short-circuit
+-- `valid_only=true` queries (`WHERE invalidated_at IS NULL`).
+CREATE INDEX IF NOT EXISTS idx_graph_edges_spo
+    ON graph_edges(subject_id, predicate_label, object_kind, object_entity_id, invalidated_at);
 
 -- Predicate registry (§3.3).
 CREATE TABLE IF NOT EXISTS graph_predicates (

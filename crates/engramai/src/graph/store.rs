@@ -184,6 +184,13 @@ pub struct CandidateMatch {
 // GraphStore trait — full §4.2 surface
 // ---------------------------------------------------------------------------
 
+/// Hard cap on rows returned by [`GraphStore::find_edges`] (ISS-034, design
+/// §4.2). Bounds work for pathological histories where one (subject,
+/// predicate, object) triple has hundreds of supersession versions; the
+/// resolution driver (v03-resolution §3.4.4) only ever inspects the head
+/// of the list so silently truncating is safe.
+pub const MAX_FIND_EDGES_RESULTS: usize = 64;
+
 /// Persistence and query surface for the v0.3 graph layer.
 ///
 /// Object-safe; callers may hold `&dyn GraphStore` for test injection.
@@ -281,8 +288,33 @@ pub trait GraphStore {
     // -------------------------------------------------------------- Edge
     fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
     fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError>;
+    /// Per-triple edge lookup (ISS-034, design §4.2). Returns existing
+    /// edges matching the full `(subject, predicate, object)` triple,
+    /// ordered by `recorded_at DESC`, hard-capped at
+    /// [`MAX_FIND_EDGES_RESULTS`]. When `valid_only=true` only edges with
+    /// `invalidated_at IS NULL` are returned.
+    fn find_edges(
+        &self,
+        subject_id: Uuid,
+        predicate: &Predicate,
+        object: &EdgeEnd,
+        valid_only: bool,
+    ) -> Result<Vec<Edge>, GraphError>;
+    /// Mark `prior_id` as invalidated by `successor_id` at `now` (ISS-034,
+    /// design §4.2). Sets `prior.invalidated_at = now` and
+    /// `prior.invalidated_by = Some(successor_id)`. GUARD-3 primitive: never
+    /// deletes, never touches any other column. Idempotent when called
+    /// twice with the same `successor_id`; returns `Invariant` if the
+    /// prior is already closed by a *different* successor.
+    fn invalidate_edge(
+        &mut self,
+        prior_id: Uuid,
+        successor_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<(), GraphError>;
     /// Invalidate `old` pointing at `successor`; mark `successor.supersedes
-    /// = old`. Atomic; rolls back on any invariant break.
+    /// = old`. Atomic; rolls back on any invariant break. Convenience
+    /// wrapper composing `insert_edge` + `invalidate_edge` (design §4.2).
     fn supersede_edge(
         &mut self,
         old: Uuid,
@@ -1838,6 +1870,227 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
             None => Ok(None),
             Some(cols) => decode_edge_row(cols).map(Some),
         }
+    }
+    fn find_edges(
+        &self,
+        subject_id: Uuid,
+        predicate: &Predicate,
+        object: &EdgeEnd,
+        valid_only: bool,
+    ) -> Result<Vec<Edge>, GraphError> {
+        // ISS-034: per-triple lookup. Backed by `idx_graph_edges_spo`
+        // (subject_id, predicate_label, object_kind, object_entity_id,
+        // invalidated_at). Two SQL shapes: entity-object and literal-object.
+        // For entity-object the index narrows to a single point lookup; for
+        // literal-object the index narrows on (subject, predicate, 'literal',
+        // NULL) and the literal-string equality is an in-row filter (the
+        // result cap bounds the worst case).
+        let (predicate_kind, predicate_label) = predicate_to_columns(predicate)?;
+        let (object_kind, object_entity_blob, object_literal) = edge_end_to_columns(object)?;
+        let subject_blob = subject_id.as_bytes().to_vec();
+        let cap = MAX_FIND_EDGES_RESULTS as i64;
+
+        let cols: Vec<EdgeRowColumns> = match (&object_entity_blob, &object_literal) {
+            (Some(obj_blob), None) => {
+                // Entity-object: full index hit.
+                let sql_live = "SELECT id, subject_id,
+                                       predicate_kind, predicate_label,
+                                       object_kind, object_entity_id, object_literal,
+                                       summary,
+                                       valid_from, valid_to, recorded_at, invalidated_at,
+                                       invalidated_by, supersedes,
+                                       episode_id, memory_id,
+                                       resolution_method,
+                                       activation, confidence,
+                                       agent_affect,
+                                       created_at
+                                FROM graph_edges
+                                WHERE subject_id = ?1 AND namespace = ?2
+                                  AND predicate_kind = ?3 AND predicate_label = ?4
+                                  AND object_kind = ?5 AND object_entity_id = ?6
+                                  AND invalidated_at IS NULL
+                                ORDER BY recorded_at DESC, id ASC
+                                LIMIT ?7";
+                let sql_all = "SELECT id, subject_id,
+                                      predicate_kind, predicate_label,
+                                      object_kind, object_entity_id, object_literal,
+                                      summary,
+                                      valid_from, valid_to, recorded_at, invalidated_at,
+                                      invalidated_by, supersedes,
+                                      episode_id, memory_id,
+                                      resolution_method,
+                                      activation, confidence,
+                                      agent_affect,
+                                      created_at
+                               FROM graph_edges
+                               WHERE subject_id = ?1 AND namespace = ?2
+                                 AND predicate_kind = ?3 AND predicate_label = ?4
+                                 AND object_kind = ?5 AND object_entity_id = ?6
+                               ORDER BY recorded_at DESC, id ASC
+                               LIMIT ?7";
+                let mut stmt = self
+                    .conn
+                    .prepare_cached(if valid_only { sql_live } else { sql_all })?;
+                let v: Vec<EdgeRowColumns> = stmt
+                    .query_map(
+                        rusqlite::params![
+                            subject_blob,
+                            self.namespace,
+                            predicate_kind,
+                            predicate_label,
+                            object_kind,
+                            obj_blob,
+                            cap,
+                        ],
+                        row_to_edge_columns,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            (None, Some(lit_text)) => {
+                // Literal-object: index narrows on (subj, pred, 'literal', NULL);
+                // literal text equality is an in-row filter.
+                let sql_live = "SELECT id, subject_id,
+                                       predicate_kind, predicate_label,
+                                       object_kind, object_entity_id, object_literal,
+                                       summary,
+                                       valid_from, valid_to, recorded_at, invalidated_at,
+                                       invalidated_by, supersedes,
+                                       episode_id, memory_id,
+                                       resolution_method,
+                                       activation, confidence,
+                                       agent_affect,
+                                       created_at
+                                FROM graph_edges
+                                WHERE subject_id = ?1 AND namespace = ?2
+                                  AND predicate_kind = ?3 AND predicate_label = ?4
+                                  AND object_kind = 'literal'
+                                  AND object_literal = ?5
+                                  AND invalidated_at IS NULL
+                                ORDER BY recorded_at DESC, id ASC
+                                LIMIT ?6";
+                let sql_all = "SELECT id, subject_id,
+                                      predicate_kind, predicate_label,
+                                      object_kind, object_entity_id, object_literal,
+                                      summary,
+                                      valid_from, valid_to, recorded_at, invalidated_at,
+                                      invalidated_by, supersedes,
+                                      episode_id, memory_id,
+                                      resolution_method,
+                                      activation, confidence,
+                                      agent_affect,
+                                      created_at
+                               FROM graph_edges
+                               WHERE subject_id = ?1 AND namespace = ?2
+                                 AND predicate_kind = ?3 AND predicate_label = ?4
+                                 AND object_kind = 'literal'
+                                 AND object_literal = ?5
+                               ORDER BY recorded_at DESC, id ASC
+                               LIMIT ?6";
+                let mut stmt = self
+                    .conn
+                    .prepare_cached(if valid_only { sql_live } else { sql_all })?;
+                let v: Vec<EdgeRowColumns> = stmt
+                    .query_map(
+                        rusqlite::params![
+                            subject_blob,
+                            self.namespace,
+                            predicate_kind,
+                            predicate_label,
+                            lit_text,
+                            cap,
+                        ],
+                        row_to_edge_columns,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                v
+            }
+            // edge_end_to_columns produces exactly one of (Some, None) or
+            // (None, Some); this match arm is unreachable in practice.
+            _ => return Err(GraphError::Invariant("EdgeEnd encoded with neither entity nor literal")),
+        };
+
+        cols.into_iter().map(decode_edge_row).collect()
+    }
+    fn invalidate_edge(
+        &mut self,
+        prior_id: Uuid,
+        successor_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<(), GraphError> {
+        // ISS-034: GUARD-3 primitive. Single UPDATE that closes out a prior
+        // edge by setting `invalidated_at` and `invalidated_by`. Idempotent
+        // when called twice with the same `successor_id`; errors when the
+        // prior is already closed by a different successor.
+        let prior_blob = prior_id.as_bytes().to_vec();
+        let succ_blob = successor_id.as_bytes().to_vec();
+        let now_unix = dt_to_unix(now);
+
+        // Read current state (under the same connection — the caller is
+        // expected to wrap this in a transaction via `with_graph_tx` when
+        // ordering matters; the read+update here is itself atomic under
+        // SQLite's serializable WAL semantics for a single connection).
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT invalidated_at, invalidated_by
+             FROM graph_edges
+             WHERE id = ?1 AND namespace = ?2",
+        )?;
+        let row: Option<(Option<f64>, Option<Vec<u8>>)> = stmt
+            .query_row(
+                rusqlite::params![prior_blob, self.namespace],
+                |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
+            )
+            .optional()?;
+
+        let (existing_at, existing_by) = match row {
+            None => return Err(GraphError::EdgeNotFound(prior_id)),
+            Some(t) => t,
+        };
+
+        if let Some(_at) = existing_at {
+            // Already closed. Idempotent only if `invalidated_by` matches.
+            match existing_by {
+                Some(by) if by == succ_blob => return Ok(()),
+                _ => {
+                    return Err(GraphError::Invariant(
+                        "edge already invalidated by another successor",
+                    ))
+                }
+            }
+        }
+
+        // Verify successor exists (FK on `invalidated_by`); the FK would
+        // catch this at commit time, but checking up-front gives a typed
+        // error instead of a SQLite constraint failure.
+        let mut stmt_succ = self
+            .conn
+            .prepare_cached("SELECT 1 FROM graph_edges WHERE id = ?1 AND namespace = ?2")?;
+        let succ_exists: Option<i64> = stmt_succ
+            .query_row(rusqlite::params![succ_blob, self.namespace], |r| r.get::<_, i64>(0))
+            .optional()?;
+        if succ_exists.is_none() {
+            return Err(GraphError::EdgeNotFound(successor_id));
+        }
+
+        let mut stmt_upd = self.conn.prepare_cached(
+            "UPDATE graph_edges
+             SET invalidated_at = ?1, invalidated_by = ?2
+             WHERE id = ?3 AND namespace = ?4
+               AND invalidated_at IS NULL",
+        )?;
+        let n = stmt_upd.execute(rusqlite::params![
+            now_unix,
+            succ_blob,
+            prior_blob,
+            self.namespace,
+        ])?;
+        if n == 0 {
+            // Concurrent writer closed it between our SELECT and UPDATE.
+            return Err(GraphError::Invariant(
+                "edge already invalidated by another successor",
+            ));
+        }
+        Ok(())
     }
     fn supersede_edge(&mut self, _old: Uuid, _successor: &Edge, _at: DateTime<Utc>) -> Result<(), GraphError> {
         unimplemented!("Phase 3: supersede_edge")
@@ -3776,6 +4029,355 @@ mod tests {
             &e.predicate,
             Predicate::Canonical(CanonicalPredicate::WorksAt)
         )));
+    }
+
+    // ----- ISS-034: find_edges + invalidate_edge -----
+
+    fn make_edge(subj: Uuid, obj: Uuid, t: DateTime<Utc>) -> Edge {
+        Edge::new(
+            subj,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: obj },
+            None,
+            t,
+        )
+    }
+
+    #[test]
+    fn find_edges_happy_path_entity_object() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t0 = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+
+        let e1 = make_edge(subj, obj, t0);
+        let e2 = make_edge(subj, obj, t0 + chrono::Duration::seconds(10));
+        let e3 = make_edge(subj, obj, t0 + chrono::Duration::seconds(20));
+        store.insert_edge(&e1).unwrap();
+        store.insert_edge(&e2).unwrap();
+        store.insert_edge(&e3).unwrap();
+
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let object = EdgeEnd::Entity { id: obj };
+        let found = store.find_edges(subj, &pred, &object, true).unwrap();
+        assert_eq!(found.len(), 3, "all three live edges returned");
+        assert_eq!(found[0].id, e3.id, "newest first");
+        assert_eq!(found[2].id, e1.id, "oldest last");
+    }
+
+    #[test]
+    fn find_edges_filters_by_object_identity() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let acme = insert_subject_entity(&mut store, "Acme");
+        let other = insert_subject_entity(&mut store, "OtherCo");
+
+        let e_acme = make_edge(subj, acme, now);
+        let e_other = make_edge(subj, other, now + chrono::Duration::seconds(1));
+        store.insert_edge(&e_acme).unwrap();
+        store.insert_edge(&e_other).unwrap();
+
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let found_acme = store
+            .find_edges(subj, &pred, &EdgeEnd::Entity { id: acme }, true)
+            .unwrap();
+        assert_eq!(found_acme.len(), 1);
+        assert_eq!(found_acme[0].id, e_acme.id);
+
+        let found_other = store
+            .find_edges(subj, &pred, &EdgeEnd::Entity { id: other }, true)
+            .unwrap();
+        assert_eq!(found_other.len(), 1);
+        assert_eq!(found_other[0].id, e_other.id);
+    }
+
+    #[test]
+    fn find_edges_valid_only_filter() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+
+        let live = make_edge(subj, obj, now);
+        let mut dead = make_edge(subj, obj, now + chrono::Duration::seconds(1));
+        dead.invalidate(now + chrono::Duration::seconds(2));
+        store.insert_edge(&live).unwrap();
+        store.insert_edge(&dead).unwrap();
+
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let object = EdgeEnd::Entity { id: obj };
+        let live_only = store.find_edges(subj, &pred, &object, true).unwrap();
+        assert_eq!(live_only.len(), 1, "only live edge with valid_only=true");
+        assert_eq!(live_only[0].id, live.id);
+
+        let all = store.find_edges(subj, &pred, &object, false).unwrap();
+        assert_eq!(all.len(), 2, "both edges with valid_only=false");
+    }
+
+    #[test]
+    fn find_edges_literal_object() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+
+        let lit_a = EdgeEnd::Literal { value: serde_json::json!(42) };
+        let lit_b = EdgeEnd::Literal { value: serde_json::json!("hello") };
+
+        let e_a = Edge::new(
+            subj,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            lit_a.clone(),
+            None,
+            now,
+        );
+        let e_b = Edge::new(
+            subj,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            lit_b.clone(),
+            None,
+            now + chrono::Duration::seconds(1),
+        );
+        store.insert_edge(&e_a).unwrap();
+        store.insert_edge(&e_b).unwrap();
+
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let found_a = store.find_edges(subj, &pred, &lit_a, true).unwrap();
+        assert_eq!(found_a.len(), 1);
+        assert_eq!(found_a[0].id, e_a.id);
+
+        let found_b = store.find_edges(subj, &pred, &lit_b, true).unwrap();
+        assert_eq!(found_b.len(), 1);
+        assert_eq!(found_b[0].id, e_b.id);
+    }
+
+    #[test]
+    fn find_edges_empty_result() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let object = EdgeEnd::Entity { id: obj };
+
+        let found = store.find_edges(subj, &pred, &object, true).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn find_edges_caps_at_max_results() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let t0 = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+
+        let n = MAX_FIND_EDGES_RESULTS + 5;
+        for i in 0..n {
+            let e = make_edge(subj, obj, t0 + chrono::Duration::seconds(i as i64));
+            store.insert_edge(&e).unwrap();
+        }
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let object = EdgeEnd::Entity { id: obj };
+        let found = store.find_edges(subj, &pred, &object, true).unwrap();
+        assert_eq!(found.len(), MAX_FIND_EDGES_RESULTS, "result cap honored");
+    }
+
+    #[test]
+    fn find_edges_uses_spo_index() {
+        let mut conn = fresh_conn();
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            let now = Utc::now();
+            let s = insert_subject_entity(&mut store, "Alice");
+            let o = insert_subject_entity(&mut store, "Acme");
+            let e = make_edge(s, o, now);
+            store.insert_edge(&e).unwrap();
+        }
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM graph_edges
+                 WHERE subject_id = ?1 AND namespace = ?2
+                   AND predicate_kind = ?3 AND predicate_label = ?4
+                   AND object_kind = ?5 AND object_entity_id = ?6
+                   AND invalidated_at IS NULL
+                 ORDER BY recorded_at DESC, id ASC
+                 LIMIT 64",
+            )
+            .unwrap();
+        let dummy_blob = Uuid::new_v4().as_bytes().to_vec();
+        let plan: Vec<String> = stmt
+            .query_map(
+                rusqlite::params![dummy_blob, "default", "canonical", "WorksAt", "entity", dummy_blob],
+                |r| r.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let plan_text = plan.join("\n");
+        assert!(
+            plan_text.contains("idx_graph_edges_spo"),
+            "EXPLAIN QUERY PLAN should use idx_graph_edges_spo, got:\n{}",
+            plan_text
+        );
+    }
+
+    #[test]
+    fn invalidate_edge_happy_path() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+
+        let prior = make_edge(subj, obj, now);
+        let successor = make_edge(subj, obj, now + chrono::Duration::seconds(1));
+        store.insert_edge(&prior).unwrap();
+        store.insert_edge(&successor).unwrap();
+
+        let close_at = now + chrono::Duration::seconds(2);
+        store.invalidate_edge(prior.id, successor.id, close_at).unwrap();
+
+        let reloaded = store.get_edge(prior.id).unwrap().unwrap();
+        assert!(reloaded.invalidated_at.is_some(), "invalidated_at set");
+        assert_eq!(reloaded.invalidated_by, Some(successor.id), "invalidated_by set");
+        let succ_reloaded = store.get_edge(successor.id).unwrap().unwrap();
+        assert!(succ_reloaded.invalidated_at.is_none(), "successor unchanged");
+    }
+
+    #[test]
+    fn invalidate_edge_idempotent_same_successor() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+
+        let prior = make_edge(subj, obj, now);
+        let successor = make_edge(subj, obj, now + chrono::Duration::seconds(1));
+        store.insert_edge(&prior).unwrap();
+        store.insert_edge(&successor).unwrap();
+
+        let close_at = now + chrono::Duration::seconds(2);
+        store.invalidate_edge(prior.id, successor.id, close_at).unwrap();
+        store
+            .invalidate_edge(prior.id, successor.id, close_at + chrono::Duration::seconds(5))
+            .expect("idempotent retry must be Ok");
+
+        let reloaded = store.get_edge(prior.id).unwrap().unwrap();
+        let first_close_unix = dt_to_unix(close_at);
+        let actual_close_unix = dt_to_unix(reloaded.invalidated_at.unwrap());
+        assert!(
+            (first_close_unix - actual_close_unix).abs() < 1e-3,
+            "no-op preserved original invalidated_at"
+        );
+    }
+
+    #[test]
+    fn invalidate_edge_already_closed_by_other_errors() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+
+        let prior = make_edge(subj, obj, now);
+        let succ_a = make_edge(subj, obj, now + chrono::Duration::seconds(1));
+        let succ_b = make_edge(subj, obj, now + chrono::Duration::seconds(2));
+        store.insert_edge(&prior).unwrap();
+        store.insert_edge(&succ_a).unwrap();
+        store.insert_edge(&succ_b).unwrap();
+
+        store
+            .invalidate_edge(prior.id, succ_a.id, now + chrono::Duration::seconds(3))
+            .unwrap();
+        match store.invalidate_edge(prior.id, succ_b.id, now + chrono::Duration::seconds(4)) {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(msg.contains("already invalidated"), "msg: {}", msg);
+            }
+            other => panic!("expected Invariant error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn invalidate_edge_missing_prior_errors() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+        let successor = make_edge(subj, obj, now);
+        store.insert_edge(&successor).unwrap();
+
+        let missing = Uuid::new_v4();
+        match store.invalidate_edge(missing, successor.id, now) {
+            Err(GraphError::EdgeNotFound(id)) => assert_eq!(id, missing),
+            other => panic!("expected EdgeNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn invalidate_edge_missing_successor_errors() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+        let prior = make_edge(subj, obj, now);
+        store.insert_edge(&prior).unwrap();
+
+        let missing_succ = Uuid::new_v4();
+        match store.invalidate_edge(prior.id, missing_succ, now) {
+            Err(GraphError::EdgeNotFound(id)) => assert_eq!(id, missing_succ),
+            other => panic!("expected EdgeNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn find_edges_skips_invalidated_when_valid_only() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+
+        let prior = make_edge(subj, obj, now);
+        let successor = make_edge(subj, obj, now + chrono::Duration::seconds(1));
+        store.insert_edge(&prior).unwrap();
+        store.insert_edge(&successor).unwrap();
+        store
+            .invalidate_edge(prior.id, successor.id, now + chrono::Duration::seconds(2))
+            .unwrap();
+
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let object = EdgeEnd::Entity { id: obj };
+        let live = store.find_edges(subj, &pred, &object, true).unwrap();
+        assert_eq!(live.len(), 1, "prior must be excluded");
+        assert_eq!(live[0].id, successor.id);
+    }
+
+    #[test]
+    fn find_edges_namespace_isolation() {
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+        let (subj_a, obj_a, edge_a) = {
+            let mut store = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let s = insert_subject_entity(&mut store, "AliceA");
+            let o = insert_subject_entity(&mut store, "AcmeA");
+            let e = make_edge(s, o, now);
+            store.insert_edge(&e).unwrap();
+            (s, o, e.id)
+        };
+        let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+        let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
+        let object = EdgeEnd::Entity { id: obj_a };
+        let found = store_b.find_edges(subj_a, &pred, &object, true).unwrap();
+        assert!(found.is_empty(), "ns_b cannot see edge {} in ns_a", edge_a);
     }
 
     #[test]
