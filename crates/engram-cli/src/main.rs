@@ -953,9 +953,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     ExtractorArg::Anthropic => {
                         let token = auth_token.ok_or("Anthropic extractor requires --auth-token or ANTHROPIC_API_KEY")?;
-                        let anthropic_extractor = AnthropicExtractor::new(&token, oauth);
+                        let anthropic_extractor = if let Some(model) = extractor_model.as_deref() {
+                            let mut config = engramai::extractor::AnthropicExtractorConfig::default();
+                            config.model = model.to_string();
+                            AnthropicExtractor::with_config(&token, oauth, config)
+                        } else {
+                            AnthropicExtractor::new(&token, oauth)
+                        };
+                        let model_used = extractor_model.as_deref().unwrap_or("claude-haiku-4-5-20251001");
                         mem.set_extractor(Box::new(anthropic_extractor));
-                        log::info!("Using Anthropic extractor (oauth: {})", oauth);
+                        log::info!("Using Anthropic extractor (model: {}, oauth: {})", model_used, oauth);
                     }
                 }
             }
