@@ -1,6 +1,6 @@
 # ISS-034: GraphStore trait missing `find_edges` + `invalidate_edge` (edge-side counterpart of ISS-033)
 
-**Status:** open
+**Status:** resolved (2026-04-26, commits da4b89d + db77f0c)
 **Severity:** high — blocks v03-resolution §3.4.4 (Edge Resolution) and §3.5 (Persist) driver, which blocks the end-to-end `store_raw → extraction → resolution → graph write` pipeline
 **Related:**
 - v03-graph-layer (feature) — owns `GraphStore` trait
