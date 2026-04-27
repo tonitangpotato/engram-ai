@@ -160,6 +160,12 @@ pub trait JobQueue: Send + Sync {
     /// Configured capacity for droppable jobs. `None` means unbounded
     /// (unusual; reserved for tests / specialized backends).
     fn capacity(&self) -> Option<usize>;
+
+    /// Stop accepting new enqueues. Existing queued jobs remain
+    /// dequeueable. Used by the worker pool's shutdown-drain protocol
+    /// (§5.2). Idempotent — calling on an already-closed queue is a
+    /// no-op.
+    fn close(&self);
 }
 
 /// In-memory bounded FIFO queue. Used in tests and as the default
@@ -247,6 +253,12 @@ impl JobQueue for BoundedJobQueue {
 
     fn capacity(&self) -> Option<usize> {
         Some(self.capacity)
+    }
+
+    fn close(&self) {
+        // Delegates to the inherent `close()` to keep the existing
+        // direct-call call sites compiling.
+        BoundedJobQueue::close(self)
     }
 }
 

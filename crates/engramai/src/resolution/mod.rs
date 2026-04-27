@@ -89,13 +89,16 @@ pub mod context;
 pub mod decision;
 pub mod edge_decision;
 pub mod fusion;
+pub mod pipeline;
 pub mod queue;
 pub mod signals;
 pub mod stage_edge_extract;
 pub mod stage_extract;
 pub mod stage_persist;
+pub mod stats;
 pub mod status;
 pub mod trace;
+pub mod worker;
 
 pub use adapters::{
     draft_entity_from_mention, map_entity_kind, map_predicate, normalize_predicate_str,
@@ -111,6 +114,10 @@ pub use signals::{
 };
 pub use stage_persist::{
     build_delta, drive_persist, ApplyDelta, EdgeResolution, EntityResolution, PersistOutcome,
+};
+pub use stats::{
+    ConfigError as ResolutionConfigError, ResolutionConfig, ResolutionStats, DEFAULT_QUEUE_CAP,
+    DEFAULT_SHUTDOWN_DRAIN, DEFAULT_WORKER_COUNT, DEFAULT_WORKER_IDLE_POLL, MAX_WORKER_COUNT,
 };
 pub use status::{ExtractionStatus, FailureKind, ResolutionTraceSummary};
 pub use trace::{CandidateScore, SignalContribution};
