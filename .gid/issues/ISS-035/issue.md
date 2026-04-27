@@ -1,11 +1,17 @@
 ---
 id: "ISS-035"
 title: "§3.4.4 Edge Decision lookup key inconsistent with match arms"
-status: open
+status: resolved
 priority: P2
 created: 2026-04-26
+resolved: 2026-04-26
 severity: high
 ---
+
+## Resolution (2026-04-26)
+
+All five coupled design changes (find_edges signature, Cardinality enum elevation, EdgeDecision rewrite, naming unification, MAX cap removal for slot lookup) shipped via the five `iss-035-impl-*` sub-tasks (all marked done in graph). Implementation verified end-to-end through the v03-resolution pipeline (ISS-037). Issue closed as part of that wire-up.
+
 # ISS-035: §3.4.4 Edge Decision lookup key inconsistent with match arms
 
 **Status:** design-fixed 2026-04-26 (r2 review applied), implementation pending

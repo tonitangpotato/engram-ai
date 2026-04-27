@@ -1,10 +1,23 @@
 ---
 id: "ISS-032"
 title: "Cached / Causal Recall Path Produces Broken Confidence Scores"
-status: open
+status: resolved
 priority: P2
 created: 2026-04-10
+resolved: 2026-04-26
 ---
+
+## Resolution (2026-04-26)
+
+Line-by-line audit of `crates/engramai/src/memory.rs` confirmed both root-cause fixes from the original plan are already in place:
+
+- **Sub-fix 3a (redundant probe elimination):** the cached path no longer issues a parallel full recall solely to compute `continuity_ratio`. Implemented earlier as part of the WM consolidation work.
+- **Sub-fix 3b (carry-forward of relevance signals):** cached path now carries `query_match_score`, `embedding_similarity`, and `original_score` from the prior recall into `compute_query_confidence`, so confidence reflects real relevance instead of zeros.
+
+The two remaining `compute_query_confidence` call-sites that still produce degenerate scores (associations recall and causal recall — formerly suspected as part of this issue) are **not cached-path bugs**. They are semantic: those code paths have no `query` to match against, so calling a query-confidence scorer is API misuse, not a missing-signal bug. That concern is split into ISS-039.
+
+This issue is therefore resolved as scoped. ISS-039 owns the residual associations/causal scorer-misuse problem.
+
 # ISS-032: Cached / Causal Recall Path Produces Broken Confidence Scores
 
 **Status:** 🔴 Open
