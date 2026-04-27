@@ -1,0 +1,88 @@
+[package]
+name = "engram-bench"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Benchmark harness, drivers, scorers, and ship-gate evaluator for Engram v0.3. Separate workspace member — its dependencies MUST NOT leak into engramai's runtime dep graph (GUARD-9, design §9.4)."
+authors = ["Toni Tang <tonitangpotato@gmail.com>"]
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/tonitangpotato/engram-ai"
+publish = false
+
+# ============================================================================
+# GUARD-9 Boundary
+# ============================================================================
+# This crate is the SOLE owner of all benchmark-only dependencies.
+# Per v03-benchmarks design §9.4 + master GUARD-9:
+#
+#   * Adding a benchmark dep here → ALLOWED.
+#   * Adding the same dep to crates/engramai/Cargo.toml `[dependencies]` → FORBIDDEN
+#     unless it is *also* required by the runtime library for non-benchmark reasons.
+#
+# Validation rule: `cargo build -p engramai` must succeed with this entire
+# crate absent or its `target/` cleared. The reverse (building this crate
+# without engramai) is, by definition, impossible — engramai is the
+# system-under-measurement.
+# ============================================================================
+
+[dependencies]
+# System under measurement (path dep — engram-bench is never published with engramai pinned).
+engramai = { path = "../engramai" }
+# Migration driver consumes the migration tool's structured JSON output (design §3.6, §12.3).
+engramai-migrate = { path = "../engramai-migrate" }
+
+# CLI surface — single binary with subcommands per design §7.1.
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Reproducibility record TOML schema (design §6).
+toml = "0.8"
+
+# Driver outputs (`*_summary.json`, `*_per_query.jsonl`) per design §3.1–§3.6.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Timestamps in run records + summary tables (design §6.1, §10.1).
+chrono = { version = "0.4", features = ["serde"] }
+
+# Fixture SHA pinning + reproducibility-record `[dataset].sha256` field (design §6, §9).
+sha2 = "0.10"
+hex = "0.4"
+
+# Seeded RNG for cost-harness corpus sampler (design §3.3 — committed selection
+# indices require a deterministic generator). Must match the seed/algorithm
+# documented in the corpus selection record.
+rand = "0.8"
+rand_chacha = "0.3"
+
+# Error context across drivers / harness / scorers.
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging — env_logger consumed at binary entry; library code uses `log` macros.
+log = "0.4"
+env_logger = "0.11"
+
+# TTY detection for colorized vs plain `[PASS]/[FAIL]` rendering (design §10.1
+# "no ANSI codes leak into committed reproducibility records").
+is-terminal = "0.4"
+
+# Filesystem helpers for `benchmarks/runs/<timestamp>_<driver>_<sha>/` layout
+# (design §6.2) and `clean-fixtures` subcommand (design §9 fixture lifecycle).
+walkdir = "2"
+
+# UUID for run identifiers when needed (mirrors workspace convention).
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+[dev-dependencies]
+# Fixture-only test scaffolding: temp directories, golden-file tests, mocked
+# scorers. Per §9.4: fixtures are test-only — these never leak into the binary.
+tempfile = "3"
+proptest = "1.5"
+
+[lib]
+name = "engram_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "engram-bench"
+path = "src/main.rs"
