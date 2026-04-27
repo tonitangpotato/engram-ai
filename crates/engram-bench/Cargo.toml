@@ -70,6 +70,11 @@ is-terminal = "0.4"
 # (design §6.2) and `clean-fixtures` subcommand (design §9 fixture lifecycle).
 walkdir = "2"
 
+# Regex pipeline for the rustclaw-trace anonymizer (design §9.3.1 — must be
+# deterministic, auditable, regex-driven; NOT LLM-based to avoid circular
+# dependency on the system under measurement).
+regex = "1"
+
 # UUID for run identifiers when needed (mirrors workspace convention).
 uuid = { version = "1.10", features = ["v4", "serde"] }
 
