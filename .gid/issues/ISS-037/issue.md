@@ -1,14 +1,18 @@
 ---
 id: "ISS-037"
 title: "v03-resolution: Pipeline Wire-up Blockers (Connection Ownership, Storage Privacy, Sync Bound)"
-status: open
+status: resolved
 priority: P1
 created: 2026-04-26
+resolved: 2026-04-26
+resolution_commits:
+  - 48b8996  # Steps 1-2: SqliteMemoryReader
+  - b4eaddf  # Steps 3-5: Memory::with_pipeline_pool + e2e test
 ---
 
 # ISS-037: v03-resolution Pipeline Wire-up Blockers
 
-**Status:** Open
+**Status:** Resolved (2026-04-26)
 **Priority:** P1 (blocks v03-resolution end-to-end integration)
 **Created:** 2026-04-26
 **Affects:** `crates/engramai/src/memory.rs`, `crates/engramai/src/storage.rs`, `crates/engramai/src/resolution/pipeline.rs`
@@ -84,3 +88,28 @@ Sequence:
 - v03-resolution feature: `.gid/features/v03-resolution/`
 - Worker pool: `crates/engramai/src/resolution/worker.rs`
 - Pipeline impl: `crates/engramai/src/resolution/pipeline.rs`
+
+## Resolution Record (2026-04-26)
+
+**Steps 1-2** — commit `48b8996`:
+- `fetch_memory_record(conn, id)` free fn extracted from `Storage::get` (composability)
+- `row_to_record` converted to free fn (no self dependency)
+- `resolution/memory_reader.rs`: `SqliteMemoryReader { conn: Arc<Mutex<Connection>> }` with full `MemoryReader` trait impl
+- Unit tests: fetch existing, missing record handling
+
+**Steps 3-5** — commit `b4eaddf`:
+- `Memory::pipeline_pool: Option<WorkerPool>` field added
+- `Memory::with_pipeline_pool(self, db_path, config) -> Result<Self>` builder:
+  - Opens dedicated persistent `Connection` (separate from `Memory.storage.conn`, same db file — sqlite WAL handles concurrency as planned)
+  - Wraps `Storage` + `SqliteMemoryReader` in `Arc<Mutex>` for thread-safe sharing
+  - Starts `WorkerPool` with tuned worker count
+  - Replaces `Memory.job_queue` with `BoundedJobQueue` feeding the pool
+- `Drop` impl performs graceful pool shutdown with timeout
+- E2E test `iss037_pipeline_e2e_test.rs` (3 scenarios, all green):
+  - `pipeline_pool_drains_queue_after_store_raw` — full pipeline e2e with mock extractor, asserts entities persisted to graph
+  - `pipeline_pool_shutdown_idempotent` — explicit `shutdown()` safe to call twice
+  - `drop_without_explicit_shutdown_does_not_panic` — Drop guard verified
+
+**Note on Blocker 1 deviation:** Original plan specified `Box::leak(Connection)` to obtain `&'static mut Connection`. Implementation uses `Arc<Mutex<Connection>>` instead — same semantic outcome (process-lifetime connection, Send + Sync sharing) but without leak ergonomics. Cleaner and easier to reason about for shutdown.
+
+**Verification:** `cargo test -p engramai` → 1632 passed, 0 failed.
