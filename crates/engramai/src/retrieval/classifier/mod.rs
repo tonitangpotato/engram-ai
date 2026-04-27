@@ -15,6 +15,7 @@
 //! §3.4 (fallback / total classifier).
 
 pub mod heuristic;
+pub mod llm_fallback;
 
 use std::sync::Arc;
 

@@ -23,6 +23,7 @@ pub mod api;
 pub mod budget;
 pub mod classifier;
 pub mod fusion;
+pub mod plans;
 
 pub use api::{
     EntityId, GraphQuery, GraphQueryResponse, MemoryTier, PlanTrace, RetrievalError,
