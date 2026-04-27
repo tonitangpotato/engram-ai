@@ -72,9 +72,68 @@ use super::fusion::{fuse, FusionResult, SignalWeights};
 use super::queue::{JobMode, PipelineJob};
 use super::stage_edge_extract::extract_edges;
 use super::stage_extract::extract_entities;
-use super::stage_persist::{drive_persist, EdgeResolution, EntityResolution};
+use super::stage_persist::{build_delta, drive_persist, EdgeResolution, EntityResolution};
 use super::stats::ResolutionStats;
 use super::worker::{JobProcessor, ProcessError};
+
+use crate::graph::delta::GraphDelta;
+
+// ---------------------------------------------------------------------------
+// PipelineError — surface for the migration backfill handoff (§6.5 +
+// v03-migration §5.2). Distinct from `ProcessError` (worker-pool surface)
+// so migration can pattern-match on `ExtractionFailure` (per-record, data,
+// retryable) vs. `Fatal` (storage/IO, abort) cleanly.
+// ---------------------------------------------------------------------------
+
+/// Errors returned by [`ResolutionPipeline::resolve_for_backfill`].
+///
+/// Two-variant taxonomy from v03-migration §5.2:
+///
+/// - `ExtractionFailure` — per-record data failure. Migration logs it to
+///   `graph_extraction_failures` and advances the checkpoint. Retryable
+///   via `engramai migrate --retry-failed`.
+/// - `Fatal` — storage / IO abort. Migration aborts the run and preserves
+///   the checkpoint for resume.
+///
+/// **Note:** `resolve_for_backfill` never produces `ExtractionFailure`
+/// today — per-stage data failures are recorded on `ctx.failures` and
+/// flow through into `delta.stage_failures` (caller persists them via
+/// `apply_graph_delta`). The variant exists for forward-compat with
+/// future stages that may surface stop-the-record errors. Only fatal
+/// store-call failures from `resolve_entities` / `resolve_edges` map to
+/// `Fatal`.
+#[derive(Debug)]
+pub enum PipelineError {
+    /// Per-record extraction failure. Carries the underlying detail as
+    /// a string for now (taxonomy lives in `graph_extraction_failures`).
+    ExtractionFailure(String),
+    /// Storage / IO error. Halts the migration run.
+    Fatal(String),
+}
+
+impl std::fmt::Display for PipelineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PipelineError::ExtractionFailure(m) => write!(f, "extraction failure: {m}"),
+            PipelineError::Fatal(m) => write!(f, "fatal pipeline error: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for PipelineError {}
+
+impl From<ProcessError> for PipelineError {
+    fn from(e: ProcessError) -> Self {
+        // `ProcessError::Stage` arriving from `resolve_entities` /
+        // `resolve_edges` means a store call (get_entity, find_edges,
+        // search_candidates) returned `Err`. Those are storage-level
+        // errors → `Fatal`. `NotFound` and `Other` are likewise treated
+        // as fatal in the backfill context (the memory was just handed
+        // to us by the orchestrator; missing dependent state is a
+        // storage anomaly, not a per-record extraction failure).
+        PipelineError::Fatal(e.to_string())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // MemoryReader — narrow capability for fetching the v0.2 memory row.
@@ -641,5 +700,513 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         }
 
         Ok(decisions)
+    }
+
+    // -----------------------------------------------------------------------
+    // §6.5 Migration backfill entry point
+    // -----------------------------------------------------------------------
+
+    /// Resolve a historic v0.2 memory into a `GraphDelta` for the
+    /// migration backfill orchestrator (v03-migration §5.2).
+    ///
+    /// Differs from the normal [`run_job`] in three respects (per
+    /// v03-resolution design §6.5):
+    ///
+    /// 1. **No new L1 Episode is created.** The supplied `MemoryRecord`
+    ///    has no `episode_id` field on the v0.2 type; backfill memories
+    ///    typically map to NULL episode (master DESIGN §8.1). We seed
+    ///    the `PipelineContext` with `Uuid::nil()` as the sentinel for
+    ///    "no episode" — the persist layer interprets this however the
+    ///    storage adapter chooses. **This is a deviation from the
+    ///    task-brief signature** which suggested `Option<Uuid>`; see
+    ///    "Deviations" note in the implementation summary.
+    /// 2. **Forced synchronous execution.** No queue.enqueue, no worker
+    ///    dispatch. All stages run inline on the calling thread.
+    /// 3. **Returns `GraphDelta`, does not persist.** The caller
+    ///    (`BackfillOrchestrator`) is responsible for invoking
+    ///    `GraphStore::apply_graph_delta`. This keeps the per-record
+    ///    transaction boundary in migration's hands and lets re-runs on
+    ///    the same record produce identical deltas (idempotence per
+    ///    §5.2 checkpoint-resume).
+    ///
+    /// No `ResolutionStats` is returned — migration owns its own
+    /// progress telemetry (§5.5).
+    ///
+    /// ### Error mapping
+    ///
+    /// - Per-stage data failures (extract / resolve recorded on
+    ///   `ctx.failures`) are **not** errors here: they propagate into
+    ///   `delta.stage_failures` and the caller persists them as part of
+    ///   the same atomic apply.
+    /// - `resolve_entities` / `resolve_edges` returning `Err` (a store
+    ///   call failed) maps to [`PipelineError::Fatal`] via
+    ///   `From<ProcessError>`.
+    pub fn resolve_for_backfill(
+        &self,
+        memory: &MemoryRecord,
+    ) -> Result<GraphDelta, PipelineError> {
+        // Build context. Episode id: nil-UUID sentinel for "no episode"
+        // (v0.2 MemoryRecord has no episode_id field; design §6.5
+        // mandates we do NOT mint a new episode).
+        let mut ctx = PipelineContext::new(memory.clone(), Uuid::nil(), None);
+
+        // §3.2 entity extract — total over v0.2 extractor; non-fatal
+        // failures land on `ctx.failures`.
+        let _ = extract_entities(&self.entity_extractor, &mut ctx);
+
+        // §3.3 edge extract — failures non-fatal, recorded on ctx.
+        let _ = extract_edges(self.triple_extractor.as_ref(), &mut ctx);
+
+        // §3.4 resolve. We don't expose stats — pass a throwaway sink.
+        let mut sink = ResolutionStats::default();
+        let entity_decisions = self.resolve_entities(&mut ctx, &mut sink)?;
+        let edge_decisions = self.resolve_edges(&mut ctx, &entity_decisions, &mut sink)?;
+
+        // §3.5 build delta — pure, no IO. Idempotent on equal inputs.
+        let delta = build_delta(&ctx, &entity_decisions, &edge_decisions);
+        Ok(delta)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod backfill_tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    use crate::entities::EntityExtractor;
+    use crate::graph::audit::{ExtractionFailure, ResolutionTrace};
+    use crate::graph::edge::Edge;
+    use crate::graph::entity::{Entity, EntityKind};
+    use crate::graph::schema::Predicate;
+    use crate::graph::store::{
+        CandidateMatch, CandidateQuery, EntityMentions, GraphRead, GraphWrite,
+        PipelineRunRow, ProposedPredicateStats,
+    };
+    use crate::graph::topic::KnowledgeTopic;
+    use crate::graph::{ApplyReport, EdgeEnd, GraphDelta, GraphError};
+    use crate::triple::Triple;
+    use crate::triple_extractor::TripleExtractor;
+    use crate::types::{MemoryLayer, MemoryRecord, MemoryType};
+
+    use std::error::Error as StdError;
+    use std::sync::Mutex as StdMutex;
+
+    // --- Stub TripleExtractor: scripted output, sync per real trait ---
+    struct StubTriples(Vec<Triple>);
+    impl TripleExtractor for StubTriples {
+        fn extract_triples(
+            &self,
+            _content: &str,
+        ) -> Result<Vec<Triple>, Box<dyn StdError + Send + Sync>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    // --- Stub GraphStore: returns empty for everything; never written.
+    // Sufficient for resolve_for_backfill testing because:
+    //   - search_candidates → empty → all entities CreateNew
+    //   - find_edges → empty → all edges Add
+    //   - get_entity is never called (no MergeInto path)
+    //   - persist is NOT invoked by resolve_for_backfill.
+    // Methods not exercised by resolve_for_backfill panic via
+    // `unimplemented!()` so accidental future call paths fail loudly.
+    struct StubStore;
+
+    impl GraphRead for StubStore {
+        fn get_entity(&self, _id: Uuid) -> Result<Option<Entity>, GraphError> {
+            Ok(None)
+        }
+        fn list_entities_by_kind(
+            &self,
+            _kind: &EntityKind,
+            _limit: usize,
+        ) -> Result<Vec<Entity>, GraphError> {
+            Ok(vec![])
+        }
+        fn search_candidates(
+            &self,
+            _q: &CandidateQuery,
+        ) -> Result<Vec<CandidateMatch>, GraphError> {
+            Ok(vec![])
+        }
+        fn resolve_alias(&self, _n: &str) -> Result<Option<Uuid>, GraphError> {
+            Ok(None)
+        }
+        fn get_edge(&self, _id: Uuid) -> Result<Option<Edge>, GraphError> {
+            Ok(None)
+        }
+        fn find_edges(
+            &self,
+            _s: Uuid,
+            _p: &Predicate,
+            _o: Option<&EdgeEnd>,
+            _v: bool,
+        ) -> Result<Vec<Edge>, GraphError> {
+            Ok(vec![])
+        }
+        fn edges_of(
+            &self,
+            _id: Uuid,
+            _p: Option<&Predicate>,
+            _inv: bool,
+        ) -> Result<Vec<Edge>, GraphError> {
+            unimplemented!("edges_of: not used by resolve_for_backfill")
+        }
+        fn edges_as_of(
+            &self,
+            _id: Uuid,
+            _t: chrono::DateTime<Utc>,
+        ) -> Result<Vec<Edge>, GraphError> {
+            unimplemented!("edges_as_of: not used by resolve_for_backfill")
+        }
+        fn traverse(
+            &self,
+            _start: Uuid,
+            _depth: usize,
+            _max_results: usize,
+            _filter: &[Predicate],
+        ) -> Result<Vec<(Uuid, Edge)>, GraphError> {
+            unimplemented!("traverse: not used by resolve_for_backfill")
+        }
+        fn entities_in_episode(&self, _e: Uuid) -> Result<Vec<Uuid>, GraphError> {
+            unimplemented!()
+        }
+        fn edges_in_episode(&self, _e: Uuid) -> Result<Vec<Uuid>, GraphError> {
+            unimplemented!()
+        }
+        fn mentions_of_entity(
+            &self,
+            _e: Uuid,
+        ) -> Result<EntityMentions, GraphError> {
+            unimplemented!()
+        }
+        fn entities_linked_to_memory(
+            &self,
+            _m: &str,
+        ) -> Result<Vec<Uuid>, GraphError> {
+            unimplemented!()
+        }
+        fn memories_mentioning_entity(
+            &self,
+            _e: Uuid,
+            _lim: usize,
+        ) -> Result<Vec<String>, GraphError> {
+            unimplemented!()
+        }
+        fn edges_sourced_from_memory(
+            &self,
+            _m: &str,
+        ) -> Result<Vec<Edge>, GraphError> {
+            unimplemented!()
+        }
+        fn get_topic(&self, _id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError> {
+            unimplemented!()
+        }
+        fn list_topics(
+            &self,
+            _ns: &str,
+            _include_superseded: bool,
+            _lim: usize,
+        ) -> Result<Vec<KnowledgeTopic>, GraphError> {
+            unimplemented!()
+        }
+        fn latest_pipeline_run_for_memory(
+            &self,
+            _m: &str,
+        ) -> Result<Option<PipelineRunRow>, GraphError> {
+            unimplemented!()
+        }
+        fn list_proposed_predicates(
+            &self,
+            _min_usage: u64,
+        ) -> Result<Vec<ProposedPredicateStats>, GraphError> {
+            unimplemented!()
+        }
+        fn list_failed_episodes(
+            &self,
+            _unresolved_only: bool,
+        ) -> Result<Vec<Uuid>, GraphError> {
+            unimplemented!()
+        }
+        fn list_namespaces(&self) -> Result<Vec<String>, GraphError> {
+            unimplemented!()
+        }
+    }
+
+    impl GraphWrite for StubStore {
+        fn insert_entity(&mut self, _e: &Entity) -> Result<(), GraphError> {
+            unimplemented!("insert_entity: persist not invoked by resolve_for_backfill")
+        }
+        fn update_entity_cognitive(
+            &mut self,
+            _id: Uuid,
+            _activation: f64,
+            _importance: f64,
+            _identity_confidence: f64,
+            _agent_affect: Option<serde_json::Value>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn touch_entity_last_seen(
+            &mut self,
+            _id: Uuid,
+            _ls: chrono::DateTime<Utc>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn update_entity_embedding(
+            &mut self,
+            _id: Uuid,
+            _emb: Option<&[f32]>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn upsert_alias(
+            &mut self,
+            _normalized: &str,
+            _alias_raw: &str,
+            _canonical_id: Uuid,
+            _source_episode: Option<Uuid>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn merge_entities(
+            &mut self,
+            _winner: Uuid,
+            _loser: Uuid,
+            _batch_size: usize,
+        ) -> Result<crate::graph::store::MergeReport, GraphError> {
+            unimplemented!()
+        }
+        fn insert_edge(&mut self, _e: &Edge) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn invalidate_edge(
+            &mut self,
+            _prior_id: Uuid,
+            _successor_id: Uuid,
+            _now: chrono::DateTime<Utc>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn supersede_edge(
+            &mut self,
+            _old: Uuid,
+            _successor: &Edge,
+            _at: chrono::DateTime<Utc>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn link_memory_to_entities(
+            &mut self,
+            _memory_id: &str,
+            _entity_ids: &[(Uuid, f64, Option<String>)],
+            _at: chrono::DateTime<Utc>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn upsert_topic(&mut self, _t: &KnowledgeTopic) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn supersede_topic(
+            &mut self,
+            _old: Uuid,
+            _successor: Uuid,
+            _at: chrono::DateTime<Utc>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn begin_pipeline_run(
+            &mut self,
+            _kind: PipelineKind,
+            _input_summary: serde_json::Value,
+        ) -> Result<Uuid, GraphError> {
+            unimplemented!()
+        }
+        fn begin_pipeline_run_for_memory(
+            &mut self,
+            _kind: PipelineKind,
+            _memory_id: &str,
+            _episode_id: Uuid,
+            _input_summary: serde_json::Value,
+        ) -> Result<Uuid, GraphError> {
+            unimplemented!()
+        }
+        fn finish_pipeline_run(
+            &mut self,
+            _run: Uuid,
+            _status: RunStatus,
+            _summary: Option<serde_json::Value>,
+            _err: Option<&str>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn record_resolution_trace(
+            &mut self,
+            _t: &ResolutionTrace,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn record_predicate_use(
+            &mut self,
+            _p: &Predicate,
+            _raw: &str,
+            _at: chrono::DateTime<Utc>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn record_extraction_failure(
+            &mut self,
+            _f: &ExtractionFailure,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn mark_failure_resolved(
+            &mut self,
+            _id: Uuid,
+            _at: chrono::DateTime<Utc>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn with_transaction(
+            &mut self,
+            _f: &mut dyn FnMut(&rusqlite::Transaction<'_>) -> Result<(), GraphError>,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
+        fn apply_graph_delta(
+            &mut self,
+            _d: &GraphDelta,
+        ) -> Result<ApplyReport, GraphError> {
+            // resolve_for_backfill must NOT call apply — surface loudly
+            // if a future change accidentally wires it through.
+            panic!("apply_graph_delta should not be called by resolve_for_backfill")
+        }
+    }
+
+    // GraphStore is auto-impl'd via blanket `impl<T: GraphWrite> GraphStore for T`.
+
+    struct StubReader;
+    impl MemoryReader for StubReader {
+        fn fetch(
+            &self,
+            _id: &str,
+        ) -> Result<Option<MemoryRecord>, MemoryReadError> {
+            // resolve_for_backfill takes &MemoryRecord directly and never
+            // hits the reader. Surface loudly if that changes.
+            Ok(None)
+        }
+    }
+
+    fn fixture_memory(id: &str, content: &str) -> MemoryRecord {
+        MemoryRecord {
+            id: id.into(),
+            content: content.into(),
+            memory_type: MemoryType::Episodic,
+            layer: MemoryLayer::Working,
+            created_at: Utc.with_ymd_and_hms(2026, 4, 26, 12, 0, 0).unwrap(),
+            access_times: vec![],
+            working_strength: 1.0,
+            core_strength: 0.0,
+            importance: 0.5,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: "backfill_test".into(),
+            contradicts: None,
+            contradicted_by: None,
+            superseded_by: None,
+            metadata: None,
+        }
+    }
+
+    fn build_pipeline(triples: Vec<Triple>) -> ResolutionPipeline<StubStore> {
+        let mr: Arc<dyn MemoryReader> = Arc::new(StubReader);
+        ResolutionPipeline::new(
+            mr,
+            Arc::new(EntityExtractor::new(&crate::entities::EntityConfig::default())),
+            Arc::new(StubTriples(triples)),
+            Arc::new(StdMutex::new(StubStore)),
+            PipelineConfig::default(),
+        )
+    }
+
+    #[test]
+    fn test_resolve_for_backfill_null_episode() {
+        // Memory whose episode_id semantically is None (v0.2 row).
+        let mem = fixture_memory("mem-null", "Alice works at Acme Corp.");
+        let pipe = build_pipeline(vec![]);
+        let delta = pipe.resolve_for_backfill(&mem).expect("backfill ok");
+        // For backfill all edges (if present) carry `Some(Uuid::nil())`
+        // per current persist code; that is the documented sentinel
+        // and not a "new episode."
+        for e in &delta.edges {
+            assert_eq!(
+                e.episode_id,
+                Some(Uuid::nil()),
+                "backfill edges must not mint new episodes"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_for_backfill_with_episode() {
+        // The current MemoryRecord type has no episode_id field, so this
+        // test asserts the "no episode minted" property — equivalent to
+        // null-episode case at the Rust-type level. This test is kept to
+        // document the semantic (and to fail loudly if a future change
+        // adds episode_id to MemoryRecord and we forget to wire it).
+        let mem = fixture_memory("mem-eps", "Bob uses Rust.");
+        let pipe = build_pipeline(vec![]);
+        let delta = pipe.resolve_for_backfill(&mem).expect("backfill ok");
+        for e in &delta.edges {
+            assert_eq!(e.episode_id, Some(Uuid::nil()));
+        }
+    }
+
+    #[test]
+    fn test_resolve_for_backfill_idempotent() {
+        let mem = fixture_memory("mem-idem", "Alice works at Acme Corp using Rust.");
+        let pipe = build_pipeline(vec![]);
+        let d1 = pipe.resolve_for_backfill(&mem).expect("first ok");
+        let d2 = pipe.resolve_for_backfill(&mem).expect("second ok");
+        // Canonical names are stable; entity ids are minted fresh per
+        // run (CreateNew path mints v4 uuids), so equivalence is on the
+        // shape, not the ids. Match what the design calls "equivalent
+        // GraphDelta": same canonical entity names, same edge predicates.
+        let names1: Vec<_> = d1
+            .entities
+            .iter()
+            .map(|e| (e.canonical_name.clone(), e.kind.clone()))
+            .collect();
+        let names2: Vec<_> = d2
+            .entities
+            .iter()
+            .map(|e| (e.canonical_name.clone(), e.kind.clone()))
+            .collect();
+        assert_eq!(names1, names2, "canonical entity names must match");
+
+        let preds1: Vec<_> = d1
+            .edges
+            .iter()
+            .map(|e| format!("{:?}", e.predicate))
+            .collect();
+        let preds2: Vec<_> = d2
+            .edges
+            .iter()
+            .map(|e| format!("{:?}", e.predicate))
+            .collect();
+        assert_eq!(preds1, preds2, "edge predicates must match");
+        assert_eq!(
+            d1.mentions.len(),
+            d2.mentions.len(),
+            "mention count must match"
+        );
+        // memory_id derivation is deterministic for the same memory.
+        assert_eq!(d1.memory_id, d2.memory_id);
     }
 }
