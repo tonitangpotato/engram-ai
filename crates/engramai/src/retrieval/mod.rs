@@ -20,9 +20,13 @@
 //!   currently exists so the crate keeps compiling at every step.
 
 pub mod api;
+pub mod budget;
 pub mod classifier;
 
 pub use api::{
     EntityId, GraphQuery, GraphQueryResponse, MemoryTier, PlanTrace, RetrievalError,
     RetrievalOutcome, ScoredResult, SubScores, TimeWindow,
+};
+pub use budget::{
+    BudgetController, CostCap, CostCaps, CostCounters, Stage, StageBudget,
 };
