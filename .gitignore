@@ -21,6 +21,8 @@ __pycache__/
 .gid/graph.db.before-*
 .gid/graph.db.wrong-*
 .gid/extract-meta.json
+# Autopilot source-file backups (timestamped pre-edit snapshots) — git history is the real backup
+**/*.before-impl-*
 **/.gid/lsp-daemon.pid
 **/.gid/lsp-daemon.sock
 **/.gid/extract-meta.json
