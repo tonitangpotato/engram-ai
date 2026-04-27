@@ -92,8 +92,8 @@ pub mod scorers;
 // ---------------------------------------------------------------------------
 
 pub use harness::{
-    aggregate_release_decision, run_release_gate, BenchDriver, BenchError, Driver, HarnessConfig,
-    Override, Rationale, ReleaseDecision, RunReport,
+    aggregate_release_decision, run_release_gate, BenchDriver, BenchError, CostTier, Driver,
+    HarnessConfig, Override, Rationale, ReleaseDecision, RunReport, Stage,
 };
 pub use harness::gates::{Comparator, GateResult, GateStatus, Priority};
 pub use harness::repro::ReproRecord;
