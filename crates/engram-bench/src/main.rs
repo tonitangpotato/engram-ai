@@ -243,9 +243,11 @@ fn resolve_driver(driver: Driver) -> Option<Box<dyn BenchDriver>> {
             engram_bench::drivers::longmemeval::LongMemEvalDriver,
         )),
         Driver::Cost => Some(Box::new(engram_bench::drivers::cost::CostDriver)),
-        // The remaining three drivers are skeletons — surface clearly.
-        Driver::TestPreservation
-        | Driver::CognitiveRegression
+        Driver::TestPreservation => Some(Box::new(
+            engram_bench::drivers::test_preservation::TestPreservationDriver,
+        )),
+        // The remaining two drivers are skeletons — surface clearly.
+        Driver::CognitiveRegression
         | Driver::MigrationIntegrity => None,
     }
 }

@@ -15,9 +15,14 @@
 //! via `task:bench-impl-driver-cost` (skeleton + GOAL-2.11 placeholder
 //! per the module-level docs in `cost.rs`). `longmemeval` landed via
 //! `task:bench-impl-driver-longmemeval` (delta_pp computed against
-//! immutable v0.2 baseline per §5.1). The other drivers remain todo
-//! per the v03-benchmarks build plan T3 task table.
+//! immutable v0.2 baseline per §5.1). `test_preservation` landed via
+//! `task:bench-impl-driver-test-preservation` — `cargo test` wrapper
+//! around v0.2.2's test sources, with skip-aware migration-tool
+//! detection (returns `blocked_by` when v03-migration is absent).
+//! The remaining `cognitive_regression` and `migration_integrity`
+//! drivers stay todo per the v03-benchmarks build plan T3 task table.
 
 pub mod cost;
 pub mod locomo;
 pub mod longmemeval;
+pub mod test_preservation;
