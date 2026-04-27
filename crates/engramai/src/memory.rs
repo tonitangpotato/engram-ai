@@ -136,6 +136,18 @@ pub struct Memory {
     /// Held as `Arc<dyn JobQueue>` so producers (this struct) and
     /// consumers (the worker pool, Step D) can share one instance.
     job_queue: Option<std::sync::Arc<dyn crate::resolution::JobQueue>>,
+
+    /// Worker pool handle (ISS-037 Step 3). Owned by `Memory` so the
+    /// pool's lifetime is tied to the memory instance — dropping `Memory`
+    /// signals shutdown, and explicit `Memory::shutdown()` performs a
+    /// graceful drain.
+    ///
+    /// Held inside an `Option<Mutex<Option<WorkerPool>>>` (rather than
+    /// just `Option<WorkerPool>`) because shutdown takes the pool by
+    /// value (`WorkerPool::shutdown(self, ...)`) but `Memory::shutdown`
+    /// receives `&mut self` — `Mutex<Option<_>>::lock().take()` lets us
+    /// extract the pool without consuming `Memory`.
+    pipeline_pool: Option<std::sync::Mutex<Option<crate::resolution::worker::WorkerPool>>>,
 }
 
 impl Memory {
@@ -210,6 +222,143 @@ impl Memory {
     #[doc(hidden)]
     pub fn job_queue_ref(&self) -> Option<&std::sync::Arc<dyn crate::resolution::JobQueue>> {
         self.job_queue.as_ref()
+    }
+
+    /// Wire up the v0.3 resolution pipeline end-to-end (ISS-037 Step 3).
+    ///
+    /// Constructs the full pipeline machinery and attaches it to this
+    /// `Memory` instance:
+    ///
+    /// 1. Opens a **second** SQLite [`Connection`] against `db_path`,
+    ///    [`Box::leak`]ed to obtain `&'static mut Connection` so the
+    ///    resulting [`SqliteGraphStore`] can satisfy the `'static`
+    ///    bound that [`crate::resolution::worker::WorkerPool`]'s
+    ///    `Arc<dyn JobProcessor>` requires (ISS-037 Blocker 1). The
+    ///    leak is intentional: the connection's natural lifetime IS the
+    ///    process lifetime, and the worker pool's shutdown drops all
+    ///    references except this leaked one — which is correct.
+    /// 2. Opens a third connection inside [`SqliteMemoryReader`] for
+    ///    the cross-thread memory-row read path (ISS-037 Blocker 2).
+    /// 3. Builds [`ResolutionPipeline`] with the supplied
+    ///    `triple_extractor` (caller-injected so tests can pass mocks
+    ///    and production can pass an LLM-backed impl).
+    /// 4. Constructs a [`BoundedJobQueue`] of `queue_capacity` and
+    ///    installs it via [`Memory::set_job_queue`].
+    /// 5. Starts a [`WorkerPool`] with `worker_count` workers running
+    ///    the pipeline as their [`JobProcessor`].
+    ///
+    /// After this call, every [`Memory::store_raw`] that successfully
+    /// admits a fact also enqueues a `PipelineJob::initial`, and the
+    /// worker pool drains the queue, populating the v0.3 graph.
+    ///
+    /// # Concurrency model
+    ///
+    /// - Foreground writes go through `self.storage.conn` (one
+    ///   connection).
+    /// - Pipeline graph writes go through the leaked connection
+    ///   wrapped in `Arc<Mutex<SqliteGraphStore<'static>>>` (one
+    ///   connection, serialized by the mutex).
+    /// - Pipeline memory reads go through `SqliteMemoryReader`'s own
+    ///   `Mutex<Connection>` (one connection).
+    ///
+    /// All three connections target the same DB file. SQLite WAL mode
+    /// (set up in [`Storage::new`] and re-applied by
+    /// `SqliteMemoryReader::open`) handles cross-connection
+    /// concurrency without explicit coordination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the second/third connection fails to open
+    /// or if [`WorkerPool::start`] fails (typically: invalid config).
+    pub fn with_pipeline_pool(
+        mut self,
+        db_path: impl AsRef<std::path::Path>,
+        triple_extractor: std::sync::Arc<dyn crate::triple_extractor::TripleExtractor>,
+        config: crate::resolution::ResolutionConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        use std::sync::{Arc, Mutex};
+        use crate::graph::store::SqliteGraphStore;
+        use crate::resolution::pipeline::{PipelineConfig, ResolutionPipeline};
+        use crate::resolution::worker::{JobProcessor, WorkerPool};
+        use crate::resolution::{BoundedJobQueue, JobQueue, SqliteMemoryReader};
+
+        let db_path_ref = db_path.as_ref();
+
+        // (1) Leaked connection for the graph store. See doc comment for
+        // the rationale — this is correct semantics, not a leak in the
+        // resource-bug sense.
+        let graph_conn: &'static mut rusqlite::Connection = {
+            let conn = rusqlite::Connection::open(db_path_ref)?;
+            // Match Storage::new pragmas. Critical for WAL coexistence.
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+            )?;
+            Box::leak(Box::new(conn))
+        };
+        let graph_store = SqliteGraphStore::new(graph_conn);
+        let store_arc: Arc<Mutex<SqliteGraphStore<'static>>> = Arc::new(Mutex::new(graph_store));
+
+        // (2) Memory reader (separate connection, internally Mutex-wrapped).
+        let memory_reader: Arc<dyn crate::resolution::pipeline::MemoryReader> =
+            Arc::new(SqliteMemoryReader::open(db_path_ref)?);
+
+        // (3) Build the pipeline. Entity extractor is freshly constructed
+        //     from this Memory's existing config so the pipeline sees
+        //     identical extraction behavior. (EntityExtractor is not
+        //     Clone; reconstruction from config is the canonical path.)
+        let entity_extractor = Arc::new(crate::entities::EntityExtractor::new(
+            &self.config.entity_config,
+        ));
+        let pipeline = ResolutionPipeline::new(
+            memory_reader,
+            entity_extractor,
+            triple_extractor,
+            store_arc,
+            PipelineConfig::default(),
+        );
+        let processor: Arc<dyn JobProcessor> = Arc::new(pipeline);
+
+        // (4) Queue + install on producer side.
+        let queue: Arc<dyn JobQueue> = Arc::new(BoundedJobQueue::new(config.queue_cap));
+        self.set_job_queue(Arc::clone(&queue));
+
+        // (5) Start the worker pool.
+        let pool = WorkerPool::start(&config, queue, processor)?;
+        self.pipeline_pool = Some(std::sync::Mutex::new(Some(pool)));
+
+        Ok(self)
+    }
+
+    /// Gracefully shut down the resolution pipeline pool, if any.
+    ///
+    /// Closes the queue, drains in-flight jobs (bounded by `deadline`),
+    /// joins all worker threads, and returns the final pool stats. Safe
+    /// to call multiple times — subsequent calls return `Ok(None)`.
+    ///
+    /// If the pool was never installed (no [`Memory::with_pipeline_pool`]
+    /// call), returns `Ok(None)`.
+    ///
+    /// # Why this is on `&mut self`
+    ///
+    /// [`WorkerPool::shutdown`] takes `self` by value. The pool is held
+    /// inside `Mutex<Option<WorkerPool>>`, so shutdown is `take()` →
+    /// `pool.shutdown(deadline)`. This lets `Memory::shutdown` consume
+    /// the pool without consuming the `Memory` itself.
+    pub fn shutdown_pipeline(
+        &mut self,
+        deadline: std::time::Duration,
+    ) -> Result<
+        Option<crate::resolution::worker::WorkerPoolStatsSnapshot>,
+        crate::resolution::worker::WorkerPoolError,
+    > {
+        let Some(slot) = self.pipeline_pool.as_ref() else {
+            return Ok(None);
+        };
+        let mut guard = slot.lock().expect("pipeline_pool mutex poisoned");
+        let Some(pool) = guard.take() else {
+            return Ok(None);
+        };
+        pool.shutdown(deadline).map(Some)
     }
 
     /// §6.3 introspection: current `ExtractionStatus` for `memory_id`.
@@ -367,6 +516,7 @@ impl Memory {
             event_sink: default_event_sink_placeholder(),
             counting_sink: None,
             job_queue: None,
+            pipeline_pool: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -434,6 +584,7 @@ impl Memory {
             event_sink: default_event_sink_placeholder(),
             counting_sink: None,
             job_queue: None,
+            pipeline_pool: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -499,6 +650,7 @@ impl Memory {
             event_sink: default_event_sink_placeholder(),
             counting_sink: None,
             job_queue: None,
+            pipeline_pool: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -569,6 +721,7 @@ impl Memory {
             event_sink: default_event_sink_placeholder(),
             counting_sink: None,
             job_queue: None,
+            pipeline_pool: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -5395,6 +5548,25 @@ impl Memory {
         self.synthesis_llm_provider = provider;
     }
 
+}
+
+/// Best-effort graceful shutdown of the resolution pipeline pool when
+/// `Memory` is dropped without an explicit [`Memory::shutdown_pipeline`]
+/// call (ISS-037 Step 4).
+///
+/// Uses a small fixed deadline (1s) — long enough for in-flight jobs to
+/// finish their current commit, short enough not to block process exit.
+/// Production code should prefer explicit `shutdown_pipeline` so failures
+/// surface as `Result` rather than being swallowed in the destructor.
+impl Drop for Memory {
+    fn drop(&mut self) {
+        if self.pipeline_pool.is_some() {
+            // Ignore errors — Drop cannot return them. The explicit
+            // `shutdown_pipeline` API exists for callers that need
+            // structured errors.
+            let _ = self.shutdown_pipeline(std::time::Duration::from_secs(1));
+        }
+    }
 }
 
 /// Compute confidence score (0.0-1.0) for a recall result.
