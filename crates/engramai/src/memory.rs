@@ -4463,12 +4463,7 @@ impl Memory {
                         self.config.contradiction_penalty,
                     );
                     let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
-                    let confidence = compute_query_confidence(
-                        None,   // no embedding in causal recall path
-                        false,  // not an FTS query match
-                        0.0,    // no entity score
-                        age_hours,
-                    );
+                    let confidence = compute_association_confidence(activation, age_hours);
                     (record, activation, confidence)
                 })
                 .filter(|(_, _, conf)| *conf >= min_confidence)
@@ -4613,12 +4608,7 @@ impl Memory {
                             self.config.contradiction_penalty,
                         );
                         let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
-                        let confidence = compute_query_confidence(
-                            None,
-                            false,
-                            0.0,
-                            age_hours,
-                        );
+                        let confidence = compute_association_confidence(activation, age_hours);
                         (activation, confidence)
                     };
                     
@@ -4984,12 +4974,7 @@ impl Memory {
             .take(limit)
             .map(|(record, activation)| {
                 let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
-                let confidence = compute_query_confidence(
-                    None,   // no embedding in associations path
-                    false,  // not an FTS query match
-                    0.0,    // no entity score
-                    age_hours,
-                );
+                let confidence = compute_association_confidence(activation, age_hours);
                 let confidence_label = confidence_label(confidence);
                 
                 RecallResult {
@@ -5628,6 +5613,58 @@ fn compute_query_confidence(
     }
 }
 
+/// Compute confidence for association/causal recall paths.
+///
+/// Unlike `compute_query_confidence`, which scores query-relevance using
+/// embedding similarity, FTS, and entity overlap, this function scores
+/// **association strength** for non-query recall paths (Hebbian links,
+/// causal chains, working-memory associations).
+///
+/// # Model
+///
+/// - **Primary signal:** `activation` — ACT-R retrieval activation encoding
+///   link strength × co-activation × time decay. Already computed upstream
+///   via `retrieval_activation(...)`.
+/// - **Secondary signal:** `age_hours` — recency boost for very fresh memories.
+///
+/// Returns a scalar 0–1 confidence on the same scale as `compute_query_confidence`
+/// so downstream `confidence_label` thresholds continue to work unchanged.
+///
+/// # Example
+///
+/// ```ignore
+/// let activation = retrieval_activation(&record, &context, now, ...);
+/// let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
+/// let confidence = compute_association_confidence(activation, age_hours);
+/// ```
+fn compute_association_confidence(
+    activation: f64,
+    age_hours: f64,
+) -> f64 {
+    // Activation is the primary signal. ACT-R activation can range widely:
+    // - Strong associations: 0.0 to 2.0+
+    // - Weak associations: -1.0 to 0.0
+    // - Very weak/irrelevant: -∞ (filtered upstream)
+    //
+    // Map activation to 0–1 using a sigmoid centered at 0.0 (the ACT-R
+    // retrieval threshold). Steepness=2 gives smooth discrimination without
+    // cliff edges.
+    let activation_confidence = 1.0 / (1.0 + (-2.0 * activation).exp());
+
+    // Recency boost: very recent memories get a small uplift.
+    // ≤24 hours → 1.0 (flat, since ln(≤1) is clamped to 0)
+    // 7 days     → ~0.34
+    // 30 days    → ~0.23
+    // (Same formula as query-confidence recency, for consistency.)
+    let recency = 1.0 / (1.0 + (age_hours / 24.0).ln().max(0.0));
+    let recency_boost = 0.05 * recency.clamp(0.0, 1.0);
+
+    // Combine: activation is weighted 0.95, recency 0.05 (same as query model).
+    let confidence = 0.95 * activation_confidence + recency_boost;
+
+    confidence.clamp(0.0, 1.0)
+}
+
 fn confidence_label(confidence: f64) -> String {
     match confidence {
         c if c >= 0.8 => "high".to_string(),
@@ -5875,6 +5912,66 @@ mod confidence_tests {
         let c_low = compute_query_confidence(Some(0.3), false, 0.0, 100.0);
         let gap = c_high - c_low;
         assert!(gap > 0.3, "sigmoid should create large gap between 0.8 and 0.3 sim: gap={gap}");
+    }
+
+    // ISS-039: Tests for compute_association_confidence
+    #[test]
+    fn test_association_confidence_strong_activation_fresh() {
+        // Strong activation (1.5) + fresh memory (1 hour) → high confidence
+        let c = compute_association_confidence(1.5, 1.0);
+        assert!(c >= 0.8, "strong activation + fresh should yield high confidence, got {c}");
+        assert_eq!(confidence_label(c), "high");
+    }
+
+    #[test]
+    fn test_association_confidence_strong_activation_old() {
+        // Strong activation (1.5) + old memory (30 days = 720 hours) → still high
+        // Activation is primary signal, recency is secondary (only 5% weight)
+        let c = compute_association_confidence(1.5, 720.0);
+        assert!(c >= 0.75, "strong activation + old should still be high confidence, got {c}");
+        assert_eq!(confidence_label(c), "high");
+    }
+
+    #[test]
+    fn test_association_confidence_weak_activation_fresh() {
+        // Weak activation (-0.5) + fresh memory (1 hour) → low confidence
+        let c = compute_association_confidence(-0.5, 1.0);
+        assert!(c < 0.5, "weak activation + fresh should yield low-medium confidence, got {c}");
+    }
+
+    #[test]
+    fn test_association_confidence_weak_activation_old() {
+        // Weak activation (-0.5) + old memory (30 days) → very low confidence
+        let c = compute_association_confidence(-0.5, 720.0);
+        assert!(c < 0.4, "weak activation + old should yield low confidence, got {c}");
+    }
+
+    #[test]
+    fn test_association_confidence_activation_is_primary() {
+        // Verify activation is the primary signal by comparing same age with different activations
+        let c_strong = compute_association_confidence(1.0, 100.0);
+        let c_weak = compute_association_confidence(-1.0, 100.0);
+        let gap = c_strong - c_weak;
+        assert!(gap > 0.5, "activation should dominate confidence: gap={gap}");
+    }
+
+    #[test]
+    fn test_association_confidence_recency_is_secondary() {
+        // Verify recency is secondary by comparing same activation with different ages
+        let c_fresh = compute_association_confidence(0.5, 1.0);
+        let c_old = compute_association_confidence(0.5, 720.0);
+        let gap = c_fresh - c_old;
+        // Gap should be small (recency weight is only 5%)
+        assert!(gap < 0.1, "recency should have small effect: gap={gap}");
+        assert!(c_fresh > c_old, "fresh should be slightly higher than old");
+    }
+
+    #[test]
+    fn test_association_confidence_zero_activation_threshold() {
+        // Activation = 0.0 is the ACT-R retrieval threshold
+        // Should map to ~0.5 confidence (sigmoid midpoint)
+        let c = compute_association_confidence(0.0, 24.0);
+        assert!((c - 0.5).abs() < 0.1, "zero activation should map near 0.5 confidence, got {c}");
     }
 
     #[test]
