@@ -1,12 +1,19 @@
 ---
 id: "ISS-039"
 title: "Associations & Causal Recall Paths Misuse query-confidence Scorer"
-status: open
+status: resolved
 priority: P2
 created: 2026-04-26
+resolved: 2026-04-26
 component: crates/engramai/src/memory.rs
 related: [ISS-032]
 ---
+
+## Resolution (2026-04-26)
+
+Shipped via Option A. New `compute_association_confidence(activation, age_hours)` lives alongside `compute_query_confidence` in memory.rs. All three association/causal call sites (lines 4466, 4611, 4977) switched. `RecallResult` shape unchanged — zero downstream churn.
+
+Verification: 6 new association-confidence tests pass; full lib (1415 tests) + integration suite remain green. Commit: e650dd8.
 
 # ISS-039: Associations & Causal Recall Paths Misuse query-confidence Scorer
 
