@@ -12,5 +12,10 @@
 //! `ErrorTag` encode.
 
 pub mod error;
+pub mod progress;
 
 pub use error::{ErrorTag, ExitCode, MigrationError};
+pub use progress::{
+    EmitterConfig, MigrationLogRow, MigrationPhase, MigrationProgress, ProgressCallback,
+    ProgressEmitter, ProgressEvent,
+};
