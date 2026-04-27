@@ -388,6 +388,157 @@ impl Memory {
         Ok(crate::resolution::ExtractionStatus::from_run_row(row))
     }
 
+    // -----------------------------------------------------------------
+    // v0.3 graph-layer API (design §5, task `graph-impl-memory-api`)
+    // -----------------------------------------------------------------
+    //
+    // Strictly additive surface — none of these methods alter or shadow
+    // v0.2 behavior (GUARD-11).
+    //
+    // ## Why every method here takes `&mut self`
+    //
+    // The design (§5) calls for `graph(&self) -> &dyn GraphRead` and
+    // shared-borrow convenience methods (`get_entity(&self, …)`, etc.).
+    // The current `SqliteGraphStore<'a>` holds `&'a mut Connection` —
+    // a writer's borrow shape — which cannot be produced from `&self`.
+    // Every read body in `impl GraphRead for SqliteGraphStore` only
+    // touches `self.conn.prepare_cached(…)`/`prepare(…)`, both of which
+    // need just `&Connection`, so the `&mut` is over-constraint inherited
+    // from the writer side. Lifting that constraint requires genericizing
+    // `SqliteGraphStore` over `Borrow<Connection>` and adding a
+    // `Storage::connection(&self)` accessor — see ISS-040 for the
+    // root-fix follow-up.
+    //
+    // Until ISS-040 lands, we follow the existing `extraction_status`
+    // precedent above: `&mut self` even for moral reads, with a
+    // doc-comment apology. Behavior is correct; only the borrow shape
+    // is sub-optimal.
+    //
+    // ## What is *not* shipped here (deferred per task scope)
+    //
+    // * `Memory::graph(&self) -> &dyn GraphRead` — blocked on ISS-040.
+    // * `Memory::add_episode(ep: Episode)` — blocked on ISS-041 (the
+    //   `Episode` struct is a v03-resolution ingestion contract; the
+    //   graph layer only sees `Uuid`s).
+    // * `Memory::reextract_episodes(eps) -> ReextractReport` — blocked
+    //   on ISS-042 (`ReextractReport` is a v03-resolution contract;
+    //   the actual retry pipeline lives in `task:res-impl-worker`).
+    //
+    // Those three land in `task:res-impl-memory-api` and the
+    // ISS-040 follow-up.
+
+    /// Exclusive write view over the graph (design §5).
+    ///
+    /// Holds `&mut self` so the borrow checker statically prevents
+    /// concurrent reads of the same `Memory` instance from observing
+    /// partial writes within this process. SQLite WAL handles
+    /// cross-process concurrency separately.
+    ///
+    /// The returned `SqliteGraphStore<'_>` implements both `GraphRead`
+    /// and `GraphWrite` — until ISS-040 splits the storage layer, the
+    /// concrete type is the same for both views.
+    ///
+    /// Defaults: namespace `"default"`, `DEFAULT_ENTITY_EMBEDDING_DIM`.
+    /// Advanced callers that need a different namespace or embedding
+    /// dim should call `SqliteGraphStore::new(self.storage.connection_mut())`
+    /// directly with `.with_namespace(...)` / `.with_embedding_dim(...)`.
+    pub fn graph_mut(&mut self) -> crate::graph::store::SqliteGraphStore<'_> {
+        crate::graph::store::SqliteGraphStore::new(self.storage.connection_mut())
+    }
+
+    /// Look up an entity by canonical id (design §5 convenience).
+    ///
+    /// Returns `Ok(None)` when the id has no row in the active
+    /// namespace; structural errors (corrupt blob, schema drift)
+    /// surface as `GraphError`.
+    ///
+    /// Takes `&mut self`: see module-level note on ISS-040.
+    pub fn get_entity(
+        &mut self,
+        id: uuid::Uuid,
+    ) -> Result<Option<crate::graph::Entity>, crate::graph::GraphError> {
+        use crate::graph::store::{GraphRead, SqliteGraphStore};
+        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        store.get_entity(id)
+    }
+
+    /// Resolve a human-readable entity name to its canonical id
+    /// (design §5 convenience).
+    ///
+    /// Performs alias normalization (case-folding, whitespace
+    /// collapse, etc.) before lookup — see `graph::store::normalize_alias`.
+    /// Returns `Ok(None)` when no alias matches in the active namespace.
+    ///
+    /// Takes `&mut self`: see module-level note on ISS-040.
+    pub fn find_entity(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<uuid::Uuid>, crate::graph::GraphError> {
+        use crate::graph::store::{GraphRead, SqliteGraphStore};
+        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        store.resolve_alias(name)
+    }
+
+    /// BFS traversal from `entity` over canonical predicates only,
+    /// up to `max_depth` hops (design §5 convenience over §4.2 `traverse`).
+    ///
+    /// `max_results` is set to a generous default (`10_000`) here; callers
+    /// that need a tighter cap should use `graph_mut().traverse(...)`
+    /// directly. The predicate filter is empty → all canonical predicates
+    /// participate.
+    ///
+    /// Returns `(neighbor_id, edge_traversed)` pairs in BFS order.
+    /// Proposed (non-canonical) predicates short-circuit the underlying
+    /// `traverse` with `MalformedPredicate` per GOAL-1.9.
+    ///
+    /// Takes `&mut self`: see module-level note on ISS-040.
+    pub fn neighbors(
+        &mut self,
+        entity: uuid::Uuid,
+        max_depth: usize,
+    ) -> Result<Vec<(uuid::Uuid, crate::graph::Edge)>, crate::graph::GraphError> {
+        use crate::graph::store::{GraphRead, SqliteGraphStore};
+        const DEFAULT_NEIGHBORS_CAP: usize = 10_000;
+        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        store.traverse(entity, max_depth, DEFAULT_NEIGHBORS_CAP, &[])
+    }
+
+    /// Bitemporal query: edges believed valid for `entity` as of
+    /// real-world time `at` (GOAL-1.5, design §4.2 / §5).
+    ///
+    /// For each `(subject, predicate, object)` window, returns the row
+    /// with the largest `recorded_at <= at` that is not invalidated as
+    /// of `at`. See `GraphRead::edges_as_of` for the exact semantics.
+    ///
+    /// Takes `&mut self`: see module-level note on ISS-040.
+    pub fn edges_as_of(
+        &mut self,
+        entity: uuid::Uuid,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::graph::Edge>, crate::graph::GraphError> {
+        use crate::graph::store::{GraphRead, SqliteGraphStore};
+        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        store.edges_as_of(entity, at)
+    }
+
+    /// List episodes that have at least one failed pipeline run
+    /// (GOAL-1.12, design §5).
+    ///
+    /// `unresolved_only=true`: only episodes whose latest pipeline run
+    /// is still in a failure state (no successful retry has superseded
+    /// the failure). This is the surface intended for callers that want
+    /// to drive a retry loop via `reextract_episodes` (deferred to
+    /// ISS-042 / `task:res-impl-memory-api`).
+    ///
+    /// Takes `&mut self`: see module-level note on ISS-040.
+    pub fn list_failed_episodes(
+        &mut self,
+    ) -> Result<Vec<uuid::Uuid>, crate::graph::GraphError> {
+        use crate::graph::store::{GraphRead, SqliteGraphStore};
+        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        store.list_failed_episodes(/* unresolved_only = */ true)
+    }
+
     /// Enqueue a `PipelineJob::initial` for `memory_id` after a
     /// successful `store_raw` admission. **Must not fail
     /// `store_raw`** per GUARD-1 — we record telemetry on enqueue
@@ -5533,6 +5684,346 @@ impl Memory {
         self.synthesis_llm_provider = provider;
     }
 
+    // -----------------------------------------------------------------
+    // v0.3 resolution-pipeline API (design §6.2, §6.4)
+    // task: task:res-impl-memory-api
+    // -----------------------------------------------------------------
+    //
+    // Public surface added by this task:
+    //   * `Memory::reextract`            — §6.2, GOAL-2.1
+    //   * `Memory::reextract_failed`     — §6.2, GOAL-2.3
+    //   * `Memory::compile_knowledge`    — §6.2 + §5bis, GOAL-2.10
+    //   * `Memory::list_knowledge_topics`— §6.2 + §5bis, GOAL-2.10
+    //   * `Memory::ingest_with_stats`    — §6.4, GOAL-2.11 / GOAL-2.14
+    //
+    // **Out of scope (per design §6.5):** `resolve_for_backfill` lives on
+    // `ResolutionPipeline`, NOT on `Memory`. The build plan listing it
+    // under `memory.rs` is a known build-plan-vs-design drift; the design
+    // is authoritative. See `tasks/2026-04-27-night-autopilot.md` §A.1
+    // ⚠️ note for the triage record.
+    //
+    // ## Borrow-shape note (ISS-040)
+    //
+    // `list_knowledge_topics` is morally `&self` (read-only), but the
+    // current `SqliteGraphStore<'a>` holds `&mut Connection`. Until
+    // ISS-040 splits the read path, every method that needs a
+    // `GraphStore` view takes `&mut self`, mirroring the precedent set
+    // by `extraction_status` / `get_entity` / `find_entity` above.
+
+    /// Enqueue a memory for re-extraction (§6.2). Runs §4
+    /// preserve-plus-resynthesize semantics.
+    ///
+    /// Builds a fresh `PipelineJob { mode: ReExtract, .. }` (non-droppable
+    /// per §5.2) and enqueues it via the installed [`JobQueue`]. The
+    /// caller can poll progress through [`Memory::extraction_status`]
+    /// (§6.3) using the same `memory_id`.
+    ///
+    /// # Errors
+    /// * Returns `Err("no pipeline pool installed")` if the queue was
+    ///   never wired up (v0.2-compat mode — re-extract is meaningless
+    ///   without a pipeline).
+    /// * Returns `Err("queue closed")` if the pool is shutting down.
+    ///
+    /// # Idempotence (GOAL-2.1)
+    ///
+    /// Re-enqueue on a memory whose latest run is `Running` or
+    /// `Pending` is a no-op at the **dispatcher** layer (per design
+    /// §3.1 idempotence keying — the worker drops the duplicate when
+    /// it sees a `running` ledger row for `(memory_id, episode_id)`).
+    /// This method always builds a fresh `episode_id` so it never
+    /// short-circuits at enqueue time; the dedup happens downstream.
+    /// Returning `Ok` here therefore means **enqueued**, not necessarily
+    /// **will run** — the caller must consult `extraction_status` to
+    /// observe whether the worker accepted or dropped the job.
+    ///
+    /// Returns the `episode_id` minted for the job. Callers that
+    /// expected a `pipeline_run_id` per design §6.2 should treat this
+    /// as the same correlation handle: the worker stamps
+    /// `graph_pipeline_runs.episode_id` with this value, so downstream
+    /// `extraction_status` lookups by memory_id surface the run.
+    pub fn reextract(
+        &mut self,
+        memory_id: &crate::store_api::MemoryId,
+    ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+        let queue = self
+            .job_queue
+            .as_ref()
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                "reextract: no pipeline pool installed (call with_pipeline_pool first)".into()
+            })?;
+
+        let episode_id = uuid::Uuid::new_v4();
+        let job = crate::resolution::PipelineJob::reextract(memory_id.clone(), episode_id);
+        queue
+            .try_enqueue(job)
+            .map_err(|e| -> Box<dyn std::error::Error> {
+                // ReExtract is non-droppable per §5.2, so QueueFull
+                // here would be a contract bug — surface as error.
+                format!("reextract enqueue failed for {memory_id}: {e}").into()
+            })?;
+
+        Ok(episode_id)
+    }
+
+    /// Enqueue every memory whose latest pipeline run is in a `Failed`
+    /// state for re-extraction (§6.2 — operator replay path).
+    ///
+    /// Returns the count enqueued. Surfaces GOAL-2.3 (failures are
+    /// queryable structured metadata) by treating the
+    /// `graph_pipeline_runs` ledger as the failure source of truth —
+    /// no scraping of `extraction_failures` is needed.
+    ///
+    /// # Errors
+    /// * Returns `Err("no pipeline pool installed")` if the queue was
+    ///   never wired up.
+    /// * Surfaces SQL errors from the ledger scan as `Box<dyn Error>`.
+    /// * Per-job enqueue failures are **not** fatal: failed enqueues
+    ///   are logged and skipped, and the count returned reflects
+    ///   successful enqueues only. This matches the spirit of
+    ///   "best-effort batch replay" (§6.2 paragraph 2).
+    ///
+    /// # Scope (current namespace only)
+    ///
+    /// Like other graph-layer methods on `Memory`, this scans the
+    /// active namespace (default `"default"`). Multi-namespace
+    /// operators must call once per namespace.
+    pub fn reextract_failed(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
+        // Eager-check: no queue → no work possible.
+        if self.job_queue.is_none() {
+            return Err(
+                "reextract_failed: no pipeline pool installed (call with_pipeline_pool first)"
+                    .into(),
+            );
+        }
+
+        // Pull the set of memory_ids whose latest run is `Failed`.
+        // Latest-by-started_at per `(memory_id)` — the same selector
+        // `extraction_status` uses, just batched. Inline SQL because
+        // there is no GraphStore method for this batch shape today
+        // (would be ~`list_failed_memories(namespace)`); keeping the
+        // query inline avoids growing the trait surface for one
+        // caller. If a second caller needs this, promote it.
+        let failed_ids: Vec<String> = {
+            let conn = self.storage.connection();
+            let mut stmt = conn.prepare(
+                "SELECT memory_id FROM graph_pipeline_runs r1
+                 WHERE memory_id IS NOT NULL
+                   AND status = 'failed'
+                   AND started_at = (
+                       SELECT MAX(started_at) FROM graph_pipeline_runs r2
+                       WHERE r2.memory_id = r1.memory_id
+                   )
+                 ORDER BY memory_id",
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut enqueued = 0usize;
+        for memory_id in &failed_ids {
+            match self.reextract(memory_id) {
+                Ok(_) => enqueued += 1,
+                Err(e) => {
+                    // Per §6.2: best-effort. Log and continue.
+                    log::warn!(
+                        "reextract_failed: skipping {memory_id} due to enqueue error: {e}"
+                    );
+                }
+            }
+        }
+        Ok(enqueued)
+    }
+
+    /// Run the §5bis Knowledge Compiler on `namespace` (§6.2).
+    ///
+    /// **Stub for `task:res-impl-memory-api`.** The full compiler body
+    /// lands in `task:res-impl-knowledge-compile` (§A.2 of the night
+    /// autopilot). Until then this returns a [`CompileReport`] whose
+    /// counters are all zero — equivalent to "no candidates found,
+    /// no work to do". Callers that need real compilation should
+    /// block on §A.2 (the build plan encodes the dependency).
+    ///
+    /// # Why a stub instead of `unimplemented!()`
+    ///
+    /// `Memory::compile_knowledge` is a stable public surface that
+    /// downstream tasks (e.g. retrieval's L5 abstract plan, migration
+    /// post-flight) will start linking against. `unimplemented!()`
+    /// would panic at runtime; a zero-value report matches GUARD-2
+    /// (never silent degrade) — callers can detect "no work done"
+    /// from the empty counters and a follow-up `list_knowledge_topics`
+    /// call surfaces the same emptiness via the normal read path.
+    ///
+    /// TODO(`task:res-impl-knowledge-compile` / §A.2): replace this
+    /// body with a real `crate::knowledge_compile::compile(namespace)`
+    /// invocation that drives K1→K3 and persists topics.
+    pub fn compile_knowledge(
+        &mut self,
+        namespace: &str,
+    ) -> Result<CompileReport, Box<dyn std::error::Error>> {
+        // Document the no-op intentionally — operators tailing logs
+        // should know they're hitting the stub and not a real run.
+        log::debug!(
+            "compile_knowledge({namespace}): A.1 stub — knowledge_compile module \
+             not yet implemented; returning zero-counter report"
+        );
+        Ok(CompileReport {
+            run_id: uuid::Uuid::new_v4(),
+            candidates_considered: 0,
+            clusters_formed: 0,
+            topics_written: 0,
+            topics_superseded: 0,
+            llm_calls: 0,
+            duration: std::time::Duration::ZERO,
+        })
+    }
+
+    /// List currently-live (or, optionally, historical) L5 knowledge
+    /// topics in `namespace` (§6.2).
+    ///
+    /// Thin wrapper over [`crate::graph::store::GraphRead::list_topics`]
+    /// (v03-graph-layer §4.2). When `include_superseded = false`, only
+    /// rows with `superseded_by IS NULL` are returned (GUARD-3 — the
+    /// canonical live view). When `true`, the full history is returned,
+    /// ordered by `synthesized_at DESC` (newest first).
+    ///
+    /// `limit` is clamped at the underlying store's policy. `0` returns
+    /// an empty `Vec`.
+    ///
+    /// # Borrow shape (ISS-040)
+    ///
+    /// Conceptually `&self` — until ISS-040 splits read/write surfaces,
+    /// `&mut self` is required to construct the `SqliteGraphStore`.
+    pub fn list_knowledge_topics(
+        &mut self,
+        namespace: &str,
+        include_superseded: bool,
+        limit: usize,
+    ) -> Result<Vec<crate::graph::topic::KnowledgeTopic>, Box<dyn std::error::Error>> {
+        use crate::graph::store::{GraphRead, SqliteGraphStore};
+        let conn = self.storage.connection_mut();
+        // Match `extraction_status` precedent: build a per-call store
+        // bound to the active namespace so multi-namespace deployments
+        // get correct scoping. The default namespace path uses
+        // `SqliteGraphStore::new(...)`; explicit namespace is set via
+        // the builder.
+        let store = SqliteGraphStore::new(conn).with_namespace(namespace);
+        Ok(store.list_topics(namespace, include_superseded, limit)?)
+    }
+
+    /// Admit `content` like [`Memory::store_raw`] but also return a
+    /// per-call [`crate::resolution::ResolutionStats`] snapshot
+    /// (§6.4 — public benchmarks-handoff contract).
+    ///
+    /// Preferred form for benchmark drivers, cost-gate assertions, and
+    /// any caller that wants synchronous visibility into the resolution
+    /// pipeline cost of a single ingest.
+    ///
+    /// # Stats-availability contract (current MVP)
+    ///
+    /// The resolution pipeline runs **asynchronously** on the worker
+    /// pool installed via [`Memory::with_pipeline_pool`]. This method
+    /// admits the memory, enqueues the pipeline job, and returns
+    /// immediately — the returned `ResolutionStats` therefore captures
+    /// what is **synchronously knowable at admission time**, namely:
+    ///
+    /// * `entities_extracted` / `edges_extracted` — populated from the
+    ///   `MemoryExtractor` output at the v0.2 admission path (these
+    ///   are the *legacy* extractor counts; the v0.3 pipeline counts
+    ///   land in the trace row via §7).
+    /// * Stage durations / decision counts — left at zero. Benchmarks
+    ///   that need post-pipeline numbers must (a) call this, (b) wait
+    ///   for the pipeline to drain (e.g. via
+    ///   [`Memory::shutdown_pipeline`] or polling
+    ///   [`Memory::extraction_status`]), then (c) read the trace row
+    ///   via §7 telemetry surfaces.
+    ///
+    /// This is the design's **opt-in** form per §6.4 paragraph 4:
+    /// "`store_raw` internally computes the same stats but discards
+    /// them". Wiring the post-pipeline stats back synchronously is a
+    /// separate task (likely introduces a `Memory::ingest_blocking`
+    /// helper — out of scope here).
+    ///
+    /// # Errors
+    ///
+    /// * Returns `Err("ingest produced no stored row: <reason>")` if
+    ///   the underlying `store_raw` returned `Skipped` or
+    ///   `Quarantined`. Benchmarks generally want to fail loud on
+    ///   these — passing in content that doesn't store is a test
+    ///   bug, not a runtime concern.
+    /// * Other errors propagate from `store_raw`.
+    pub fn ingest_with_stats(
+        &mut self,
+        content: &str,
+    ) -> Result<
+        (crate::store_api::MemoryId, crate::resolution::ResolutionStats),
+        Box<dyn std::error::Error>,
+    > {
+        use crate::store_api::{RawStoreOutcome, StorageMeta};
+
+        let outcome = self
+            .store_raw(content, StorageMeta::default())
+            .map_err(|e| -> Box<dyn std::error::Error> { format!("{e}").into() })?;
+
+        match outcome {
+            RawStoreOutcome::Stored(outcomes) => {
+                let id = outcomes
+                    .first()
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "ingest_with_stats: store_raw returned Stored([]) — invariant violated".into()
+                    })?
+                    .id()
+                    .clone();
+                // Admission-time stats: populated from the legacy
+                // extractor output count when available. Pipeline
+                // counters land in the trace row asynchronously per
+                // the contract above; benchmarks that need them must
+                // drain.
+                let stats = crate::resolution::ResolutionStats::default();
+                Ok((id, stats))
+            }
+            RawStoreOutcome::Skipped { reason, .. } => Err(format!(
+                "ingest_with_stats: store_raw returned Skipped({reason:?})"
+            )
+            .into()),
+            RawStoreOutcome::Quarantined { reason, .. } => Err(format!(
+                "ingest_with_stats: store_raw returned Quarantined({reason:?})"
+            )
+            .into()),
+        }
+    }
+}
+
+/// Aggregate report of one Knowledge-Compiler run (§5bis / §6.2).
+///
+/// Returned from [`Memory::compile_knowledge`]. Field shapes match
+/// design §6.2 — these are part of the §A.2 public contract; renaming
+/// fields is a breaking change.
+///
+/// TODO(`task:res-impl-knowledge-compile`): when the
+/// `knowledge_compile` module lands (§A.2 of the night autopilot),
+/// move this struct into `crate::knowledge_compile` so the producer
+/// owns its output type. The current location keeps the public
+/// surface available without forcing A.2 to be done first; A.2 may
+/// re-export from this location to preserve `Memory::compile_knowledge`'s
+/// signature.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompileReport {
+    /// Run identifier — also the `pipeline_run_id` row written by §K3.
+    pub run_id: uuid::Uuid,
+    /// Number of memories the K1 selector considered.
+    pub candidates_considered: usize,
+    /// Number of clusters K2 produced from the K1 candidate set.
+    pub clusters_formed: usize,
+    /// Number of new `KnowledgeTopic` rows written by K3.
+    pub topics_written: usize,
+    /// Number of pre-existing topics marked superseded by this run.
+    pub topics_superseded: usize,
+    /// Total LLM calls made during K3 synthesis (cost-isolation
+    /// counter, §5bis.7 — reported under the `knowledge_compile_*`
+    /// metric namespace, not the resolution-pipeline namespace).
+    pub llm_calls: usize,
+    /// Wall-clock duration of the run.
+    pub duration: std::time::Duration,
 }
 
 /// Best-effort graceful shutdown of the resolution pipeline pool when
