@@ -89,6 +89,7 @@ pub mod context;
 pub mod decision;
 pub mod edge_decision;
 pub mod fusion;
+pub mod memory_reader;
 pub mod pipeline;
 pub mod queue;
 pub mod signals;
@@ -107,6 +108,7 @@ pub use candidate_retrieval::{retrieve_candidates, RetrievalParams, ScoredCandid
 pub use context::{DraftEdge, DraftEntity, PipelineContext, PipelineStage, StageFailure};
 pub use decision::{decide, Decision, DecisionThresholds, ResolutionOutcome};
 pub use fusion::{fuse, FusionResult, Measurement, SignalWeights};
+pub use memory_reader::SqliteMemoryReader;
 pub use queue::{BoundedJobQueue, EnqueueError, JobMode, JobQueue, PipelineJob};
 pub use signals::{
     affective_continuity, cooccurrence, graph_context, identity_hint, name_match, recency,

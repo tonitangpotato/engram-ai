@@ -1035,15 +1035,7 @@ impl Storage {
 
     /// Get a memory by ID.
     pub fn get(&self, id: &str) -> Result<Option<MemoryRecord>, rusqlite::Error> {
-        let access_times = self.get_access_times(id)?;
-        
-        self.conn
-            .query_row(
-                "SELECT * FROM memories WHERE id = ?",
-                params![id],
-                |row| self.row_to_record(row, access_times.clone()),
-            )
-            .optional()
+        fetch_memory_record(&self.conn, id)
     }
 
     /// Get all memories.
@@ -1613,61 +1605,7 @@ impl Storage {
         row: &rusqlite::Row,
         access_times: Vec<DateTime<Utc>>,
     ) -> SqlResult<MemoryRecord> {
-        // Use column names instead of indices to handle DBs with extra columns (e.g. Python's summary/tokens)
-        let memory_type_str: String = row.get("memory_type")?;
-        let layer_str: String = row.get("layer")?;
-        let created_at_f64: f64 = row.get("created_at")?;
-        let last_consolidated_f64: Option<f64> = row.get("last_consolidated")?;
-        let metadata_str: Option<String> = row.get("metadata")?;
-        
-        let memory_type = match memory_type_str.as_str() {
-            "factual" => MemoryType::Factual,
-            "episodic" => MemoryType::Episodic,
-            "relational" => MemoryType::Relational,
-            "emotional" => MemoryType::Emotional,
-            "procedural" => MemoryType::Procedural,
-            "opinion" => MemoryType::Opinion,
-            "causal" => MemoryType::Causal,
-            _ => MemoryType::Factual,
-        };
-        
-        let layer = match layer_str.as_str() {
-            "core" => MemoryLayer::Core,
-            "working" => MemoryLayer::Working,
-            "archive" => MemoryLayer::Archive,
-            _ => MemoryLayer::Working,
-        };
-        
-        let created_at = f64_to_datetime(created_at_f64);
-        
-        let last_consolidated = last_consolidated_f64.map(f64_to_datetime);
-        
-        let contradicts_str: String = row.get("contradicts")?;
-        let contradicted_by_str: String = row.get("contradicted_by")?;
-        let superseded_by_str: String = row.get("superseded_by").unwrap_or_default();
-        
-        let metadata = metadata_str
-            .and_then(|s| serde_json::from_str(&s).ok());
-        
-        Ok(MemoryRecord {
-            id: row.get("id")?,
-            content: row.get("content")?,
-            memory_type,
-            layer,
-            created_at,
-            access_times,
-            working_strength: row.get("working_strength")?,
-            core_strength: row.get("core_strength")?,
-            importance: row.get("importance")?,
-            pinned: row.get::<_, i32>("pinned")? != 0,
-            consolidation_count: row.get("consolidation_count")?,
-            last_consolidated,
-            source: row.get("source")?,
-            contradicts: if contradicts_str.is_empty() { None } else { Some(contradicts_str) },
-            contradicted_by: if contradicted_by_str.is_empty() { None } else { Some(contradicted_by_str) },
-            superseded_by: if superseded_by_str.is_empty() { None } else { Some(superseded_by_str) },
-            metadata,
-        })
+        row_to_record_impl(row, access_times)
     }
     
     /// Get the namespace of a memory by ID.
@@ -4849,6 +4787,121 @@ pub struct BackfillRow {
     pub attempts:        u32,
     pub last_attempt_at: Option<f64>,
     pub last_error:      Option<String>,
+}
+
+// =============================================================================
+// Free functions for cross-thread memory access (used by ResolutionPipeline's
+// SqliteMemoryReader, which holds its own Mutex<Connection> separate from
+// `Storage`'s connection — see ISS-037 Blocker 2).
+// =============================================================================
+
+/// Fetch a `MemoryRecord` by ID using a borrowed connection.
+///
+/// This mirrors `Storage::get` but takes `&Connection` directly so it can be
+/// reused from a `MemoryReader` impl that owns its own connection (typically
+/// wrapped in `Mutex` for `Sync`).
+pub fn fetch_memory_record(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<MemoryRecord>, rusqlite::Error> {
+    let access_times = fetch_access_times(conn, id)?;
+
+    conn.query_row(
+        "SELECT * FROM memories WHERE id = ?",
+        params![id],
+        |row| row_to_record_impl(row, access_times.clone()),
+    )
+    .optional()
+}
+
+/// Fetch all access timestamps for a memory using a borrowed connection.
+fn fetch_access_times(
+    conn: &Connection,
+    id: &str,
+) -> Result<Vec<DateTime<Utc>>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT accessed_at FROM access_log WHERE memory_id = ? ORDER BY accessed_at",
+    )?;
+    let rows = stmt.query_map(params![id], |row| {
+        let ts: f64 = row.get(0)?;
+        Ok(f64_to_datetime(ts))
+    })?;
+    rows.collect()
+}
+
+/// Map a SQL row from `memories` into a `MemoryRecord`.
+///
+/// Connection-independent: takes pre-fetched `access_times` so it can be called
+/// from any context (Storage method, free function, MemoryReader, etc.).
+fn row_to_record_impl(
+    row: &rusqlite::Row,
+    access_times: Vec<DateTime<Utc>>,
+) -> SqlResult<MemoryRecord> {
+    // Use column names instead of indices to handle DBs with extra columns (e.g. Python's summary/tokens)
+    let memory_type_str: String = row.get("memory_type")?;
+    let layer_str: String = row.get("layer")?;
+    let created_at_f64: f64 = row.get("created_at")?;
+    let last_consolidated_f64: Option<f64> = row.get("last_consolidated")?;
+    let metadata_str: Option<String> = row.get("metadata")?;
+
+    let memory_type = match memory_type_str.as_str() {
+        "factual" => MemoryType::Factual,
+        "episodic" => MemoryType::Episodic,
+        "relational" => MemoryType::Relational,
+        "emotional" => MemoryType::Emotional,
+        "procedural" => MemoryType::Procedural,
+        "opinion" => MemoryType::Opinion,
+        "causal" => MemoryType::Causal,
+        _ => MemoryType::Factual,
+    };
+
+    let layer = match layer_str.as_str() {
+        "core" => MemoryLayer::Core,
+        "working" => MemoryLayer::Working,
+        "archive" => MemoryLayer::Archive,
+        _ => MemoryLayer::Working,
+    };
+
+    let created_at = f64_to_datetime(created_at_f64);
+    let last_consolidated = last_consolidated_f64.map(f64_to_datetime);
+
+    let contradicts_str: String = row.get("contradicts")?;
+    let contradicted_by_str: String = row.get("contradicted_by")?;
+    let superseded_by_str: String = row.get("superseded_by").unwrap_or_default();
+
+    let metadata = metadata_str.and_then(|s| serde_json::from_str(&s).ok());
+
+    Ok(MemoryRecord {
+        id: row.get("id")?,
+        content: row.get("content")?,
+        memory_type,
+        layer,
+        created_at,
+        access_times,
+        working_strength: row.get("working_strength")?,
+        core_strength: row.get("core_strength")?,
+        importance: row.get("importance")?,
+        pinned: row.get::<_, i32>("pinned")? != 0,
+        consolidation_count: row.get("consolidation_count")?,
+        last_consolidated,
+        source: row.get("source")?,
+        contradicts: if contradicts_str.is_empty() {
+            None
+        } else {
+            Some(contradicts_str)
+        },
+        contradicted_by: if contradicted_by_str.is_empty() {
+            None
+        } else {
+            Some(contradicted_by_str)
+        },
+        superseded_by: if superseded_by_str.is_empty() {
+            None
+        } else {
+            Some(superseded_by_str)
+        },
+        metadata,
+    })
 }
 
 #[cfg(test)]

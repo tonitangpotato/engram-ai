@@ -69,6 +69,10 @@ impl JobQueue for CountingQueue {
     fn capacity(&self) -> Option<usize> {
         self.inner.capacity()
     }
+
+    fn close(&self) {
+        self.inner.close();
+    }
 }
 
 // -------------------------------------------------------------------
