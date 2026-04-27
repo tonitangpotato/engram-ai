@@ -17,6 +17,7 @@ pub mod checkpoint;
 pub mod error;
 pub mod failure;
 pub mod lock;
+pub mod phase_machine;
 pub mod preflight;
 pub mod progress;
 pub mod schema;
@@ -53,6 +54,7 @@ pub use lock::{
     local_hostname, real_pid_alive, AcquiredLock, LockHolder, MigrationLock, PidAliveCheck,
     LOCK_DDL,
 };
+pub use phase_machine::{PhaseExecutors, PhaseMachine, PhaseMachineConfig, PhaseRunOutcome};
 pub use preflight::{
     check_disk_space, detect_schema_version, required_free_bytes, run_preflight,
     PreflightInputs, PreflightOutcome, SchemaState, DISK_SPACE_MULTIPLIER_DEN,
