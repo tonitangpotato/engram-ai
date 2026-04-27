@@ -114,6 +114,7 @@ pub mod migration_types;
 pub mod models;
 pub mod promotion;
 pub mod query_classifier;
+pub mod retrieval;
 pub mod session_wm;
 pub mod storage;
 pub mod store_api;
