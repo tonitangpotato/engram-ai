@@ -938,13 +938,14 @@ fn validate_failure_closed_sets(stage: &str, category: &str) -> Result<(), Graph
     use crate::graph::audit::{
         CATEGORY_BUDGET_EXHAUSTED, CATEGORY_DB_ERROR, CATEGORY_INTERNAL,
         CATEGORY_LLM_INVALID_OUTPUT, CATEGORY_LLM_TIMEOUT, STAGE_DEDUP, STAGE_EDGE_EXTRACT,
-        STAGE_ENTITY_EXTRACT, STAGE_PERSIST,
+        STAGE_ENTITY_EXTRACT, STAGE_KNOWLEDGE_COMPILE, STAGE_PERSIST,
     };
     const STAGES: &[&str] = &[
         STAGE_ENTITY_EXTRACT,
         STAGE_EDGE_EXTRACT,
         STAGE_DEDUP,
         STAGE_PERSIST,
+        STAGE_KNOWLEDGE_COMPILE,
     ];
     const CATEGORIES: &[&str] = &[
         CATEGORY_LLM_TIMEOUT,

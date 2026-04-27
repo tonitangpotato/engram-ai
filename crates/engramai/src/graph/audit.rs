@@ -21,6 +21,10 @@ pub const STAGE_ENTITY_EXTRACT: &str = "entity_extract";
 pub const STAGE_EDGE_EXTRACT: &str = "edge_extract";
 pub const STAGE_DEDUP: &str = "dedup";
 pub const STAGE_PERSIST: &str = "persist";
+/// L5 Knowledge-Compiler stage label (design §5bis.4 step 2). Per-cluster
+/// failures during summarize/embed/persist are recorded with this stage so
+/// the operator-facing failure ledger groups them under one filter.
+pub const STAGE_KNOWLEDGE_COMPILE: &str = "knowledge_compile";
 
 // Failure categories — closed set.
 pub const CATEGORY_LLM_TIMEOUT: &str = "llm_timeout";
