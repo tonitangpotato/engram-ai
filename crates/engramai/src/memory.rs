@@ -539,6 +539,44 @@ impl Memory {
         store.list_failed_episodes(/* unresolved_only = */ true)
     }
 
+    /// List proposed (non-canonical) predicates with their use-count
+    /// — design §6.6 / **GOAL-3.12** (novel-predicate retrieval) and
+    /// design §4.2 / GOAL-1.10 (schema-evolution review).
+    ///
+    /// Proposed predicates are LLM-authored relations that fall
+    /// outside the canonical predicate vocabulary (see
+    /// [`crate::graph::Predicate::Proposed`]). They are retrievable
+    /// through the same `GraphQuery` surface — this method exposes
+    /// their *catalog* so operators can review what novel relations
+    /// the system has encountered and decide whether to promote any
+    /// to canonical.
+    ///
+    /// `min_usage` filters out one-off / noisy proposals; pass `0`
+    /// to see every proposed predicate. Results are returned in the
+    /// underlying store's order (typically descending usage; see
+    /// `GraphRead::list_proposed_predicates`).
+    ///
+    /// Takes `&mut self`: see module-level note on ISS-040.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Operator-facing review surface — show every proposed
+    /// // predicate seen at least 3 times.
+    /// let proposed = memory.list_proposed_predicates(3)?;
+    /// for stat in &proposed {
+    ///     println!("{:>3}× {}", stat.usage_count, stat.label);
+    /// }
+    /// ```
+    pub fn list_proposed_predicates(
+        &mut self,
+        min_usage: u64,
+    ) -> Result<Vec<crate::graph::store::ProposedPredicateStats>, crate::graph::GraphError> {
+        use crate::graph::store::{GraphRead, SqliteGraphStore};
+        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        store.list_proposed_predicates(min_usage)
+    }
+
     /// Enqueue a `PipelineJob::initial` for `memory_id` after a
     /// successful `store_raw` admission. **Must not fail
     /// `store_raw`** per GUARD-1 — we record telemetry on enqueue

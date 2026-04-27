@@ -23,12 +23,14 @@ pub mod api;
 pub mod budget;
 pub mod classifier;
 pub mod fusion;
+pub mod outcomes;
 pub mod plans;
 
 pub use api::{
-    EntityId, GraphQuery, GraphQueryResponse, MemoryTier, PlanTrace, RetrievalError,
-    RetrievalOutcome, ScoredResult, SubScores, TimeWindow,
+    EntityId, GraphQuery, GraphQueryResponse, MemoryTier, PlanTrace, ScoredResult, SubScores,
+    TimeWindow,
 };
+pub use outcomes::{RetrievalError, RetrievalOutcome};
 pub use budget::{
     BudgetController, CostCap, CostCaps, CostCounters, Stage, StageBudget,
 };

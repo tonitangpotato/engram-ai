@@ -262,61 +262,15 @@ pub struct GraphQueryResponse {
 }
 
 // ---------------------------------------------------------------------------
-// 6.4 — RetrievalOutcome (placeholder — full surface owned by T12)
+// 6.4 — RetrievalOutcome / RetrievalError
 // ---------------------------------------------------------------------------
+//
+// The full surface lives in [`crate::retrieval::outcomes`] (owned by
+// `task:retr-impl-typed-outcomes`, T12). Re-exported here so existing
+// `use crate::retrieval::api::{RetrievalOutcome, RetrievalError}` paths
+// keep compiling without churn — the module split is internal.
 
-/// Typed retrieval outcome — design §6.4 / GOAL-3.10.
-///
-/// **Status:** *placeholder for the public-API task (T11).* The full variant
-/// list (`NoEntityFound`, `EntityFoundNoEdges`, `NoMemoriesInWindow`,
-/// `AmbiguousQuery`, `L5NotReady`, `DowngradedFromAbstract`,
-/// `DowngradedFromEpisodic`, `NoCognitiveState`) is materialized by
-/// `task:retr-impl-typed-outcomes` (T12). Today this enum carries enough
-/// shape for stub method bodies and downstream callers to compile; T12
-/// will *add* variants (and that addition is API-breaking-safe because the
-/// enum is `#[non_exhaustive]`).
-///
-/// A `RetrievalOutcome` *other than* [`Ok`](RetrievalOutcome::Ok) is **not**
-/// an [`Err`]: results may still be present (e.g., associative fallback). An
-/// [`Err(RetrievalError)`](RetrievalError) is reserved for infrastructure
-/// failure (DB error, timeout, config error). See §6.4 for the semantic
-/// contract.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum RetrievalOutcome {
-    /// Results non-empty; the plan executed normally.
-    Ok,
-    /// Placeholder: a "miss" outcome that T12 will refine into the
-    /// concrete variants from §6.4. Callers MUST treat unknown variants
-    /// gracefully (the `#[non_exhaustive]` attribute compels a wildcard
-    /// arm in `match`).
-    Empty,
-}
-
-/// Infrastructure-level failure (design §6.2a).
-///
-/// "Empty result" is **not** here — that goes in the `Ok(_)` path with
-/// [`RetrievalOutcome`].
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum RetrievalError {
-    /// Outer-query timeout (design §7.2). Per-stage cutoffs return partial
-    /// results inside `Ok(_)` and are not modeled as `Err`.
-    #[error("retrieval timed out")]
-    Timeout,
-    /// Backing store (graph or memory) not available.
-    #[error("retrieval store unavailable")]
-    StoreUnavailable,
-    /// Configuration invariant violated (e.g., `FusionWeights` don't sum to 1).
-    #[error("retrieval config error: {0}")]
-    ConfigError(String),
-    /// Classifier (Stage 1 or Stage 2) returned an unrecoverable error.
-    #[error("classifier error: {0}")]
-    ClassifierError(String),
-    /// Catch-all for unexpected internal failures. Implementation tasks
-    /// should narrow these into more specific variants where possible.
-    #[error("retrieval internal error: {0}")]
-    Internal(String),
-}
+pub use crate::retrieval::outcomes::{RetrievalError, RetrievalOutcome};
 
 // ---------------------------------------------------------------------------
 // 6.3 — PlanTrace (placeholder — full surface owned by T14)

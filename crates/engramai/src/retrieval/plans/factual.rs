@@ -260,15 +260,27 @@ pub enum FactualOutcome {
 }
 
 impl FactualOutcome {
-    /// Lift to the public [`crate::retrieval::api::RetrievalOutcome`].
+    /// Lift to the public [`crate::retrieval::api::RetrievalOutcome`]
+    /// (T12 — `task:retr-impl-typed-outcomes`).
     ///
-    /// Until T12 (`task:retr-impl-typed-outcomes`) lands, downgrade /
-    /// cutoff variants collapse onto the placeholder
-    /// [`crate::retrieval::api::RetrievalOutcome::Empty`] when they would
-    /// surface zero results, otherwise [`Ok`]
-    /// (`crate::retrieval::api::RetrievalOutcome::Ok`). This adaptor is
-    /// the *only* place that mapping decision is made; T12 will replace
-    /// the body without touching call sites that rely on the lift.
+    /// Mapping (design §6.4):
+    /// - `Ok` (non-empty results) → `RetrievalOutcome::Ok`
+    /// - `Ok` (empty results, post-projection) → `EntityFoundNoEdges`
+    ///   with the surviving anchors empty (the projection cleared
+    ///   them; caller treats it as "no edges to traverse")
+    /// - `Empty` → `EntityFoundNoEdges { entities: vec![] }` — the
+    ///   plan resolved anchors but the candidate set was projected
+    ///   empty; no anchor list is preserved at this layer (the
+    ///   adaptor takes only the local outcome, not the rich anchors)
+    /// - `DowngradedNoEntity` → `NoEntityFound` (no token resolved)
+    /// - `DowngradedNoEdges` → `EntityFoundNoEdges`
+    /// - `Cutoff` → `Ok` (partial results, never `Err`) when results
+    ///   are present; `EntityFoundNoEdges` when empty (the budget
+    ///   fired before edges could be assembled)
+    ///
+    /// `results_empty` lets the adaptor distinguish "we ran cleanly
+    /// but the answer set is empty" from "we got rows" — both stay
+    /// inside `Ok(_)` per GUARD-6 semantics.
     pub fn to_retrieval_outcome(
         &self,
         results_empty: bool,
@@ -276,9 +288,16 @@ impl FactualOutcome {
         use crate::retrieval::api::RetrievalOutcome;
         match self {
             FactualOutcome::Ok if !results_empty => RetrievalOutcome::Ok,
-            // Every other shape — `Ok` with empty results, downgrade,
-            // cutoff — maps onto Empty for now. T12 will refine.
-            _ => RetrievalOutcome::Empty,
+            FactualOutcome::Ok | FactualOutcome::Empty | FactualOutcome::DowngradedNoEdges => {
+                RetrievalOutcome::EntityFoundNoEdges { entities: vec![] }
+            }
+            FactualOutcome::DowngradedNoEntity { .. } => RetrievalOutcome::NoEntityFound {
+                query_tokens: vec![],
+            },
+            FactualOutcome::Cutoff if !results_empty => RetrievalOutcome::Ok,
+            FactualOutcome::Cutoff => {
+                RetrievalOutcome::EntityFoundNoEdges { entities: vec![] }
+            }
         }
     }
 }
@@ -1088,23 +1107,32 @@ mod tests {
             FactualOutcome::Ok.to_retrieval_outcome(false),
             RetrievalOutcome::Ok
         ));
-        // Ok but empty results → Empty.
+        // Ok but empty results → EntityFoundNoEdges (anchors resolved
+        // but candidates projected away).
         assert!(matches!(
             FactualOutcome::Ok.to_retrieval_outcome(true),
-            RetrievalOutcome::Empty
+            RetrievalOutcome::EntityFoundNoEdges { .. }
         ));
-        // Downgrade variants → Empty regardless of results_empty (the
-        // T12 enum will refine this).
+        // No-entity-resolved → NoEntityFound (T12).
         assert!(matches!(
-            FactualOutcome::DowngradedNoEntity {
-                reason: "x"
-            }
-            .to_retrieval_outcome(false),
-            RetrievalOutcome::Empty
+            FactualOutcome::DowngradedNoEntity { reason: "x" }
+                .to_retrieval_outcome(false),
+            RetrievalOutcome::NoEntityFound { .. }
         ));
+        // No-edges → EntityFoundNoEdges.
+        assert!(matches!(
+            FactualOutcome::DowngradedNoEdges.to_retrieval_outcome(false),
+            RetrievalOutcome::EntityFoundNoEdges { .. }
+        ));
+        // Cutoff with results → Ok (partial result is still success).
         assert!(matches!(
             FactualOutcome::Cutoff.to_retrieval_outcome(false),
-            RetrievalOutcome::Empty
+            RetrievalOutcome::Ok
+        ));
+        // Cutoff with no results → EntityFoundNoEdges.
+        assert!(matches!(
+            FactualOutcome::Cutoff.to_retrieval_outcome(true),
+            RetrievalOutcome::EntityFoundNoEdges { .. }
         ));
     }
 }

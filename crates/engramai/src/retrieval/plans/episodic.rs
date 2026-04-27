@@ -239,18 +239,36 @@ pub enum EpisodicOutcome {
 }
 
 impl EpisodicOutcome {
-    /// Promote to the public [`RetrievalOutcome`] surface.
+    /// Promote to the public [`RetrievalOutcome`] surface (T12 —
+    /// `task:retr-impl-typed-outcomes`).
     ///
-    /// `results_empty` lets us distinguish `Ok(non-empty)` from a window
-    /// that was valid but produced no rows; the latter still maps to
-    /// [`RetrievalOutcome::Empty`] for the caller's convenience.
+    /// Mapping (design §6.4):
+    /// - `Ok` (non-empty) → `Ok`
+    /// - `Ok` (empty) / `Empty` → `NoMemoriesInWindow { None, None }`
+    ///   — the adaptor cannot see the window bounds; the orchestrator
+    ///   may rebuild a richer outcome with the actual `start` / `end`
+    ///   when it has them in scope
+    /// - `DowngradedFromEpisodic` → `DowngradedFromEpisodic { reason }`
+    ///   with the documented reason `"no_time_expression"`
+    /// - `Cutoff` → `DowngradedFromEpisodic { "window_outside_cutoff" }`
+    ///
+    /// `results_empty` distinguishes `Ok(non-empty)` from `Ok(empty)`;
+    /// only the first surfaces as `RetrievalOutcome::Ok`.
     pub fn to_retrieval_outcome(&self, results_empty: bool) -> RetrievalOutcome {
         match self {
             EpisodicOutcome::Ok if !results_empty => RetrievalOutcome::Ok,
-            EpisodicOutcome::Ok
-            | EpisodicOutcome::Empty
-            | EpisodicOutcome::DowngradedFromEpisodic
-            | EpisodicOutcome::Cutoff => RetrievalOutcome::Empty,
+            EpisodicOutcome::Ok | EpisodicOutcome::Empty => {
+                RetrievalOutcome::NoMemoriesInWindow {
+                    start: None,
+                    end: None,
+                }
+            }
+            EpisodicOutcome::DowngradedFromEpisodic => RetrievalOutcome::DowngradedFromEpisodic {
+                reason: "no_time_expression".to_string(),
+            },
+            EpisodicOutcome::Cutoff => RetrievalOutcome::DowngradedFromEpisodic {
+                reason: "window_outside_cutoff".to_string(),
+            },
         }
     }
 }
@@ -593,27 +611,27 @@ mod tests {
 
     #[test]
     fn outcome_lift_to_retrieval_outcome() {
-        // `RetrievalOutcome` does not derive PartialEq today (T12 owns
-        // the full surface), so we pattern-match instead.
+        // `RetrievalOutcome` is `non_exhaustive` and does not derive
+        // PartialEq, so we pattern-match instead.
         assert!(matches!(
             EpisodicOutcome::Ok.to_retrieval_outcome(false),
             RetrievalOutcome::Ok
         ));
         assert!(matches!(
             EpisodicOutcome::Ok.to_retrieval_outcome(true),
-            RetrievalOutcome::Empty
+            RetrievalOutcome::NoMemoriesInWindow { .. }
         ));
         assert!(matches!(
             EpisodicOutcome::Empty.to_retrieval_outcome(true),
-            RetrievalOutcome::Empty
+            RetrievalOutcome::NoMemoriesInWindow { .. }
         ));
         assert!(matches!(
             EpisodicOutcome::DowngradedFromEpisodic.to_retrieval_outcome(true),
-            RetrievalOutcome::Empty
+            RetrievalOutcome::DowngradedFromEpisodic { .. }
         ));
         assert!(matches!(
             EpisodicOutcome::Cutoff.to_retrieval_outcome(true),
-            RetrievalOutcome::Empty
+            RetrievalOutcome::DowngradedFromEpisodic { .. }
         ));
     }
 
