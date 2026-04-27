@@ -10,6 +10,7 @@ repository = "https://github.com/tonitangpotato/engram-ai"
 
 [dependencies]
 engramai = { path = "../engramai" }
+engramai-migrate = { path = "../engramai-migrate" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }

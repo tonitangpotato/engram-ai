@@ -548,6 +548,69 @@ enum Commands {
     /// Knowledge compiler — compile, query, maintain knowledge
     #[command(subcommand)]
     Knowledge(KnowledgeCommand),
+
+    /// Migrate database from v0.2.x to v0.3 (additive schema, idempotent, resumable).
+    ///
+    /// See `.gid/features/v03-migration/design.md` §9.1 for the full flag surface.
+    /// This subcommand is a thin wrapper over the `engramai-migrate` library —
+    /// all orchestration logic lives there.
+    Migrate {
+        /// Path to the SQLite database. Falls back to the top-level --database flag.
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Skip Phase 1 backup (operator must accept the warning).
+        #[arg(long)]
+        no_backup: bool,
+
+        /// Skip the 5-second grace period after the --no-backup banner.
+        #[arg(long, requires = "no_backup")]
+        no_grace: bool,
+
+        /// Acknowledge migration is forward-only (not in-place reversible).
+        #[arg(long)]
+        accept_forward_only: bool,
+
+        /// Resume an interrupted migration from migration_state.
+        #[arg(long)]
+        resume: bool,
+
+        /// Re-process records in graph_extraction_failures.
+        #[arg(long)]
+        retry_failed: bool,
+
+        /// Abort Phase 4 on first per-record failure.
+        #[arg(long)]
+        stop_on_failure: bool,
+
+        /// Run up to and including PHASE (0-5) then stop.
+        #[arg(long, value_name = "PHASE")]
+        gate: Option<u8>,
+
+        /// Print current migration status and exit.
+        #[arg(long)]
+        status: bool,
+
+        /// Plan the migration without executing (see §9.1a depth table).
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Phase 4 dry-run sample size (0 disables sampling).
+        #[arg(long, default_value = "50")]
+        dry_run_sample: u64,
+
+        /// Output format: human (default) or json (§9.4 schema for benchmarks).
+        #[arg(long, default_value = "human")]
+        format: MigrateFormat,
+    },
+}
+
+/// `--format` argument for the `migrate` subcommand. Mapped to
+/// [`engramai_migrate::OutputFormat`] in the dispatch handler.
+#[derive(Clone, Debug, ValueEnum)]
+enum MigrateFormat {
+    Human,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -809,7 +872,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     
     let cli = Cli::parse();
-    
+
+    // Migration short-circuit — runs against a v0.2 DB that the v0.3
+    // Memory cannot open. Handle BEFORE constructing Memory.
+    if let Commands::Migrate {
+        ref db,
+        no_backup,
+        no_grace,
+        accept_forward_only,
+        resume,
+        retry_failed,
+        stop_on_failure,
+        gate,
+        status,
+        dry_run,
+        dry_run_sample,
+        ref format,
+    } = cli.command
+    {
+        return run_migrate_subcommand(
+            db.clone().unwrap_or_else(|| cli.database.clone()),
+            no_backup,
+            no_grace,
+            accept_forward_only,
+            resume,
+            retry_failed,
+            stop_on_failure,
+            gate,
+            status,
+            dry_run,
+            dry_run_sample,
+            format,
+        );
+    }
+
     let db_path = cli.database.to_str().ok_or("invalid database path")?;
     
     // Build embedding config from CLI args
@@ -2489,7 +2585,184 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+
+        Commands::Migrate { .. } => {
+            // Handled in early short-circuit at the top of main(). Reaching
+            // this arm means we forgot to add the early-return for a new
+            // flag; treat as a programming error.
+            unreachable!("Migrate subcommand should have been handled before Memory init");
+        }
     }
     
     Ok(())
+}
+
+/// Dispatch the `engram migrate` subcommand. Thin wrapper that builds a
+/// [`MigrateOptions`] from clap-parsed argv, calls the library entry
+/// points (`engramai_migrate::migrate` / `engramai_migrate::status`), and
+/// renders the report in the requested format.
+///
+/// Mapping from §9.1 exit codes to process exit:
+/// - `Ok(report)` with `report.migration_complete == true` → exit 0
+/// - `Err(MigrationError)` → exit `error.exit_code() as i32`
+/// - dry-run that projected failure → exit `EXIT_DRY_RUN_WOULD_FAIL`
+#[allow(clippy::too_many_arguments)]
+fn run_migrate_subcommand(
+    db_path: PathBuf,
+    no_backup: bool,
+    no_grace: bool,
+    accept_forward_only: bool,
+    resume: bool,
+    retry_failed: bool,
+    stop_on_failure: bool,
+    gate: Option<u8>,
+    status_only: bool,
+    dry_run: bool,
+    dry_run_sample: u64,
+    format: &MigrateFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use engramai_migrate::{migrate, status, MigrateOptions, OutputFormat};
+    use engramai_migrate::progress::MigrationPhase;
+
+    // Translate clap argv into library options.
+    let mut opts = MigrateOptions::new(&db_path);
+    opts.no_backup = no_backup;
+    opts.accept_no_grace = no_grace;
+    opts.accept_forward_only = accept_forward_only;
+    opts.resume = resume;
+    opts.retry_failed = retry_failed;
+    opts.stop_on_failure = stop_on_failure;
+    opts.dry_run = dry_run;
+    opts.dry_run_sample = dry_run_sample;
+    opts.format = match format {
+        MigrateFormat::Human => OutputFormat::Human,
+        MigrateFormat::Json => OutputFormat::Json,
+    };
+    opts.gate = match gate {
+        None => None,
+        Some(0) => Some(MigrationPhase::PreFlight),
+        Some(1) => Some(MigrationPhase::Backup),
+        Some(2) => Some(MigrationPhase::SchemaTransition),
+        Some(3) => Some(MigrationPhase::TopicCarryForward),
+        Some(4) => Some(MigrationPhase::Backfill),
+        Some(5) => Some(MigrationPhase::Verify),
+        Some(other) => {
+            return Err(format!("--gate must be 0..=5, got {other}").into());
+        }
+    };
+
+    // 5-second grace banner for --no-backup unless --no-grace was set.
+    if no_backup && !no_grace && !dry_run {
+        eprintln!(
+            "⚠️  --no-backup was passed. The migration will run WITHOUT a backup file."
+        );
+        eprintln!("    You have 5 seconds to cancel (Ctrl-C). Pass --no-grace to skip.");
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
+    // --status short-circuit: read-only snapshot, never mutates the DB.
+    if status_only {
+        let report = status(&opts)?;
+        render_migration_report(&report, &opts);
+        return Ok(());
+    }
+
+    // Live (or dry-run) execution.
+    let result = migrate(&opts);
+
+    match result {
+        Ok(report) => {
+            render_migration_report(&report, &opts);
+            Ok(())
+        }
+        Err(e) => {
+            // Surface as a structured failure on stderr (human) or stdout
+            // (json — benchmarks parses stdout). Exit code maps via the
+            // error's stable taxonomy.
+            match opts.format {
+                OutputFormat::Json => {
+                    // Best-effort partial report from a fresh status call —
+                    // if even that fails, fall back to a minimal stub.
+                    let mut partial = engramai_migrate::MigrationReport::empty(
+                        &opts.db_path,
+                        &opts.tool_version,
+                        chrono::Utc::now(),
+                    );
+                    partial.errors.push(format!("{e}"));
+                    println!("{}", partial.to_json_pretty()?);
+                }
+                OutputFormat::Human => {
+                    eprintln!("✗ migration failed: {e}");
+                    eprintln!("  exit code: {}", e.exit_code() as u8);
+                    eprintln!("  error tag: {}", e.error_tag().as_str());
+                }
+            }
+            std::process::exit(e.exit_code() as i32);
+        }
+    }
+}
+
+/// Render a [`engramai_migrate::MigrationReport`] in the operator's
+/// requested format. Human format mirrors §9.1's sample text; JSON
+/// emits the §9.4 stable schema.
+fn render_migration_report(
+    report: &engramai_migrate::MigrationReport,
+    opts: &engramai_migrate::MigrateOptions,
+) {
+    use engramai_migrate::OutputFormat;
+    match opts.format {
+        OutputFormat::Json => {
+            // Pretty JSON — benchmarks parses with serde_json which is
+            // whitespace-tolerant. Pretty form is friendlier for ad-hoc
+            // operator inspection too.
+            match report.to_json_pretty() {
+                Ok(s) => println!("{}", s),
+                Err(e) => eprintln!("✗ failed to serialise report: {e}"),
+            }
+        }
+        OutputFormat::Human => {
+            println!("engramai migrate — {}", report.db_path);
+            println!("  schema_version    : {}", report.schema_version);
+            println!("  tool_version      : {}", report.tool_version);
+            println!("  started_at        : {}", report.started_at);
+            if let Some(ref ca) = report.completed_at {
+                println!("  completed_at      : {}", ca);
+            }
+            println!("  duration_secs     : {}", report.duration_secs);
+            println!("  final_phase       : {}", report.final_phase);
+            println!("  migration_complete: {}", report.migration_complete);
+            if let Some(ref bp) = report.backup_path {
+                println!("  backup            : {}", bp);
+            }
+            if !report.phases_completed.is_empty() {
+                println!("  phases_completed  : {}", report.phases_completed.join(", "));
+            }
+            println!("  counts.pre        : memories={} kc_topics={} entities={} edges={} topics={}",
+                report.counts.pre.memories,
+                report.counts.pre.kc_topic_pages,
+                report.counts.pre.entities,
+                report.counts.pre.edges,
+                report.counts.pre.knowledge_topics);
+            println!("  counts.post       : memories={} entities={} edges={} topics={} legacy={} synth={}",
+                report.counts.post.memories,
+                report.counts.post.entities,
+                report.counts.post.edges,
+                report.counts.post.knowledge_topics,
+                report.counts.post.knowledge_topics_legacy,
+                report.counts.post.knowledge_topics_synthesized);
+            if report.backfill.records_total > 0 || report.backfill.records_processed > 0 {
+                println!("  backfill          : {}/{} processed, {} succeeded, {} failed",
+                    report.backfill.records_processed,
+                    report.backfill.records_total,
+                    report.backfill.records_succeeded,
+                    report.backfill.records_failed);
+            }
+            for w in &report.warnings {
+                println!("  ⚠ {}", w);
+            }
+            for e in &report.errors {
+                eprintln!("  ✗ {}", e);
+            }
+        }
+    }
 }

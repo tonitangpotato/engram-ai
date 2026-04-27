@@ -14,6 +14,7 @@
 pub mod backfill;
 pub mod backup;
 pub mod checkpoint;
+pub mod cli;
 pub mod compat;
 pub mod error;
 pub mod failure;
@@ -36,6 +37,10 @@ pub use backup::{
 pub use checkpoint::{
     sha256_hex, CheckpointStore, MigrationStateRow, PhaseDigestRow, CHECKPOINT_DDL,
     NO_RECORDS_PROCESSED,
+};
+pub use cli::{
+    migrate, status, BackfillReport, CountsReport, MigrateOptions, MigrationReport,
+    OutputFormat, PostCounts, PreCounts, TopicCarryForwardReport,
 };
 pub use compat::{
     assert_v02_compat, contract_for, MethodContract, V02CompatSurface, BEHAVIORAL_CONTRACT,
