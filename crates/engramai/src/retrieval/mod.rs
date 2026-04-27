@@ -22,6 +22,7 @@
 pub mod api;
 pub mod budget;
 pub mod classifier;
+pub mod fusion;
 
 pub use api::{
     EntityId, GraphQuery, GraphQueryResponse, MemoryTier, PlanTrace, RetrievalError,
@@ -30,3 +31,4 @@ pub use api::{
 pub use budget::{
     BudgetController, CostCap, CostCaps, CostCounters, Stage, StageBudget,
 };
+pub use fusion::{NullReranker, Reranker};
