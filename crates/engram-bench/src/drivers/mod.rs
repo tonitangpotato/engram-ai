@@ -11,6 +11,8 @@
 //!
 //! ## Status
 //!
-//! **Structural placeholder.** Each sub-module is its own task per the
-//! v03-benchmarks build plan (T3 task table). This `mod.rs` exists so the
-//! crate compiles before the per-driver tasks land.
+//! `locomo` landed via `task:bench-impl-driver-locomo`. The other
+//! drivers remain todo per the v03-benchmarks build plan T3 task
+//! table.
+
+pub mod locomo;
