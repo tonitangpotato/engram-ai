@@ -13,8 +13,11 @@
 //!
 //! `locomo` landed via `task:bench-impl-driver-locomo`. `cost` landed
 //! via `task:bench-impl-driver-cost` (skeleton + GOAL-2.11 placeholder
-//! per the module-level docs in `cost.rs`). The other drivers remain
-//! todo per the v03-benchmarks build plan T3 task table.
+//! per the module-level docs in `cost.rs`). `longmemeval` landed via
+//! `task:bench-impl-driver-longmemeval` (delta_pp computed against
+//! immutable v0.2 baseline per §5.1). The other drivers remain todo
+//! per the v03-benchmarks build plan T3 task table.
 
 pub mod cost;
 pub mod locomo;
+pub mod longmemeval;
