@@ -10,14 +10,16 @@
 //! - [`bitemporal`] — bi-temporal projection helper (cross-cutting).
 //! - [`factual`] — Factual plan (`task:retr-impl-factual-bitemporal`).
 //! - [`episodic`] — Episodic plan (`task:retr-impl-episodic`).
-//! - `associative` (`task:retr-impl-associative`) — pending.
-//! - `abstract_l5` (`task:retr-impl-abstract-l5`) — pending.
+//! - [`associative`] — Associative plan (`task:retr-impl-associative`).
+//! - [`abstract_l5`] — Abstract / L5 plan (`task:retr-impl-abstract-l5`).
 //! - `affective` (`task:retr-impl-affective`) — pending.
 //! - `hybrid` (`task:retr-impl-hybrid`) — pending.
 
 pub mod bitemporal;
 pub mod episodic;
 pub mod factual;
+pub mod associative;
+pub mod abstract_l5;
 
 pub use bitemporal::{project_edges, AsOfMode, ProjectedEdge};
 pub use episodic::{
@@ -27,4 +29,15 @@ pub use episodic::{
 pub use factual::{
     EntityResolver, FactualOutcome, FactualPlan, FactualPlanInputs,
     FactualPlanResult, NullEntityResolver, ResolvedAnchor,
+};
+pub use associative::{
+    AssociativeCandidate, AssociativeOutcome, AssociativePlan,
+    AssociativePlanInputs, AssociativePlanResult, NullSeedRecaller,
+    SeedHit, SeedRecallStatus, SeedRecaller,
+    DEFAULT_K_POOL, DEFAULT_K_SEED,
+};
+pub use abstract_l5::{
+    AbstractCandidate, AbstractOutcome, AbstractPlan, AbstractPlanInputs,
+    AbstractPlanResult, NullTopicSearcher, TopicHit, TopicSearchStatus,
+    TopicSearcher, DEFAULT_K_TOPICS, DEFAULT_L5_MIN_TOPIC_SCORE,
 };
