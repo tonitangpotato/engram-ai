@@ -24,6 +24,7 @@ pub mod budget;
 pub mod classifier;
 pub mod explain;
 pub mod fusion;
+pub mod metrics;
 pub mod outcomes;
 pub mod plans;
 
@@ -40,3 +41,8 @@ pub use budget::{
     BudgetController, CostCap, CostCaps, CostCounters, Stage, StageBudget,
 };
 pub use fusion::{NullReranker, Reranker};
+pub use metrics::{
+    BiTemporalMode, Counter, DowngradeReason, DroppedKind, Gauge, Histogram, MetricLabel,
+    MetricsRegistry, OutcomeLabel, TokenDirection, render_prometheus,
+    DEFAULT_LATENCY_BUCKETS, DEFAULT_LLM_DURATION_BUCKETS,
+};
