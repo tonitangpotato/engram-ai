@@ -11,8 +11,18 @@
 //! the reranker contract stands on its own and integrates with the fusion
 //! output (`Vec<ScoredResult>`) regardless of how that output is produced.
 
+pub mod combiner;
 pub mod reranker;
+pub mod signals;
 
+pub use combiner::{
+    combine, fuse_and_rank, reciprocal_rank_fusion, FusionConfig, FusionWeights,
+    SignalWeightMatrix, RRF_DEFAULT_K,
+};
 pub use reranker::{
     assert_reranker_contract, ContractCheck, NullReranker, Reranker,
+};
+pub use signals::{
+    actr_score, bm25_score, graph_score, recency_score, vector_score,
+    BM25_DEFAULT_SATURATION, GRAPH_DEFAULT_DECAY, RECENCY_DEFAULT_HALF_LIFE,
 };
