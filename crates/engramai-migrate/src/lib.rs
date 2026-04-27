@@ -14,6 +14,7 @@
 pub mod backfill;
 pub mod backup;
 pub mod checkpoint;
+pub mod compat;
 pub mod error;
 pub mod failure;
 pub mod lock;
@@ -35,6 +36,10 @@ pub use backup::{
 pub use checkpoint::{
     sha256_hex, CheckpointStore, MigrationStateRow, PhaseDigestRow, CHECKPOINT_DDL,
     NO_RECORDS_PROCESSED,
+};
+pub use compat::{
+    assert_v02_compat, contract_for, MethodContract, V02CompatSurface, BEHAVIORAL_CONTRACT,
+    V02_FROZEN_METHODS,
 };
 pub use schema::{
     apply_additive_columns, record_schema_version_v3, rename_entities_valence_if_present,
