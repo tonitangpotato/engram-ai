@@ -9,16 +9,21 @@
 //!
 //! - [`bitemporal`] — bi-temporal projection helper (cross-cutting).
 //! - [`factual`] — Factual plan (`task:retr-impl-factual-bitemporal`).
-//! - `episodic` (`task:retr-impl-episodic`) — pending.
+//! - [`episodic`] — Episodic plan (`task:retr-impl-episodic`).
 //! - `associative` (`task:retr-impl-associative`) — pending.
 //! - `abstract_l5` (`task:retr-impl-abstract-l5`) — pending.
 //! - `affective` (`task:retr-impl-affective`) — pending.
 //! - `hybrid` (`task:retr-impl-hybrid`) — pending.
 
 pub mod bitemporal;
+pub mod episodic;
 pub mod factual;
 
 pub use bitemporal::{project_edges, AsOfMode, ProjectedEdge};
+pub use episodic::{
+    EpisodicMemoryStore, EpisodicOutcome, EpisodicPlan, EpisodicPlanInputs,
+    EpisodicPlanResult, KnowledgeCutoff, NullEpisodicStore, ResolvedWindow,
+};
 pub use factual::{
     EntityResolver, FactualOutcome, FactualPlan, FactualPlanInputs,
     FactualPlanResult, NullEntityResolver, ResolvedAnchor,
