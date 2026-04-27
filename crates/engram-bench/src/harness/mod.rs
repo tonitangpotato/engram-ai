@@ -285,12 +285,13 @@ pub fn run_release_gate(
                     record_path: PathBuf::new(),
                     gates: vec![gates::GateResult {
                         goal: format!("driver:{:?}", driver.name()),
-                        metric: f64::NAN,
-                        threshold: f64::NAN,
-                        comparator: gates::Comparator::Eq,
-                        status: gates::GateStatus::Error,
+                        metric_key: format!("driver:{:?}.error", driver.name()),
                         priority: gates::Priority::P0,
-                        message: Some(err.to_string()),
+                        comparator: gates::Comparator::Eq,
+                        threshold: None,
+                        observed: None,
+                        status: gates::GateStatus::Error,
+                        message: err.to_string(),
                     }],
                     summary_json: serde_json::json!({
                         "error": err.to_string(),
@@ -347,9 +348,9 @@ pub fn aggregate_release_decision(
                 GateStatus::Pass => {}
                 GateStatus::Error => errors.push(gate.goal.clone()),
                 GateStatus::Fail => match gate.priority {
-                    Priority::P0 => failed_p0.push(gate.goal.clone()),
-                    Priority::P1 => failed_p1.push(gate.goal.clone()),
-                    Priority::P2 => { /* P2 fails are notes, not blockers */ }
+                    Priority::P0Hard => failed_p0.push(gate.goal.clone()),
+                    Priority::P0Expectation => failed_p1.push(gate.goal.clone()),
+                    Priority::P1Advisory => { /* advisory: notes, not blockers */ }
                 },
             }
         }
@@ -929,12 +930,7 @@ mod release_gate_tests {
         // Failure became an ERROR-status synthetic gate.
         assert_eq!(reports[1].gates.len(), 1);
         assert_eq!(reports[1].gates[0].status, gates::GateStatus::Error);
-        assert!(reports[1]
-            .gates[0]
-            .message
-            .as_ref()
-            .unwrap()
-            .contains("fixture missing"));
+        assert!(reports[1].gates[0].message.contains("fixture missing"));
     }
 }
 
@@ -946,12 +942,13 @@ mod aggregation_tests {
     fn gate(goal: &str, status: GateStatus, priority: Priority) -> GateResult {
         GateResult {
             goal: goal.to_string(),
-            metric: 0.0,
-            threshold: 0.0,
-            comparator: Comparator::Ge,
-            status,
+            metric_key: format!("test.{}", goal),
             priority,
-            message: None,
+            comparator: Comparator::Ge,
+            threshold: Some(0.0),
+            observed: Some(0.0),
+            status,
+            message: String::new(),
         }
     }
 
