@@ -188,6 +188,17 @@ pub enum MigrationError {
     /// Dry-run projected a failure (constraint, schema, sampled-backfill failure).
     #[error("dry-run projected a failure: {0}")]
     DryRunWouldFail(String),
+
+    /// Phase 0 disk-space gate: the target filesystem does not have enough
+    /// free bytes for a safe migration (`free >= 1.1 * db_size`, per §3.1).
+    /// Distinct from [`MigrationError::BackfillFatal`] (which covers
+    /// disk-full *during* Phase 4 writes) — this fires *before* any write,
+    /// so the operator can free space and retry without `--resume`.
+    #[error(
+        "insufficient free disk space for safe migration: \
+         need {needed} bytes (1.1× DB size), have {available} bytes"
+    )]
+    InsufficientDiskSpace { needed: u64, available: u64 },
 }
 
 impl MigrationError {
@@ -217,6 +228,7 @@ impl MigrationError {
                 ExitCode::RollbackOnCompletedMigration
             }
             MigrationError::DryRunWouldFail(_) => ExitCode::DryRunWouldFail,
+            MigrationError::InsufficientDiskSpace { .. } => ExitCode::DiskFull,
         }
     }
 
@@ -242,6 +254,7 @@ impl MigrationError {
                 ErrorTag::RollbackCompletedMigration
             }
             MigrationError::DryRunWouldFail(_) => ErrorTag::DryRunWouldFail,
+            MigrationError::InsufficientDiskSpace { .. } => ErrorTag::DiskFull,
         }
     }
 
@@ -270,6 +283,7 @@ impl MigrationError {
             MigrationError::LockStale { .. } => true,     // Yes (after --force-unlock)
             MigrationError::CheckpointDigestMismatch { .. } => true, // Yes (with flag)
             MigrationError::BatchStuck { .. } => true,    // Yes
+            MigrationError::InsufficientDiskSpace { .. } => true, // Yes (free space + retry)
         }
     }
 }
@@ -310,6 +324,10 @@ mod tests {
             },
             MigrationError::RollbackOnCompletedMigration,
             MigrationError::DryRunWouldFail("constraint X would fail".into()),
+            MigrationError::InsufficientDiskSpace {
+                needed: 1_100_000,
+                available: 500_000,
+            },
         ]
     }
 
@@ -408,9 +426,17 @@ mod tests {
                 ExitCode::DryRunWouldFail,
                 "MIG_DRY_RUN_WOULD_FAIL",
             ),
+            (
+                MigrationError::InsufficientDiskSpace {
+                    needed: 100,
+                    available: 50,
+                },
+                ExitCode::DiskFull,
+                "MIG_DISK_FULL",
+            ),
         ];
 
-        assert_eq!(cases.len(), 15, "all 15 error variants must be covered");
+        assert_eq!(cases.len(), 16, "all 16 error variants must be covered");
         for (err, expected_exit, expected_tag) in cases {
             assert_eq!(
                 err.exit_code(),
@@ -484,6 +510,11 @@ mod tests {
         assert!(MigrationError::BackfillFatal("x".into()).is_resumable());
         assert!(MigrationError::BatchStuck {
             last_id: "z".into()
+        }
+        .is_resumable());
+        assert!(MigrationError::InsufficientDiskSpace {
+            needed: 100,
+            available: 50
         }
         .is_resumable());
     }
