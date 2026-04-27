@@ -381,7 +381,7 @@ impl Memory {
         &mut self,
         memory_id: &str,
     ) -> Result<crate::resolution::ExtractionStatus, Box<dyn std::error::Error>> {
-        use crate::graph::store::{GraphStore, SqliteGraphStore};
+        use crate::graph::store::{GraphRead, SqliteGraphStore};
         let conn = self.storage.connection_mut();
         let store = SqliteGraphStore::new(conn);
         let row = store.latest_pipeline_run_for_memory(memory_id)?;

@@ -215,27 +215,19 @@ pub struct CandidateMatch {
 /// of the list so silently truncating is safe.
 pub const MAX_FIND_EDGES_RESULTS: usize = 64;
 
-/// Persistence and query surface for the v0.3 graph layer.
+/// Pure-read query surface for the v0.3 graph layer (design §5.1).
 ///
-/// Object-safe; callers may hold `&dyn GraphStore` for test injection.
+/// Every method takes `&self`. The implementation MUST NOT mutate any
+/// persistent or in-memory state reachable from `&self`. Multiple readers
+/// may hold `&dyn GraphRead` concurrently against a single writer; this
+/// type-level discipline mirrors the SQLite WAL single-writer/multi-reader
+/// runtime model (design §8).
+///
+/// Object-safe; callers may hold `&dyn GraphRead` for test injection.
 /// The production impl is [`SqliteGraphStore`].
-pub trait GraphStore {
+pub trait GraphRead {
     // ------------------------------------------------------------ Entity
-    fn insert_entity(&mut self, e: &Entity) -> Result<(), GraphError>;
     fn get_entity(&self, id: Uuid) -> Result<Option<Entity>, GraphError>;
-    fn update_entity_cognitive(
-        &mut self,
-        id: Uuid,
-        activation: f64,
-        importance: f64,
-        identity_confidence: f64,
-        agent_affect: Option<Json>,
-    ) -> Result<(), GraphError>;
-    fn touch_entity_last_seen(
-        &mut self,
-        id: Uuid,
-        ts: DateTime<Utc>,
-    ) -> Result<(), GraphError>;
     fn list_entities_by_kind(
         &self,
         kind: &EntityKind,
@@ -243,22 +235,6 @@ pub trait GraphStore {
     ) -> Result<Vec<Entity>, GraphError>;
 
     // ------------------------------------ Candidate retrieval (ISS-033)
-    /// Update the embedding blob for an existing entity (ISS-033).
-    /// Separated from `update_entity_cognitive` because embedding is not a
-    /// cognitive scalar and validation rules differ — length-validated,
-    /// not range-validated.
-    ///
-    /// On dim mismatch returns `GraphError::Invariant("entity embedding
-    /// dim mismatch")`. Passing `None` clears the embedding (used by
-    /// v03-migration during cross-dim rewrites; not a normal operational
-    /// path). Returns `GraphError::EntityNotFound(id)` if the row does not
-    /// exist in the current namespace.
-    fn update_entity_embedding(
-        &mut self,
-        id: Uuid,
-        embedding: Option<&[f32]>,
-    ) -> Result<(), GraphError>;
-
     /// Raw multi-signal candidate lookup for v03-resolution §3.4.1.
     ///
     /// **Contract.** Returns *unranked* raw signals — the caller (fusion
@@ -294,23 +270,9 @@ pub trait GraphStore {
     ) -> Result<Vec<CandidateMatch>, GraphError>;
 
     // -------------------------------------------------- Alias / identity
-    fn upsert_alias(
-        &mut self,
-        normalized: &str,
-        alias_raw: &str,
-        canonical_id: Uuid,
-        source_episode: Option<Uuid>,
-    ) -> Result<(), GraphError>;
     fn resolve_alias(&self, normalized: &str) -> Result<Option<Uuid>, GraphError>;
-    fn merge_entities(
-        &mut self,
-        winner: Uuid,
-        loser: Uuid,
-        batch_size: usize,
-    ) -> Result<MergeReport, GraphError>;
 
     // -------------------------------------------------------------- Edge
-    fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
     fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError>;
     /// Edge lookup with two query modes (ISS-034 + ISS-035, design §4.2):
     ///
@@ -341,27 +303,6 @@ pub trait GraphStore {
         object: Option<&EdgeEnd>,
         valid_only: bool,
     ) -> Result<Vec<Edge>, GraphError>;
-    /// Mark `prior_id` as invalidated by `successor_id` at `now` (ISS-034,
-    /// design §4.2). Sets `prior.invalidated_at = now` and
-    /// `prior.invalidated_by = Some(successor_id)`. GUARD-3 primitive: never
-    /// deletes, never touches any other column. Idempotent when called
-    /// twice with the same `successor_id`; returns `Invariant` if the
-    /// prior is already closed by a *different* successor.
-    fn invalidate_edge(
-        &mut self,
-        prior_id: Uuid,
-        successor_id: Uuid,
-        now: DateTime<Utc>,
-    ) -> Result<(), GraphError>;
-    /// Invalidate `old` pointing at `successor`; mark `successor.supersedes
-    /// = old`. Atomic; rolls back on any invariant break. Convenience
-    /// wrapper composing `insert_edge` + `invalidate_edge` (design §4.2).
-    fn supersede_edge(
-        &mut self,
-        old: Uuid,
-        successor: &Edge,
-        at: DateTime<Utc>,
-    ) -> Result<(), GraphError>;
     fn edges_of(
         &self,
         subject: Uuid,
@@ -391,12 +332,6 @@ pub trait GraphStore {
     fn mentions_of_entity(&self, entity: Uuid) -> Result<EntityMentions, GraphError>;
 
     // ---------------------------------------- Memory ↔ Entity provenance
-    fn link_memory_to_entities(
-        &mut self,
-        memory_id: &str,
-        entity_ids: &[(Uuid, f64, Option<String>)],
-        at: DateTime<Utc>,
-    ) -> Result<(), GraphError>;
     fn entities_linked_to_memory(
         &self,
         memory_id: &str,
@@ -412,7 +347,6 @@ pub trait GraphStore {
     ) -> Result<Vec<Edge>, GraphError>;
 
     // ------------------------------------------------- L5 Knowledge Topics
-    fn upsert_topic(&mut self, t: &KnowledgeTopic) -> Result<(), GraphError>;
     fn get_topic(&self, id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError>;
     fn list_topics(
         &self,
@@ -420,6 +354,124 @@ pub trait GraphStore {
         include_superseded: bool,
         limit: usize,
     ) -> Result<Vec<KnowledgeTopic>, GraphError>;
+
+    // ---------------------------------------------- Pipeline-run ledger
+    /// §6.3: latest pipeline run for `memory_id` (any kind, by `started_at`
+    /// DESC). Returns `None` if no run has ever been recorded for that
+    /// memory. The row is the projection consumed by `extraction_status`.
+    fn latest_pipeline_run_for_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<PipelineRunRow>, GraphError>;
+
+    // -------------------------------------- Schema registry (GOAL-1.10)
+    fn list_proposed_predicates(
+        &self,
+        min_usage: u64,
+    ) -> Result<Vec<ProposedPredicateStats>, GraphError>;
+
+    // ----------------------------------- Visible failures (GOAL-1.12)
+    fn list_failed_episodes(
+        &self,
+        unresolved_only: bool,
+    ) -> Result<Vec<Uuid>, GraphError>;
+
+    // -------------------------------------- Namespaces (§4.1 lifecycle)
+    fn list_namespaces(&self) -> Result<Vec<String>, GraphError>;
+}
+
+/// Mutating write surface for the v0.3 graph layer (design §5.1).
+///
+/// Every method takes `&mut self`. Requires [`GraphRead`] as a super-trait
+/// so a `&mut dyn GraphWrite` can be down-borrowed to `&dyn GraphRead` for
+/// read-after-write inside a single transaction.
+///
+/// Object-safe; the production impl is [`SqliteGraphStore`]. The
+/// borrow-checker discipline modeling SQLite WAL's single-writer/
+/// multi-reader runtime guarantee is documented in design §8.
+pub trait GraphWrite: GraphRead {
+    // ------------------------------------------------------------ Entity
+    fn insert_entity(&mut self, e: &Entity) -> Result<(), GraphError>;
+    fn update_entity_cognitive(
+        &mut self,
+        id: Uuid,
+        activation: f64,
+        importance: f64,
+        identity_confidence: f64,
+        agent_affect: Option<Json>,
+    ) -> Result<(), GraphError>;
+    fn touch_entity_last_seen(
+        &mut self,
+        id: Uuid,
+        ts: DateTime<Utc>,
+    ) -> Result<(), GraphError>;
+
+    // ------------------------------------ Candidate retrieval (ISS-033)
+    /// Update the embedding blob for an existing entity (ISS-033).
+    /// Separated from `update_entity_cognitive` because embedding is not a
+    /// cognitive scalar and validation rules differ — length-validated,
+    /// not range-validated.
+    ///
+    /// On dim mismatch returns `GraphError::Invariant("entity embedding
+    /// dim mismatch")`. Passing `None` clears the embedding (used by
+    /// v03-migration during cross-dim rewrites; not a normal operational
+    /// path). Returns `GraphError::EntityNotFound(id)` if the row does not
+    /// exist in the current namespace.
+    fn update_entity_embedding(
+        &mut self,
+        id: Uuid,
+        embedding: Option<&[f32]>,
+    ) -> Result<(), GraphError>;
+
+    // -------------------------------------------------- Alias / identity
+    fn upsert_alias(
+        &mut self,
+        normalized: &str,
+        alias_raw: &str,
+        canonical_id: Uuid,
+        source_episode: Option<Uuid>,
+    ) -> Result<(), GraphError>;
+    fn merge_entities(
+        &mut self,
+        winner: Uuid,
+        loser: Uuid,
+        batch_size: usize,
+    ) -> Result<MergeReport, GraphError>;
+
+    // -------------------------------------------------------------- Edge
+    fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
+    /// Mark `prior_id` as invalidated by `successor_id` at `now` (ISS-034,
+    /// design §4.2). Sets `prior.invalidated_at = now` and
+    /// `prior.invalidated_by = Some(successor_id)`. GUARD-3 primitive: never
+    /// deletes, never touches any other column. Idempotent when called
+    /// twice with the same `successor_id`; returns `Invariant` if the
+    /// prior is already closed by a *different* successor.
+    fn invalidate_edge(
+        &mut self,
+        prior_id: Uuid,
+        successor_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<(), GraphError>;
+    /// Invalidate `old` pointing at `successor`; mark `successor.supersedes
+    /// = old`. Atomic; rolls back on any invariant break. Convenience
+    /// wrapper composing `insert_edge` + `invalidate_edge` (design §4.2).
+    fn supersede_edge(
+        &mut self,
+        old: Uuid,
+        successor: &Edge,
+        at: DateTime<Utc>,
+    ) -> Result<(), GraphError>;
+
+    // ---------------------------------------- Memory ↔ Entity provenance
+    fn link_memory_to_entities(
+        &mut self,
+        memory_id: &str,
+        entity_ids: &[(Uuid, f64, Option<String>)],
+        at: DateTime<Utc>,
+    ) -> Result<(), GraphError>;
+
+    // ------------------------------------------------- L5 Knowledge Topics
+    fn upsert_topic(&mut self, t: &KnowledgeTopic) -> Result<(), GraphError>;
     fn supersede_topic(
         &mut self,
         old: Uuid,
@@ -452,13 +504,6 @@ pub trait GraphStore {
         output_summary: Option<Json>,
         error_detail: Option<&str>,
     ) -> Result<(), GraphError>;
-    /// §6.3: latest pipeline run for `memory_id` (any kind, by `started_at`
-    /// DESC). Returns `None` if no run has ever been recorded for that
-    /// memory. The row is the projection consumed by `extraction_status`.
-    fn latest_pipeline_run_for_memory(
-        &self,
-        memory_id: &str,
-    ) -> Result<Option<PipelineRunRow>, GraphError>;
     fn record_resolution_trace(
         &mut self,
         t: &ResolutionTrace,
@@ -471,28 +516,17 @@ pub trait GraphStore {
         raw: &str,
         at: DateTime<Utc>,
     ) -> Result<(), GraphError>;
-    fn list_proposed_predicates(
-        &self,
-        min_usage: u64,
-    ) -> Result<Vec<ProposedPredicateStats>, GraphError>;
 
     // ----------------------------------- Visible failures (GOAL-1.12)
     fn record_extraction_failure(
         &mut self,
         f: &ExtractionFailure,
     ) -> Result<(), GraphError>;
-    fn list_failed_episodes(
-        &self,
-        unresolved_only: bool,
-    ) -> Result<Vec<Uuid>, GraphError>;
     fn mark_failure_resolved(
         &mut self,
         failure_id: Uuid,
         at: DateTime<Utc>,
     ) -> Result<(), GraphError>;
-
-    // -------------------------------------- Namespaces (§4.1 lifecycle)
-    fn list_namespaces(&self) -> Result<Vec<String>, GraphError>;
 
     // ------------------------------------------- Transaction escape hatch
     /// **Warning:** raw `&Transaction` access; bypasses GUARDs. See §4.2.
@@ -518,6 +552,15 @@ pub trait GraphStore {
         delta: &GraphDelta,
     ) -> Result<ApplyReport, GraphError>;
 }
+
+/// Combined read+write surface — historical name preserved for back-compat
+/// (design §5.1 / GUARD-11). New code SHOULD use [`GraphRead`] or
+/// [`GraphWrite`] explicitly to express its borrow intent. Any type that
+/// implements [`GraphWrite`] (and therefore [`GraphRead`] via the
+/// super-trait bound) automatically implements `GraphStore` via the
+/// blanket impl below — no manual impls needed.
+pub trait GraphStore: GraphWrite {}
+impl<T: GraphWrite + ?Sized> GraphStore for T {}
 
 // ---------------------------------------------------------------------------
 // SqliteGraphStore — production impl
@@ -1127,72 +1170,7 @@ fn decode_edge_row(c: EdgeRowColumns) -> Result<Edge, GraphError> {
 // Phase 2 (CRUD) and Phase 3 (transactional / multi-table).
 // ---------------------------------------------------------------------------
 
-impl<'a> GraphStore for SqliteGraphStore<'a> {
-    // -------------------------------------------------- Entity (Phase 2)
-    fn insert_entity(&mut self, e: &Entity) -> Result<(), GraphError> {
-        // Reserved-key gate (§3.1) — refuse to write `attributes` containing
-        // promoted-to-typed-field keys. Loud failure beats silent shadowing.
-        validate_attributes(&e.attributes)?;
-
-        let kind_text = kind_to_text(&e.kind)?;
-        let attributes_json = serde_json::to_string(&e.attributes)?;
-        let history_json = serde_json::to_string(&e.history)?;
-        let agent_affect_json = match &e.agent_affect {
-            Some(v) => Some(serde_json::to_string(v)?),
-            None => None,
-        };
-        let fp_blob: Option<Vec<u8>> = e
-            .somatic_fingerprint
-            .as_ref()
-            .map(|fp| fp.to_le_bytes().to_vec());
-        let merged_into_blob: Option<Vec<u8>> =
-            e.merged_into.map(|u| u.as_bytes().to_vec());
-        // ISS-033: validate + encode embedding before INSERT. Dim mismatch is
-        // a hard error; see `entity_embedding_to_blob` for the contract.
-        let embedding_blob: Option<Vec<u8>> =
-            entity_embedding_to_blob(e.embedding.as_deref(), self.embedding_dim)?;
-
-        // Single-statement INSERT runs in SQLite autocommit; FK + CHECK
-        // failures bubble up as `GraphError::Sqlite`.
-        self.conn.execute(
-            "INSERT INTO graph_entities (
-                id, canonical_name, kind, summary, attributes,
-                first_seen, last_seen, created_at, updated_at,
-                activation, agent_affect, arousal, importance,
-                identity_confidence, somatic_fingerprint, namespace,
-                history, merged_into, embedding
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5,
-                ?6, ?7, ?8, ?9,
-                ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16,
-                ?17, ?18, ?19
-            )",
-            rusqlite::params![
-                e.id.as_bytes().to_vec(),
-                e.canonical_name,
-                kind_text,
-                e.summary,
-                attributes_json,
-                dt_to_unix(e.first_seen),
-                dt_to_unix(e.last_seen),
-                dt_to_unix(e.created_at),
-                dt_to_unix(e.updated_at),
-                e.activation,
-                agent_affect_json,
-                e.arousal,
-                e.importance,
-                e.identity_confidence,
-                fp_blob,
-                self.namespace,
-                history_json,
-                merged_into_blob,
-                embedding_blob,
-            ],
-        )?;
-        Ok(())
-    }
-
+impl<'a> GraphRead for SqliteGraphStore<'a> {
     fn get_entity(&self, id: Uuid) -> Result<Option<Entity>, GraphError> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, canonical_name, kind, summary, attributes,
@@ -1300,85 +1278,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         }))
     }
 
-    fn update_entity_cognitive(
-        &mut self,
-        id: Uuid,
-        activation: f64,
-        importance: f64,
-        identity_confidence: f64,
-        agent_affect: Option<Json>,
-    ) -> Result<(), GraphError> {
-        // Bounds: schema CHECK enforces [0,1] but we surface the error as
-        // `Invariant` rather than a raw rusqlite CHECK failure for caller
-        // ergonomics (and because NaN slips past CHECK on some SQLite builds).
-        for (name, v) in [
-            ("activation", activation),
-            ("importance", importance),
-            ("identity_confidence", identity_confidence),
-        ] {
-            if !v.is_finite() || !(0.0..=1.0).contains(&v) {
-                let _ = name; // name kept for future log-on-failure hook
-                return Err(GraphError::Invariant(
-                    "cognitive scalar out of [0.0, 1.0]",
-                ));
-            }
-        }
-        let agent_affect_json = match agent_affect {
-            Some(v) => Some(serde_json::to_string(&v)?),
-            None => None,
-        };
-        let now = dt_to_unix(Utc::now());
-        let rows = self.conn.execute(
-            "UPDATE graph_entities
-             SET activation = ?1,
-                 importance = ?2,
-                 identity_confidence = ?3,
-                 agent_affect = ?4,
-                 updated_at = ?5
-             WHERE id = ?6 AND namespace = ?7",
-            rusqlite::params![
-                activation,
-                importance,
-                identity_confidence,
-                agent_affect_json,
-                now,
-                id.as_bytes().to_vec(),
-                self.namespace,
-            ],
-        )?;
-        if rows == 0 {
-            return Err(GraphError::EntityNotFound(id));
-        }
-        Ok(())
-    }
-
-    fn touch_entity_last_seen(
-        &mut self,
-        id: Uuid,
-        ts: DateTime<Utc>,
-    ) -> Result<(), GraphError> {
-        // Monotonic last_seen: never roll backwards. The CHECK
-        // (first_seen <= last_seen) at the schema layer would also reject
-        // a write that violates the row invariant, but we want a clear
-        // EntityNotFound vs. a no-op-because-stale-ts distinction.
-        let new_ts = dt_to_unix(ts);
-        let rows = self.conn.execute(
-            "UPDATE graph_entities
-             SET last_seen = MAX(last_seen, ?1),
-                 updated_at = ?1
-             WHERE id = ?2 AND namespace = ?3",
-            rusqlite::params![
-                new_ts,
-                id.as_bytes().to_vec(),
-                self.namespace,
-            ],
-        )?;
-        if rows == 0 {
-            return Err(GraphError::EntityNotFound(id));
-        }
-        Ok(())
-    }
-
     fn list_entities_by_kind(
         &self,
         kind: &EntityKind,
@@ -1416,40 +1315,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
             }
         }
         Ok(out)
-    }
-
-    // ---------------------------------- Candidate retrieval (ISS-033)
-
-    fn update_entity_embedding(
-        &mut self,
-        id: Uuid,
-        embedding: Option<&[f32]>,
-    ) -> Result<(), GraphError> {
-        // Validate + encode through the same codec as `insert_entity` so the
-        // dim mismatch error message ("entity embedding dim mismatch") is
-        // identical regardless of code path. `None` clears the column,
-        // which is a legitimate path used by v03-migration cross-dim
-        // rewrites — not an operational anti-pattern.
-        let blob: Option<Vec<u8>> =
-            entity_embedding_to_blob(embedding, self.embedding_dim)?;
-        let now = dt_to_unix(Utc::now());
-
-        let rows = self.conn.execute(
-            "UPDATE graph_entities
-             SET embedding = ?1,
-                 updated_at = ?2
-             WHERE id = ?3 AND namespace = ?4",
-            rusqlite::params![
-                blob,
-                now,
-                id.as_bytes().to_vec(),
-                self.namespace,
-            ],
-        )?;
-        if rows == 0 {
-            return Err(GraphError::EntityNotFound(id));
-        }
-        Ok(())
     }
 
     fn search_candidates(
@@ -1792,64 +1657,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         }
         Ok(scored)
     }
-    //
-    // Phase 2 originally deferred these to a later slice; ISS-033 needs the
-    // alias-exact lookup wired into `search_candidates`, so the stubs are
-    // replaced with real impls here. Same write/read normalization
-    // contract as v03-resolution: alias rows are keyed on
-    // `entity::normalize_alias` output (lowercase + trim + NFKC), and
-    // resolve_alias normalizes its argument identically. Asymmetric
-    // normalization between writer and reader silently breaks the lookup,
-    // so the entry points BOTH go through `normalize_alias`.
-    //
-    // The schema's PRIMARY KEY is (namespace, normalized, canonical_id):
-    // - Same alias text (after normalization) pointing at the same canonical
-    //   entity in the same namespace deduplicates on conflict (the alias
-    //   surface form may have varied — we keep the most recent raw form via
-    //   `ON CONFLICT DO UPDATE`).
-    // - Same normalized form pointing at *different* canonical entities is
-    //   permitted and represents an ambiguous alias — `resolve_alias` returns
-    //   the first such row deterministically (lowest canonical_id), and
-    //   v03-resolution treats this as a "needs disambiguation" signal.
-    fn upsert_alias(
-        &mut self,
-        normalized: &str,
-        alias_raw: &str,
-        canonical_id: Uuid,
-        source_episode: Option<Uuid>,
-    ) -> Result<(), GraphError> {
-        // Idempotent re-normalization: even if the caller already
-        // normalized, doing it again is cheap and protects against caller
-        // bugs (the index lookup is the single source of truth here).
-        let norm = normalize_alias(normalized);
-        let now = dt_to_unix(Utc::now());
-        let canonical_blob = canonical_id.as_bytes().to_vec();
-        let source_blob: Option<Vec<u8>> =
-            source_episode.map(|u| u.as_bytes().to_vec());
-
-        // ON CONFLICT: the row already exists for this (namespace,
-        // normalized, canonical_id) triple. Refresh `alias` (raw form may
-        // have varied across mentions) and leave `first_seen` /
-        // `source_episode` alone (audit fields — first observation wins).
-        self.conn.execute(
-            "INSERT INTO graph_entity_aliases (
-                normalized, canonical_id, alias,
-                former_canonical_id, first_seen, source_episode, namespace
-            ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)
-            ON CONFLICT(namespace, normalized, canonical_id) DO UPDATE SET
-                alias = excluded.alias",
-            rusqlite::params![
-                norm,
-                canonical_blob,
-                alias_raw,
-                now,
-                source_blob,
-                self.namespace,
-            ],
-        )?;
-        Ok(())
-    }
-
     fn resolve_alias(
         &self,
         normalized: &str,
@@ -1873,395 +1680,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         Ok(Some(id))
     }
 
-    fn merge_entities(
-        &mut self,
-        winner: Uuid,
-        loser: Uuid,
-        batch_size: usize,
-    ) -> Result<MergeReport, GraphError> {
-        // Design §3.4 (Merge semantics) + §4.2 (resumable batched merges).
-        //
-        // Sequence:
-        //   1. Validate inputs — both entities exist, same namespace,
-        //      neither is its own self, loser is not already redirected
-        //      somewhere else, winner is not redirected to loser, etc.
-        //   2. **First batch tx** (only if not already begun): set
-        //      `loser.merged_into = winner.id` + repoint loser's aliases'
-        //      `canonical_id` to winner (preserve `former_canonical_id`).
-        //      This is the redirect signal — once committed, readers
-        //      doing entity-level lookups on the loser id transparently
-        //      follow `merged_into` (see `get_entity`).
-        //   3. **Edge-fanout batches**: iterate, each iteration picks up
-        //      to `batch_size` live edges where loser is subject OR
-        //      object, and for each: insert a successor edge with the
-        //      loser slot replaced by winner; mark prior invalidated_by
-        //      = successor.id. Each batch is its own transaction;
-        //      between batches a reader may observe a partially-merged
-        //      state (§8 "Reader semantics during merge").
-        //   4. Stop when no live loser edges remain. Idempotent:
-        //      re-calling is safe; if `loser.merged_into` is already set
-        //      to winner, we skip step 2; if no live edges, loop exits
-        //      immediately.
-        //
-        // Resumability: callers retry on transient failure (e.g.
-        // SQLITE_BUSY); each batch either commits cleanly or rolls back
-        // entirely, and the next call replays from current state.
-        if winner == loser {
-            return Err(GraphError::Invariant(
-                "merge_entities: winner and loser must differ",
-            ));
-        }
-        if batch_size == 0 {
-            return Err(GraphError::Invariant(
-                "merge_entities: batch_size must be > 0",
-            ));
-        }
-
-        let winner_blob = winner.as_bytes().to_vec();
-        let loser_blob = loser.as_bytes().to_vec();
-
-        // ---- 1. Validation ----------------------------------------------
-        // Both entities must exist in this namespace.
-        let winner_present: Option<Option<Vec<u8>>> = self
-            .conn
-            .query_row(
-                "SELECT merged_into FROM graph_entities WHERE id = ?1 AND namespace = ?2",
-                rusqlite::params![winner_blob, self.namespace],
-                |r| r.get::<_, Option<Vec<u8>>>(0),
-            )
-            .optional()?;
-        let winner_merged_into = match winner_present {
-            None => return Err(GraphError::EntityNotFound(winner)),
-            Some(m) => opt_blob_to_uuid(m)?,
-        };
-        if winner_merged_into.is_some() {
-            // Winner is itself a loser of a prior merge — refuse, the
-            // caller should pick the ultimate winner explicitly.
-            return Err(GraphError::Invariant(
-                "merge_entities: winner is already merged into another entity",
-            ));
-        }
-
-        let loser_present: Option<Option<Vec<u8>>> = self
-            .conn
-            .query_row(
-                "SELECT merged_into FROM graph_entities WHERE id = ?1 AND namespace = ?2",
-                rusqlite::params![loser_blob, self.namespace],
-                |r| r.get::<_, Option<Vec<u8>>>(0),
-            )
-            .optional()?;
-        let loser_merged_into = match loser_present {
-            None => return Err(GraphError::EntityNotFound(loser)),
-            Some(m) => opt_blob_to_uuid(m)?,
-        };
-        // Idempotence — `merged_into` already set:
-        //  - If pointing at `winner`: continue (resume edge fanout).
-        //  - If pointing elsewhere: refuse — different merge in flight.
-        if let Some(prev_winner) = loser_merged_into {
-            if prev_winner != winner {
-                return Err(GraphError::Invariant(
-                    "merge_entities: loser already merged into a different winner",
-                ));
-            }
-        }
-
-        let mut report = MergeReport {
-            edges_superseded: 0,
-            aliases_repointed: 0,
-        };
-
-        // ---- 2. First batch — set merged_into + repoint aliases --------
-        // Skipped on resume (loser_merged_into already Some(winner)).
-        if loser_merged_into.is_none() {
-            let tx = self.conn.transaction()?;
-            // 2a. Set loser.merged_into = winner.
-            tx.execute(
-                "UPDATE graph_entities
-                 SET merged_into = ?1, updated_at = ?2
-                 WHERE id = ?3 AND namespace = ?4",
-                rusqlite::params![
-                    winner_blob,
-                    dt_to_unix(chrono::Utc::now()),
-                    loser_blob,
-                    self.namespace,
-                ],
-            )?;
-            // 2b. Repoint loser's aliases. UPDATE rows where canonical_id =
-            //     loser, set canonical_id = winner, former_canonical_id =
-            //     loser (preserving the redirect chain). Skip rows that
-            //     would collide with an existing (namespace, normalized,
-            //     winner) PK — the alias is already known to winner; just
-            //     drop the loser-pointing duplicate.
-            //
-            //     SQLite doesn't support UPDATE...ON CONFLICT in older
-            //     versions, so we do it in two passes: DELETE colliders
-            //     first, then UPDATE survivors.
-            tx.execute(
-                "DELETE FROM graph_entity_aliases
-                 WHERE canonical_id = ?1
-                   AND namespace = ?2
-                   AND (namespace, normalized, ?3) IN (
-                       SELECT namespace, normalized, canonical_id
-                       FROM graph_entity_aliases
-                       WHERE canonical_id = ?3 AND namespace = ?2
-                   )",
-                rusqlite::params![loser_blob, self.namespace, winner_blob],
-            )?;
-            let aliases_n = tx.execute(
-                "UPDATE graph_entity_aliases
-                 SET canonical_id = ?1,
-                     former_canonical_id = COALESCE(former_canonical_id, ?2)
-                 WHERE canonical_id = ?2 AND namespace = ?3",
-                rusqlite::params![winner_blob, loser_blob, self.namespace],
-            )?;
-            report.aliases_repointed = aliases_n as u64;
-            tx.commit()?;
-        }
-
-        // ---- 3. Edge fan-out batches ------------------------------------
-        // Loop: each iteration pulls up to `batch_size` live edges where
-        // loser appears as subject OR object_entity_id, and re-mints them
-        // with winner in that slot. Continues until no live loser edges
-        // remain.
-        loop {
-            // Read a batch of live edges referencing loser.
-            // Use a UNION to combine the subject-side and object-side
-            // candidates, capped at batch_size total. Order by
-            // recorded_at ASC so older edges are processed first
-            // (gives deterministic resumption).
-            let mut stmt = self.conn.prepare_cached(
-                "SELECT id, subject_id,
-                        predicate_kind, predicate_label,
-                        object_kind, object_entity_id, object_literal,
-                        summary,
-                        valid_from, valid_to, recorded_at, invalidated_at,
-                        invalidated_by, supersedes,
-                        episode_id, memory_id,
-                        resolution_method,
-                        activation, confidence,
-                        agent_affect,
-                        created_at
-                 FROM graph_edges
-                 WHERE namespace = ?1
-                   AND invalidated_at IS NULL
-                   AND (subject_id = ?2 OR (object_kind = 'entity' AND object_entity_id = ?2))
-                 ORDER BY recorded_at ASC, id ASC
-                 LIMIT ?3",
-            )?;
-            let cols: Vec<EdgeRowColumns> = stmt
-                .query_map(
-                    rusqlite::params![self.namespace, loser_blob, batch_size as i64],
-                    row_to_edge_columns,
-                )?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(stmt);
-
-            if cols.is_empty() {
-                break;
-            }
-
-            let prior_edges: Vec<Edge> =
-                cols.into_iter().map(decode_edge_row).collect::<Result<Vec<_>, _>>()?;
-
-            // Re-mint each prior with loser → winner remapping.
-            let tx = self.conn.transaction()?;
-            let now = chrono::Utc::now();
-            let now_unix = dt_to_unix(now);
-            for prior in &prior_edges {
-                // Build successor with loser slot replaced.
-                let new_subject = if prior.subject_id == loser {
-                    winner
-                } else {
-                    prior.subject_id
-                };
-                let new_object = match &prior.object {
-                    EdgeEnd::Entity { id } if *id == loser => EdgeEnd::Entity { id: winner },
-                    other => other.clone(),
-                };
-                // Mint a new edge that mirrors prior except for the
-                // loser slot, with `supersedes = Some(prior.id)` and a
-                // fresh id + recorded_at = now. We don't change other
-                // bi-temporal fields (`valid_from`/`valid_to`) — the
-                // belief itself is unchanged, only the entity reference
-                // is updated.
-                let mut successor = Edge::new(
-                    new_subject,
-                    prior.predicate.clone(),
-                    new_object,
-                    prior.valid_from,
-                    now,
-                );
-                successor.summary = prior.summary.clone();
-                successor.valid_to = prior.valid_to;
-                successor.activation = prior.activation;
-                successor.confidence = prior.confidence;
-                successor.agent_affect = prior.agent_affect.clone();
-                successor.episode_id = prior.episode_id;
-                successor.memory_id = prior.memory_id.clone();
-                successor.resolution_method = prior.resolution_method.clone();
-                successor.supersedes = Some(prior.id);
-                successor.validate()?;
-
-                // INSERT successor.
-                let (predicate_kind, predicate_label) =
-                    predicate_to_columns(&successor.predicate)?;
-                let (object_kind, object_entity_blob, object_literal) =
-                    edge_end_to_columns(&successor.object)?;
-                let resolution_text = resolution_method_to_text(&successor.resolution_method)?;
-                let agent_affect_json = match &successor.agent_affect {
-                    Some(v) => Some(serde_json::to_string(v)?),
-                    None => None,
-                };
-                tx.execute(
-                    "INSERT INTO graph_edges (
-                        id, subject_id,
-                        predicate_kind, predicate_label,
-                        object_kind, object_entity_id, object_literal,
-                        summary,
-                        valid_from, valid_to, recorded_at, invalidated_at,
-                        invalidated_by, supersedes,
-                        episode_id, memory_id,
-                        resolution_method,
-                        activation, confidence,
-                        agent_affect,
-                        created_at, namespace
-                    ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                        ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                        ?17, ?18, ?19, ?20, ?21, ?22
-                    )",
-                    rusqlite::params![
-                        successor.id.as_bytes().to_vec(),
-                        successor.subject_id.as_bytes().to_vec(),
-                        predicate_kind,
-                        predicate_label,
-                        object_kind,
-                        object_entity_blob,
-                        object_literal,
-                        successor.summary,
-                        opt_dt_to_unix(successor.valid_from),
-                        opt_dt_to_unix(successor.valid_to),
-                        dt_to_unix(successor.recorded_at),
-                        opt_dt_to_unix(successor.invalidated_at),
-                        successor.invalidated_by.map(|u| u.as_bytes().to_vec()),
-                        successor.supersedes.map(|u| u.as_bytes().to_vec()),
-                        successor.episode_id.map(|u| u.as_bytes().to_vec()),
-                        successor.memory_id,
-                        resolution_text,
-                        successor.activation,
-                        successor.confidence,
-                        agent_affect_json,
-                        dt_to_unix(successor.created_at),
-                        self.namespace,
-                    ],
-                )?;
-                // Invalidate prior in this same tx.
-                tx.execute(
-                    "UPDATE graph_edges
-                     SET invalidated_at = ?1, invalidated_by = ?2
-                     WHERE id = ?3 AND namespace = ?4
-                       AND invalidated_at IS NULL",
-                    rusqlite::params![
-                        now_unix,
-                        successor.id.as_bytes().to_vec(),
-                        prior.id.as_bytes().to_vec(),
-                        self.namespace,
-                    ],
-                )?;
-                report.edges_superseded += 1;
-            }
-            tx.commit()?;
-
-            // Telemetry: a batch of N consolidation writes.
-            self.sink
-                .emit_operational_load("merge_entities_batch", prior_edges.len() as u32);
-
-            if prior_edges.len() < batch_size {
-                // We pulled less than a full batch — no more work.
-                break;
-            }
-        }
-
-        Ok(report)
-    }
-
-    // -------------------------------------------------- Edge (Phase 2/3)
-    fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError> {
-        // Type-level invariants first — this is the only writer-side
-        // validation we control. SQL CHECKs handle the structural XOR
-        // (object_kind ↔ object_entity_id/object_literal) and the
-        // valid_from ≤ valid_to bound, but bound-checking f64s in Rust
-        // gives a typed `GraphError::Invariant` with a meaningful message
-        // instead of a raw `SqliteFailure(CHECK constraint failed)`.
-        edge.validate()?;
-
-        let (predicate_kind, predicate_label) = predicate_to_columns(&edge.predicate)?;
-        let (object_kind, object_entity_blob, object_literal) =
-            edge_end_to_columns(&edge.object)?;
-        let resolution_text = resolution_method_to_text(&edge.resolution_method)?;
-        let agent_affect_json = match &edge.agent_affect {
-            Some(v) => Some(serde_json::to_string(v)?),
-            None => None,
-        };
-
-        // Note: `confidence_source` is not persisted in this slice — §4.1
-        // does not currently carry a column for it. On read the field is
-        // re-defaulted to `Recovered` (the post-write canonical value for
-        // non-`Migrated` edges). See DevNote #5 in the file header for the
-        // rationale and the planned schema follow-up.
-        self.conn.execute(
-            "INSERT INTO graph_edges (
-                id, subject_id,
-                predicate_kind, predicate_label,
-                object_kind, object_entity_id, object_literal,
-                summary,
-                valid_from, valid_to, recorded_at, invalidated_at,
-                invalidated_by, supersedes,
-                episode_id, memory_id,
-                resolution_method,
-                activation, confidence,
-                agent_affect,
-                created_at, namespace
-            ) VALUES (
-                ?1, ?2,
-                ?3, ?4,
-                ?5, ?6, ?7,
-                ?8,
-                ?9, ?10, ?11, ?12,
-                ?13, ?14,
-                ?15, ?16,
-                ?17,
-                ?18, ?19,
-                ?20,
-                ?21, ?22
-            )",
-            rusqlite::params![
-                edge.id.as_bytes().to_vec(),
-                edge.subject_id.as_bytes().to_vec(),
-                predicate_kind,
-                predicate_label,
-                object_kind,
-                object_entity_blob,
-                object_literal,
-                edge.summary,
-                opt_dt_to_unix(edge.valid_from),
-                opt_dt_to_unix(edge.valid_to),
-                dt_to_unix(edge.recorded_at),
-                opt_dt_to_unix(edge.invalidated_at),
-                edge.invalidated_by.map(|u| u.as_bytes().to_vec()),
-                edge.supersedes.map(|u| u.as_bytes().to_vec()),
-                edge.episode_id.map(|u| u.as_bytes().to_vec()),
-                edge.memory_id,
-                resolution_text,
-                edge.activation,
-                edge.confidence,
-                agent_affect_json,
-                dt_to_unix(edge.created_at),
-                self.namespace,
-            ],
-        )?;
-        Ok(())
-    }
     fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, subject_id,
@@ -2497,233 +1915,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         };
 
         cols.into_iter().map(decode_edge_row).collect()
-    }
-    fn invalidate_edge(
-        &mut self,
-        prior_id: Uuid,
-        successor_id: Uuid,
-        now: DateTime<Utc>,
-    ) -> Result<(), GraphError> {
-        // ISS-034: GUARD-3 primitive. Single UPDATE that closes out a prior
-        // edge by setting `invalidated_at` and `invalidated_by`. Idempotent
-        // when called twice with the same `successor_id`; errors when the
-        // prior is already closed by a different successor.
-        let prior_blob = prior_id.as_bytes().to_vec();
-        let succ_blob = successor_id.as_bytes().to_vec();
-        let now_unix = dt_to_unix(now);
-
-        // Read current state (under the same connection — the caller is
-        // expected to wrap this in a transaction via `with_graph_tx` when
-        // ordering matters; the read+update here is itself atomic under
-        // SQLite's serializable WAL semantics for a single connection).
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT invalidated_at, invalidated_by
-             FROM graph_edges
-             WHERE id = ?1 AND namespace = ?2",
-        )?;
-        let row: Option<(Option<f64>, Option<Vec<u8>>)> = stmt
-            .query_row(
-                rusqlite::params![prior_blob, self.namespace],
-                |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
-            )
-            .optional()?;
-
-        let (existing_at, existing_by) = match row {
-            None => return Err(GraphError::EdgeNotFound(prior_id)),
-            Some(t) => t,
-        };
-
-        if let Some(_at) = existing_at {
-            // Already closed. Idempotent only if `invalidated_by` matches.
-            match existing_by {
-                Some(by) if by == succ_blob => return Ok(()),
-                _ => {
-                    return Err(GraphError::Invariant(
-                        "edge already invalidated by another successor",
-                    ))
-                }
-            }
-        }
-
-        // Verify successor exists (FK on `invalidated_by`); the FK would
-        // catch this at commit time, but checking up-front gives a typed
-        // error instead of a SQLite constraint failure.
-        let mut stmt_succ = self
-            .conn
-            .prepare_cached("SELECT 1 FROM graph_edges WHERE id = ?1 AND namespace = ?2")?;
-        let succ_exists: Option<i64> = stmt_succ
-            .query_row(rusqlite::params![succ_blob, self.namespace], |r| r.get::<_, i64>(0))
-            .optional()?;
-        if succ_exists.is_none() {
-            return Err(GraphError::EdgeNotFound(successor_id));
-        }
-
-        let mut stmt_upd = self.conn.prepare_cached(
-            "UPDATE graph_edges
-             SET invalidated_at = ?1, invalidated_by = ?2
-             WHERE id = ?3 AND namespace = ?4
-               AND invalidated_at IS NULL",
-        )?;
-        let n = stmt_upd.execute(rusqlite::params![
-            now_unix,
-            succ_blob,
-            prior_blob,
-            self.namespace,
-        ])?;
-        if n == 0 {
-            // Concurrent writer closed it between our SELECT and UPDATE.
-            return Err(GraphError::Invariant(
-                "edge already invalidated by another successor",
-            ));
-        }
-        Ok(())
-    }
-    fn supersede_edge(
-        &mut self,
-        old: Uuid,
-        successor: &Edge,
-        at: DateTime<Utc>,
-    ) -> Result<(), GraphError> {
-        // §4.2 spec: convenience wrapper composing `insert_edge(successor)` +
-        // `invalidate_edge(old, successor.id, at)` inside a single transaction.
-        // Both writes commit together or neither does. Used by ad-hoc callers
-        // that don't need the decomposed primitives the resolution pipeline
-        // (§3.5) uses to batch successor inserts before invalidations.
-        //
-        // Invariant: `successor.supersedes` SHOULD point at `old`. We do not
-        // enforce this — the caller controls the chain wiring per §3.4 — but
-        // the FK on `invalidated_by` is enforced by `invalidate_edge` (looks
-        // up `successor_id` after insert).
-        //
-        // Tx model: rusqlite's `Transaction` guard-rolls back on Drop unless
-        // explicitly committed. We mirror the pattern used by
-        // `record_extraction_failure` / `mark_failure_resolved` (a `tx =
-        // self.conn.transaction()?` followed by manual commit on success).
-        // Insert + invalidate both run on `self.conn` inside the same physical
-        // transaction because rusqlite doesn't open a second connection — the
-        // outer transaction's writes are visible to the inner SQL.
-
-        // Verify successor wiring matches `old` if the caller set it. A
-        // mismatched `supersedes` is a programming error; failing fast with
-        // `Invariant` is preferable to silently writing a corrupt chain.
-        if let Some(s) = successor.supersedes {
-            if s != old {
-                return Err(GraphError::Invariant(
-                    "supersede_edge: successor.supersedes does not match `old`",
-                ));
-            }
-        }
-
-        let tx = self.conn.transaction()?;
-        // Within the transaction, we drop our `&mut self.conn` borrow into a
-        // raw `&Transaction` and call SQL directly. We can't call our own
-        // trait methods through `&mut self` because the connection is now
-        // owned by `tx`. Instead, we replay the relevant CRUD inline. This is
-        // a small amount of duplication but avoids re-entrant borrows of
-        // `self.conn`.
-
-        // --- 1. INSERT successor edge (mirrors `insert_edge`) ---
-        successor.validate()?;
-        let (predicate_kind, predicate_label) = predicate_to_columns(&successor.predicate)?;
-        let (object_kind, object_entity_blob, object_literal) =
-            edge_end_to_columns(&successor.object)?;
-        let resolution_text = resolution_method_to_text(&successor.resolution_method)?;
-        let agent_affect_json = match &successor.agent_affect {
-            Some(v) => Some(serde_json::to_string(v)?),
-            None => None,
-        };
-        tx.execute(
-            "INSERT INTO graph_edges (
-                id, subject_id,
-                predicate_kind, predicate_label,
-                object_kind, object_entity_id, object_literal,
-                summary,
-                valid_from, valid_to, recorded_at, invalidated_at,
-                invalidated_by, supersedes,
-                episode_id, memory_id,
-                resolution_method,
-                activation, confidence,
-                agent_affect,
-                created_at, namespace
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                ?17, ?18, ?19, ?20, ?21, ?22
-            )",
-            rusqlite::params![
-                successor.id.as_bytes().to_vec(),
-                successor.subject_id.as_bytes().to_vec(),
-                predicate_kind,
-                predicate_label,
-                object_kind,
-                object_entity_blob,
-                object_literal,
-                successor.summary,
-                opt_dt_to_unix(successor.valid_from),
-                opt_dt_to_unix(successor.valid_to),
-                dt_to_unix(successor.recorded_at),
-                opt_dt_to_unix(successor.invalidated_at),
-                successor.invalidated_by.map(|u| u.as_bytes().to_vec()),
-                successor.supersedes.map(|u| u.as_bytes().to_vec()),
-                successor.episode_id.map(|u| u.as_bytes().to_vec()),
-                successor.memory_id,
-                resolution_text,
-                successor.activation,
-                successor.confidence,
-                agent_affect_json,
-                dt_to_unix(successor.created_at),
-                self.namespace,
-            ],
-        )?;
-
-        // --- 2. INVALIDATE prior edge (mirrors `invalidate_edge`) ---
-        let prior_blob = old.as_bytes().to_vec();
-        let succ_blob = successor.id.as_bytes().to_vec();
-        let now_unix = dt_to_unix(at);
-
-        // Read current invalidation state.
-        let row: Option<(Option<f64>, Option<Vec<u8>>)> = tx
-            .query_row(
-                "SELECT invalidated_at, invalidated_by
-                 FROM graph_edges
-                 WHERE id = ?1 AND namespace = ?2",
-                rusqlite::params![prior_blob, self.namespace],
-                |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
-            )
-            .optional()?;
-        let (existing_at, existing_by) = match row {
-            None => return Err(GraphError::EdgeNotFound(old)),
-            Some(t) => t,
-        };
-        if existing_at.is_some() {
-            // Already closed — idempotent only if same successor.
-            match existing_by {
-                Some(by) if by == succ_blob => {
-                    tx.commit()?;
-                    return Ok(());
-                }
-                _ => {
-                    return Err(GraphError::Invariant(
-                        "edge already invalidated by another successor",
-                    ))
-                }
-            }
-        }
-        let n = tx.execute(
-            "UPDATE graph_edges
-             SET invalidated_at = ?1, invalidated_by = ?2
-             WHERE id = ?3 AND namespace = ?4
-               AND invalidated_at IS NULL",
-            rusqlite::params![now_unix, succ_blob, prior_blob, self.namespace],
-        )?;
-        if n == 0 {
-            return Err(GraphError::Invariant(
-                "edge already invalidated by another successor",
-            ));
-        }
-
-        tx.commit()?;
-        Ok(())
     }
     fn edges_of(
         &self, subject: Uuid, predicate: Option<&Predicate>, include_invalidated: bool,
@@ -3417,120 +2608,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         }
         Ok(EntityMentions { episode_ids, memory_ids })
     }
-    fn link_memory_to_entities(
-        &mut self,
-        memory_id: &str,
-        entity_ids: &[(Uuid, f64, Option<String>)],
-        at: DateTime<Utc>,
-    ) -> Result<(), GraphError> {
-        // §4.2 Memory↔Entity provenance — atomic batch with within-batch dedup
-        // and `ON CONFLICT DO UPDATE` cross-batch dedup. See design §4.2 for
-        // the upsert-rule contract.
-
-        // (1) Validate inputs up front so we never open a transaction we'd
-        //     then have to roll back for a trivially detectable bug.
-        for (_eid, conf, _span) in entity_ids {
-            if !conf.is_finite() || !(0.0..=1.0).contains(conf) {
-                return Err(GraphError::Invariant(
-                    "link_memory_to_entities: confidence out of [0,1]",
-                ));
-            }
-        }
-
-        // (2) Within-batch dedup. Fold duplicate `entity_id`s in input order
-        //     using the same rules as cross-batch (max confidence, latest
-        //     non-NULL span). This guarantees the SQL layer sees one row per
-        //     entity_id and removes a class of "ON CONFLICT applied twice
-        //     within the same statement" footguns.
-        use std::collections::HashMap;
-        let mut folded: HashMap<Uuid, (f64, Option<String>)> =
-            HashMap::with_capacity(entity_ids.len());
-        // Preserve first-seen order for deterministic iteration (HashMap
-        // iteration order is randomized — that's fine for SQL, but tests want
-        // determinism. Track order in a separate Vec).
-        let mut order: Vec<Uuid> = Vec::with_capacity(entity_ids.len());
-        for (eid, conf, span) in entity_ids {
-            match folded.get_mut(eid) {
-                Some((existing_conf, existing_span)) => {
-                    if *conf > *existing_conf {
-                        *existing_conf = *conf;
-                    }
-                    if span.is_some() {
-                        *existing_span = span.clone();
-                    }
-                }
-                None => {
-                    folded.insert(*eid, (*conf, span.clone()));
-                    order.push(*eid);
-                }
-            }
-        }
-
-        let recorded_at = dt_to_unix(at);
-        let ns = self.namespace.clone();
-
-        // (3) Atomic batch: cross-namespace check + upsert in one transaction.
-        let tx = self.conn.transaction()?;
-        {
-            // Namespace pre-check. The PK `(memory_id, entity_id)` does NOT
-            // include namespace; a pre-existing row with a different namespace
-            // would silently be "stolen" by a naive upsert. Detect and fail
-            // loud (design §4.2: cross-namespace memory↔entity link is an
-            // invariant violation).
-            let mut ns_check = tx.prepare_cached(
-                "SELECT namespace FROM graph_memory_entity_mentions
-                 WHERE memory_id = ?1 AND entity_id = ?2",
-            )?;
-            for eid in &order {
-                let existing_ns: Option<String> = ns_check
-                    .query_row(
-                        rusqlite::params![memory_id, eid.as_bytes().to_vec()],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(existing) = existing_ns {
-                    if existing != ns {
-                        // tx is dropped → automatic rollback. We surface a
-                        // structured invariant for the caller.
-                        return Err(GraphError::Invariant(
-                            "cross-namespace memory↔entity link",
-                        ));
-                    }
-                }
-            }
-            drop(ns_check);
-
-            // Upsert. The DO UPDATE clause encodes the design §4.2 rules:
-            //   confidence    ← max(existing, new)        (monotone)
-            //   mention_span  ← COALESCE(new, existing)   (latest non-NULL)
-            //   recorded_at   ← max(existing, new)        (latest wins)
-            //   namespace     ← (preserved; not in DO UPDATE)
-            let mut upsert = tx.prepare_cached(
-                "INSERT INTO graph_memory_entity_mentions
-                    (memory_id, entity_id, mention_span, confidence,
-                     recorded_at, namespace)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(memory_id, entity_id) DO UPDATE SET
-                    confidence   = MAX(confidence, excluded.confidence),
-                    mention_span = COALESCE(excluded.mention_span, mention_span),
-                    recorded_at  = MAX(recorded_at, excluded.recorded_at)",
-            )?;
-            for eid in &order {
-                let (conf, span) = &folded[eid];
-                upsert.execute(rusqlite::params![
-                    memory_id,
-                    eid.as_bytes().to_vec(),
-                    span.as_deref(),
-                    conf,
-                    recorded_at,
-                    ns,
-                ])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     fn entities_linked_to_memory(&self, memory_id: &str) -> Result<Vec<Uuid>, GraphError> {
         // Namespace-scoped: rows from sibling namespaces never leak. Order:
         // recorded_at ASC, entity_id ASC (design §4.2 — stable, deterministic).
@@ -3613,91 +2690,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         rows.into_iter().map(decode_edge_row).collect()
     }
 
-    // ------------------------------------------------- Topics (Phase 2)
-    fn upsert_topic(&mut self, t: &KnowledgeTopic) -> Result<(), GraphError> {
-        // §4.1 `knowledge_topics` is mirrored against `graph_entities` (the
-        // PK is also a FK into entities). Caller MUST insert the mirror
-        // entity before upserting the topic — surfacing the FK error here
-        // is correct: it forces the integrity invariant at the seam.
-        //
-        // Embedding dim: §4.1 says topic embeddings share the system-wide
-        // `embedding_dim` with entities. Reuse the same encoder so a single
-        // change in dim policy propagates to both writers without per-call
-        // duplication.
-        t.validate_embedding_dim(self.embedding_dim)?;
-        let embedding_blob =
-            entity_embedding_to_blob(t.embedding.as_deref(), self.embedding_dim)?;
-
-        // Vec<String>/Vec<Uuid> persist as JSON TEXT (column default '[]').
-        // Serializing here keeps the SQL statement uniform; the schema stores
-        // these as TEXT to avoid a third-table normalization that buys us
-        // nothing for v0.3 (callers always read the full topic).
-        let source_memories = serde_json::to_string(&t.source_memories)?;
-        // Persist Uuids as their canonical hyphenated string form inside the
-        // JSON array — matches how serde does Uuid by default and keeps the
-        // text-blob roundtrip stable across `bytes`/`hyphenated` choices.
-        let contributing_json = serde_json::to_string(
-            &t.contributing_entities
-                .iter()
-                .map(|u| u.to_string())
-                .collect::<Vec<_>>(),
-        )?;
-
-        let cluster_weights_json = match &t.cluster_weights {
-            Some(v) => Some(serde_json::to_string(v)?),
-            None => None,
-        };
-
-        // Upsert. PK is `topic_id`. On conflict update every mutable column
-        // (everything except topic_id and namespace — namespace is part of
-        // identity per §4.1 and changing it via an upsert would be a stealth
-        // namespace move; reject by virtue of WHERE-pinning identity).
-        let sql = "INSERT INTO knowledge_topics (
-                topic_id, title, summary, embedding,
-                source_memories, contributing_entities, cluster_weights,
-                synthesis_run_id, synthesized_at,
-                superseded_by, superseded_at,
-                namespace
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-            ON CONFLICT(topic_id) DO UPDATE SET
-                title = excluded.title,
-                summary = excluded.summary,
-                embedding = excluded.embedding,
-                source_memories = excluded.source_memories,
-                contributing_entities = excluded.contributing_entities,
-                cluster_weights = excluded.cluster_weights,
-                synthesis_run_id = excluded.synthesis_run_id,
-                synthesized_at = excluded.synthesized_at,
-                superseded_by = excluded.superseded_by,
-                superseded_at = excluded.superseded_at
-            WHERE knowledge_topics.namespace = excluded.namespace";
-        let n = self.conn.execute(
-            sql,
-            rusqlite::params![
-                t.topic_id.as_bytes().to_vec(),
-                t.title,
-                t.summary,
-                embedding_blob,
-                source_memories,
-                contributing_json,
-                cluster_weights_json,
-                t.synthesis_run_id.map(|u| u.as_bytes().to_vec()),
-                t.synthesized_at,
-                t.superseded_by.map(|u| u.as_bytes().to_vec()),
-                t.superseded_at,
-                t.namespace,
-            ],
-        )?;
-        // n == 0 means the WHERE clause filtered out the conflict row,
-        // i.e. an attempt to upsert across namespaces. Surface as an
-        // invariant — same shape as `link_memory_to_entities`.
-        if n == 0 {
-            return Err(GraphError::Invariant(
-                "upsert_topic: cross-namespace topic upsert rejected",
-            ));
-        }
-        Ok(())
-    }
     fn get_topic(&self, id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT topic_id, title, summary, embedding,
@@ -3953,6 +2945,1208 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         }
         Ok(topics)
     }
+    fn latest_pipeline_run_for_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<PipelineRunRow>, GraphError> {
+        // Latest-by-started_at over the partial index `idx_graph_pipeline_runs_memory`.
+        // Bound the result to a single row — `LIMIT 1` keeps the planner on
+        // the index seek even on legacy DBs that may have additional runs
+        // for the same memory id.
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, kind, status, started_at, finished_at,
+                    memory_id, episode_id, error_detail
+             FROM graph_pipeline_runs
+             WHERE memory_id = ?1 AND namespace = ?2
+             ORDER BY started_at DESC
+             LIMIT 1",
+        )?;
+        let row = stmt
+            .query_row(
+                rusqlite::params![memory_id, self.namespace],
+                |row| {
+                    let run_id_blob: Vec<u8> = row.get(0)?;
+                    let kind_str: String = row.get(1)?;
+                    let status_str: String = row.get(2)?;
+                    let started_at: f64 = row.get(3)?;
+                    let finished_at: Option<f64> = row.get(4)?;
+                    let memory_id_opt: Option<String> = row.get(5)?;
+                    let episode_id_blob: Option<Vec<u8>> = row.get(6)?;
+                    let error_detail: Option<String> = row.get(7)?;
+                    Ok((
+                        run_id_blob,
+                        kind_str,
+                        status_str,
+                        started_at,
+                        finished_at,
+                        memory_id_opt,
+                        episode_id_blob,
+                        error_detail,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((run_id_blob, kind_str, status_str, started_at, finished_at, memory_id_opt, episode_id_blob, error_detail)) = row else {
+            return Ok(None);
+        };
+        // Decode all SQLite-side encodings to canonical Rust types. Each
+        // failure surfaces as `GraphError::Invariant` with a precise context
+        // string — never silently default.
+        if run_id_blob.len() != 16 {
+            return Err(GraphError::Invariant(
+                "graph_pipeline_runs.run_id length != 16",
+            ));
+        }
+        let run_id = Uuid::from_slice(&run_id_blob).unwrap();
+        // serde_json reads enum variants only when the input is a JSON
+        // string (i.e. wrapped in quotes), matching the encoding done in
+        // `begin_pipeline_run_inner` via `serde_json::to_string(&kind)`.
+        let kind: PipelineKind = serde_json::from_str(&format!("\"{kind_str}\""))?;
+        let status: RunStatus = serde_json::from_str(&format!("\"{status_str}\""))?;
+        let started_at = unix_to_dt(started_at)?;
+        let finished_at = match finished_at {
+            Some(f) => Some(unix_to_dt(f)?),
+            None => None,
+        };
+        let episode_id = opt_blob_to_uuid(episode_id_blob)?;
+        Ok(Some(PipelineRunRow {
+            run_id,
+            kind,
+            status,
+            started_at,
+            finished_at,
+            memory_id: memory_id_opt,
+            episode_id,
+            error_detail,
+        }))
+    }
+    fn list_proposed_predicates(&self, min_usage: u64) -> Result<Vec<ProposedPredicateStats>, GraphError> {
+        // GOAL-1.10: surface drift candidates only — canonical predicates
+        // are operator-curated and not "proposed". Filter both by `kind`
+        // and `min_usage`. SQLite stores `usage_count` as INTEGER (i64);
+        // saturate u64 → i64 to avoid silently overflowing high counts.
+        let threshold: i64 = i64::try_from(min_usage).unwrap_or(i64::MAX);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT label, usage_count FROM graph_predicates
+             WHERE kind = 'proposed' AND usage_count >= ?1
+             ORDER BY usage_count DESC, label ASC",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![threshold], |row| {
+                let label: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((label, count))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(label, count)| ProposedPredicateStats {
+                label,
+                usage_count: count.max(0) as u64,
+            })
+            .collect())
+    }
+
+    fn list_failed_episodes(&self, unresolved_only: bool) -> Result<Vec<Uuid>, GraphError> {
+        // Distinct episode ids — many failures may target the same episode
+        // (e.g. resolution + persist both fail on the same input). Callers
+        // care about the episode set, not the failure multiset.
+        let sql = if unresolved_only {
+            "SELECT DISTINCT episode_id FROM graph_extraction_failures
+             WHERE namespace = ?1 AND resolved_at IS NULL
+             ORDER BY episode_id ASC"
+        } else {
+            "SELECT DISTINCT episode_id FROM graph_extraction_failures
+             WHERE namespace = ?1
+             ORDER BY episode_id ASC"
+        };
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let blobs = stmt
+            .query_map(rusqlite::params![self.namespace], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        blobs
+            .into_iter()
+            .map(|b| {
+                Uuid::from_slice(&b).map_err(|_| {
+                    GraphError::Invariant(
+                        "list_failed_episodes: episode_id blob is not a valid UUID",
+                    )
+                })
+            })
+            .collect()
+    }
+    // ------------------------------------------ Namespaces (Phase 2)
+    fn list_namespaces(&self) -> Result<Vec<String>, GraphError> {
+        // §4.1 lifecycle: namespace lives on graph_entities. Distinct
+        // namespaces seen across the canonical entity table is the
+        // authoritative answer; entity-less namespaces (e.g. orphan alias
+        // rows) are not exposed here by design.
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT namespace FROM graph_entities ORDER BY namespace",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+
+}
+
+impl<'a> GraphWrite for SqliteGraphStore<'a> {
+    // -------------------------------------------------- Entity (Phase 2)
+    fn insert_entity(&mut self, e: &Entity) -> Result<(), GraphError> {
+        // Reserved-key gate (§3.1) — refuse to write `attributes` containing
+        // promoted-to-typed-field keys. Loud failure beats silent shadowing.
+        validate_attributes(&e.attributes)?;
+
+        let kind_text = kind_to_text(&e.kind)?;
+        let attributes_json = serde_json::to_string(&e.attributes)?;
+        let history_json = serde_json::to_string(&e.history)?;
+        let agent_affect_json = match &e.agent_affect {
+            Some(v) => Some(serde_json::to_string(v)?),
+            None => None,
+        };
+        let fp_blob: Option<Vec<u8>> = e
+            .somatic_fingerprint
+            .as_ref()
+            .map(|fp| fp.to_le_bytes().to_vec());
+        let merged_into_blob: Option<Vec<u8>> =
+            e.merged_into.map(|u| u.as_bytes().to_vec());
+        // ISS-033: validate + encode embedding before INSERT. Dim mismatch is
+        // a hard error; see `entity_embedding_to_blob` for the contract.
+        let embedding_blob: Option<Vec<u8>> =
+            entity_embedding_to_blob(e.embedding.as_deref(), self.embedding_dim)?;
+
+        // Single-statement INSERT runs in SQLite autocommit; FK + CHECK
+        // failures bubble up as `GraphError::Sqlite`.
+        self.conn.execute(
+            "INSERT INTO graph_entities (
+                id, canonical_name, kind, summary, attributes,
+                first_seen, last_seen, created_at, updated_at,
+                activation, agent_affect, arousal, importance,
+                identity_confidence, somatic_fingerprint, namespace,
+                history, merged_into, embedding
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5,
+                ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13,
+                ?14, ?15, ?16,
+                ?17, ?18, ?19
+            )",
+            rusqlite::params![
+                e.id.as_bytes().to_vec(),
+                e.canonical_name,
+                kind_text,
+                e.summary,
+                attributes_json,
+                dt_to_unix(e.first_seen),
+                dt_to_unix(e.last_seen),
+                dt_to_unix(e.created_at),
+                dt_to_unix(e.updated_at),
+                e.activation,
+                agent_affect_json,
+                e.arousal,
+                e.importance,
+                e.identity_confidence,
+                fp_blob,
+                self.namespace,
+                history_json,
+                merged_into_blob,
+                embedding_blob,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn update_entity_cognitive(
+        &mut self,
+        id: Uuid,
+        activation: f64,
+        importance: f64,
+        identity_confidence: f64,
+        agent_affect: Option<Json>,
+    ) -> Result<(), GraphError> {
+        // Bounds: schema CHECK enforces [0,1] but we surface the error as
+        // `Invariant` rather than a raw rusqlite CHECK failure for caller
+        // ergonomics (and because NaN slips past CHECK on some SQLite builds).
+        for (name, v) in [
+            ("activation", activation),
+            ("importance", importance),
+            ("identity_confidence", identity_confidence),
+        ] {
+            if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+                let _ = name; // name kept for future log-on-failure hook
+                return Err(GraphError::Invariant(
+                    "cognitive scalar out of [0.0, 1.0]",
+                ));
+            }
+        }
+        let agent_affect_json = match agent_affect {
+            Some(v) => Some(serde_json::to_string(&v)?),
+            None => None,
+        };
+        let now = dt_to_unix(Utc::now());
+        let rows = self.conn.execute(
+            "UPDATE graph_entities
+             SET activation = ?1,
+                 importance = ?2,
+                 identity_confidence = ?3,
+                 agent_affect = ?4,
+                 updated_at = ?5
+             WHERE id = ?6 AND namespace = ?7",
+            rusqlite::params![
+                activation,
+                importance,
+                identity_confidence,
+                agent_affect_json,
+                now,
+                id.as_bytes().to_vec(),
+                self.namespace,
+            ],
+        )?;
+        if rows == 0 {
+            return Err(GraphError::EntityNotFound(id));
+        }
+        Ok(())
+    }
+
+    fn touch_entity_last_seen(
+        &mut self,
+        id: Uuid,
+        ts: DateTime<Utc>,
+    ) -> Result<(), GraphError> {
+        // Monotonic last_seen: never roll backwards. The CHECK
+        // (first_seen <= last_seen) at the schema layer would also reject
+        // a write that violates the row invariant, but we want a clear
+        // EntityNotFound vs. a no-op-because-stale-ts distinction.
+        let new_ts = dt_to_unix(ts);
+        let rows = self.conn.execute(
+            "UPDATE graph_entities
+             SET last_seen = MAX(last_seen, ?1),
+                 updated_at = ?1
+             WHERE id = ?2 AND namespace = ?3",
+            rusqlite::params![
+                new_ts,
+                id.as_bytes().to_vec(),
+                self.namespace,
+            ],
+        )?;
+        if rows == 0 {
+            return Err(GraphError::EntityNotFound(id));
+        }
+        Ok(())
+    }
+
+    // ---------------------------------- Candidate retrieval (ISS-033)
+
+    fn update_entity_embedding(
+        &mut self,
+        id: Uuid,
+        embedding: Option<&[f32]>,
+    ) -> Result<(), GraphError> {
+        // Validate + encode through the same codec as `insert_entity` so the
+        // dim mismatch error message ("entity embedding dim mismatch") is
+        // identical regardless of code path. `None` clears the column,
+        // which is a legitimate path used by v03-migration cross-dim
+        // rewrites — not an operational anti-pattern.
+        let blob: Option<Vec<u8>> =
+            entity_embedding_to_blob(embedding, self.embedding_dim)?;
+        let now = dt_to_unix(Utc::now());
+
+        let rows = self.conn.execute(
+            "UPDATE graph_entities
+             SET embedding = ?1,
+                 updated_at = ?2
+             WHERE id = ?3 AND namespace = ?4",
+            rusqlite::params![
+                blob,
+                now,
+                id.as_bytes().to_vec(),
+                self.namespace,
+            ],
+        )?;
+        if rows == 0 {
+            return Err(GraphError::EntityNotFound(id));
+        }
+        Ok(())
+    }
+
+    //
+    // Phase 2 originally deferred these to a later slice; ISS-033 needs the
+    // alias-exact lookup wired into `search_candidates`, so the stubs are
+    // replaced with real impls here. Same write/read normalization
+    // contract as v03-resolution: alias rows are keyed on
+    // `entity::normalize_alias` output (lowercase + trim + NFKC), and
+    // resolve_alias normalizes its argument identically. Asymmetric
+    // normalization between writer and reader silently breaks the lookup,
+    // so the entry points BOTH go through `normalize_alias`.
+    //
+    // The schema's PRIMARY KEY is (namespace, normalized, canonical_id):
+    // - Same alias text (after normalization) pointing at the same canonical
+    //   entity in the same namespace deduplicates on conflict (the alias
+    //   surface form may have varied — we keep the most recent raw form via
+    //   `ON CONFLICT DO UPDATE`).
+    // - Same normalized form pointing at *different* canonical entities is
+    //   permitted and represents an ambiguous alias — `resolve_alias` returns
+    //   the first such row deterministically (lowest canonical_id), and
+    //   v03-resolution treats this as a "needs disambiguation" signal.
+    fn upsert_alias(
+        &mut self,
+        normalized: &str,
+        alias_raw: &str,
+        canonical_id: Uuid,
+        source_episode: Option<Uuid>,
+    ) -> Result<(), GraphError> {
+        // Idempotent re-normalization: even if the caller already
+        // normalized, doing it again is cheap and protects against caller
+        // bugs (the index lookup is the single source of truth here).
+        let norm = normalize_alias(normalized);
+        let now = dt_to_unix(Utc::now());
+        let canonical_blob = canonical_id.as_bytes().to_vec();
+        let source_blob: Option<Vec<u8>> =
+            source_episode.map(|u| u.as_bytes().to_vec());
+
+        // ON CONFLICT: the row already exists for this (namespace,
+        // normalized, canonical_id) triple. Refresh `alias` (raw form may
+        // have varied across mentions) and leave `first_seen` /
+        // `source_episode` alone (audit fields — first observation wins).
+        self.conn.execute(
+            "INSERT INTO graph_entity_aliases (
+                normalized, canonical_id, alias,
+                former_canonical_id, first_seen, source_episode, namespace
+            ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)
+            ON CONFLICT(namespace, normalized, canonical_id) DO UPDATE SET
+                alias = excluded.alias",
+            rusqlite::params![
+                norm,
+                canonical_blob,
+                alias_raw,
+                now,
+                source_blob,
+                self.namespace,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn merge_entities(
+        &mut self,
+        winner: Uuid,
+        loser: Uuid,
+        batch_size: usize,
+    ) -> Result<MergeReport, GraphError> {
+        // Design §3.4 (Merge semantics) + §4.2 (resumable batched merges).
+        //
+        // Sequence:
+        //   1. Validate inputs — both entities exist, same namespace,
+        //      neither is its own self, loser is not already redirected
+        //      somewhere else, winner is not redirected to loser, etc.
+        //   2. **First batch tx** (only if not already begun): set
+        //      `loser.merged_into = winner.id` + repoint loser's aliases'
+        //      `canonical_id` to winner (preserve `former_canonical_id`).
+        //      This is the redirect signal — once committed, readers
+        //      doing entity-level lookups on the loser id transparently
+        //      follow `merged_into` (see `get_entity`).
+        //   3. **Edge-fanout batches**: iterate, each iteration picks up
+        //      to `batch_size` live edges where loser is subject OR
+        //      object, and for each: insert a successor edge with the
+        //      loser slot replaced by winner; mark prior invalidated_by
+        //      = successor.id. Each batch is its own transaction;
+        //      between batches a reader may observe a partially-merged
+        //      state (§8 "Reader semantics during merge").
+        //   4. Stop when no live loser edges remain. Idempotent:
+        //      re-calling is safe; if `loser.merged_into` is already set
+        //      to winner, we skip step 2; if no live edges, loop exits
+        //      immediately.
+        //
+        // Resumability: callers retry on transient failure (e.g.
+        // SQLITE_BUSY); each batch either commits cleanly or rolls back
+        // entirely, and the next call replays from current state.
+        if winner == loser {
+            return Err(GraphError::Invariant(
+                "merge_entities: winner and loser must differ",
+            ));
+        }
+        if batch_size == 0 {
+            return Err(GraphError::Invariant(
+                "merge_entities: batch_size must be > 0",
+            ));
+        }
+
+        let winner_blob = winner.as_bytes().to_vec();
+        let loser_blob = loser.as_bytes().to_vec();
+
+        // ---- 1. Validation ----------------------------------------------
+        // Both entities must exist in this namespace.
+        let winner_present: Option<Option<Vec<u8>>> = self
+            .conn
+            .query_row(
+                "SELECT merged_into FROM graph_entities WHERE id = ?1 AND namespace = ?2",
+                rusqlite::params![winner_blob, self.namespace],
+                |r| r.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()?;
+        let winner_merged_into = match winner_present {
+            None => return Err(GraphError::EntityNotFound(winner)),
+            Some(m) => opt_blob_to_uuid(m)?,
+        };
+        if winner_merged_into.is_some() {
+            // Winner is itself a loser of a prior merge — refuse, the
+            // caller should pick the ultimate winner explicitly.
+            return Err(GraphError::Invariant(
+                "merge_entities: winner is already merged into another entity",
+            ));
+        }
+
+        let loser_present: Option<Option<Vec<u8>>> = self
+            .conn
+            .query_row(
+                "SELECT merged_into FROM graph_entities WHERE id = ?1 AND namespace = ?2",
+                rusqlite::params![loser_blob, self.namespace],
+                |r| r.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()?;
+        let loser_merged_into = match loser_present {
+            None => return Err(GraphError::EntityNotFound(loser)),
+            Some(m) => opt_blob_to_uuid(m)?,
+        };
+        // Idempotence — `merged_into` already set:
+        //  - If pointing at `winner`: continue (resume edge fanout).
+        //  - If pointing elsewhere: refuse — different merge in flight.
+        if let Some(prev_winner) = loser_merged_into {
+            if prev_winner != winner {
+                return Err(GraphError::Invariant(
+                    "merge_entities: loser already merged into a different winner",
+                ));
+            }
+        }
+
+        let mut report = MergeReport {
+            edges_superseded: 0,
+            aliases_repointed: 0,
+        };
+
+        // ---- 2. First batch — set merged_into + repoint aliases --------
+        // Skipped on resume (loser_merged_into already Some(winner)).
+        if loser_merged_into.is_none() {
+            let tx = self.conn.transaction()?;
+            // 2a. Set loser.merged_into = winner.
+            tx.execute(
+                "UPDATE graph_entities
+                 SET merged_into = ?1, updated_at = ?2
+                 WHERE id = ?3 AND namespace = ?4",
+                rusqlite::params![
+                    winner_blob,
+                    dt_to_unix(chrono::Utc::now()),
+                    loser_blob,
+                    self.namespace,
+                ],
+            )?;
+            // 2b. Repoint loser's aliases. UPDATE rows where canonical_id =
+            //     loser, set canonical_id = winner, former_canonical_id =
+            //     loser (preserving the redirect chain). Skip rows that
+            //     would collide with an existing (namespace, normalized,
+            //     winner) PK — the alias is already known to winner; just
+            //     drop the loser-pointing duplicate.
+            //
+            //     SQLite doesn't support UPDATE...ON CONFLICT in older
+            //     versions, so we do it in two passes: DELETE colliders
+            //     first, then UPDATE survivors.
+            tx.execute(
+                "DELETE FROM graph_entity_aliases
+                 WHERE canonical_id = ?1
+                   AND namespace = ?2
+                   AND (namespace, normalized, ?3) IN (
+                       SELECT namespace, normalized, canonical_id
+                       FROM graph_entity_aliases
+                       WHERE canonical_id = ?3 AND namespace = ?2
+                   )",
+                rusqlite::params![loser_blob, self.namespace, winner_blob],
+            )?;
+            let aliases_n = tx.execute(
+                "UPDATE graph_entity_aliases
+                 SET canonical_id = ?1,
+                     former_canonical_id = COALESCE(former_canonical_id, ?2)
+                 WHERE canonical_id = ?2 AND namespace = ?3",
+                rusqlite::params![winner_blob, loser_blob, self.namespace],
+            )?;
+            report.aliases_repointed = aliases_n as u64;
+            tx.commit()?;
+        }
+
+        // ---- 3. Edge fan-out batches ------------------------------------
+        // Loop: each iteration pulls up to `batch_size` live edges where
+        // loser appears as subject OR object_entity_id, and re-mints them
+        // with winner in that slot. Continues until no live loser edges
+        // remain.
+        loop {
+            // Read a batch of live edges referencing loser.
+            // Use a UNION to combine the subject-side and object-side
+            // candidates, capped at batch_size total. Order by
+            // recorded_at ASC so older edges are processed first
+            // (gives deterministic resumption).
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT id, subject_id,
+                        predicate_kind, predicate_label,
+                        object_kind, object_entity_id, object_literal,
+                        summary,
+                        valid_from, valid_to, recorded_at, invalidated_at,
+                        invalidated_by, supersedes,
+                        episode_id, memory_id,
+                        resolution_method,
+                        activation, confidence,
+                        agent_affect,
+                        created_at
+                 FROM graph_edges
+                 WHERE namespace = ?1
+                   AND invalidated_at IS NULL
+                   AND (subject_id = ?2 OR (object_kind = 'entity' AND object_entity_id = ?2))
+                 ORDER BY recorded_at ASC, id ASC
+                 LIMIT ?3",
+            )?;
+            let cols: Vec<EdgeRowColumns> = stmt
+                .query_map(
+                    rusqlite::params![self.namespace, loser_blob, batch_size as i64],
+                    row_to_edge_columns,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+
+            if cols.is_empty() {
+                break;
+            }
+
+            let prior_edges: Vec<Edge> =
+                cols.into_iter().map(decode_edge_row).collect::<Result<Vec<_>, _>>()?;
+
+            // Re-mint each prior with loser → winner remapping.
+            let tx = self.conn.transaction()?;
+            let now = chrono::Utc::now();
+            let now_unix = dt_to_unix(now);
+            for prior in &prior_edges {
+                // Build successor with loser slot replaced.
+                let new_subject = if prior.subject_id == loser {
+                    winner
+                } else {
+                    prior.subject_id
+                };
+                let new_object = match &prior.object {
+                    EdgeEnd::Entity { id } if *id == loser => EdgeEnd::Entity { id: winner },
+                    other => other.clone(),
+                };
+                // Mint a new edge that mirrors prior except for the
+                // loser slot, with `supersedes = Some(prior.id)` and a
+                // fresh id + recorded_at = now. We don't change other
+                // bi-temporal fields (`valid_from`/`valid_to`) — the
+                // belief itself is unchanged, only the entity reference
+                // is updated.
+                let mut successor = Edge::new(
+                    new_subject,
+                    prior.predicate.clone(),
+                    new_object,
+                    prior.valid_from,
+                    now,
+                );
+                successor.summary = prior.summary.clone();
+                successor.valid_to = prior.valid_to;
+                successor.activation = prior.activation;
+                successor.confidence = prior.confidence;
+                successor.agent_affect = prior.agent_affect.clone();
+                successor.episode_id = prior.episode_id;
+                successor.memory_id = prior.memory_id.clone();
+                successor.resolution_method = prior.resolution_method.clone();
+                successor.supersedes = Some(prior.id);
+                successor.validate()?;
+
+                // INSERT successor.
+                let (predicate_kind, predicate_label) =
+                    predicate_to_columns(&successor.predicate)?;
+                let (object_kind, object_entity_blob, object_literal) =
+                    edge_end_to_columns(&successor.object)?;
+                let resolution_text = resolution_method_to_text(&successor.resolution_method)?;
+                let agent_affect_json = match &successor.agent_affect {
+                    Some(v) => Some(serde_json::to_string(v)?),
+                    None => None,
+                };
+                tx.execute(
+                    "INSERT INTO graph_edges (
+                        id, subject_id,
+                        predicate_kind, predicate_label,
+                        object_kind, object_entity_id, object_literal,
+                        summary,
+                        valid_from, valid_to, recorded_at, invalidated_at,
+                        invalidated_by, supersedes,
+                        episode_id, memory_id,
+                        resolution_method,
+                        activation, confidence,
+                        agent_affect,
+                        created_at, namespace
+                    ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                        ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                        ?17, ?18, ?19, ?20, ?21, ?22
+                    )",
+                    rusqlite::params![
+                        successor.id.as_bytes().to_vec(),
+                        successor.subject_id.as_bytes().to_vec(),
+                        predicate_kind,
+                        predicate_label,
+                        object_kind,
+                        object_entity_blob,
+                        object_literal,
+                        successor.summary,
+                        opt_dt_to_unix(successor.valid_from),
+                        opt_dt_to_unix(successor.valid_to),
+                        dt_to_unix(successor.recorded_at),
+                        opt_dt_to_unix(successor.invalidated_at),
+                        successor.invalidated_by.map(|u| u.as_bytes().to_vec()),
+                        successor.supersedes.map(|u| u.as_bytes().to_vec()),
+                        successor.episode_id.map(|u| u.as_bytes().to_vec()),
+                        successor.memory_id,
+                        resolution_text,
+                        successor.activation,
+                        successor.confidence,
+                        agent_affect_json,
+                        dt_to_unix(successor.created_at),
+                        self.namespace,
+                    ],
+                )?;
+                // Invalidate prior in this same tx.
+                tx.execute(
+                    "UPDATE graph_edges
+                     SET invalidated_at = ?1, invalidated_by = ?2
+                     WHERE id = ?3 AND namespace = ?4
+                       AND invalidated_at IS NULL",
+                    rusqlite::params![
+                        now_unix,
+                        successor.id.as_bytes().to_vec(),
+                        prior.id.as_bytes().to_vec(),
+                        self.namespace,
+                    ],
+                )?;
+                report.edges_superseded += 1;
+            }
+            tx.commit()?;
+
+            // Telemetry: a batch of N consolidation writes.
+            self.sink
+                .emit_operational_load("merge_entities_batch", prior_edges.len() as u32);
+
+            if prior_edges.len() < batch_size {
+                // We pulled less than a full batch — no more work.
+                break;
+            }
+        }
+
+        Ok(report)
+    }
+
+    // -------------------------------------------------- Edge (Phase 2/3)
+    fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError> {
+        // Type-level invariants first — this is the only writer-side
+        // validation we control. SQL CHECKs handle the structural XOR
+        // (object_kind ↔ object_entity_id/object_literal) and the
+        // valid_from ≤ valid_to bound, but bound-checking f64s in Rust
+        // gives a typed `GraphError::Invariant` with a meaningful message
+        // instead of a raw `SqliteFailure(CHECK constraint failed)`.
+        edge.validate()?;
+
+        let (predicate_kind, predicate_label) = predicate_to_columns(&edge.predicate)?;
+        let (object_kind, object_entity_blob, object_literal) =
+            edge_end_to_columns(&edge.object)?;
+        let resolution_text = resolution_method_to_text(&edge.resolution_method)?;
+        let agent_affect_json = match &edge.agent_affect {
+            Some(v) => Some(serde_json::to_string(v)?),
+            None => None,
+        };
+
+        // Note: `confidence_source` is not persisted in this slice — §4.1
+        // does not currently carry a column for it. On read the field is
+        // re-defaulted to `Recovered` (the post-write canonical value for
+        // non-`Migrated` edges). See DevNote #5 in the file header for the
+        // rationale and the planned schema follow-up.
+        self.conn.execute(
+            "INSERT INTO graph_edges (
+                id, subject_id,
+                predicate_kind, predicate_label,
+                object_kind, object_entity_id, object_literal,
+                summary,
+                valid_from, valid_to, recorded_at, invalidated_at,
+                invalidated_by, supersedes,
+                episode_id, memory_id,
+                resolution_method,
+                activation, confidence,
+                agent_affect,
+                created_at, namespace
+            ) VALUES (
+                ?1, ?2,
+                ?3, ?4,
+                ?5, ?6, ?7,
+                ?8,
+                ?9, ?10, ?11, ?12,
+                ?13, ?14,
+                ?15, ?16,
+                ?17,
+                ?18, ?19,
+                ?20,
+                ?21, ?22
+            )",
+            rusqlite::params![
+                edge.id.as_bytes().to_vec(),
+                edge.subject_id.as_bytes().to_vec(),
+                predicate_kind,
+                predicate_label,
+                object_kind,
+                object_entity_blob,
+                object_literal,
+                edge.summary,
+                opt_dt_to_unix(edge.valid_from),
+                opt_dt_to_unix(edge.valid_to),
+                dt_to_unix(edge.recorded_at),
+                opt_dt_to_unix(edge.invalidated_at),
+                edge.invalidated_by.map(|u| u.as_bytes().to_vec()),
+                edge.supersedes.map(|u| u.as_bytes().to_vec()),
+                edge.episode_id.map(|u| u.as_bytes().to_vec()),
+                edge.memory_id,
+                resolution_text,
+                edge.activation,
+                edge.confidence,
+                agent_affect_json,
+                dt_to_unix(edge.created_at),
+                self.namespace,
+            ],
+        )?;
+        Ok(())
+    }
+    fn invalidate_edge(
+        &mut self,
+        prior_id: Uuid,
+        successor_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<(), GraphError> {
+        // ISS-034: GUARD-3 primitive. Single UPDATE that closes out a prior
+        // edge by setting `invalidated_at` and `invalidated_by`. Idempotent
+        // when called twice with the same `successor_id`; errors when the
+        // prior is already closed by a different successor.
+        let prior_blob = prior_id.as_bytes().to_vec();
+        let succ_blob = successor_id.as_bytes().to_vec();
+        let now_unix = dt_to_unix(now);
+
+        // Read current state (under the same connection — the caller is
+        // expected to wrap this in a transaction via `with_graph_tx` when
+        // ordering matters; the read+update here is itself atomic under
+        // SQLite's serializable WAL semantics for a single connection).
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT invalidated_at, invalidated_by
+             FROM graph_edges
+             WHERE id = ?1 AND namespace = ?2",
+        )?;
+        let row: Option<(Option<f64>, Option<Vec<u8>>)> = stmt
+            .query_row(
+                rusqlite::params![prior_blob, self.namespace],
+                |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
+            )
+            .optional()?;
+
+        let (existing_at, existing_by) = match row {
+            None => return Err(GraphError::EdgeNotFound(prior_id)),
+            Some(t) => t,
+        };
+
+        if let Some(_at) = existing_at {
+            // Already closed. Idempotent only if `invalidated_by` matches.
+            match existing_by {
+                Some(by) if by == succ_blob => return Ok(()),
+                _ => {
+                    return Err(GraphError::Invariant(
+                        "edge already invalidated by another successor",
+                    ))
+                }
+            }
+        }
+
+        // Verify successor exists (FK on `invalidated_by`); the FK would
+        // catch this at commit time, but checking up-front gives a typed
+        // error instead of a SQLite constraint failure.
+        let mut stmt_succ = self
+            .conn
+            .prepare_cached("SELECT 1 FROM graph_edges WHERE id = ?1 AND namespace = ?2")?;
+        let succ_exists: Option<i64> = stmt_succ
+            .query_row(rusqlite::params![succ_blob, self.namespace], |r| r.get::<_, i64>(0))
+            .optional()?;
+        if succ_exists.is_none() {
+            return Err(GraphError::EdgeNotFound(successor_id));
+        }
+
+        let mut stmt_upd = self.conn.prepare_cached(
+            "UPDATE graph_edges
+             SET invalidated_at = ?1, invalidated_by = ?2
+             WHERE id = ?3 AND namespace = ?4
+               AND invalidated_at IS NULL",
+        )?;
+        let n = stmt_upd.execute(rusqlite::params![
+            now_unix,
+            succ_blob,
+            prior_blob,
+            self.namespace,
+        ])?;
+        if n == 0 {
+            // Concurrent writer closed it between our SELECT and UPDATE.
+            return Err(GraphError::Invariant(
+                "edge already invalidated by another successor",
+            ));
+        }
+        Ok(())
+    }
+    fn supersede_edge(
+        &mut self,
+        old: Uuid,
+        successor: &Edge,
+        at: DateTime<Utc>,
+    ) -> Result<(), GraphError> {
+        // §4.2 spec: convenience wrapper composing `insert_edge(successor)` +
+        // `invalidate_edge(old, successor.id, at)` inside a single transaction.
+        // Both writes commit together or neither does. Used by ad-hoc callers
+        // that don't need the decomposed primitives the resolution pipeline
+        // (§3.5) uses to batch successor inserts before invalidations.
+        //
+        // Invariant: `successor.supersedes` SHOULD point at `old`. We do not
+        // enforce this — the caller controls the chain wiring per §3.4 — but
+        // the FK on `invalidated_by` is enforced by `invalidate_edge` (looks
+        // up `successor_id` after insert).
+        //
+        // Tx model: rusqlite's `Transaction` guard-rolls back on Drop unless
+        // explicitly committed. We mirror the pattern used by
+        // `record_extraction_failure` / `mark_failure_resolved` (a `tx =
+        // self.conn.transaction()?` followed by manual commit on success).
+        // Insert + invalidate both run on `self.conn` inside the same physical
+        // transaction because rusqlite doesn't open a second connection — the
+        // outer transaction's writes are visible to the inner SQL.
+
+        // Verify successor wiring matches `old` if the caller set it. A
+        // mismatched `supersedes` is a programming error; failing fast with
+        // `Invariant` is preferable to silently writing a corrupt chain.
+        if let Some(s) = successor.supersedes {
+            if s != old {
+                return Err(GraphError::Invariant(
+                    "supersede_edge: successor.supersedes does not match `old`",
+                ));
+            }
+        }
+
+        let tx = self.conn.transaction()?;
+        // Within the transaction, we drop our `&mut self.conn` borrow into a
+        // raw `&Transaction` and call SQL directly. We can't call our own
+        // trait methods through `&mut self` because the connection is now
+        // owned by `tx`. Instead, we replay the relevant CRUD inline. This is
+        // a small amount of duplication but avoids re-entrant borrows of
+        // `self.conn`.
+
+        // --- 1. INSERT successor edge (mirrors `insert_edge`) ---
+        successor.validate()?;
+        let (predicate_kind, predicate_label) = predicate_to_columns(&successor.predicate)?;
+        let (object_kind, object_entity_blob, object_literal) =
+            edge_end_to_columns(&successor.object)?;
+        let resolution_text = resolution_method_to_text(&successor.resolution_method)?;
+        let agent_affect_json = match &successor.agent_affect {
+            Some(v) => Some(serde_json::to_string(v)?),
+            None => None,
+        };
+        tx.execute(
+            "INSERT INTO graph_edges (
+                id, subject_id,
+                predicate_kind, predicate_label,
+                object_kind, object_entity_id, object_literal,
+                summary,
+                valid_from, valid_to, recorded_at, invalidated_at,
+                invalidated_by, supersedes,
+                episode_id, memory_id,
+                resolution_method,
+                activation, confidence,
+                agent_affect,
+                created_at, namespace
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                ?17, ?18, ?19, ?20, ?21, ?22
+            )",
+            rusqlite::params![
+                successor.id.as_bytes().to_vec(),
+                successor.subject_id.as_bytes().to_vec(),
+                predicate_kind,
+                predicate_label,
+                object_kind,
+                object_entity_blob,
+                object_literal,
+                successor.summary,
+                opt_dt_to_unix(successor.valid_from),
+                opt_dt_to_unix(successor.valid_to),
+                dt_to_unix(successor.recorded_at),
+                opt_dt_to_unix(successor.invalidated_at),
+                successor.invalidated_by.map(|u| u.as_bytes().to_vec()),
+                successor.supersedes.map(|u| u.as_bytes().to_vec()),
+                successor.episode_id.map(|u| u.as_bytes().to_vec()),
+                successor.memory_id,
+                resolution_text,
+                successor.activation,
+                successor.confidence,
+                agent_affect_json,
+                dt_to_unix(successor.created_at),
+                self.namespace,
+            ],
+        )?;
+
+        // --- 2. INVALIDATE prior edge (mirrors `invalidate_edge`) ---
+        let prior_blob = old.as_bytes().to_vec();
+        let succ_blob = successor.id.as_bytes().to_vec();
+        let now_unix = dt_to_unix(at);
+
+        // Read current invalidation state.
+        let row: Option<(Option<f64>, Option<Vec<u8>>)> = tx
+            .query_row(
+                "SELECT invalidated_at, invalidated_by
+                 FROM graph_edges
+                 WHERE id = ?1 AND namespace = ?2",
+                rusqlite::params![prior_blob, self.namespace],
+                |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
+            )
+            .optional()?;
+        let (existing_at, existing_by) = match row {
+            None => return Err(GraphError::EdgeNotFound(old)),
+            Some(t) => t,
+        };
+        if existing_at.is_some() {
+            // Already closed — idempotent only if same successor.
+            match existing_by {
+                Some(by) if by == succ_blob => {
+                    tx.commit()?;
+                    return Ok(());
+                }
+                _ => {
+                    return Err(GraphError::Invariant(
+                        "edge already invalidated by another successor",
+                    ))
+                }
+            }
+        }
+        let n = tx.execute(
+            "UPDATE graph_edges
+             SET invalidated_at = ?1, invalidated_by = ?2
+             WHERE id = ?3 AND namespace = ?4
+               AND invalidated_at IS NULL",
+            rusqlite::params![now_unix, succ_blob, prior_blob, self.namespace],
+        )?;
+        if n == 0 {
+            return Err(GraphError::Invariant(
+                "edge already invalidated by another successor",
+            ));
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+    fn link_memory_to_entities(
+        &mut self,
+        memory_id: &str,
+        entity_ids: &[(Uuid, f64, Option<String>)],
+        at: DateTime<Utc>,
+    ) -> Result<(), GraphError> {
+        // §4.2 Memory↔Entity provenance — atomic batch with within-batch dedup
+        // and `ON CONFLICT DO UPDATE` cross-batch dedup. See design §4.2 for
+        // the upsert-rule contract.
+
+        // (1) Validate inputs up front so we never open a transaction we'd
+        //     then have to roll back for a trivially detectable bug.
+        for (_eid, conf, _span) in entity_ids {
+            if !conf.is_finite() || !(0.0..=1.0).contains(conf) {
+                return Err(GraphError::Invariant(
+                    "link_memory_to_entities: confidence out of [0,1]",
+                ));
+            }
+        }
+
+        // (2) Within-batch dedup. Fold duplicate `entity_id`s in input order
+        //     using the same rules as cross-batch (max confidence, latest
+        //     non-NULL span). This guarantees the SQL layer sees one row per
+        //     entity_id and removes a class of "ON CONFLICT applied twice
+        //     within the same statement" footguns.
+        use std::collections::HashMap;
+        let mut folded: HashMap<Uuid, (f64, Option<String>)> =
+            HashMap::with_capacity(entity_ids.len());
+        // Preserve first-seen order for deterministic iteration (HashMap
+        // iteration order is randomized — that's fine for SQL, but tests want
+        // determinism. Track order in a separate Vec).
+        let mut order: Vec<Uuid> = Vec::with_capacity(entity_ids.len());
+        for (eid, conf, span) in entity_ids {
+            match folded.get_mut(eid) {
+                Some((existing_conf, existing_span)) => {
+                    if *conf > *existing_conf {
+                        *existing_conf = *conf;
+                    }
+                    if span.is_some() {
+                        *existing_span = span.clone();
+                    }
+                }
+                None => {
+                    folded.insert(*eid, (*conf, span.clone()));
+                    order.push(*eid);
+                }
+            }
+        }
+
+        let recorded_at = dt_to_unix(at);
+        let ns = self.namespace.clone();
+
+        // (3) Atomic batch: cross-namespace check + upsert in one transaction.
+        let tx = self.conn.transaction()?;
+        {
+            // Namespace pre-check. The PK `(memory_id, entity_id)` does NOT
+            // include namespace; a pre-existing row with a different namespace
+            // would silently be "stolen" by a naive upsert. Detect and fail
+            // loud (design §4.2: cross-namespace memory↔entity link is an
+            // invariant violation).
+            let mut ns_check = tx.prepare_cached(
+                "SELECT namespace FROM graph_memory_entity_mentions
+                 WHERE memory_id = ?1 AND entity_id = ?2",
+            )?;
+            for eid in &order {
+                let existing_ns: Option<String> = ns_check
+                    .query_row(
+                        rusqlite::params![memory_id, eid.as_bytes().to_vec()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(existing) = existing_ns {
+                    if existing != ns {
+                        // tx is dropped → automatic rollback. We surface a
+                        // structured invariant for the caller.
+                        return Err(GraphError::Invariant(
+                            "cross-namespace memory↔entity link",
+                        ));
+                    }
+                }
+            }
+            drop(ns_check);
+
+            // Upsert. The DO UPDATE clause encodes the design §4.2 rules:
+            //   confidence    ← max(existing, new)        (monotone)
+            //   mention_span  ← COALESCE(new, existing)   (latest non-NULL)
+            //   recorded_at   ← max(existing, new)        (latest wins)
+            //   namespace     ← (preserved; not in DO UPDATE)
+            let mut upsert = tx.prepare_cached(
+                "INSERT INTO graph_memory_entity_mentions
+                    (memory_id, entity_id, mention_span, confidence,
+                     recorded_at, namespace)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(memory_id, entity_id) DO UPDATE SET
+                    confidence   = MAX(confidence, excluded.confidence),
+                    mention_span = COALESCE(excluded.mention_span, mention_span),
+                    recorded_at  = MAX(recorded_at, excluded.recorded_at)",
+            )?;
+            for eid in &order {
+                let (conf, span) = &folded[eid];
+                upsert.execute(rusqlite::params![
+                    memory_id,
+                    eid.as_bytes().to_vec(),
+                    span.as_deref(),
+                    conf,
+                    recorded_at,
+                    ns,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    // ------------------------------------------------- Topics (Phase 2)
+    fn upsert_topic(&mut self, t: &KnowledgeTopic) -> Result<(), GraphError> {
+        // §4.1 `knowledge_topics` is mirrored against `graph_entities` (the
+        // PK is also a FK into entities). Caller MUST insert the mirror
+        // entity before upserting the topic — surfacing the FK error here
+        // is correct: it forces the integrity invariant at the seam.
+        //
+        // Embedding dim: §4.1 says topic embeddings share the system-wide
+        // `embedding_dim` with entities. Reuse the same encoder so a single
+        // change in dim policy propagates to both writers without per-call
+        // duplication.
+        t.validate_embedding_dim(self.embedding_dim)?;
+        let embedding_blob =
+            entity_embedding_to_blob(t.embedding.as_deref(), self.embedding_dim)?;
+
+        // Vec<String>/Vec<Uuid> persist as JSON TEXT (column default '[]').
+        // Serializing here keeps the SQL statement uniform; the schema stores
+        // these as TEXT to avoid a third-table normalization that buys us
+        // nothing for v0.3 (callers always read the full topic).
+        let source_memories = serde_json::to_string(&t.source_memories)?;
+        // Persist Uuids as their canonical hyphenated string form inside the
+        // JSON array — matches how serde does Uuid by default and keeps the
+        // text-blob roundtrip stable across `bytes`/`hyphenated` choices.
+        let contributing_json = serde_json::to_string(
+            &t.contributing_entities
+                .iter()
+                .map(|u| u.to_string())
+                .collect::<Vec<_>>(),
+        )?;
+
+        let cluster_weights_json = match &t.cluster_weights {
+            Some(v) => Some(serde_json::to_string(v)?),
+            None => None,
+        };
+
+        // Upsert. PK is `topic_id`. On conflict update every mutable column
+        // (everything except topic_id and namespace — namespace is part of
+        // identity per §4.1 and changing it via an upsert would be a stealth
+        // namespace move; reject by virtue of WHERE-pinning identity).
+        let sql = "INSERT INTO knowledge_topics (
+                topic_id, title, summary, embedding,
+                source_memories, contributing_entities, cluster_weights,
+                synthesis_run_id, synthesized_at,
+                superseded_by, superseded_at,
+                namespace
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ON CONFLICT(topic_id) DO UPDATE SET
+                title = excluded.title,
+                summary = excluded.summary,
+                embedding = excluded.embedding,
+                source_memories = excluded.source_memories,
+                contributing_entities = excluded.contributing_entities,
+                cluster_weights = excluded.cluster_weights,
+                synthesis_run_id = excluded.synthesis_run_id,
+                synthesized_at = excluded.synthesized_at,
+                superseded_by = excluded.superseded_by,
+                superseded_at = excluded.superseded_at
+            WHERE knowledge_topics.namespace = excluded.namespace";
+        let n = self.conn.execute(
+            sql,
+            rusqlite::params![
+                t.topic_id.as_bytes().to_vec(),
+                t.title,
+                t.summary,
+                embedding_blob,
+                source_memories,
+                contributing_json,
+                cluster_weights_json,
+                t.synthesis_run_id.map(|u| u.as_bytes().to_vec()),
+                t.synthesized_at,
+                t.superseded_by.map(|u| u.as_bytes().to_vec()),
+                t.superseded_at,
+                t.namespace,
+            ],
+        )?;
+        // n == 0 means the WHERE clause filtered out the conflict row,
+        // i.e. an attempt to upsert across namespaces. Surface as an
+        // invariant — same shape as `link_memory_to_entities`.
+        if n == 0 {
+            return Err(GraphError::Invariant(
+                "upsert_topic: cross-namespace topic upsert rejected",
+            ));
+        }
+        Ok(())
+    }
     fn supersede_topic(&mut self, old: Uuid, successor: Uuid, at: DateTime<Utc>) -> Result<(), GraphError> {
         // §4.1 GUARD-3: supersede is monotonic, never erase. Mirror
         // `KnowledgeTopic::supersede` semantics — error if the row is already
@@ -4040,81 +4234,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
             ));
         }
         self.begin_pipeline_run_inner(kind, Some(memory_id), Some(episode_id), input_summary)
-    }
-    fn latest_pipeline_run_for_memory(
-        &self,
-        memory_id: &str,
-    ) -> Result<Option<PipelineRunRow>, GraphError> {
-        // Latest-by-started_at over the partial index `idx_graph_pipeline_runs_memory`.
-        // Bound the result to a single row — `LIMIT 1` keeps the planner on
-        // the index seek even on legacy DBs that may have additional runs
-        // for the same memory id.
-        let mut stmt = self.conn.prepare(
-            "SELECT run_id, kind, status, started_at, finished_at,
-                    memory_id, episode_id, error_detail
-             FROM graph_pipeline_runs
-             WHERE memory_id = ?1 AND namespace = ?2
-             ORDER BY started_at DESC
-             LIMIT 1",
-        )?;
-        let row = stmt
-            .query_row(
-                rusqlite::params![memory_id, self.namespace],
-                |row| {
-                    let run_id_blob: Vec<u8> = row.get(0)?;
-                    let kind_str: String = row.get(1)?;
-                    let status_str: String = row.get(2)?;
-                    let started_at: f64 = row.get(3)?;
-                    let finished_at: Option<f64> = row.get(4)?;
-                    let memory_id_opt: Option<String> = row.get(5)?;
-                    let episode_id_blob: Option<Vec<u8>> = row.get(6)?;
-                    let error_detail: Option<String> = row.get(7)?;
-                    Ok((
-                        run_id_blob,
-                        kind_str,
-                        status_str,
-                        started_at,
-                        finished_at,
-                        memory_id_opt,
-                        episode_id_blob,
-                        error_detail,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((run_id_blob, kind_str, status_str, started_at, finished_at, memory_id_opt, episode_id_blob, error_detail)) = row else {
-            return Ok(None);
-        };
-        // Decode all SQLite-side encodings to canonical Rust types. Each
-        // failure surfaces as `GraphError::Invariant` with a precise context
-        // string — never silently default.
-        if run_id_blob.len() != 16 {
-            return Err(GraphError::Invariant(
-                "graph_pipeline_runs.run_id length != 16",
-            ));
-        }
-        let run_id = Uuid::from_slice(&run_id_blob).unwrap();
-        // serde_json reads enum variants only when the input is a JSON
-        // string (i.e. wrapped in quotes), matching the encoding done in
-        // `begin_pipeline_run_inner` via `serde_json::to_string(&kind)`.
-        let kind: PipelineKind = serde_json::from_str(&format!("\"{kind_str}\""))?;
-        let status: RunStatus = serde_json::from_str(&format!("\"{status_str}\""))?;
-        let started_at = unix_to_dt(started_at)?;
-        let finished_at = match finished_at {
-            Some(f) => Some(unix_to_dt(f)?),
-            None => None,
-        };
-        let episode_id = opt_blob_to_uuid(episode_id_blob)?;
-        Ok(Some(PipelineRunRow {
-            run_id,
-            kind,
-            status,
-            started_at,
-            finished_at,
-            memory_id: memory_id_opt,
-            episode_id,
-            error_detail,
-        }))
     }
     fn finish_pipeline_run(
         &mut self, run_id: Uuid, status: RunStatus, output_summary: Option<Json>, error_detail: Option<&str>,
@@ -4237,33 +4356,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         )?;
         Ok(())
     }
-    fn list_proposed_predicates(&self, min_usage: u64) -> Result<Vec<ProposedPredicateStats>, GraphError> {
-        // GOAL-1.10: surface drift candidates only — canonical predicates
-        // are operator-curated and not "proposed". Filter both by `kind`
-        // and `min_usage`. SQLite stores `usage_count` as INTEGER (i64);
-        // saturate u64 → i64 to avoid silently overflowing high counts.
-        let threshold: i64 = i64::try_from(min_usage).unwrap_or(i64::MAX);
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT label, usage_count FROM graph_predicates
-             WHERE kind = 'proposed' AND usage_count >= ?1
-             ORDER BY usage_count DESC, label ASC",
-        )?;
-        let rows = stmt
-            .query_map(rusqlite::params![threshold], |row| {
-                let label: String = row.get(0)?;
-                let count: i64 = row.get(1)?;
-                Ok((label, count))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows
-            .into_iter()
-            .map(|(label, count)| ProposedPredicateStats {
-                label,
-                usage_count: count.max(0) as u64,
-            })
-            .collect())
-    }
-
     // ------------------------------------------- Failures (Phase 2)
     fn record_extraction_failure(&mut self, f: &ExtractionFailure) -> Result<(), GraphError> {
         // §4.1 invariant: closed-set `stage` and `error_category` strings.
@@ -4293,36 +4385,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
             ],
         )?;
         Ok(())
-    }
-    fn list_failed_episodes(&self, unresolved_only: bool) -> Result<Vec<Uuid>, GraphError> {
-        // Distinct episode ids — many failures may target the same episode
-        // (e.g. resolution + persist both fail on the same input). Callers
-        // care about the episode set, not the failure multiset.
-        let sql = if unresolved_only {
-            "SELECT DISTINCT episode_id FROM graph_extraction_failures
-             WHERE namespace = ?1 AND resolved_at IS NULL
-             ORDER BY episode_id ASC"
-        } else {
-            "SELECT DISTINCT episode_id FROM graph_extraction_failures
-             WHERE namespace = ?1
-             ORDER BY episode_id ASC"
-        };
-        let mut stmt = self.conn.prepare_cached(sql)?;
-        let blobs = stmt
-            .query_map(rusqlite::params![self.namespace], |row| {
-                row.get::<_, Vec<u8>>(0)
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        blobs
-            .into_iter()
-            .map(|b| {
-                Uuid::from_slice(&b).map_err(|_| {
-                    GraphError::Invariant(
-                        "list_failed_episodes: episode_id blob is not a valid UUID",
-                    )
-                })
-            })
-            .collect()
     }
     fn mark_failure_resolved(&mut self, failure_id: Uuid, at: DateTime<Utc>) -> Result<(), GraphError> {
         // GOAL-1.12: failures are append-only; `resolved_at` is the only
@@ -4358,21 +4420,6 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         )?;
         tx.commit()?;
         Ok(())
-    }
-
-    // ------------------------------------------ Namespaces (Phase 2)
-    fn list_namespaces(&self) -> Result<Vec<String>, GraphError> {
-        // §4.1 lifecycle: namespace lives on graph_entities. Distinct
-        // namespaces seen across the canonical entity table is the
-        // authoritative answer; entity-less namespaces (e.g. orphan alias
-        // rows) are not exposed here by design.
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT DISTINCT namespace FROM graph_entities ORDER BY namespace",
-        )?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
     }
 
     // ----------------------------------------- Transaction (Phase 2)
@@ -4894,7 +4941,9 @@ impl<'a> GraphStore for SqliteGraphStore<'a> {
         tx.commit()?;
         Ok(report)
     }
+
 }
+
 
 #[cfg(test)]
 mod tests {

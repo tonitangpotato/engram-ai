@@ -67,7 +67,7 @@ use crate::graph::{
     edge::{ConfidenceSource, Edge, EdgeEnd, ResolutionMethod},
     entity::Entity,
     schema::Predicate,
-    store::GraphStore,
+    store::{GraphStore, GraphWrite},
     GraphError,
 };
 use crate::resolution::context::{
@@ -349,7 +349,10 @@ pub trait ApplyDelta {
 
 impl<S: GraphStore + ?Sized> ApplyDelta for S {
     fn apply_graph_delta(&mut self, delta: &GraphDelta) -> Result<ApplyReport, GraphError> {
-        GraphStore::apply_graph_delta(self, delta)
+        // `apply_graph_delta` lives on `GraphWrite` (design §5.1). The
+        // marker `GraphStore: GraphWrite` super-trait pulls it in for the
+        // blanket impl.
+        GraphWrite::apply_graph_delta(self, delta)
     }
 }
 

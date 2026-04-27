@@ -16,7 +16,7 @@ use rusqlite::Connection;
 
 use crate::graph::entity::{Entity, EntityKind};
 use crate::graph::storage_graph::init_graph_tables;
-use crate::graph::store::{GraphStore, SqliteGraphStore};
+use crate::graph::store::{GraphWrite, SqliteGraphStore};
 
 /// Open an in-memory connection with foreign-keys ON, the v0.2 `memories`
 /// stub table that some §4.1 tables reference, and the full graph schema.

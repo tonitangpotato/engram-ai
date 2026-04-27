@@ -731,6 +731,17 @@ use crate::graph::edge::{Edge, ResolutionMethod};
 use crate::graph::schema::Predicate;
 
 /// All graph-layer persistence sits behind this trait so tests can stub it.
+///
+/// **Surface note (see §5.1).** In the public API surface this trait is
+/// split into `GraphRead` (all `&self` methods) and `GraphWrite: GraphRead`
+/// (all `&mut self` methods) to give readers and writers separate borrow
+/// domains, matching the SQLite WAL single-writer/multi-reader runtime
+/// model. The combined declaration shown here is for §4.2 readability —
+/// the implementation in `crates/engramai/src/graph/store.rs` declares
+/// the two split traits and a unified `SqliteGraphStore` that implements
+/// both. Any reference to "the `GraphStore` trait" elsewhere in this
+/// document means "the `GraphRead` + `GraphWrite` pair as a single
+/// conceptual surface".
 pub trait GraphStore {
     // Entity
     fn insert_entity(&mut self, e: &Entity) -> Result<(), GraphError>;
@@ -1282,7 +1293,7 @@ impl Memory {
 }
 ```
 
-New v0.3 additions are **added methods on the existing `Memory` struct** plus a `graph()` accessor that hands out a borrowed `&dyn GraphStore` for advanced callers:
+New v0.3 additions are **added methods on the existing `Memory` struct** plus split read/write graph accessors that hand out borrowed trait objects for advanced callers:
 
 ```rust
 impl Memory {
@@ -1290,10 +1301,15 @@ impl Memory {
     pub fn add_episode(&mut self, ep: Episode) -> Result<Uuid, EngramError>;
 
     // ---- Direct graph access (advanced callers / tools / agents) ----
-    pub fn graph(&self) -> &dyn GraphStore;
-    pub fn graph_mut(&mut self) -> &mut dyn GraphStore;
+    /// Read-only graph view. Multiple readers may hold this concurrently
+    /// against a single writer (SQLite WAL concurrency, see §8).
+    pub fn graph(&self) -> &dyn GraphRead;
+    /// Exclusive write view. Holds `&mut self` so the borrow checker
+    /// statically prevents concurrent reads of the same `Memory` from
+    /// observing partial writes within this process.
+    pub fn graph_mut(&mut self) -> &mut dyn GraphWrite;
 
-    // ---- Convenience: high-level graph queries ----
+    // ---- Convenience: high-level graph queries (read-only) ----
     pub fn get_entity(&self, id: Uuid) -> Result<Option<Entity>, EngramError>;
     pub fn find_entity(&self, name: &str) -> Result<Option<Uuid>, EngramError>;
     pub fn neighbors(
@@ -1310,6 +1326,80 @@ impl Memory {
     pub fn reextract_episodes(&mut self, eps: &[Uuid]) -> Result<ReextractReport, EngramError>;
 }
 ```
+
+#### 5.1 Trait split: `GraphRead` + `GraphWrite`
+
+The v0.3 graph surface is split into two traits rather than a single `GraphStore`:
+
+```rust
+/// Pure read surface. Object-safe. All methods take `&self` — the
+/// implementation MUST NOT mutate any persistent or in-memory state
+/// reachable from `&self`. Callers may hold multiple `&dyn GraphRead`
+/// concurrently against a single writer (SQLite WAL, §8).
+pub trait GraphRead {
+    fn get_entity(&self, id: Uuid) -> Result<Option<Entity>, GraphError>;
+    fn list_entities_by_kind(&self, kind: &EntityKind, limit: usize) -> Result<Vec<Entity>, GraphError>;
+    fn resolve_alias(&self, normalized: &str) -> Result<Option<Uuid>, GraphError>;
+    fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError>;
+    fn edges_as_of(&self, subject: Uuid, at: DateTime<Utc>) -> Result<Vec<Edge>, GraphError>;
+    fn entities_in_episode(&self, episode: Uuid) -> Result<Vec<Uuid>, GraphError>;
+    fn edges_in_episode(&self, episode: Uuid) -> Result<Vec<Uuid>, GraphError>;
+    fn mentions_of_entity(&self, entity: Uuid) -> Result<EntityMentions, GraphError>;
+    fn entities_linked_to_memory(&self, memory_id: &str) -> Result<Vec<Uuid>, GraphError>;
+    fn edges_sourced_from_memory(&self, memory_id: &str) -> Result<Vec<Edge>, GraphError>;
+    fn get_topic(&self, id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError>;
+    fn list_topics(&self, ns: &str, include_superseded: bool, limit: usize) -> Result<Vec<KnowledgeTopic>, GraphError>;
+    fn list_proposed_predicates(&self, min_usage: u64) -> Result<Vec<ProposedPredicateStats>, GraphError>;
+    fn list_failed_episodes(&self, unresolved_only: bool) -> Result<Vec<Uuid>, GraphError>;
+    fn list_namespaces(&self) -> Result<Vec<String>, GraphError>;
+    fn candidate_signals(&self, q: &CandidateQuery) -> Result<CandidateSignals, GraphError>;
+    fn neighbors(&self, entity: Uuid, max_depth: usize) -> Result<Vec<(Uuid, Edge)>, GraphError>;
+    fn traverse(&self, start: Uuid, opts: &TraverseOptions) -> Result<TraverseResult, GraphError>;
+    // ... (every existing `&self` method on GraphStore)
+}
+
+/// Mutating write surface. Requires `GraphRead` as a super-trait so a
+/// `&mut dyn GraphWrite` can be down-borrowed to `&dyn GraphRead` for
+/// read-after-write inside a single transaction.
+pub trait GraphWrite: GraphRead {
+    fn insert_entity(&mut self, e: &Entity) -> Result<(), GraphError>;
+    fn update_entity_cognitive(&mut self, id: Uuid, activation: f64, importance: f64,
+                               identity_confidence: f64, agent_affect: Option<Json>) -> Result<(), GraphError>;
+    fn touch_entity_last_seen(&mut self, id: Uuid, ts: DateTime<Utc>) -> Result<(), GraphError>;
+    fn update_entity_embedding(&mut self, id: Uuid, embedding: Option<&[f32]>) -> Result<(), GraphError>;
+    fn merge_entities(&mut self, loser: Uuid, winner: Uuid, at: DateTime<Utc>) -> Result<MergeReport, GraphError>;
+    fn insert_edge(&mut self, edge: &Edge) -> Result<(), GraphError>;
+    fn supersede_edge(&mut self, old: Uuid, successor: Uuid, at: DateTime<Utc>) -> Result<(), GraphError>;
+    fn invalidate_edge(&mut self, id: Uuid, at: DateTime<Utc>) -> Result<(), GraphError>;
+    fn upsert_topic(&mut self, t: &KnowledgeTopic) -> Result<(), GraphError>;
+    fn supersede_topic(&mut self, old: Uuid, successor: Uuid, at: DateTime<Utc>) -> Result<(), GraphError>;
+    fn begin_pipeline_run(&mut self, kind: PipelineKind, input_summary: Json) -> Result<Uuid, GraphError>;
+    fn record_resolution_trace(&mut self, t: &ResolutionTrace) -> Result<(), GraphError>;
+    fn record_predicate_use(&mut self, p: &Predicate, raw: &str, at: DateTime<Utc>) -> Result<(), GraphError>;
+    fn record_extraction_failure(&mut self, f: &ExtractionFailure) -> Result<(), GraphError>;
+    fn mark_failure_resolved(&mut self, failure_id: Uuid, at: DateTime<Utc>) -> Result<(), GraphError>;
+    fn apply_graph_delta(&mut self, delta: &GraphDelta) -> Result<ApplyReport, GraphError>;
+    // ... (every existing `&mut self` method on GraphStore)
+}
+```
+
+`SqliteGraphStore<'_>` implements both traits. The `Storage::graph_mut(&mut self) -> SqliteGraphStore<'_>` accessor is preserved as the canonical entry; the public surface is what changes.
+
+##### Trade-off analysis (why split vs. unified)
+
+We considered two shapes:
+
+- **Option A — unified `GraphStore` with mixed `&self`/`&mut self` methods**, accessed via `graph_mut(&mut self) -> &mut GraphStore`. Simpler — one trait, one accessor. But: callers that only need to read must still hold `&mut Memory`, defeating Rust's borrow-checker as a concurrency tool. Multiple read-only call sites in `v03-resolution` (candidate retrieval, fusion, decision) would serialize against any concurrent writer at the type level even though SQLite WAL allows true concurrency at the storage level.
+- **Option B — split `GraphRead` + `GraphWrite: GraphRead`** (chosen). Read-only callers hold `&dyn GraphRead` derived from `&Memory`; writers hold `&mut dyn GraphWrite` derived from `&mut Memory`. The borrow checker now models the underlying SQLite WAL discipline at compile time: many readers OR one writer, never both for the same `Memory` handle. Ingestion pipelines that already need to run concurrent retrieval (e.g., resolution candidate scoring) get the parallelism for free with no `RwLock`/`Arc` ceremony at the `Memory` boundary.
+
+**Cost analysis of Option B (the deciding factor).** An earlier draft of this trade-off feared that splitting would force `predicate_use_buffer` and `WatermarkTracker` (the two pieces of mutable in-memory state on `SqliteGraphStore`) to be wrapped in `Mutex` or `Cell`, paying coordination cost on every read. **Re-reading the implementation invalidated this fear**: both fields are touched only on `&mut self` paths (`record_predicate_use`, `flush_predicate_uses`, write-side traversal bookkeeping). No `&self` method reads or writes either buffer. Therefore the split requires **zero interior-mutability wrapping** — it is a pure type-level refactor: every `fn(&self,...)` method moves to `GraphRead`, every `fn(&mut self,...)` method moves to `GraphWrite`, and `SqliteGraphStore` impls both. Runtime cost is exactly zero; the only cost is the mechanical relocation of trait method declarations.
+
+**Why we accept Option B's complexity now.**
+
+1. **Concurrency requirement is current, not hypothetical.** The agent ecosystem already runs multi-agent workflows where a writer (ingestion) and readers (retrieval, audit, CLI) target the same store. Modeling this correctly at the type level prevents a class of accidental serialization bugs that would otherwise surface as "why is my read blocking?" puzzles.
+2. **v0.3 is greenfield for this surface.** Every caller of the new graph API will be written against the split traits from day one. There is no migration cost on existing call sites — only the (mechanical) relocation inside `store.rs`.
+3. **Late-split is asymmetric debt.** If we shipped Option A and 17 resolution call sites adopted `&mut graph`, retrofitting to Option B later means tracking down every gratuitous `&mut` and proving it could have been `&`. SOUL.md "no technical debt" applies precisely here: the cost of "later" is strictly larger than the cost of "now", with no offsetting present-day benefit.
+4. **The historical Option A argument was based on a measurement error.** The supposed `Mutex`-wrapping cost does not exist (see Cost analysis above). Once that cost is correctly priced at zero, Option A has no remaining advantage.
 
 **Compat guarantees.**
 
@@ -1414,6 +1504,8 @@ pub struct MemoryEntityMention {
 4. **Determinism.** Serializing a `GraphDelta` to JSON and back produces an equal delta (`PartialEq`). This is why `HashMap` is not used in the struct — all collections are `Vec` with stable order.
 
 #### `GraphStore::apply_graph_delta` — Atomic Persistence
+
+(Per §5.1, this method lives on the `GraphWrite` half of the split trait. The fragment below uses `trait GraphStore` for continuity with §4.2's combined declaration; the production code declares it on `GraphWrite`.)
 
 ```rust
 pub trait GraphStore {
@@ -1598,6 +1690,10 @@ pub enum GraphError {
 ## 8. Concurrency & Consistency
 
 **Writer model: single-writer, multi-reader.** SQLite in WAL mode (already enabled by `storage.rs` via `PRAGMA journal_mode=WAL`) gives lock-free reader concurrency against a single writer. The graph module inherits the connection discipline of the enclosing `Storage`; no new concurrency primitives. Cross-process access serializes on SQLite's file lock with the existing 5000 ms `busy_timeout`.
+
+**Type-level enforcement of the writer model.** The single-writer/multi-reader discipline is encoded in the trait split (§5.1): readers hold `&dyn GraphRead` borrowed from `&Memory`; writers hold `&mut dyn GraphWrite` borrowed from `&mut Memory`. Rust's borrow checker therefore prevents any in-process call site from accidentally holding a writer alongside a reader against the same `Memory` handle — an error class that would otherwise surface as "why is my retrieval blocking on ingestion?" investigations. This is a compile-time projection of the runtime guarantee SQLite WAL already provides; the two layers reinforce each other rather than duplicating logic. Cross-process readers continue to rely on WAL exclusively.
+
+**No interior mutability required.** `SqliteGraphStore`'s two pieces of mutable in-memory state — `predicate_use_buffer` (HashMap of pending predicate-usage counts) and `WatermarkTracker` (flush pacing) — are touched only on `&mut self` paths. The trait split therefore needs no `Mutex`, `RwLock`, or `Cell` wrapping; read methods are `&self`-pure all the way down to the `rusqlite::Connection`. See §5.1 trade-off analysis for the cost accounting.
 
 **Reader semantics during ingest.** A reader sees pre-commit state for the duration of a writer transaction (§4.3 Rule A). Since the write is atomic over entity + edges, a reader never observes an edge whose subject or object doesn't exist. `edges_as_of(t)` is evaluated against currently-committed state; in-flight async resolution is not yet visible (correct semantics — "what do I believe right now as of time t?", not "what will I believe once resolution finishes?").
 

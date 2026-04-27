@@ -54,7 +54,7 @@
 
 use crate::graph::entity::EntityKind;
 use crate::graph::error::GraphError;
-use crate::graph::store::{CandidateMatch, CandidateQuery, GraphStore};
+use crate::graph::store::{CandidateMatch, CandidateQuery, GraphRead};
 use crate::resolution::fusion::Measurement;
 use crate::resolution::signals::Signal;
 use std::time::Duration;
@@ -106,7 +106,7 @@ impl Default for RetrievalParams {
 ///
 /// Returns an empty vec when the store finds no candidates — this is the
 /// `CreateNew` short-circuit path; fusion is not called.
-pub fn retrieve_candidates<S: GraphStore + ?Sized>(
+pub fn retrieve_candidates<S: GraphRead + ?Sized>(
     store: &S,
     mention_text: &str,
     mention_embedding: Option<&[f32]>,
@@ -304,7 +304,7 @@ mod tests {
     // They are the regression line for ISS-033 Layer 3.
     // ============================================================
 
-    use crate::graph::store::SqliteGraphStore;
+    use crate::graph::store::{GraphWrite, SqliteGraphStore};
     use crate::graph::test_helpers::{fresh_conn, insert_test_entity};
     use chrono::Utc;
 
