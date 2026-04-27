@@ -198,7 +198,7 @@ impl Default for GraphQuery {
 /// Population is owned by `task:retr-impl-fusion`; the type is co-located
 /// with the API so `ScoredResult::Memory` can reference it without a
 /// dependency on the (not-yet-existent) fusion module.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SubScores {
     pub vector_score: Option<f64>,
     pub bm25_score: Option<f64>,
@@ -273,22 +273,15 @@ pub struct GraphQueryResponse {
 pub use crate::retrieval::outcomes::{RetrievalError, RetrievalOutcome};
 
 // ---------------------------------------------------------------------------
-// 6.3 — PlanTrace (placeholder — full surface owned by T14)
+// 6.3 — PlanTrace (full surface in `crate::retrieval::explain`)
 // ---------------------------------------------------------------------------
+//
+// Owned by `task:retr-impl-explain-trace` (T14). Re-exported here so the
+// `GraphQueryResponse` field type stays addressable from the API surface
+// without a separate `use crate::retrieval::explain::PlanTrace;` import in
+// every caller.
 
-/// Opt-in observability bundle — design §6.3 / GOAL-3.11.
-///
-/// **Status:** *placeholder.* `task:retr-impl-explain-trace` (T14) replaces
-/// this with the full struct (`classifier`, `plan`, `downgrades`, `fusion`,
-/// `bi_temporal`, `affect`, `total_latency`, `per_stage_latency`). Today
-/// the type exists only so [`GraphQueryResponse::trace`] can have a typed
-/// `Option<_>` field; the body is intentionally empty so T14 can fill in
-/// without rippling through the API surface.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PlanTrace {
-    /// Total wall-clock time observed by the orchestrator. Filled by T14.
-    pub total_latency: Duration,
-}
+pub use crate::retrieval::explain::PlanTrace;
 
 // ---------------------------------------------------------------------------
 // 6.5 — Tier API

@@ -22,13 +22,18 @@
 pub mod api;
 pub mod budget;
 pub mod classifier;
+pub mod explain;
 pub mod fusion;
 pub mod outcomes;
 pub mod plans;
 
 pub use api::{
-    EntityId, GraphQuery, GraphQueryResponse, MemoryTier, PlanTrace, ScoredResult, SubScores,
-    TimeWindow,
+    EntityId, GraphQuery, GraphQueryResponse, MemoryTier, ScoredResult, SubScores, TimeWindow,
+};
+pub use explain::{
+    AffectTrace, BiTemporalTrace, ClassifierTrace, Downgrade, FusionCandidate, FusionTrace,
+    HybridTruncatedEntry, LlmCost, PerStageTiming, PlanDetail, PlanTrace, PlanTraceBuilder,
+    SignalScoreSnapshot,
 };
 pub use outcomes::{RetrievalError, RetrievalOutcome};
 pub use budget::{
