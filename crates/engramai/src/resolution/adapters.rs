@@ -148,6 +148,47 @@ pub fn draft_entity_from_mention(
     }
 }
 
+/// Build a `DraftEntity` for a triple endpoint (subject or object) that the
+/// EntityExtractor did not produce — i.e. an entity name that appears in an
+/// LLM-extracted edge but has no corresponding `ExtractedEntity` mention.
+///
+/// This is the "edge lift" path (ISS-048): without it, `resolve_edges` drops
+/// every edge whose subject/object isn't in `ctx.entity_drafts`, even though
+/// the LLM clearly identified the name as a referent.
+///
+/// The lifted draft is intentionally weak:
+/// - `kind = EntityKind::other("unknown")` — the LLM's edge call didn't tell
+///   us the type. Downstream resolution can still merge against existing
+///   typed entities by name (kind is only used for tie-breaking / boosts).
+/// - `aliases` carries the lowercase form, matching `draft_entity_from_mention`
+///   so dedup against pattern-matched mentions works (`mention.normalized`
+///   is also the lowercase form for non-Person/Url/File types).
+/// - `canonical_name` keeps the raw endpoint string so `resolve_edges` can
+///   match `DraftEdge::subject_name` (which is also the raw string) directly.
+pub fn draft_entity_from_triple_endpoint(
+    name: &str,
+    occurred_at: DateTime<Utc>,
+    affect_snapshot: Option<SomaticFingerprint>,
+) -> DraftEntity {
+    // Normalization mirrors `draft_entity_from_mention` aliases: lowercase
+    // (which is what `normalize_entity_name` produces for the default case).
+    // Trim removes incidental whitespace from LLM output. We do NOT lowercase
+    // `canonical_name` itself — that mirrors `draft_entity_from_mention`,
+    // which keeps `mention.name` raw while seeding aliases with `normalized`.
+    let trimmed = name.trim();
+    let alias = trimmed.to_lowercase();
+
+    DraftEntity {
+        canonical_name: trimmed.to_string(),
+        kind: EntityKind::other("unknown"),
+        aliases: vec![alias],
+        subtype_hint: None,
+        first_seen: occurred_at,
+        last_seen: occurred_at,
+        somatic_fingerprint: affect_snapshot,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +417,84 @@ mod tests {
 
         assert!(draft.somatic_fingerprint.is_some());
         assert_eq!(draft.somatic_fingerprint.unwrap().0[0], 0.1);
+    }
+
+    // ---- draft_entity_from_triple_endpoint (ISS-048 edge lift) ----
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_keeps_raw_canonical_name() {
+        // canonical_name must match what `DraftEdge::subject_name` carries
+        // (raw triple string), so `resolve_edges` can do exact-string lookup.
+        let now = Utc::now();
+        let draft = draft_entity_from_triple_endpoint("Caroline Martinez", now, None);
+        assert_eq!(draft.canonical_name, "Caroline Martinez");
+    }
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_alias_is_lowercased() {
+        // Alias is the dedup key against pattern-matched mentions, whose
+        // aliases are `mention.normalized` (lowercase for default types).
+        let now = Utc::now();
+        let draft = draft_entity_from_triple_endpoint("Caroline Martinez", now, None);
+        assert_eq!(draft.aliases, vec!["caroline martinez".to_string()]);
+    }
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_trims_whitespace() {
+        // LLM edge outputs can have stray whitespace; trim before storing.
+        let now = Utc::now();
+        let draft = draft_entity_from_triple_endpoint("  Acme  ", now, None);
+        assert_eq!(draft.canonical_name, "Acme");
+        assert_eq!(draft.aliases, vec!["acme".to_string()]);
+    }
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_kind_is_unknown_other() {
+        // The LLM's edge call didn't classify the entity; we default to
+        // `Other("unknown")` (NFKC+lowercase via the sanctioned constructor).
+        let now = Utc::now();
+        let draft = draft_entity_from_triple_endpoint("Anything", now, None);
+        assert_eq!(draft.kind, EntityKind::Other("unknown".into()));
+        assert!(draft.subtype_hint.is_none());
+    }
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_first_seen_eq_last_seen() {
+        // Single-mention semantics: first_seen == last_seen at draft time.
+        let now = Utc::now();
+        let draft = draft_entity_from_triple_endpoint("Foo", now, None);
+        assert_eq!(draft.first_seen, now);
+        assert_eq!(draft.last_seen, now);
+    }
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_carries_affect_snapshot() {
+        let fp = SomaticFingerprint([0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let now = Utc::now();
+        let draft = draft_entity_from_triple_endpoint("Foo", now, Some(fp));
+        assert!(draft.somatic_fingerprint.is_some());
+        assert_eq!(draft.somatic_fingerprint.unwrap().0[0], 0.9);
+    }
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_alias_matches_mention_normalized_for_dedup() {
+        // CRITICAL: lifted alias must equal `mention.normalized` for the
+        // same name, so pattern-matched and edge-lifted entities dedup.
+        // For a non-Person/Url/File mention, `normalize_entity_name` returns
+        // simple lowercase — which is what we produce here.
+        let now = Utc::now();
+        let mention = ExtractedEntity {
+            name: "Acme Corp".into(),
+            normalized: crate::entities::normalize_entity_name(
+                "Acme Corp",
+                &V02EntityType::Organization,
+            ),
+            entity_type: V02EntityType::Organization,
+        };
+        let mention_draft = draft_entity_from_mention(&mention, now, None);
+        let lifted_draft = draft_entity_from_triple_endpoint("Acme Corp", now, None);
+
+        // Same alias key → dedup will collapse them.
+        assert_eq!(mention_draft.aliases, lifted_draft.aliases);
     }
 }

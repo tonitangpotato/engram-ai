@@ -74,6 +74,7 @@ use super::decision::{decide, Decision, DecisionThresholds, ResolutionOutcome};
 use super::edge_decision::{compute_edge_decision, EdgeDecision};
 use super::fusion::{fuse, FusionResult, SignalWeights};
 use super::queue::{JobMode, PipelineJob};
+use super::adapters::draft_entity_from_triple_endpoint;
 use super::stage_edge_extract::extract_edges;
 use super::stage_extract::extract_entities;
 use super::stage_persist::{build_delta, drive_persist, EdgeResolution, EntityResolution};
@@ -326,6 +327,18 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         let _ = extract_edges(self.triple_extractor.as_ref(), &mut ctx);
         stats.edge_extract_duration = t.elapsed();
         stats.edges_extracted = ctx.extracted_triples.len() as u64;
+
+        // ── 5b. ISS-048: lift novel triple endpoints into entity drafts ──
+        // Triples may name subjects/objects that the EntityExtractor did
+        // not surface as `ExtractedEntity` mentions. Without this step,
+        // `resolve_edges` would drop those edges (UNRESOLVED_SUBJECT /
+        // UNRESOLVED_OBJECT) even though the LLM clearly identified the
+        // referent. Lift them as weak `Other("unknown")` drafts so they
+        // flow through resolution alongside pattern-matched mentions.
+        // Pure CPU work, no IO; counts skipped from `stats` (the lifted
+        // count is implicit in `entities_extracted` after this point).
+        lift_novel_endpoints(&mut ctx);
+        stats.entities_extracted = ctx.entity_drafts.len() as u64;
 
         // ── 6. §3.4 resolve entities ─────────────────────────────────────
         let t = Instant::now();
@@ -761,6 +774,9 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         // §3.3 edge extract — failures non-fatal, recorded on ctx.
         let _ = extract_edges(self.triple_extractor.as_ref(), &mut ctx);
 
+        // ISS-048: lift novel triple endpoints (see process() for rationale).
+        lift_novel_endpoints(&mut ctx);
+
         // §3.4 resolve. We don't expose stats — pass a throwaway sink.
         let mut sink = ResolutionStats::default();
         let entity_decisions = self.resolve_entities(&mut ctx, &mut sink)?;
@@ -769,6 +785,76 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         // §3.5 build delta — pure, no IO. Idempotent on equal inputs.
         let delta = build_delta(&ctx, &entity_decisions, &edge_decisions);
         Ok(delta)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ISS-048 — lift novel edge endpoints into entity drafts.
+// ---------------------------------------------------------------------------
+
+/// For every subject/object name in `ctx.extracted_triples` that is not
+/// already represented in `ctx.entity_drafts`, append a weak
+/// `Other("unknown")` draft via `draft_entity_from_triple_endpoint`.
+///
+/// **Why:** the EntityExtractor (§3.2, pattern-based today) only surfaces
+/// names matching its regex set. The TripleExtractor (§3.3, LLM-driven)
+/// often names additional referents in subject/object slots. Without lift,
+/// `resolve_edges` would log UNRESOLVED_SUBJECT / UNRESOLVED_OBJECT for
+/// every such edge and persist drops them — exactly the gap ISS-048 fixes.
+///
+/// **Dedup key:** the lowercase form of the trimmed name. This matches the
+/// `aliases` slot used by `draft_entity_from_mention` (which seeds aliases
+/// with `mention.normalized`, lowercase for the default `EntityType`),
+/// and the `aliases` slot used by `draft_entity_from_triple_endpoint`
+/// itself. Same key on both sides → pattern-mention + edge-lift naming
+/// the same entity collapse to a single draft (verified by
+/// `pipeline_lift_dedup_against_pattern_drafts`).
+///
+/// **Mutation:** appends to `ctx.entity_drafts` only. Does not touch
+/// `ctx.extracted_entities` (which is reserved for actual mentions in the
+/// memory text — lifted endpoints are not mentions).
+///
+/// **No IO, no LLM calls.** Pure transformation over `ctx`.
+pub(crate) fn lift_novel_endpoints(ctx: &mut PipelineContext) {
+    if ctx.extracted_triples.is_empty() {
+        return;
+    }
+
+    // Seed the seen-set from existing drafts. Each `DraftEntity` carries
+    // its lowercase form in `aliases[0]` (per the two adapter functions).
+    // Fall back to lowercasing `canonical_name` defensively in case a
+    // future code path ever produces an alias-less draft.
+    let mut seen: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(ctx.entity_drafts.len() * 2);
+    for draft in &ctx.entity_drafts {
+        if let Some(a) = draft.aliases.first() {
+            seen.insert(a.clone());
+        } else {
+            seen.insert(draft.canonical_name.trim().to_lowercase());
+        }
+    }
+
+    let occurred_at = ctx.memory.created_at;
+    let affect = ctx.affect_snapshot;
+
+    // Collect endpoints first to avoid borrowing `ctx` immutably (triples)
+    // and mutably (entity_drafts) in the same scope.
+    let endpoints: Vec<String> = ctx
+        .extracted_triples
+        .iter()
+        .flat_map(|t| [t.subject.clone(), t.object.clone()])
+        .collect();
+
+    for raw in endpoints {
+        let key = raw.trim().to_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        if !seen.insert(key) {
+            continue;
+        }
+        let draft = draft_entity_from_triple_endpoint(&raw, occurred_at, affect);
+        ctx.entity_drafts.push(draft);
     }
 }
 
@@ -1212,5 +1298,150 @@ mod backfill_tests {
         );
         // memory_id derivation is deterministic for the same memory.
         assert_eq!(d1.memory_id, d2.memory_id);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ISS-048 — lift_novel_endpoints unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod lift_tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    use crate::graph::entity::EntityKind;
+    use crate::resolution::context::DraftEntity;
+    use crate::triple::{Predicate, Triple};
+    use crate::types::{MemoryLayer, MemoryType};
+    use uuid::Uuid;
+
+    fn fixture_ctx() -> PipelineContext {
+        let mem = MemoryRecord {
+            id: "mem-lift".into(),
+            content: "irrelevant for lift step".into(),
+            memory_type: MemoryType::Episodic,
+            layer: MemoryLayer::Working,
+            created_at: Utc.with_ymd_and_hms(2026, 4, 28, 9, 0, 0).unwrap(),
+            access_times: vec![],
+            working_strength: 1.0,
+            core_strength: 0.0,
+            importance: 0.5,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: "lift_test".into(),
+            contradicts: None,
+            contradicted_by: None,
+            superseded_by: None,
+            metadata: None,
+        };
+        PipelineContext::new(mem, Uuid::nil(), None)
+    }
+
+    fn triple(subject: &str, object: &str) -> Triple {
+        Triple::new(
+            subject.to_string(),
+            Predicate::RelatedTo,
+            object.to_string(),
+            0.9,
+        )
+    }
+
+    #[test]
+    fn pipeline_lifts_novel_edge_subjects_into_drafts() {
+        // Given: pipeline saw an edge ("Caroline Martinez", works_at, "Acme")
+        // but the EntityExtractor surfaced no mentions (entity_drafts empty).
+        let mut ctx = fixture_ctx();
+        ctx.extracted_triples
+            .push(triple("Caroline Martinez", "Acme"));
+
+        // When: lift runs.
+        lift_novel_endpoints(&mut ctx);
+
+        // Then: both endpoints become weak drafts ready for resolution.
+        assert_eq!(
+            ctx.entity_drafts.len(),
+            2,
+            "subject + object both lifted; got {:?}",
+            ctx.entity_drafts
+                .iter()
+                .map(|d| d.canonical_name.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        let aliases: Vec<&str> = ctx
+            .entity_drafts
+            .iter()
+            .map(|d| d.aliases[0].as_str())
+            .collect();
+        assert!(
+            aliases.contains(&"caroline martinez"),
+            "subject not lifted: {:?}",
+            aliases
+        );
+        assert!(aliases.contains(&"acme"), "object not lifted: {:?}", aliases);
+
+        // Kind is the weak `Other("unknown")` per draft_entity_from_triple_endpoint.
+        for d in &ctx.entity_drafts {
+            assert_eq!(d.kind, EntityKind::Other("unknown".into()));
+        }
+    }
+
+    #[test]
+    fn pipeline_lift_dedup_against_pattern_drafts() {
+        // Given: EntityExtractor already surfaced "Caroline Martinez" as a
+        // pattern-matched mention (entity_drafts has it via
+        // draft_entity_from_mention, whose alias is the lowercase form).
+        let mut ctx = fixture_ctx();
+        ctx.entity_drafts.push(DraftEntity {
+            canonical_name: "Caroline Martinez".to_string(),
+            kind: EntityKind::Person,
+            aliases: vec!["caroline martinez".to_string()],
+            subtype_hint: None,
+            first_seen: ctx.memory.created_at,
+            last_seen: ctx.memory.created_at,
+            somatic_fingerprint: None,
+        });
+
+        // The same name appears as a triple subject; "Acme" is novel.
+        ctx.extracted_triples
+            .push(triple("Caroline Martinez", "Acme"));
+
+        // When: lift runs.
+        lift_novel_endpoints(&mut ctx);
+
+        // Then: dedup wins for "Caroline Martinez"; only "Acme" is added.
+        // Total drafts: 1 (original Caroline) + 1 (lifted Acme) = 2.
+        assert_eq!(
+            ctx.entity_drafts.len(),
+            2,
+            "expected pattern-matched Caroline + lifted Acme; got {:?}",
+            ctx.entity_drafts
+                .iter()
+                .map(|d| (d.canonical_name.as_str(), d.kind.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        // The pattern-matched Caroline must keep its original `Person` kind —
+        // lift must not overwrite a stronger draft.
+        let caroline = ctx
+            .entity_drafts
+            .iter()
+            .find(|d| d.canonical_name == "Caroline Martinez")
+            .expect("Caroline preserved");
+        assert!(
+            matches!(caroline.kind, EntityKind::Person),
+            "lift overwrote pattern-matched Person draft: {:?}",
+            caroline.kind
+        );
+
+        // Acme is the lifted weak draft.
+        let acme = ctx
+            .entity_drafts
+            .iter()
+            .find(|d| d.canonical_name == "Acme")
+            .expect("Acme lifted");
+        assert_eq!(acme.kind, EntityKind::Other("unknown".into()));
     }
 }
