@@ -115,6 +115,26 @@ enum Commands {
         /// Use OAuth mode for Anthropic (Claude Max)
         #[arg(long)]
         oauth: bool,
+
+        // === ISS-046: v0.3 graph layer plumbing ===
+        /// Path to v0.3 graph SQLite DB. Default: <main_db>.graph.db
+        /// (e.g. `foo.db` → `foo.graph.db`). Has no effect with --no-graph.
+        #[arg(long, env = "ENGRAM_GRAPH_DB")]
+        graph_db: Option<PathBuf>,
+
+        /// Disable v0.3 graph writes entirely (v0.2-only mode). When set,
+        /// `engram store` only writes the legacy `memories` row and skips
+        /// the resolution pipeline. Useful for fast batch ingest where
+        /// graph layer is not needed.
+        #[arg(long)]
+        no_graph: bool,
+
+        /// Bounded drain timeout (seconds) for the resolution worker pool
+        /// at process exit. After this expires, queued/in-flight jobs
+        /// remain in `graph_pipeline_runs` (status=queued) and resume on
+        /// next run (§5.1.1 crash recovery).
+        #[arg(long, default_value = "60")]
+        graph_drain_timeout_secs: u64,
     },
     
     /// Recall memories by query
@@ -867,6 +887,24 @@ enum KnowledgeCommand {
     },
 }
 
+/// Compute the default v0.3 graph DB path from the main DB path (ISS-046).
+///
+/// Rule: replace the file extension with `.graph.db`. If no extension,
+/// append `.graph.db`.
+///
+/// Examples:
+/// - `foo.db`           → `foo.graph.db`
+/// - `/tmp/x.sqlite`    → `/tmp/x.graph.db`
+/// - `/tmp/no-ext`      → `/tmp/no-ext.graph.db`
+fn default_graph_db_path(main_db: &std::path::Path) -> PathBuf {
+    let stem = main_db
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "graph".to_string());
+    let parent = main_db.parent().unwrap_or_else(|| std::path::Path::new("."));
+    parent.join(format!("{}.graph.db", stem))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
@@ -1036,7 +1074,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         
-        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth } => {
+        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, graph_db, no_graph, graph_drain_timeout_secs } => {
+            // === ISS-046: install v0.3 graph layer pipeline pool ===
+            // Default ON: ingest writes to <main_db>.graph.db unless --no-graph.
+            // Triple extractor: reuses --auth-token if Anthropic mode chosen,
+            // else NoopTripleExtractor (entity-only graph; still answers
+            // entity-anchored retrieval which is what LoCoMo needs).
+            if !no_graph {
+                let gdb_path = graph_db
+                    .clone()
+                    .unwrap_or_else(|| default_graph_db_path(&cli.database));
+
+                // Choose triple extractor:
+                // - If user explicitly enabled an LLM extractor (`--extractor`),
+                //   reuse the same backend for triples (consistent semantics
+                //   between fact extraction and edge extraction).
+                // - Else: noop (entity-only graph).
+                let triple_extractor: std::sync::Arc<dyn engramai::TripleExtractor> = match (&extractor, &auth_token) {
+                    (Some(ExtractorArg::Anthropic), Some(tok)) => {
+                        std::sync::Arc::new(engramai::AnthropicTripleExtractor::new(tok, oauth))
+                    }
+                    (Some(ExtractorArg::Ollama), _) => {
+                        let model = extractor_model.as_deref().unwrap_or("llama3.2:3b");
+                        std::sync::Arc::new(engramai::OllamaTripleExtractor::new(model))
+                    }
+                    _ => std::sync::Arc::new(engramai::NoopTripleExtractor::new()),
+                };
+
+                let resolution_cfg = engramai::resolution::ResolutionConfig::default();
+
+                log::info!(
+                    "ISS-046: installing v0.3 pipeline pool (graph_db={}, triple_extractor={})",
+                    gdb_path.display(),
+                    if matches!(&extractor, Some(ExtractorArg::Anthropic) | Some(ExtractorArg::Ollama)) {
+                        "llm"
+                    } else {
+                        "noop"
+                    }
+                );
+
+                mem = mem
+                    .with_pipeline_pool(&gdb_path, triple_extractor, resolution_cfg)
+                    .map_err(|e| format!("failed to install pipeline pool at {}: {}", gdb_path.display(), e))?;
+            } else {
+                log::info!("ISS-046: --no-graph set, skipping v0.3 graph layer install");
+            }
+
             // Set up extractor if requested
             if let Some(ext) = extractor {
                 match ext {
@@ -1091,6 +1174,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("(no facts extracted)");
             } else {
                 println!("{}", id);
+            }
+
+            // === ISS-046: drain v0.3 pipeline pool before exit ===
+            // Synchronous drain bounded by graph_drain_timeout_secs. Any jobs
+            // not committed within the window stay in graph_pipeline_runs
+            // (status=queued) and resume on next run (§5.1.1 crash recovery).
+            if !no_graph {
+                let deadline = std::time::Duration::from_secs(graph_drain_timeout_secs);
+                match mem.shutdown_pipeline(deadline) {
+                    Ok(Some(stats)) => {
+                        log::info!(
+                            "ISS-046: pipeline drained ({} processed, {} failed, {} dropped)",
+                            stats.jobs_processed, stats.jobs_failed, stats.jobs_dropped_inbox_full
+                        );
+                    }
+                    Ok(None) => {
+                        log::debug!("ISS-046: no pipeline pool to drain");
+                    }
+                    Err(e) => {
+                        log::warn!("ISS-046: pipeline drain error: {}", e);
+                    }
+                }
             }
         }
         
