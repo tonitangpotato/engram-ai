@@ -60,6 +60,9 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::graph::{
+    audit::{
+        CATEGORY_APPLY_GRAPH_DELTA_ERROR, CATEGORY_MISSING_CANONICAL, CATEGORY_UNRESOLVED_DEFER,
+    },
     delta::{
         ApplyReport, EdgeInvalidation, GraphDelta, MemoryEntityMention,
         ProposedPredicate, StageFailureRow,
@@ -215,7 +218,7 @@ pub fn build_delta(
                     // we don't write a dangling reference.
                     deferred_mention_failures.push(failure_row(
                         ctx.episode_id,
-                        "missing_canonical",
+                        CATEGORY_MISSING_CANONICAL,
                         format!(
                             "EntityResolution::MergeInto missing canonical row \
                              for draft '{}' (index {})",
@@ -236,7 +239,7 @@ pub fn build_delta(
             Decision::DeferToLlm { candidate_id } => {
                 deferred_mention_failures.push(failure_row(
                     ctx.episode_id,
-                    "unresolved_defer",
+                    CATEGORY_UNRESOLVED_DEFER,
                     format!(
                         "EntityResolution::DeferToLlm reached persist for draft '{}' \
                          (index {}, candidate {}). LLM tie-break must commit a concrete \
@@ -277,7 +280,7 @@ pub fn build_delta(
             EdgeDecision::DeferToLlm => {
                 edge_failures.push(failure_row(
                     ctx.episode_id,
-                    "unresolved_defer",
+                    CATEGORY_UNRESOLVED_DEFER,
                     format!(
                         "EdgeDecision::DeferToLlm reached persist for triple index {}. \
                          LLM tie-break must commit a concrete decision before §3.5.",
@@ -391,7 +394,7 @@ pub fn drive_persist<S: ApplyDelta + ?Sized>(
         Err(e) => {
             ctx.record_failure(
                 PipelineStage::Persist,
-                "apply_graph_delta_error",
+                CATEGORY_APPLY_GRAPH_DELTA_ERROR,
                 e.to_string(),
             );
             Err(e)

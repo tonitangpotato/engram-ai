@@ -112,8 +112,10 @@ use crate::error::MigrationError;
 /// keep `engramai-migrate` a leaf crate. If v03-graph-layer adds a stage,
 /// the matching constant must be added here too; the `validate_stage`
 /// helper makes the contract explicit.
+pub const STAGE_INGEST: &str = "ingest";
 pub const STAGE_ENTITY_EXTRACT: &str = "entity_extract";
 pub const STAGE_EDGE_EXTRACT: &str = "edge_extract";
+pub const STAGE_RESOLVE: &str = "resolve";
 pub const STAGE_DEDUP: &str = "dedup";
 pub const STAGE_PERSIST: &str = "persist";
 pub const STAGE_KNOWLEDGE_COMPILE: &str = "knowledge_compile";
@@ -129,6 +131,20 @@ pub const CATEGORY_LLM_INVALID_OUTPUT: &str = "llm_invalid_output";
 pub const CATEGORY_BUDGET_EXHAUSTED: &str = "budget_exhausted";
 pub const CATEGORY_DB_ERROR: &str = "db_error";
 pub const CATEGORY_INTERNAL: &str = "internal";
+
+// Pipeline call-site categories (ISS-047). Must mirror
+// `engramai/src/graph/audit.rs` — kept duplicated to preserve
+// engramai-migrate's leaf-crate property.
+pub const CATEGORY_EXTRACTOR_ERROR: &str = "extractor_error";
+pub const CATEGORY_CANDIDATE_RETRIEVAL_ERROR: &str = "candidate_retrieval_error";
+pub const CATEGORY_CANONICAL_FETCH_ERROR: &str = "canonical_fetch_error";
+pub const CATEGORY_UNRESOLVED_SUBJECT: &str = "unresolved_subject";
+pub const CATEGORY_UNRESOLVED_OBJECT: &str = "unresolved_object";
+pub const CATEGORY_FIND_EDGES_ERROR: &str = "find_edges_error";
+pub const CATEGORY_APPLY_GRAPH_DELTA_ERROR: &str = "apply_graph_delta_error";
+pub const CATEGORY_MISSING_CANONICAL: &str = "missing_canonical";
+pub const CATEGORY_UNRESOLVED_DEFER: &str = "unresolved_defer";
+pub const CATEGORY_QUEUE_FULL: &str = "queue_full";
 
 /// UUID v5 namespace for migration-derived failure ids.
 ///
@@ -156,8 +172,10 @@ pub const DEFAULT_NAMESPACE: &str = "default";
 /// a stage in v0.4 should not require a schema migration).
 pub fn validate_stage(stage: &str) -> Result<(), MigrationError> {
     const STAGES: &[&str] = &[
+        STAGE_INGEST,
         STAGE_ENTITY_EXTRACT,
         STAGE_EDGE_EXTRACT,
+        STAGE_RESOLVE,
         STAGE_DEDUP,
         STAGE_PERSIST,
         STAGE_KNOWLEDGE_COMPILE,
@@ -180,6 +198,17 @@ pub fn validate_error_category(category: &str) -> Result<(), MigrationError> {
         CATEGORY_BUDGET_EXHAUSTED,
         CATEGORY_DB_ERROR,
         CATEGORY_INTERNAL,
+        // Pipeline call-site labels (ISS-047)
+        CATEGORY_EXTRACTOR_ERROR,
+        CATEGORY_CANDIDATE_RETRIEVAL_ERROR,
+        CATEGORY_CANONICAL_FETCH_ERROR,
+        CATEGORY_UNRESOLVED_SUBJECT,
+        CATEGORY_UNRESOLVED_OBJECT,
+        CATEGORY_FIND_EDGES_ERROR,
+        CATEGORY_APPLY_GRAPH_DELTA_ERROR,
+        CATEGORY_MISSING_CANONICAL,
+        CATEGORY_UNRESOLVED_DEFER,
+        CATEGORY_QUEUE_FULL,
     ];
     if CATEGORIES.contains(&category) {
         Ok(())

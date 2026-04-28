@@ -60,6 +60,10 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::entities::EntityExtractor;
+use crate::graph::audit::{
+    CATEGORY_CANDIDATE_RETRIEVAL_ERROR, CATEGORY_CANONICAL_FETCH_ERROR,
+    CATEGORY_FIND_EDGES_ERROR, CATEGORY_UNRESOLVED_OBJECT, CATEGORY_UNRESOLVED_SUBJECT,
+};
 use crate::graph::{EdgeEnd, GraphStore, PipelineKind, RunStatus};
 use crate::triple_extractor::TripleExtractor;
 use crate::types::MemoryRecord;
@@ -492,7 +496,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                 Err(e) => {
                     ctx.record_failure(
                         PipelineStage::Resolve,
-                        "candidate_retrieval_error",
+                        CATEGORY_CANDIDATE_RETRIEVAL_ERROR,
                         e.to_string(),
                     );
                     Vec::new()
@@ -541,7 +545,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                         Err(e) => {
                             ctx.record_failure(
                                 PipelineStage::Resolve,
-                                "canonical_fetch_error",
+                                CATEGORY_CANONICAL_FETCH_ERROR,
                                 e.to_string(),
                             );
                             None
@@ -614,7 +618,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                 None => {
                     ctx.record_failure(
                         PipelineStage::Resolve,
-                        "unresolved_subject",
+                        CATEGORY_UNRESOLVED_SUBJECT,
                         format!(
                             "subject `{}` did not appear in this run's entity drafts",
                             draft.subject_name
@@ -631,7 +635,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                     None => {
                         ctx.record_failure(
                             PipelineStage::Resolve,
-                            "unresolved_object",
+                            CATEGORY_UNRESOLVED_OBJECT,
                             format!(
                                 "object `{}` did not appear in this run's entity drafts",
                                 name
@@ -658,7 +662,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                     Err(e) => {
                         ctx.record_failure(
                             PipelineStage::Resolve,
-                            "find_edges_error",
+                            CATEGORY_FIND_EDGES_ERROR,
                             e.to_string(),
                         );
                         Vec::new()

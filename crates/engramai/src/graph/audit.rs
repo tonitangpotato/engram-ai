@@ -17,8 +17,15 @@ use super::error::GraphError;
 // ---------------------------------------------------------------------------
 
 // Stage labels — closed set, single source of truth.
+//
+// MUST mirror every variant of `resolution::context::PipelineStage` (its
+// `as_str()` impl). Drift here causes ISS-047: pipeline emits a stage
+// string the validator rejects → entire `apply_graph_delta` transaction
+// rolls back, including successfully extracted entities/edges.
+pub const STAGE_INGEST: &str = "ingest";
 pub const STAGE_ENTITY_EXTRACT: &str = "entity_extract";
 pub const STAGE_EDGE_EXTRACT: &str = "edge_extract";
+pub const STAGE_RESOLVE: &str = "resolve";
 pub const STAGE_DEDUP: &str = "dedup";
 pub const STAGE_PERSIST: &str = "persist";
 /// L5 Knowledge-Compiler stage label (design §5bis.4 step 2). Per-cluster
@@ -27,11 +34,45 @@ pub const STAGE_PERSIST: &str = "persist";
 pub const STAGE_KNOWLEDGE_COMPILE: &str = "knowledge_compile";
 
 // Failure categories — closed set.
+//
+// Two layers coexist by design:
+//
+// 1. **Coarse retry-aware classes** (llm_timeout / llm_invalid_output /
+//    budget_exhausted / db_error / internal) — used by knowledge_compile
+//    and future retry-classified errors. These map to operator escalation
+//    decisions.
+//
+// 2. **Pipeline call-site labels** (extractor_error, unresolved_subject,
+//    candidate_retrieval_error, …) — produced verbatim by
+//    `record_failure(stage, kind, …)` call sites in `resolution/`. These
+//    are diagnostic, one-per-code-path, and let operators filter the
+//    failure ledger to the exact failure mode without parsing
+//    `error_detail`.
+//
+// New categories MUST be added here (single source of truth) AND mirrored
+// in `engramai-migrate/src/failure.rs::validate_error_category`. The audit
+// allowlist is the only line of defense — there is no DB CHECK clause, by
+// design (extending the set in v0.4 should be a no-migration change).
 pub const CATEGORY_LLM_TIMEOUT: &str = "llm_timeout";
 pub const CATEGORY_LLM_INVALID_OUTPUT: &str = "llm_invalid_output";
 pub const CATEGORY_BUDGET_EXHAUSTED: &str = "budget_exhausted";
 pub const CATEGORY_DB_ERROR: &str = "db_error";
 pub const CATEGORY_INTERNAL: &str = "internal";
+
+// Pipeline call-site categories (ISS-047). One per `record_failure(…)` /
+// `failure_row(…)` call in `resolution/{pipeline,stage_persist,
+// stage_edge_extract,queue}.rs`. Naming convention: `<failed_action>_error`
+// for fail-fast paths, semantic noun for resolution gaps.
+pub const CATEGORY_EXTRACTOR_ERROR: &str = "extractor_error";
+pub const CATEGORY_CANDIDATE_RETRIEVAL_ERROR: &str = "candidate_retrieval_error";
+pub const CATEGORY_CANONICAL_FETCH_ERROR: &str = "canonical_fetch_error";
+pub const CATEGORY_UNRESOLVED_SUBJECT: &str = "unresolved_subject";
+pub const CATEGORY_UNRESOLVED_OBJECT: &str = "unresolved_object";
+pub const CATEGORY_FIND_EDGES_ERROR: &str = "find_edges_error";
+pub const CATEGORY_APPLY_GRAPH_DELTA_ERROR: &str = "apply_graph_delta_error";
+pub const CATEGORY_MISSING_CANONICAL: &str = "missing_canonical";
+pub const CATEGORY_UNRESOLVED_DEFER: &str = "unresolved_defer";
+pub const CATEGORY_QUEUE_FULL: &str = "queue_full";
 
 // Decision labels for ResolutionTrace.
 pub const DECISION_NEW: &str = "new";

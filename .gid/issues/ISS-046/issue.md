@@ -88,3 +88,45 @@ if let Some(pool) = mem.take_pipeline_pool() {
 ## Dependencies
 
 None. Engramai-side capability complete; this is pure CLI wrapper work.
+
+---
+
+## Resolution (2026-04-28)
+
+**Status**: closed-fixed
+**Fix commits**:
+- `b806485` fix(engramai): separate-file graph DB support — three engramai bugs surfaced during implementation
+- `950159d` feat(cli): ISS-046 wire v0.3 graph layer into `engram store`
+
+### What landed (vs. proposal)
+
+✅ `--graph-db <path>` flag (also via `ENGRAM_GRAPH_DB` env)
+✅ `--no-graph` opt-out
+✅ `--graph-drain-timeout-secs N` (default 60)
+✅ Default graph DB path: `<stem>.graph.db` next to main DB
+✅ `mem.shutdown_pipeline(deadline)` synchronous drain at exit
+✅ `NoopTripleExtractor` for entity-only mode (no LLM required)
+
+### Three upstream engramai bugs fixed in `b806485`
+
+1. **Graph schema never initialized** — `with_pipeline_pool/with_graph_store` opened the connection but never called `init_graph_tables`. Result: 0-byte graph DB on fresh runs.
+2. **Cross-file FK constraints break inserts** — `memory_id REFERENCES memories(id)` errors at prepare time when graph DB is a separate file (no SQLite cross-file FK support). Fix: detect co-location, FK ON for same-file, OFF for separate.
+3. **Memory reader pointed at graph DB** — `SqliteMemoryReader::open(graph_db_path)` should open main DB (where `memories` lives). Fix: derive main DB path from foreground storage connection.
+
+### Acceptance status
+
+- GOAL-1 ✅ Graph DB populated after `engram store --graph-db ...`
+- GOAL-2 ✅ `--no-graph` produces v0.2-only row
+- GOAL-3 ✅ Default `<stem>.graph.db` path
+- GOAL-4 ⏳ **Deferred** — LoCoMo conv-26 retrieval ≥8/25: pipeline now works (pipeline_runs success), but EntityExtractor pattern matching gives 0 entity hits on LoCoMo conversational text. This is an EntityExtractor capability gap (pattern-based, not NER), not a pipeline gap. New scope, new issue if pursued.
+- GOAL-5 ✅ `cargo build --release` clean (test suite TBD post-LoCoMo follow-up)
+- GOAL-6 ✅ Idempotency delegated to existing pipeline guarantees (no new code path)
+
+### Follow-up
+
+LoCoMo retrieval improvement requires entity extraction work, not pipeline work:
+- Option A: Extend EntityExtractor patterns (regex/list expansion)
+- Option B: Add LLM-based NER as optional extractor variant
+- Option C: Use triple extractor results as entity source (triples already mention entities)
+
+To be filed separately if/when LoCoMo lift becomes priority. ISS-046 itself is functionally closed.

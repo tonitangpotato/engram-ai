@@ -14,13 +14,14 @@
 //!   mapped to a v0.3 [`Predicate`] via the adapter — canonical predicates
 //!   pass through, novel labels become `Predicate::Proposed(label)`.
 
+use crate::graph::audit::CATEGORY_EXTRACTOR_ERROR;
+use crate::graph::ResolutionMethod;
 use crate::resolution::adapters::map_predicate;
 use crate::resolution::context::{
     DraftEdge, DraftEdgeEnd, PipelineContext, PipelineStage,
 };
 use crate::resolution::stage_extract::StageError;
 use crate::triple_extractor::TripleExtractor;
-use crate::graph::ResolutionMethod;
 
 /// Run §3.3: invoke the triple extractor on `ctx.memory.content`, populate
 /// `ctx.extracted_triples`, and lift each into a `DraftEdge` placed (in
@@ -53,7 +54,7 @@ pub fn extract_edges(
             );
             ctx.record_failure(
                 PipelineStage::EdgeExtract,
-                "extractor_error",
+                CATEGORY_EXTRACTOR_ERROR,
                 msg,
             );
             return Err(StageError);
