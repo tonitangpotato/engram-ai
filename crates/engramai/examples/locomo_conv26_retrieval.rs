@@ -10,7 +10,8 @@
 //! 2. Install graph store via `with_graph_store` (post-migration path).
 //! 3. Load gold QAs from `locomo10.json` whose evidence falls in
 //!    sessions 1-3 (27 questions per audit).
-//! 4. For each Q: `graph_query_locked(GraphQuery::new(question).with_limit(5))`.
+//! 4. For each Q: `graph_query_locked(GraphQuery::new(question).with_limit(5).with_namespace(ns))`.
+//!    (ISS-056: namespace must be threaded through or every query hits `"default"`.)
 //! 5. Score: did any returned memory's `source` match a gold evidence
 //!    `dia_id`? (Session-level recall@5, since LoCoMo evidence is
 //!    diaglogue-turn-level and we ingested per-turn.)
@@ -22,7 +23,8 @@
 //!   --graph-db /Users/potato/clawd/projects/engram/.gid/issues/_smoke-locomo-2026-04-27/locomo-conv26-s1-3-postd991715.graph.db \
 //!   --dataset /Users/potato/clawd/projects/cogmembench/datasets/locomo/data/locomo10.json \
 //!   --max-session 3 \
-//!   --limit 5
+//!   --limit 5 \
+//!   --ns conv26
 //! ```
 
 use engramai::Memory;
@@ -38,6 +40,12 @@ struct Args {
     dataset: PathBuf,
     max_session: u32,
     limit: usize,
+    /// Namespace to scope retrieval against (ISS-056). Defaults to
+    /// `"default"` if unset, matching pre-ISS-056 single-tenant
+    /// behavior. For conv-26 data ingested under `--ns conv26`, you
+    /// MUST pass `--ns conv26` here too — otherwise every query
+    /// hits `default` and returns 0 hits.
+    namespace: Option<String>,
 }
 
 fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
@@ -46,6 +54,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     let mut dataset = None;
     let mut max_session = 3u32;
     let mut limit = 5usize;
+    let mut namespace: Option<String> = None;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -59,6 +68,9 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
                 max_session = iter.next().ok_or("--max-session needs value")?.parse()?
             }
             "--limit" => limit = iter.next().ok_or("--limit needs value")?.parse()?,
+            "--ns" | "--namespace" => {
+                namespace = Some(iter.next().ok_or("--ns needs value")?)
+            }
             other => return Err(format!("unknown arg: {other}").into()),
         }
     }
@@ -68,6 +80,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
         dataset: dataset.ok_or("--dataset required")?,
         max_session,
         limit,
+        namespace,
     })
 }
 
@@ -167,7 +180,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_default();
         let category = q["category"].as_u64().unwrap_or(0);
 
-        let query = GraphQuery::new(question).with_limit(args.limit);
+        let mut query = GraphQuery::new(question).with_limit(args.limit);
+        if let Some(ns) = &args.namespace {
+            query = query.with_namespace(ns.clone());
+        }
         let resp = block_on(mem.graph_query_locked(query))?;
         total += 1;
 
