@@ -15,6 +15,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 hex = "0.4"
 libc = "0.2"
+# T9 (PipelineRecordProcessor) wires v0.2 records into the v0.3 resolution
+# pipeline. This is the only place engramai-migrate links engramai; the T8
+# trait `RecordProcessor` deliberately stays decoupled in `backfill.rs`.
+engramai = { path = "../engramai" }
 
 [dev-dependencies]
 tempfile = "3"

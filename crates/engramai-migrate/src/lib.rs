@@ -21,6 +21,7 @@ pub mod failure;
 pub mod lock;
 pub mod phase_machine;
 pub mod preflight;
+pub mod processor;
 pub mod progress;
 pub mod schema;
 
@@ -70,6 +71,7 @@ pub use preflight::{
     PreflightInputs, PreflightOutcome, SchemaState, DISK_SPACE_MULTIPLIER_DEN,
     DISK_SPACE_MULTIPLIER_NUM, TARGET_SCHEMA_VERSION,
 };
+pub use processor::{BackfillResolver, PipelineRecordProcessor};
 pub use progress::{
     EmitterConfig, MigrationLogRow, MigrationPhase, MigrationProgress, ProgressCallback,
     ProgressEmitter, ProgressEvent,
