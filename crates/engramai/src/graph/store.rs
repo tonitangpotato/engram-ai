@@ -4903,13 +4903,23 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         if !mentioned_entity_ids.is_empty() || !inserted_edge_ids.is_empty() {
             let memory_id_str = delta.memory_id.to_string();
             // Read current JSON arrays.
-            let cur: Option<(Option<String>, Option<String>)> = tx
+            // ISS-046 follow-up: in separate-file graph DB mode (e.g.
+            // `Memory::with_pipeline_pool("foo.graph.db")` when memories
+            // live in `foo.db`), the `memories` table does not exist in
+            // this connection. Treat that as "no row to update" — the
+            // cache is advisory and the main DB owns the canonical row.
+            let cur: Option<(Option<String>, Option<String>)> = match tx
                 .query_row(
                     "SELECT entity_ids, edge_ids FROM memories WHERE id = ?1",
                     rusqlite::params![memory_id_str],
                     |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
                 )
-                .optional()?;
+                .optional()
+            {
+                Ok(v) => v,
+                Err(e) if e.to_string().contains("no such table: memories") => None,
+                Err(e) => return Err(e.into()),
+            };
             // If the memories row doesn't exist, we don't fail — the cache
             // is advisory; the v0.2 stub schema in tests has no row, and
             // production memory inserts may happen out of order with graph

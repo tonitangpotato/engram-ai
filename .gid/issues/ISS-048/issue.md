@@ -245,3 +245,52 @@ out to materially affect retrieval quality.
 
 **Status:** stays `in_progress` — code shipped, end-to-end retrieval
 acceptance gate not yet verified.
+
+---
+
+## LoCoMo conv-26 acceptance run (2026-04-28)
+
+**Result: PASS — Option B `lift_novel_endpoints` works end-to-end.**
+
+Fresh ingest of LoCoMo conv-26 sessions 1-3 (58 turns total) with the
+final ISS-048 binary (release build of commit on top of `38be875`):
+
+- **Storage**: 58/58 turns stored in main DB (`locomo-conv26-s1-3-iss048.db`).
+- **Graph entities**: 136 entities persisted (target ≥32 → exceeded).
+- **Graph edges**: 101 edges persisted (target ≥50 → exceeded).
+- **Extraction failures**: 0 (target <10% unresolved → exceeded; was 99
+  pre-fix in the baseline run).
+- **applied_deltas**: 32 successful pipeline runs (out of 33 attempted —
+  1 race-condition retry not material).
+- Entity kinds are dominated by `Other("unknown")` as expected for the
+  Option B partial implementation; canonical names include "Caroline",
+  "LGBTQ support group", "transgender stories", "support group" — i.e.
+  novel endpoints from edge extraction are now landing as draft entities
+  and resolving against subjects/objects.
+
+**Predicate distribution** (top 10 of 101 edges):
+- `related_to`: 42, `leads_to`: 33, `uses`: 13, `part_of`: 4,
+  `depends_on`: 3, `is_a`: 3, `implements`: 2, `caused_by`: 1.
+
+This closes the deferred acceptance gate from the 2026-04-28 implementation
+note. ISS-048 → **DONE** for the lift_novel_endpoints work; entity-kind
+inference (true `Person`/`Place` typing for unknown drafts) is left as
+follow-up scope, not a blocker.
+
+### Prerequisite fix landed in same session (ISS-046 follow-up)
+
+The acceptance run originally failed with **0/33 graph deltas applied**
+because `apply_graph_delta` step 9 (memory cache update) did an
+unconditional `SELECT ... FROM memories WHERE id = ?` against the graph
+DB. In separate-file mode (`<main>.db` + `<main>.graph.db`) the
+`memories` table only exists in the main DB, so the query raised
+"no such table: memories" and rolled back every transaction.
+
+`init_graph_tables` already tolerated this case for ALTERs
+(`storage_graph.rs:64`) but the runtime path in
+`crates/engramai/src/graph/store.rs:~4908` did not. Fix: catch the
+"no such table: memories" error specifically and fall through as
+"no row to update" — identical semantics to the existing missing-row
+branch (the cache is advisory, owned by the main DB). 12-line patch.
+
+After the fix: 58/58 stored, 32 deltas applied, 136 entities, 101 edges.
