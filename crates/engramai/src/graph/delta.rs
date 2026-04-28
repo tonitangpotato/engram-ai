@@ -18,19 +18,28 @@
 //!
 //! ## Deviations from §5bis
 //!
-//! 1. **`GraphDelta.memory_id` is `Uuid`, not `String`.** §5bis spells the
-//!    field as `String`, but the task brief for Part A pins it to `Uuid`
-//!    for type-level safety against malformed ids. Same deviation applies
-//!    to [`MemoryEntityMention::memory_id`]. The serde wire form is the
-//!    canonical hyphenated lowercase string either way, so this is
-//!    forward-compatible with the §5bis canonical-serialization rules.
-//! 2. **`EntityMerge.reason` is `String`, not `MergeReason`.** §5bis says
+//! 1. **`EntityMerge.reason` is `String`, not `MergeReason`.** §5bis says
 //!    `reason: MergeReason  // defined in §3.4`, but `MergeReason` is not
 //!    defined in the loaded design fragment. A `String` placeholder keeps
 //!    the field present and serde-roundtrippable; Part B (or §3.4 landing)
 //!    can promote it to a typed enum without changing the wire format for
 //!    existing callers if the enum is `#[serde(rename_all = "snake_case")]`
 //!    and migration follows evolution rule 1.
+//!
+//! ## History
+//!
+//! - Earlier revisions typed `GraphDelta.memory_id` and
+//!   `MemoryEntityMention.memory_id` as `Uuid` for type-level safety
+//!   against malformed ids. v0.2 `MemoryRecord.id` is a free-form
+//!   `String` (e.g. `mem-42`, `episode_2024_01_15`), so a
+//!   `parse_memory_uuid` helper hashed unparseable ids into derived
+//!   UUIDs. That mapping was lossy (irreversible — no way back to the
+//!   original id from the delta) and inconsistent with the physical
+//!   schema, where `memories.id`, `graph_memory_entity_mentions.memory_id`,
+//!   and `graph_applied_deltas.memory_id` are all `TEXT`. Reverted to
+//!   §5bis: both fields are now `String`, matching the spec and the
+//!   schema. Lossiness is gone; the round-trip `delta → store → query`
+//!   preserves the original memory id verbatim.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -60,7 +69,9 @@ pub struct GraphDelta {
     /// The memory this delta was produced for (back-reference; the delta
     /// itself does not mutate the `memories` row, but `apply_graph_delta`
     /// updates `memories.entity_ids` / `memories.edge_ids` atomically).
-    pub memory_id: Uuid,
+    /// Free-form `String` matching `memories.id` in the physical schema —
+    /// v0.2 ids are not UUID-shaped in general (e.g. `mem-42`).
+    pub memory_id: String,
 
     /// Entities to upsert.
     #[serde(default)]
@@ -106,9 +117,9 @@ pub struct GraphDelta {
 impl GraphDelta {
     /// Construct an empty delta for `memory_id`. All collections start
     /// empty; callers populate them in the resolution pipeline.
-    pub fn new(memory_id: Uuid) -> Self {
+    pub fn new(memory_id: impl Into<String>) -> Self {
         Self {
-            memory_id,
+            memory_id: memory_id.into(),
             entities: vec![],
             merges: vec![],
             edges: vec![],
@@ -138,7 +149,7 @@ impl GraphDelta {
         // memory_id
         root.insert(
             "memory_id".into(),
-            Value::String(self.memory_id.to_string()),
+            Value::String(self.memory_id.clone()),
         );
 
         // entities[].id, canonical_name, kind
@@ -235,7 +246,7 @@ impl GraphDelta {
             .iter()
             .map(|m| {
                 let mut o = Map::new();
-                o.insert("memory_id".into(), Value::String(m.memory_id.to_string()));
+                o.insert("memory_id".into(), Value::String(m.memory_id.clone()));
                 o.insert("entity_id".into(), Value::String(m.entity_id.to_string()));
                 Value::Object(o)
             })
@@ -371,8 +382,9 @@ pub struct EdgeInvalidation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryEntityMention {
-    /// See deviation note 1: `Uuid` rather than §5bis's `String`.
-    pub memory_id: Uuid,
+    /// Matches `GraphDelta.memory_id` and `memories.id` in the schema.
+    /// Free-form `String` (v0.2 ids are not UUID-shaped in general).
+    pub memory_id: String,
     pub entity_id: Uuid,
     pub mention_text: String,
     pub span_start: Option<u32>,
@@ -471,8 +483,8 @@ mod tests {
 
     #[test]
     fn new_delta_is_empty() {
-        let id = Uuid::new_v4();
-        let d = GraphDelta::new(id);
+        let id = Uuid::new_v4().to_string();
+        let d = GraphDelta::new(id.clone());
         assert_eq!(d.memory_id, id);
         assert!(d.entities.is_empty());
         assert!(d.merges.is_empty());
@@ -504,8 +516,8 @@ mod tests {
         // instead — equal JSON ⇒ equal logical value for serde-derived
         // shapes (no skipped fields, no maps with non-deterministic order
         // in the empty case).
-        let id = Uuid::nil();
-        let d = GraphDelta::new(id);
+        let id = Uuid::nil().to_string();
+        let d = GraphDelta::new(id.clone());
         let s = serde_json::to_string(&d).unwrap();
         let back: GraphDelta = serde_json::from_str(&s).unwrap();
         let s2 = serde_json::to_string(&back).unwrap();
@@ -531,7 +543,7 @@ mod tests {
 
     #[test]
     fn empty_delta_hash_stable_across_calls() {
-        let id = Uuid::nil();
+        let id = Uuid::nil().to_string();
         let d = GraphDelta::new(id);
         assert_eq!(d.delta_hash(), d.delta_hash());
     }
@@ -540,14 +552,14 @@ mod tests {
     fn populated_delta_hash_stable_across_serde_roundtrip() {
         // Build a delta with at least: 1 merge, 1 mention, 1 proposed_predicate.
         // (Avoid Edge/Entity since they don't derive PartialEq — use simpler sub-types.)
-        let mut d = GraphDelta::new(Uuid::nil());
+        let mut d = GraphDelta::new(Uuid::nil().to_string());
         d.merges.push(EntityMerge {
             winner: Uuid::from_u128(1),
             loser: Uuid::from_u128(2),
             reason: "test".into(),
         });
         d.mentions.push(MemoryEntityMention {
-            memory_id: Uuid::from_u128(3),
+            memory_id: Uuid::from_u128(3).to_string(),
             entity_id: Uuid::from_u128(4),
             mention_text: "hi".into(),
             span_start: None,
@@ -569,7 +581,7 @@ mod tests {
         // canonical_value sorts keys, so JSON object key order in the source
         // doesn't matter. Construct the same logical delta two ways and
         // confirm identical hashes.
-        let mut d1 = GraphDelta::new(Uuid::from_u128(42));
+        let mut d1 = GraphDelta::new(Uuid::from_u128(42).to_string());
         d1.proposed_predicates.push(ProposedPredicate {
             label: "a".into(),
             first_seen_at: 1.0,
@@ -580,7 +592,7 @@ mod tests {
         });
         let h1 = d1.delta_hash();
 
-        let mut d2 = GraphDelta::new(Uuid::from_u128(42));
+        let mut d2 = GraphDelta::new(Uuid::from_u128(42).to_string());
         d2.proposed_predicates.push(ProposedPredicate {
             label: "a".into(),
             first_seen_at: 1.0,
@@ -594,14 +606,14 @@ mod tests {
 
     #[test]
     fn frozen_field_change_changes_hash() {
-        let d1 = GraphDelta::new(Uuid::from_u128(1));
-        let d2 = GraphDelta::new(Uuid::from_u128(2));
+        let d1 = GraphDelta::new(Uuid::from_u128(1).to_string());
+        let d2 = GraphDelta::new(Uuid::from_u128(2).to_string());
         assert_ne!(d1.delta_hash(), d2.delta_hash());
     }
 
     #[test]
     fn validate_floats_rejects_nan_in_proposed_predicate() {
-        let mut d = GraphDelta::new(Uuid::nil());
+        let mut d = GraphDelta::new(Uuid::nil().to_string());
         d.proposed_predicates.push(ProposedPredicate {
             label: "bad".into(),
             first_seen_at: f64::NAN,
@@ -613,7 +625,7 @@ mod tests {
 
     #[test]
     fn validate_floats_rejects_infinity_in_invalidation() {
-        let mut d = GraphDelta::new(Uuid::nil());
+        let mut d = GraphDelta::new(Uuid::nil().to_string());
         d.edges_to_invalidate.push(EdgeInvalidation {
             edge_id: Uuid::nil(),
             invalidated_at: f64::INFINITY,
@@ -624,7 +636,7 @@ mod tests {
 
     #[test]
     fn validate_floats_accepts_finite() {
-        let mut d = GraphDelta::new(Uuid::nil());
+        let mut d = GraphDelta::new(Uuid::nil().to_string());
         d.proposed_predicates.push(ProposedPredicate {
             label: "ok".into(),
             first_seen_at: 1.5,
@@ -634,7 +646,7 @@ mod tests {
 
     #[test]
     fn validate_references_rejects_self_merge() {
-        let mut d = GraphDelta::new(Uuid::nil());
+        let mut d = GraphDelta::new(Uuid::nil().to_string());
         let x = Uuid::from_u128(99);
         d.merges.push(EntityMerge {
             winner: x,
@@ -646,7 +658,7 @@ mod tests {
 
     #[test]
     fn validate_references_rejects_duplicate_invalidations() {
-        let mut d = GraphDelta::new(Uuid::nil());
+        let mut d = GraphDelta::new(Uuid::nil().to_string());
         let eid = Uuid::from_u128(7);
         d.edges_to_invalidate.push(EdgeInvalidation {
             edge_id: eid,
@@ -663,12 +675,12 @@ mod tests {
 
     #[test]
     fn negative_zero_normalized_in_hash() {
-        let mut d1 = GraphDelta::new(Uuid::nil());
+        let mut d1 = GraphDelta::new(Uuid::nil().to_string());
         d1.proposed_predicates.push(ProposedPredicate {
             label: "z".into(),
             first_seen_at: -0.0,
         });
-        let mut d2 = GraphDelta::new(Uuid::nil());
+        let mut d2 = GraphDelta::new(Uuid::nil().to_string());
         d2.proposed_predicates.push(ProposedPredicate {
             label: "z".into(),
             first_seen_at: 0.0,

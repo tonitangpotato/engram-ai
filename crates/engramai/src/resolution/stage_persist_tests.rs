@@ -686,11 +686,22 @@ fn build_delta_memory_id_is_deterministic_for_string_id() {
 }
 
 #[test]
-fn build_delta_memory_id_passes_through_uuid_string() {
-    let real_uuid = Uuid::new_v4();
-    let ctx = fixture_ctx(&real_uuid.to_string());
+fn build_delta_memory_id_passes_through_verbatim() {
+    // After revert to §5bis (memory_id: String), the delta carries the
+    // memory id verbatim — no parsing, no hashing, no derivation. This
+    // test guards against any future helper sneaking a transformation
+    // back in.
+    let real_uuid = Uuid::new_v4().to_string();
+    let ctx = fixture_ctx(&real_uuid);
     let delta = build_delta(&ctx, &[], &[]);
     assert_eq!(delta.memory_id, real_uuid);
+
+    // Non-UUID-shaped ids must also pass through unchanged (v0.2 schema
+    // allows free-form strings like `mem-42` or `episode_2024_01_15`).
+    let weird_id = "mem-42";
+    let ctx2 = fixture_ctx(weird_id);
+    let delta2 = build_delta(&ctx2, &[], &[]);
+    assert_eq!(delta2.memory_id, weird_id);
 }
 
 // ---------------------------------------------------------------------------

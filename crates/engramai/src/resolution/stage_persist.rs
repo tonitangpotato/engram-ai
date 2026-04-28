@@ -174,7 +174,11 @@ pub fn build_delta(
     entity_decisions: &[EntityResolution],
     edge_decisions: &[EdgeResolution],
 ) -> GraphDelta {
-    let memory_id = parse_memory_uuid(&ctx.memory.id);
+    // Memory ids are free-form strings (v0.2 schema); the delta stores them
+    // verbatim. The physical schema (`memories.id`,
+    // `graph_memory_entity_mentions.memory_id`) is also TEXT, so no
+    // conversion is needed at any boundary.
+    let memory_id: &str = &ctx.memory.id;
     let now = ctx.memory.created_at;
     let mut delta = GraphDelta::new(memory_id);
 
@@ -403,33 +407,8 @@ pub fn drive_persist<S: ApplyDelta + ?Sized>(
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers (pure)
+/// Internal helpers (pure)
 // ---------------------------------------------------------------------------
-
-/// Convert the v0.2 string `MemoryRecord.id` into a `Uuid` for the delta's
-/// `memory_id` field. v0.2 ids are not UUID-shaped in general; we hash the
-/// string into a deterministic v5-style namespace UUID so that the same
-/// string always produces the same id. See v03-migration §5 for the
-/// migration-time mapping; this helper mirrors that contract.
-fn parse_memory_uuid(s: &str) -> Uuid {
-    if let Ok(u) = Uuid::parse_str(s) {
-        return u;
-    }
-    // Stable derivation: BLAKE3 hash of the string truncated to 16 bytes,
-    // then framed as a UUID (variant + version 4 bits set so the result is
-    // a syntactically-valid UUID even though its derivation is not RFC
-    // 4122 v5). See v03-migration §5 for the canonical mapping; until that
-    // contract is finalized this is a deterministic local mapping that
-    // will not collide for distinct strings.
-    let hash = blake3::hash(s.as_bytes());
-    let mut bytes: [u8; 16] = [0; 16];
-    bytes.copy_from_slice(&hash.as_bytes()[..16]);
-    // Set version (4) and variant (RFC 4122) bits so external tools
-    // accept it.
-    bytes[6] = (bytes[6] & 0x0F) | 0x40;
-    bytes[8] = (bytes[8] & 0x3F) | 0x80;
-    Uuid::from_bytes(bytes)
-}
 
 fn dt_to_unix(dt: DateTime<Utc>) -> f64 {
     dt.timestamp() as f64 + (dt.timestamp_subsec_micros() as f64) / 1_000_000.0
@@ -521,7 +500,7 @@ fn build_new_edge(
 }
 
 fn mention_row(
-    memory_id: Uuid,
+    memory_id: &str,
     entity_id: Uuid,
     draft: &DraftEntity,
     draft_index: usize,
@@ -539,7 +518,7 @@ fn mention_row(
         .unwrap_or_else(|| draft.canonical_name.clone());
 
     MemoryEntityMention {
-        memory_id,
+        memory_id: memory_id.to_string(),
         entity_id,
         mention_text,
         span_start: None,
