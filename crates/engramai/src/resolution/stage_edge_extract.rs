@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn ctx_for(content: &str) -> PipelineContext {
-        PipelineContext::new(fixture_memory(content), Uuid::new_v4(), None)
+        PipelineContext::new(fixture_memory(content), Uuid::new_v4(), None, String::new())
     }
 
     #[test]

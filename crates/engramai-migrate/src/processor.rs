@@ -135,6 +135,7 @@ pub trait BackfillResolver: Send + Sync {
     fn resolve_for_backfill(
         &self,
         memory: &EngramaiMemoryRecord,
+        namespace: &str,
     ) -> Result<GraphDelta, PipelineError>;
 }
 
@@ -145,8 +146,12 @@ where
     fn resolve_for_backfill(
         &self,
         memory: &EngramaiMemoryRecord,
+        namespace: &str,
     ) -> Result<GraphDelta, PipelineError> {
-        ResolutionPipeline::resolve_for_backfill(self.as_ref(), memory)
+        // ISS-055: thread the namespace through to the pipeline so the
+        // backfill candidate-retrieval phase scopes to the correct rows
+        // (mirrors live ingest's namespace propagation).
+        ResolutionPipeline::resolve_for_backfill(self.as_ref(), memory, namespace)
     }
 }
 
@@ -224,7 +229,7 @@ impl RecordProcessor for PipelineRecordProcessor {
         // ---- Run the resolution pipeline ----
         // resolve_for_backfill never invokes apply_graph_delta itself
         // (per v03-resolution §6.5) — we own the persist step below.
-        let delta = match self.resolver.resolve_for_backfill(&engramai_rec) {
+        let delta = match self.resolver.resolve_for_backfill(&engramai_rec, &self.namespace) {
             Ok(d) => d,
             Err(PipelineError::ExtractionFailure(msg)) => {
                 // Per design §5.3: surface as per-record failure.
@@ -492,6 +497,7 @@ mod tests {
         fn resolve_for_backfill(
             &self,
             _memory: &EngramaiMemoryRecord,
+            _namespace: &str,
         ) -> Result<GraphDelta, PipelineError> {
             self.queue
                 .lock()

@@ -61,7 +61,7 @@ fn fixture_memory(id: &str) -> MemoryRecord {
 }
 
 fn fixture_ctx(id: &str) -> PipelineContext {
-    PipelineContext::new(fixture_memory(id), Uuid::new_v4(), None)
+    PipelineContext::new(fixture_memory(id), Uuid::new_v4(), None, String::new())
 }
 
 fn fixture_draft(name: &str, kind: EntityKind) -> DraftEntity {

@@ -4814,6 +4814,37 @@ pub fn fetch_memory_record(
     .optional()
 }
 
+/// Fetch a `MemoryRecord` *with its namespace tag* by ID.
+///
+/// ISS-055: the resolution worker must scope all graph reads/writes to the
+/// memory's `--ns` value, but `MemoryRecord` does not carry the namespace
+/// column. This function exposes both as a tuple so `SqliteMemoryReader`
+/// (the only production `MemoryReader` impl) can hand the namespace through
+/// to `ResolutionPipeline::run_job`. Storage's high-level `get` keeps its
+/// historical signature; new callers that need the namespace should use
+/// this directly.
+pub fn fetch_memory_record_with_namespace(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<(MemoryRecord, String)>, rusqlite::Error> {
+    let access_times = fetch_access_times(conn, id)?;
+
+    conn.query_row(
+        "SELECT *, namespace FROM memories WHERE id = ?",
+        params![id],
+        |row| {
+            let record = row_to_record_impl(row, access_times.clone())?;
+            // `namespace` column is part of `SELECT *`, so reading it by
+            // name works even though we list it explicitly above.
+            // SQLite returns the FIRST matching column by name, which is
+            // the one from `SELECT *` — no duplication concern.
+            let namespace: String = row.get("namespace")?;
+            Ok((record, namespace))
+        },
+    )
+    .optional()
+}
+
 /// Fetch all access timestamps for a memory using a borrowed connection.
 fn fetch_access_times(
     conn: &Connection,

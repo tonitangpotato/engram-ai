@@ -551,6 +551,22 @@ pub trait GraphWrite: GraphRead {
         &mut self,
         delta: &GraphDelta,
     ) -> Result<ApplyReport, GraphError>;
+
+    // ----------------------------------------------- Namespace stamping
+    /// Set the namespace tag that subsequent writes (and `search_candidates`
+    /// reads via `GraphRead`) will use. ISS-055: the resolution worker
+    /// holds a single `Arc<Mutex<GraphStore>>` shared across all in-flight
+    /// jobs, but each job belongs to a user-provided namespace (e.g.
+    /// `--ns conv26`). Stores that do not partition by namespace may
+    /// implement this as a no-op; production `SqliteGraphStore` updates
+    /// its `namespace` field so every following INSERT/SELECT scopes
+    /// correctly.
+    ///
+    /// Callers MUST hold the store's lock for the entire window between
+    /// `set_namespace` and the last operation that should see that value
+    /// — concurrent jobs would otherwise observe a stale or wrong tag.
+    /// The pipeline's existing `Mutex<S>` discipline satisfies this.
+    fn set_namespace(&mut self, namespace: String);
 }
 
 /// Combined read+write surface — historical name preserved for back-compat
@@ -4971,6 +4987,14 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         Ok(report)
     }
 
+    fn set_namespace(&mut self, namespace: String) {
+        // ISS-055: stamp the per-job namespace before the pipeline issues
+        // any read/write under this lock. The store's `namespace` field
+        // is the canonical filter for both INSERTs (entity/edge rows) and
+        // SELECTs (`search_candidates`, etc.). Cheap String::replace under
+        // the existing Mutex; the lock window already serializes access.
+        self.namespace = namespace;
+    }
 }
 
 

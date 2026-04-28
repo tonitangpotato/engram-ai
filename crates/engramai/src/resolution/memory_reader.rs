@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 
 use super::pipeline::{MemoryReadError, MemoryReader};
-use crate::storage::fetch_memory_record;
+use crate::storage::fetch_memory_record_with_namespace;
 use crate::types::MemoryRecord;
 
 /// SQLite-backed [`MemoryReader`] implementation.
@@ -71,12 +71,18 @@ impl SqliteMemoryReader {
 }
 
 impl MemoryReader for SqliteMemoryReader {
-    fn fetch(&self, memory_id: &str) -> Result<Option<MemoryRecord>, MemoryReadError> {
+    fn fetch(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<(MemoryRecord, String)>, MemoryReadError> {
         let guard = self
             .conn
             .lock()
             .map_err(|e| MemoryReadError::Storage(format!("mutex poisoned: {e}")))?;
-        fetch_memory_record(&guard, memory_id)
+        // ISS-055: read both the record and its `memories.namespace`
+        // column so the resolution pipeline can stamp graph writes with
+        // the user-supplied namespace (e.g. `--ns conv26`).
+        fetch_memory_record_with_namespace(&guard, memory_id)
             .map_err(|e| MemoryReadError::Storage(e.to_string()))
     }
 }
@@ -125,9 +131,12 @@ mod tests {
         let reader = SqliteMemoryReader::open(&db_path).unwrap();
         let fetched = reader.fetch("mem-1").unwrap();
         assert!(fetched.is_some(), "row written via Storage should be readable via reader");
-        let fetched = fetched.unwrap();
+        let (fetched, namespace) = fetched.unwrap();
         assert_eq!(fetched.id, "mem-1");
         assert_eq!(fetched.content, "alice met bob in paris");
+        // ISS-055: namespace is read from the `memories.namespace` column
+        // and matches the value passed to `Storage::add`.
+        assert_eq!(namespace, "test");
     }
 
     #[test]

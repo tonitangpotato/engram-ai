@@ -154,7 +154,16 @@ pub trait MemoryReader: Send + Sync {
     /// (`store_raw`). `Ok(None)` means the row was deleted between
     /// `enqueue` and `dispatch` — not an error, but the job becomes a
     /// terminal `NotFound` (see [`ProcessError::NotFound`]).
-    fn fetch(&self, memory_id: &str) -> Result<Option<MemoryRecord>, MemoryReadError>;
+    ///
+    /// Returns `(record, namespace)`. The namespace is the value of the
+    /// `memories.namespace` column at the moment of fetch — the canonical
+    /// source-of-truth that the resolution worker must use for all graph
+    /// reads/writes (ISS-055). Implementations that do not track namespace
+    /// (legacy stubs) must return an empty string.
+    fn fetch(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<(MemoryRecord, String)>, MemoryReadError>;
 }
 
 /// Errors surfaced by [`MemoryReader::fetch`]. Distinct from
@@ -293,7 +302,12 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         let run_id = self.begin_run(job)?;
 
         // ── 2. Load memory row ────────────────────────────────────────────
-        let memory = self
+        // ISS-055: capture the row's `namespace` alongside the record so
+        // every graph read/write below uses the user-provided namespace
+        // (e.g. `--ns conv26`) instead of the worker store's baked-in
+        // `"default"`. The reader is the canonical source: namespace lives
+        // on the `memories` row and is set by `store_raw` at admission.
+        let (memory, namespace) = self
             .memory_reader
             .fetch(job.memory_id.as_str())
             .map_err(|e| {
@@ -309,7 +323,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         //      capture is plumbed end-to-end; for now Initial jobs pass
         //      `None` and the affect signal s6 is simply absent in fusion
         //      measurements — graceful degradation per §3.4.2).
-        let mut ctx = PipelineContext::new(memory, job.episode_id, None);
+        let mut ctx = PipelineContext::new(memory, job.episode_id, None, namespace);
 
         // ── 4. §3.2 entity extract ───────────────────────────────────────
         let t = Instant::now();
@@ -350,9 +364,14 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         stats.resolve_duration = t.elapsed();
 
         // ── 8. §3.5 persist ──────────────────────────────────────────────
+        // ISS-055: stamp the per-job namespace before the persist step so
+        // every INSERT inside `apply_graph_delta` is scoped to the user's
+        // namespace. The lock is held for the entire persist, satisfying
+        // GraphWrite::set_namespace's "lock-and-stamp" contract.
         let t = Instant::now();
         let persist_outcome = {
             let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.set_namespace(ctx.namespace.clone());
             drive_persist(&mut *store, &mut ctx, &entity_decisions, &edge_decisions)
         };
         stats.persist_duration = t.elapsed();
@@ -491,14 +510,18 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                 .unwrap_or(&draft.canonical_name);
 
             // Candidate retrieval: read-only, but `search_candidates` is
-            // declared `&self` so we still go through the mutex.
+            // declared `&self` so we still go through the mutex. ISS-055:
+            // the store's `namespace` field is stamped to the per-job
+            // namespace inside the lock so cross-job calls (other workers
+            // with other namespaces) cannot observe a stale value.
             let candidates_result = {
-                let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                store.set_namespace(ctx.namespace.clone());
                 retrieve_candidates(
                     &*store,
                     mention_text,
                     None, // mention_embedding: future — embedder wiring lands separately
-                    self.config.namespace.as_str(),
+                    ctx.namespace.as_str(),
                     now,
                     &self.config.retrieval,
                 )
@@ -550,9 +573,12 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
 
             // For MergeInto we need the canonical Entity row (persist
             // reuses its summary/attributes). Fetch under the lock.
+            // ISS-055: stamp ns before the read so the lookup is scoped
+            // to the per-job namespace.
             let canonical = match &outcome.decision {
                 Decision::MergeInto { candidate_id } => {
-                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                    store.set_namespace(ctx.namespace.clone());
                     match store.get_entity(*candidate_id) {
                         Ok(opt) => opt,
                         Err(e) => {
@@ -663,8 +689,11 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
             };
 
             // Look up the existing slot for §3.4.4 decision.
+            // ISS-055: stamp the per-job namespace before find_edges so
+            // the slot lookup is scoped to the user's namespace.
             let existing = {
-                let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                store.set_namespace(ctx.namespace.clone());
                 match store.find_edges(
                     subject_id,
                     &draft.predicate,
@@ -761,11 +790,20 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
     pub fn resolve_for_backfill(
         &self,
         memory: &MemoryRecord,
+        namespace: &str,
     ) -> Result<GraphDelta, PipelineError> {
         // Build context. Episode id: nil-UUID sentinel for "no episode"
         // (v0.2 MemoryRecord has no episode_id field; design §6.5
         // mandates we do NOT mint a new episode).
-        let mut ctx = PipelineContext::new(memory.clone(), Uuid::nil(), None);
+        // ISS-055: namespace is provided by the migration caller (which
+        // batches rows by namespace) — backfill cannot read it from the
+        // record because v0.2 `MemoryRecord` does not carry it.
+        let mut ctx = PipelineContext::new(
+            memory.clone(),
+            Uuid::nil(),
+            None,
+            namespace.to_string(),
+        );
 
         // §3.2 entity extract — total over v0.2 extractor; non-fatal
         // failures land on `ctx.failures`.
@@ -1176,6 +1214,10 @@ mod backfill_tests {
             // if a future change accidentally wires it through.
             panic!("apply_graph_delta should not be called by resolve_for_backfill")
         }
+        fn set_namespace(&mut self, _ns: String) {
+            // No-op: StubStore is namespace-agnostic (resolve_for_backfill
+            // tests do not exercise namespace partitioning).
+        }
     }
 
     // GraphStore is auto-impl'd via blanket `impl<T: GraphWrite> GraphStore for T`.
@@ -1185,7 +1227,7 @@ mod backfill_tests {
         fn fetch(
             &self,
             _id: &str,
-        ) -> Result<Option<MemoryRecord>, MemoryReadError> {
+        ) -> Result<Option<(MemoryRecord, String)>, MemoryReadError> {
             // resolve_for_backfill takes &MemoryRecord directly and never
             // hits the reader. Surface loudly if that changes.
             Ok(None)
@@ -1230,7 +1272,7 @@ mod backfill_tests {
         // Memory whose episode_id semantically is None (v0.2 row).
         let mem = fixture_memory("mem-null", "Alice works at Acme Corp.");
         let pipe = build_pipeline(vec![]);
-        let delta = pipe.resolve_for_backfill(&mem).expect("backfill ok");
+        let delta = pipe.resolve_for_backfill(&mem, "").expect("backfill ok");
         // For backfill all edges (if present) carry `Some(Uuid::nil())`
         // per current persist code; that is the documented sentinel
         // and not a "new episode."
@@ -1252,7 +1294,7 @@ mod backfill_tests {
         // adds episode_id to MemoryRecord and we forget to wire it).
         let mem = fixture_memory("mem-eps", "Bob uses Rust.");
         let pipe = build_pipeline(vec![]);
-        let delta = pipe.resolve_for_backfill(&mem).expect("backfill ok");
+        let delta = pipe.resolve_for_backfill(&mem, "").expect("backfill ok");
         for e in &delta.edges {
             assert_eq!(e.episode_id, Some(Uuid::nil()));
         }
@@ -1262,8 +1304,8 @@ mod backfill_tests {
     fn test_resolve_for_backfill_idempotent() {
         let mem = fixture_memory("mem-idem", "Alice works at Acme Corp using Rust.");
         let pipe = build_pipeline(vec![]);
-        let d1 = pipe.resolve_for_backfill(&mem).expect("first ok");
-        let d2 = pipe.resolve_for_backfill(&mem).expect("second ok");
+        let d1 = pipe.resolve_for_backfill(&mem, "").expect("first ok");
+        let d2 = pipe.resolve_for_backfill(&mem, "").expect("second ok");
         // Canonical names are stable; entity ids are minted fresh per
         // run (CreateNew path mints v4 uuids), so equivalence is on the
         // shape, not the ids. Match what the design calls "equivalent
@@ -1336,7 +1378,7 @@ mod lift_tests {
             superseded_by: None,
             metadata: None,
         };
-        PipelineContext::new(mem, Uuid::nil(), None)
+        PipelineContext::new(mem, Uuid::nil(), None, String::new())
     }
 
     fn triple(subject: &str, object: &str) -> Triple {

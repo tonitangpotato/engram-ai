@@ -151,6 +151,13 @@ pub struct PipelineContext {
     /// Captured at write time (§3.1) and immutable thereafter (GUARD-8).
     pub affect_snapshot: Option<SomaticFingerprint>,
 
+    /// Namespace tag inherited from `memories.namespace` at fetch time
+    /// (ISS-055). The pipeline stamps this onto the shared graph store
+    /// before every read/write so per-job namespace isolation works
+    /// even though the worker pool reuses one `Arc<Mutex<GraphStore>>`
+    /// across all in-flight jobs.
+    pub namespace: String,
+
     /// Filled by §3.2.
     pub extracted_entities: Vec<ExtractedEntity>,
     /// Filled by §3.3.
@@ -178,11 +185,13 @@ impl PipelineContext {
         memory: MemoryRecord,
         episode_id: Uuid,
         affect_snapshot: Option<SomaticFingerprint>,
+        namespace: String,
     ) -> Self {
         Self {
             memory,
             episode_id,
             affect_snapshot,
+            namespace,
             extracted_entities: Vec::new(),
             extracted_triples: Vec::new(),
             entity_drafts: Vec::new(),
@@ -264,7 +273,7 @@ mod tests {
     #[test]
     fn pipeline_context_starts_empty() {
         let mem = fixture_memory();
-        let ctx = PipelineContext::new(mem, Uuid::new_v4(), None);
+        let ctx = PipelineContext::new(mem, Uuid::new_v4(), None, String::new());
         assert!(ctx.extracted_entities.is_empty());
         assert!(ctx.extracted_triples.is_empty());
         assert!(ctx.entity_drafts.is_empty());
@@ -277,7 +286,7 @@ mod tests {
     #[test]
     fn record_failure_accumulates() {
         let mem = fixture_memory();
-        let mut ctx = PipelineContext::new(mem, Uuid::new_v4(), None);
+        let mut ctx = PipelineContext::new(mem, Uuid::new_v4(), None, String::new());
         ctx.record_failure(PipelineStage::EntityExtract, "panic", "regex blew up");
         ctx.record_failure(PipelineStage::EdgeExtract, "llm_5xx", "Anthropic timeout");
         assert!(ctx.has_failures());
