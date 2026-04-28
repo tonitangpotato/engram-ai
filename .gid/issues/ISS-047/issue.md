@@ -1,10 +1,27 @@
 # ISS-047: closed-set failure-label allowlist mismatches pipeline producers — every stage failure rolls back the whole transaction
 
-- **Status**: in_progress
+- **Status**: done
+- **Closed**: 2026-04-28
 - **Severity**: blocker (graph layer is functionally non-operational for any input that triggers any stage failure)
 - **Filed**: 2026-04-28
 - **Discovered during**: ISS-046 fresh-ingest verification on LoCoMo conv-26 (b806485 + 950159d)
 - **Related**: ISS-046 (graph DB wiring — fixed), ISS-044 (pre-discovery), ISS-021 (subdim coverage)
+- **Forward link**: ISS-048 (extractors architecture mismatch — exposed by this fix)
+
+---
+
+## Verification
+
+Validated on commit `be35217`: LoCoMo conv-26 fresh-ingest, 32/32 pipeline runs
+succeeded, no rollback triggered, `applied_deltas` persisted correctly. Closed-set
+validator now accepts the full pipeline label vocabulary; failure rows route to
+audit table without nuking the transaction.
+
+## Forward note
+
+This fix resolved the rollback mechanism but surfaced a deeper architectural
+mismatch in extractor wiring — see ISS-048 for the lift-novel-edge-endpoints
+follow-up.
 
 ---
 
