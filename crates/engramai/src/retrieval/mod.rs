@@ -22,9 +22,11 @@
 pub mod api;
 pub mod budget;
 pub mod classifier;
+pub mod dispatch;
 pub mod explain;
 pub mod fusion;
 pub mod metrics;
+pub mod orchestrator;
 pub mod outcomes;
 pub mod plans;
 

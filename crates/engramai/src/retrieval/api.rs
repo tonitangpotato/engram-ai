@@ -322,21 +322,72 @@ impl MemoryTier {
 impl Memory {
     /// Structured graph-aware retrieval (design §6.2 / GOAL-3.1).
     ///
-    /// **Stub:** the orchestrator that classifies, routes to a plan,
-    /// fuses, and assembles the trace is owned by sibling tasks (see
-    /// module docs). This stub returns
-    /// [`RetrievalError::Internal`] so callers can compile against the
-    /// final signature today.
+    /// **Partial implementation:** the classifier-dispatch stage is wired
+    /// (`task:retr-impl-orchestrator-classifier-dispatch`) — incoming
+    /// queries are classified into an [`Intent`] + executable
+    /// [`PlanKind`](crate::retrieval::dispatch::PlanKind) and a
+    /// [`PlanContext`](crate::retrieval::dispatch::PlanContext) is built.
+    /// Plan **execution** is the next task
+    /// (`task:retr-impl-orchestrator-plan-execution`); until it lands the
+    /// method returns [`RetrievalError::Internal`] so callers see a clear
+    /// "dispatched but not executed" message rather than silently
+    /// succeeding with empty results.
     pub async fn graph_query(
         &self,
-        _query: GraphQuery,
+        query: GraphQuery,
     ) -> Result<GraphQueryResponse, RetrievalError> {
-        Err(RetrievalError::Internal(
-            "Memory::graph_query — orchestrator not yet implemented \
-             (task:retr-impl-classifier-* / plans / fusion / trace land first; \
-             see retrieval/api.rs module docs)"
-                .into(),
-        ))
+        // Stage A: dispatch.
+        let classifier =
+            crate::retrieval::classifier::HeuristicClassifier::with_null_lookup();
+        let dispatched = crate::retrieval::dispatch::dispatch(query, &classifier);
+        let plan_kind = dispatched.plan_kind;
+        let intent = dispatched.intent;
+        let limit = dispatched.context.limit;
+        let explain = dispatched.context.explain;
+
+        // Stage B: plan execution. The orchestrator extracts the graph
+        // store from `with_graph_read` and runs the dispatched plan
+        // against `Null*` collaborators (deferred until per-recaller
+        // tasks land — see `crate::retrieval::orchestrator` module note).
+        // The `StorageLoader` borrows `&Storage`, hydrating
+        // `MemoryRecord`s lazily.
+        let loader =
+            crate::retrieval::orchestrator::StorageLoader::new(self.storage());
+        // Self-state is `None` until cognitive-state is wired into Memory
+        // (`task:retr-impl-cognitive-state-readback`). Affective-plan
+        // queries surface `RetrievalOutcome::NoCognitiveState` for now.
+        let self_state: Option<crate::graph::affect::SomaticFingerprint> = None;
+
+        let (candidates, outcome) = self.with_graph_read(|graph| {
+            crate::retrieval::orchestrator::execute_plan(
+                dispatched, graph, &loader, self_state,
+            )
+        })?;
+
+        // Stage C: fusion + ranking. Hybrid bypasses `fuse_and_rank`
+        // because RRF already produced a fused score (§5.2). Other
+        // plans flow through the per-intent weighted combine.
+        let cfg = crate::retrieval::fusion::FusionConfig::locked();
+        let mut ranked = match plan_kind {
+            crate::retrieval::dispatch::PlanKind::Hybrid => candidates,
+            _ => crate::retrieval::fusion::fuse_and_rank(intent, &cfg, candidates),
+        };
+
+        // Top-K cutoff.
+        if ranked.len() > limit {
+            ranked.truncate(limit);
+        }
+
+        // Stage D: trace assembly is owned by `task:retr-impl-explain-trace`.
+        // Until that lands, `explain == true` queries get `trace = None`.
+        let _ = explain; // explicit intent; trace is None until T14.
+
+        Ok(GraphQueryResponse {
+            results: ranked,
+            plan_used: intent,
+            outcome,
+            trace: None,
+        })
     }
 
     /// Deterministic-mode variant (design §6.2 / §5.4).
@@ -346,14 +397,16 @@ impl Memory {
     /// benchmarks, reproducibility records, and byte-identical-output tests.
     pub async fn graph_query_locked(
         &self,
-        _query: GraphQuery,
+        query: GraphQuery,
     ) -> Result<GraphQueryResponse, RetrievalError> {
-        Err(RetrievalError::Internal(
-            "Memory::graph_query_locked — locked fusion path not yet implemented \
-             (task:retr-impl-fusion provides FusionConfig::locked(); \
-             see retrieval/api.rs module docs)"
-                .into(),
-        ))
+        // §5.4 — locked path pins `FusionConfig::locked()` and disables
+        // any env / file / flag overrides. Today `graph_query` already
+        // uses `FusionConfig::locked()` unconditionally (the env-aware
+        // alternative isn't wired yet — `task:retr-impl-fusion-config-loader`),
+        // so the two methods are behaviorally equivalent. They remain
+        // separate API entries so future work can diverge them without
+        // a breaking change to benchmark callers.
+        self.graph_query(query).await
     }
 
     /// Tier-scoped recall — design §6.5 / GOAL-3.9.
@@ -488,29 +541,64 @@ mod tests {
         }
     }
 
+    /// Without a graph store installed, `graph_query` surfaces a typed
+    /// `Internal` error from `with_graph_read` rather than crashing.
+    /// This is the v0.2-compat path: callers without v0.3 ingestion
+    /// fall back to the legacy `recall()` API.
     #[test]
-    fn graph_query_stub_returns_internal_error() {
+    fn graph_query_without_graph_store_returns_internal_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let db_path = tmp.path().join("retrieval-api-stub.db");
+        let db_path = tmp.path().join("retrieval-api-no-graph.db");
         let mem = Memory::new(db_path.to_str().unwrap(), None).expect("memory init");
         let err = block_on(mem.graph_query(GraphQuery::new("x")))
-            .expect_err("stub must error");
+            .expect_err("no graph store → Internal error");
         match err {
             RetrievalError::Internal(msg) => {
-                assert!(msg.contains("not yet implemented"), "msg = {msg}");
+                assert!(
+                    msg.contains("no graph store installed"),
+                    "unexpected message: {msg}"
+                );
             }
             other => panic!("expected Internal, got {other:?}"),
         }
     }
 
     #[test]
-    fn graph_query_locked_stub_returns_internal_error() {
+    fn graph_query_locked_delegates_to_graph_query() {
         let tmp = tempfile::tempdir().unwrap();
-        let db_path = tmp.path().join("retrieval-api-stub-locked.db");
+        let db_path = tmp.path().join("retrieval-api-locked.db");
         let mem = Memory::new(db_path.to_str().unwrap(), None).expect("memory init");
+        // Same Internal error surface as graph_query — confirms the
+        // delegation rather than the old stub message.
         let err = block_on(mem.graph_query_locked(GraphQuery::new("x")))
-            .expect_err("stub must error");
+            .expect_err("no graph store → Internal error");
         assert!(matches!(err, RetrievalError::Internal(_)));
+    }
+
+    /// End-to-end: graph store installed but empty → Factual override
+    /// downgrades to `NoEntityFound` (the orchestrator does not error;
+    /// it surfaces a typed outcome with empty results).
+    #[test]
+    fn graph_query_with_empty_graph_returns_typed_outcome() {
+        use crate::retrieval::classifier::Intent;
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("retrieval-api-empty-graph.db");
+        let graph_db = tmp.path().join("retrieval-api-empty-graph.graph.db");
+        let mem = Memory::new(db_path.to_str().unwrap(), None)
+            .expect("memory init")
+            .with_graph_store(&graph_db)
+            .expect("install graph store");
+
+        let q = GraphQuery::new("alice").with_intent(Intent::Factual);
+        let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
+        assert!(resp.results.is_empty(), "empty graph → no candidates");
+        assert_eq!(resp.plan_used, Intent::Factual);
+        assert!(
+            matches!(resp.outcome, RetrievalOutcome::NoEntityFound { .. }),
+            "got outcome {:?}",
+            resp.outcome
+        );
+        assert!(resp.trace.is_none(), "explain off → trace None");
     }
 
     #[test]

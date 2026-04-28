@@ -148,6 +148,32 @@ pub struct Memory {
     /// receives `&mut self` — `Mutex<Option<_>>::lock().take()` lets us
     /// extract the pool without consuming `Memory`.
     pipeline_pool: Option<std::sync::Mutex<Option<crate::resolution::worker::WorkerPool>>>,
+
+    /// v0.3 §6 retrieval graph-store handle.
+    ///
+    /// Holds the same `Arc<Mutex<SqliteGraphStore<'static>>>` that
+    /// `with_pipeline_pool` builds for the resolution pipeline, so
+    /// query-time plans (Factual/Associative/Abstract) can obtain
+    /// `&dyn GraphRead` from `&self` via [`Memory::with_graph_read`].
+    ///
+    /// `None` → no graph features installed (v0.2-compat mode); the
+    /// retrieval orchestrator surfaces a typed
+    /// `RetrievalError::Internal` and the caller falls through to the
+    /// v0.2 recall path.
+    ///
+    /// `Some(_)` → installed by either [`Memory::with_pipeline_pool`]
+    /// (full v0.3 ingestion) or [`Memory::with_graph_store`]
+    /// (read-only graph access without the worker pool — test
+    /// ergonomics and v0.3-without-extraction setups).
+    ///
+    /// Held as `Arc<Mutex<_>>` (not `&mut self`) because:
+    /// - `graph_query` is `&self` so concurrent retrieval calls don't
+    ///   block each other on a `&mut Memory` borrow.
+    /// - `SqliteGraphStore<'static>` needs an exclusive
+    ///   `&mut Connection` for any operation (read or write), so the
+    ///   inner `Mutex` serializes plan execution against ingestion
+    ///   workers that share the same `Arc` via the resolution pipeline.
+    graph_store: Option<std::sync::Arc<std::sync::Mutex<crate::graph::store::SqliteGraphStore<'static>>>>,
 }
 
 impl Memory {
@@ -298,6 +324,14 @@ impl Memory {
         let graph_store = SqliteGraphStore::new(graph_conn);
         let store_arc: Arc<Mutex<SqliteGraphStore<'static>>> = Arc::new(Mutex::new(graph_store));
 
+        // (1b) Stash the graph-store Arc on `Memory` so retrieval plans
+        //      can borrow `&dyn GraphRead` from `&self` via
+        //      `with_graph_read`. The pipeline (below) gets its own
+        //      clone — both share the same inner `Mutex`, which is
+        //      correct: ingestion writes and retrieval reads must
+        //      serialize against the same connection.
+        self.graph_store = Some(Arc::clone(&store_arc));
+
         // (2) Memory reader (separate connection, internally Mutex-wrapped).
         let memory_reader: Arc<dyn crate::resolution::pipeline::MemoryReader> =
             Arc::new(SqliteMemoryReader::open(db_path_ref)?);
@@ -359,6 +393,111 @@ impl Memory {
             return Ok(None);
         };
         pool.shutdown(deadline).map(Some)
+    }
+
+    /// Install a graph store handle for query-time retrieval **without**
+    /// the resolution pipeline / worker pool.
+    ///
+    /// This is the lightweight builder used by:
+    /// - **Tests** that want `graph_query` to dispatch real plans
+    ///   against a SQLite graph without spinning up a worker pool.
+    /// - **Read-only v0.3 setups** where graph extraction is performed
+    ///   out-of-band (e.g. batch import) and the running process only
+    ///   needs query access.
+    ///
+    /// Mechanics mirror [`Memory::with_pipeline_pool`]'s graph-store
+    /// construction (intentionally — both paths must produce a store
+    /// with identical pragmas + identical `'static` lifetime via a
+    /// leaked connection):
+    ///
+    /// 1. Open a fresh SQLite connection to `db_path`.
+    /// 2. Apply the canonical pragmas (`journal_mode=WAL`,
+    ///    `foreign_keys=ON`, `busy_timeout=5000`) so the new
+    ///    connection coexists with `Storage`'s connection.
+    /// 3. `Box::leak` the connection to obtain `&'static mut`.
+    ///    Documented as deliberate — the connection lives for the
+    ///    process lifetime, matching `with_pipeline_pool`'s contract.
+    /// 4. Wrap in `Arc<Mutex<SqliteGraphStore<'static>>>` and install.
+    ///
+    /// Calling this when [`Memory::with_pipeline_pool`] has **also**
+    /// run replaces the existing handle. That's intentional but
+    /// almost certainly a misconfiguration — production code should
+    /// pick one path. We don't error here because `&mut self` builders
+    /// shouldn't surprise callers with hidden ordering rules; if you
+    /// hit this in practice, file a bug.
+    pub fn with_graph_store(
+        mut self,
+        db_path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        use std::sync::{Arc, Mutex};
+        use crate::graph::store::SqliteGraphStore;
+
+        let graph_conn: &'static mut rusqlite::Connection = {
+            let conn = rusqlite::Connection::open(db_path.as_ref())?;
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+            )?;
+            Box::leak(Box::new(conn))
+        };
+        let store = SqliteGraphStore::new(graph_conn);
+        self.graph_store = Some(Arc::new(Mutex::new(store)));
+        Ok(self)
+    }
+
+    /// Borrow the installed graph store as `&dyn GraphRead` for the
+    /// duration of `f`.
+    ///
+    /// This is the canonical accessor for v0.3 query-time plans
+    /// (Factual / Associative / Abstract) that need to walk the
+    /// entity/edge graph during retrieval.
+    ///
+    /// # Why a closure
+    ///
+    /// `SqliteGraphStore<'a>` borrows a connection — there is no way
+    /// to return an owned `&dyn GraphRead` without leaking the lock
+    /// guard. Holding the guard inside `f` keeps the borrow scope
+    /// explicit and prevents callers from accidentally serializing
+    /// expensive non-graph work behind the graph mutex.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RetrievalError::Internal` if no graph store is
+    /// installed — the `Memory` was constructed without
+    /// [`Memory::with_pipeline_pool`] **and** without
+    /// [`Memory::with_graph_store`]. This is a typed downgrade, not a
+    /// panic: callers (the orchestrator) translate it into a sensible
+    /// `RetrievalOutcome` rather than crashing the v0.2 retrieval
+    /// path.
+    ///
+    /// # Mutex poisoning
+    ///
+    /// If the graph mutex is poisoned (a previous holder panicked
+    /// while writing), the call returns
+    /// `RetrievalError::Internal("graph store mutex poisoned")` rather
+    /// than propagating the panic. This mirrors the rest of the v0.3
+    /// surface — poisoning is a cooperative-shutdown signal, not a
+    /// retryable error.
+    pub fn with_graph_read<R>(
+        &self,
+        f: impl FnOnce(&dyn crate::graph::store::GraphRead) -> R,
+    ) -> Result<R, crate::retrieval::RetrievalError> {
+        let store_arc = self.graph_store.as_ref().ok_or_else(|| {
+            crate::retrieval::RetrievalError::Internal(
+                "no graph store installed — call Memory::with_pipeline_pool \
+                 or Memory::with_graph_store before invoking v0.3 retrieval"
+                    .to_string(),
+            )
+        })?;
+        let guard = store_arc.lock().map_err(|_| {
+            crate::retrieval::RetrievalError::Internal(
+                "graph store mutex poisoned (a prior holder panicked); \
+                 reconstruct Memory to recover"
+                    .to_string(),
+            )
+        })?;
+        // `&*guard` unwraps the `MutexGuard` to `&SqliteGraphStore<'static>`
+        // which coerces to `&dyn GraphRead`.
+        Ok(f(&*guard))
     }
 
     /// §6.3 introspection: current `ExtractionStatus` for `memory_id`.
@@ -706,6 +845,7 @@ impl Memory {
             counting_sink: None,
             job_queue: None,
             pipeline_pool: None,
+            graph_store: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -774,6 +914,7 @@ impl Memory {
             counting_sink: None,
             job_queue: None,
             pipeline_pool: None,
+            graph_store: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -840,6 +981,7 @@ impl Memory {
             counting_sink: None,
             job_queue: None,
             pipeline_pool: None,
+            graph_store: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
@@ -911,6 +1053,7 @@ impl Memory {
             counting_sink: None,
             job_queue: None,
             pipeline_pool: None,
+            graph_store: None,
         };
         // Install the default CountingSink, sharing one Arc between
         // the trait-object slot and the fast-path `counting_sink`
