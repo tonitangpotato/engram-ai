@@ -134,6 +134,28 @@ pub struct GraphQuery {
     /// GOAL-3.11 — opt-in `PlanTrace` assembly. Default `false` keeps the
     /// production hot path overhead-free.
     pub explain: bool,
+
+    /// Per-query override of the cognitive self-state passed into the
+    /// affective retrieval plan (`task:retr-impl-cognitive-state-readback`
+    /// / GOAL-5.6).
+    ///
+    /// When `Some(fp)`, this fingerprint is used verbatim as `s_now` for
+    /// affective ranking, **bypassing** the live
+    /// [`Memory::current_self_state`](crate::Memory::current_self_state)
+    /// readback. This exists for two reasons:
+    ///
+    /// 1. **Deterministic benchmarks (GOAL-5.6).** The
+    ///    `cognitive_regression` driver needs to compare ranking under
+    ///    state S1 vs ranking under state S2 against the *same* `Memory`
+    ///    without mutating its hub between runs. Passing fingerprints in
+    ///    via `with_self_state_override` keeps each run reproducible.
+    /// 2. **Reproducibility records (§5.4).** Saved query traces include
+    ///    the exact `s_now` used, so replays can pin it explicitly.
+    ///
+    /// When `None` (default), `Memory::graph_query` reads the live
+    /// fingerprint from the interoceptive hub. If the hub is empty the
+    /// affective plan downgrades to associative per §6.2.
+    pub self_state_override: Option<crate::graph::affect::SomaticFingerprint>,
 }
 
 impl GraphQuery {
@@ -151,6 +173,7 @@ impl GraphQuery {
             tier: None,
             query_time: None,
             explain: false,
+            self_state_override: None,
         }
     }
 
@@ -181,6 +204,21 @@ impl GraphQuery {
     /// Builder: explicit tier scoping (GOAL-3.9).
     pub fn with_tier(mut self, tier: MemoryTier) -> Self {
         self.tier = Some(tier);
+        self
+    }
+
+    /// Builder: pin the cognitive self-state for this query
+    /// (GOAL-5.6 / `task:retr-impl-cognitive-state-readback`).
+    ///
+    /// When set, this fingerprint replaces the live readback from
+    /// [`Memory::current_self_state`](crate::Memory::current_self_state)
+    /// for affective ranking. See
+    /// [`GraphQuery::self_state_override`] for the full rationale.
+    pub fn with_self_state_override(
+        mut self,
+        fp: crate::graph::affect::SomaticFingerprint,
+    ) -> Self {
+        self.self_state_override = Some(fp);
         self
     }
 }
@@ -336,6 +374,10 @@ impl Memory {
         &self,
         query: GraphQuery,
     ) -> Result<GraphQueryResponse, RetrievalError> {
+        // Extract per-query self-state override before `dispatch` consumes
+        // the query. `None` here means "fall back to live hub readback".
+        let self_state_override = query.self_state_override;
+
         // Stage A: dispatch.
         let classifier =
             crate::retrieval::classifier::HeuristicClassifier::with_null_lookup();
@@ -353,10 +395,20 @@ impl Memory {
         // `MemoryRecord`s lazily.
         let loader =
             crate::retrieval::orchestrator::StorageLoader::new(self.storage());
-        // Self-state is `None` until cognitive-state is wired into Memory
-        // (`task:retr-impl-cognitive-state-readback`). Affective-plan
-        // queries surface `RetrievalOutcome::NoCognitiveState` for now.
-        let self_state: Option<crate::graph::affect::SomaticFingerprint> = None;
+
+        // Self-state resolution (`task:retr-impl-cognitive-state-readback`
+        // / GOAL-5.6):
+        //   1. If the caller pinned a fingerprint via
+        //      `GraphQuery::with_self_state_override`, use it verbatim.
+        //      This path drives the cognitive_regression benchmark and
+        //      reproducibility replays.
+        //   2. Otherwise read the live snapshot off the interoceptive
+        //      hub via `Memory::current_self_state`. Returns `None` when
+        //      the hub is empty (cold start), so the affective plan
+        //      downgrades to associative routing per §6.2 instead of
+        //      ranking against a synthetic neutral state.
+        let self_state =
+            self_state_override.or_else(|| self.current_self_state());
 
         let (candidates, outcome) = self.with_graph_read(|graph| {
             crate::retrieval::orchestrator::execute_plan(
@@ -614,5 +666,121 @@ mod tests {
             block_on(mem.list_tier(MemoryTier::Core, 10, 0)).expect_err("stub"),
             RetrievalError::Internal(_)
         ));
+    }
+
+    // ── Self-state readback (task:retr-impl-cognitive-state-readback) ─
+
+    #[test]
+    fn graph_query_default_has_no_self_state_override() {
+        // GraphQuery::new must default the override to None so existing
+        // callers preserve behavior.
+        let q = GraphQuery::new("hello");
+        assert!(q.self_state_override.is_none());
+    }
+
+    #[test]
+    fn graph_query_with_self_state_override_sets_field() {
+        use crate::graph::affect::SomaticFingerprint;
+        let fp = SomaticFingerprint::from_array([0.5, 0.5, 0.5, 0.5, 0.0, 0.1, 0.0, 0.5]);
+        let q = GraphQuery::new("hello").with_self_state_override(fp);
+        assert_eq!(q.self_state_override, Some(fp));
+    }
+
+    #[test]
+    fn memory_current_self_state_none_on_cold_start() {
+        // Fresh Memory has no interoceptive signals → readback is None
+        // so the orchestrator downgrades the affective plan rather than
+        // ranking against a synthetic neutral state.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("retrieval-api-cold-state.db");
+        let mem = Memory::new(db_path.to_str().unwrap(), None).expect("memory init");
+        assert!(
+            mem.current_self_state().is_none(),
+            "cold-start Memory has no interoceptive signals"
+        );
+    }
+
+    #[test]
+    fn memory_current_self_state_some_after_signal_processed() {
+        // After ingesting a signal the hub has a populated domain →
+        // readback returns Some(fingerprint).
+        use crate::interoceptive::types::{InteroceptiveSignal, SignalSource};
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("retrieval-api-warm-state.db");
+        let mut mem = Memory::new(db_path.to_str().unwrap(), None).expect("memory init");
+        mem.interoceptive_hub_mut().process_signal(InteroceptiveSignal::new(
+            SignalSource::Feedback,
+            Some("coding".to_string()),
+            0.6,
+            0.4,
+        ));
+        let fp = mem
+            .current_self_state()
+            .expect("hub has signals, fingerprint should be Some");
+        // Coding domain valence_trend is updated via EWMA from one sample,
+        // and is the only domain → average follows that domain.
+        assert!(
+            fp.valence() > 0.0,
+            "positive feedback should yield positive valence, got {}",
+            fp.valence()
+        );
+    }
+
+    #[test]
+    fn graph_query_affective_with_override_against_empty_graph_does_not_panic() {
+        // Smoke test: an Affective query with self_state_override set
+        // routes through the orchestrator without panicking on the
+        // self_state plumbing. Empty graph still returns a typed outcome.
+        use crate::graph::affect::SomaticFingerprint;
+        use crate::retrieval::classifier::Intent;
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("retrieval-api-affective-override.db");
+        let graph_db = tmp.path().join("retrieval-api-affective-override.graph.db");
+        let mem = Memory::new(db_path.to_str().unwrap(), None)
+            .expect("memory init")
+            .with_graph_store(&graph_db)
+            .expect("install graph store");
+
+        let fp = SomaticFingerprint::from_array([0.7, 0.3, 0.6, 0.6, 0.1, 0.2, 0.1, 0.5]);
+        let q = GraphQuery::new("how do I feel about engram")
+            .with_intent(Intent::Affective)
+            .with_self_state_override(fp);
+        let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
+        assert_eq!(resp.plan_used, Intent::Affective);
+        assert!(resp.results.is_empty(), "empty graph → no results");
+        // Outcome should NOT be NoCognitiveState — the override carries a
+        // valid fingerprint through to the plan. The exact downgrade
+        // outcome (e.g. NoSeeds) depends on the affective plan's empty-
+        // graph behavior; we only assert the override was honored.
+        assert!(
+            !matches!(resp.outcome, RetrievalOutcome::NoCognitiveState { .. }),
+            "self_state_override should suppress NoCognitiveState; got {:?}",
+            resp.outcome
+        );
+    }
+
+    #[test]
+    fn graph_query_affective_without_state_yields_no_cognitive_state() {
+        // Cold-start Memory + no override + Affective intent → the plan
+        // sees self_state == None and returns NoCognitiveState per §6.2.
+        // This is the contract the cognitive_regression driver checks
+        // against to detect regressions to a pure stub.
+        use crate::retrieval::classifier::Intent;
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("retrieval-api-affective-cold.db");
+        let graph_db = tmp.path().join("retrieval-api-affective-cold.graph.db");
+        let mem = Memory::new(db_path.to_str().unwrap(), None)
+            .expect("memory init")
+            .with_graph_store(&graph_db)
+            .expect("install graph store");
+
+        let q = GraphQuery::new("how do I feel about engram").with_intent(Intent::Affective);
+        let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
+        assert_eq!(resp.plan_used, Intent::Affective);
+        assert!(
+            matches!(resp.outcome, RetrievalOutcome::NoCognitiveState { .. }),
+            "cold-start affective query → NoCognitiveState; got {:?}",
+            resp.outcome
+        );
     }
 }

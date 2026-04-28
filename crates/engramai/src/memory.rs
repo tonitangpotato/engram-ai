@@ -1158,6 +1158,27 @@ impl Memory {
         self.interoceptive_hub.current_state()
     }
 
+    /// Project the current interoceptive snapshot into the locked 8-dim
+    /// [`SomaticFingerprint`](crate::graph::affect::SomaticFingerprint)
+    /// consumed by the affective retrieval plan
+    /// (`task:retr-impl-cognitive-state-readback` / GOAL-5.6).
+    ///
+    /// Returns `None` when no interoceptive signals have been recorded
+    /// yet (cold start) — callers propagate this through the orchestrator
+    /// so affective queries downgrade to associative routing per §6.2
+    /// rather than ranking against a synthetic neutral state.
+    ///
+    /// See
+    /// [`InteroceptiveState::to_somatic_fingerprint`](crate::interoceptive::InteroceptiveState::to_somatic_fingerprint)
+    /// for the locked dimension mapping (GUARD-7).
+    pub fn current_self_state(
+        &self,
+    ) -> Option<crate::graph::affect::SomaticFingerprint> {
+        self.interoceptive_hub
+            .current_state()
+            .to_somatic_fingerprint()
+    }
+
     // ── Extraction Emotion Cache ───────────────────────────────────────
 
     /// Take the emotion data from the most recent LLM extraction.

@@ -428,6 +428,98 @@ impl InteroceptiveState {
 
         lines.join("\n")
     }
+
+    /// Project this interoceptive snapshot into the locked 8-dim
+    /// [`SomaticFingerprint`](crate::graph::affect::SomaticFingerprint)
+    /// layout consumed by the affective retrieval plan
+    /// (`task:retr-impl-cognitive-state-readback` / GOAL-5.6).
+    ///
+    /// Returns `None` when no domain signals have been recorded yet —
+    /// callers (e.g., [`Memory::graph_query`]) propagate `None` so the
+    /// affective plan downgrades to associative routing per §6.2 rather
+    /// than ranking against a synthetic zero state. Returns
+    /// `Some(fingerprint)` once at least one domain has been observed.
+    ///
+    /// ## Dimension mapping (GUARD-7 — locked)
+    ///
+    /// All cross-domain aggregates use the per-domain `signal_count` as
+    /// weights so a heavily-active domain dominates an idle one. Where
+    /// the projected source is unbounded (e.g., `anomaly_level` can
+    /// exceed 1.0), the result is clamped into the dimension's documented
+    /// range from `affect.rs`.
+    ///
+    /// | Idx | Name              | Range    | Source                                                 |
+    /// |-----|-------------------|----------|--------------------------------------------------------|
+    /// |  0  | valence           | -1..+1   | weighted-avg `domain_states[*].valence_trend`          |
+    /// |  1  | arousal           |   0..1   | `global_arousal` (already clamped by the hub)          |
+    /// |  2  | confidence        |   0..1   | weighted-avg `domain_states[*].confidence`             |
+    /// |  3  | alignment         |   0..1   | weighted-avg `domain_states[*].alignment_score`        |
+    /// |  4  | operational_load  |   0..1   | `(buffer_size as f64 / 100.0).clamp(0,1)` — buffer fullness proxy |
+    /// |  5  | cognitive_flow    | -1..+1   | composite: `valence * confidence * alignment` (high-flow ⇔ aligned, confident, positive) |
+    /// |  6  | anomaly_arousal   |   0..1   | weighted-avg `anomaly_level`, clamped to `[0, 1]`      |
+    /// |  7  | feedback_recent   |   0..1   | weighted-avg `domain_states[*].action_success_rate`    |
+    ///
+    /// The composite for `cognitive_flow` (idx 5) is intentionally
+    /// derived rather than a direct field, because the hub doesn't track
+    /// flow as a primitive — it emerges from the joint product of
+    /// hedonic tone (valence), metacognitive trust (confidence), and
+    /// drive-fit (alignment). When `valence` is negative the product is
+    /// negative, which encodes "anti-flow" / friction states — the
+    /// expected directional behavior under §3.7.
+    pub fn to_somatic_fingerprint(
+        &self,
+    ) -> Option<crate::graph::affect::SomaticFingerprint> {
+        if self.domain_states.is_empty() {
+            return None;
+        }
+
+        // Sum weights once. A domain with 0 signals contributes nothing
+        // and does not bias the average.
+        let total_weight: f64 = self
+            .domain_states
+            .values()
+            .map(|d| d.signal_count as f64)
+            .sum();
+
+        // If every domain is at signal_count=0 (e.g., freshly created
+        // domain rows but no observations), treat as no-data and bail
+        // out so callers can downgrade affective routing.
+        if total_weight <= 0.0 {
+            return None;
+        }
+
+        let weighted_avg = |project: fn(&DomainState) -> f64| -> f64 {
+            let sum: f64 = self
+                .domain_states
+                .values()
+                .map(|d| project(d) * d.signal_count as f64)
+                .sum();
+            sum / total_weight
+        };
+
+        let valence = weighted_avg(|d| d.valence_trend).clamp(-1.0, 1.0);
+        let arousal = self.global_arousal.clamp(0.0, 1.0);
+        let confidence = weighted_avg(|d| d.confidence).clamp(0.0, 1.0);
+        let alignment = weighted_avg(|d| d.alignment_score).clamp(0.0, 1.0);
+        let operational_load = ((self.buffer_size as f64) / 100.0).clamp(0.0, 1.0);
+        // Composite: positive valence × high confidence × good alignment
+        // ⇒ flow. Negative valence flips the sign (friction). All inputs
+        // are already clamped, so the product is in [-1, 1].
+        let cognitive_flow = (valence * confidence * alignment).clamp(-1.0, 1.0);
+        let anomaly_arousal = weighted_avg(|d| d.anomaly_level).clamp(0.0, 1.0);
+        let feedback_recent = weighted_avg(|d| d.action_success_rate).clamp(0.0, 1.0);
+
+        Some(crate::graph::affect::SomaticFingerprint::from_array([
+            valence as f32,
+            arousal as f32,
+            confidence as f32,
+            alignment as f32,
+            operational_load as f32,
+            cognitive_flow as f32,
+            anomaly_arousal as f32,
+            feedback_recent as f32,
+        ]))
+    }
 }
 
 // ── Regulation Action ─────────────────────────────────────────────────
@@ -843,6 +935,192 @@ mod tests {
         assert!(prompt.contains("coding"));
         assert!(prompt.contains("positive"));
         assert!(!prompt.contains("arousal")); // 0.3 < 0.5 threshold
+    }
+
+    // ── to_somatic_fingerprint tests (GUARD-7 layout) ─────────────────
+
+    fn empty_state() -> InteroceptiveState {
+        InteroceptiveState {
+            domain_states: HashMap::new(),
+            global_arousal: 0.0,
+            buffer_size: 0,
+            active_markers: vec![],
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn domain_with(
+        name: &str,
+        valence: f64,
+        confidence: f64,
+        alignment: f64,
+        anomaly: f64,
+        success: f64,
+        signal_count: u64,
+    ) -> DomainState {
+        let mut ds = DomainState::new(name);
+        ds.valence_trend = valence;
+        ds.confidence = confidence;
+        ds.alignment_score = alignment;
+        ds.anomaly_level = anomaly;
+        ds.action_success_rate = success;
+        ds.signal_count = signal_count;
+        ds
+    }
+
+    #[test]
+    fn somatic_fingerprint_none_when_no_domains() {
+        let state = empty_state();
+        assert!(
+            state.to_somatic_fingerprint().is_none(),
+            "no domain signals → no fingerprint"
+        );
+    }
+
+    #[test]
+    fn somatic_fingerprint_none_when_all_signal_counts_zero() {
+        // Domain rows exist but no observations have been recorded yet:
+        // weighted average is undefined, callers should see `None`.
+        let mut state = empty_state();
+        state
+            .domain_states
+            .insert("coding".into(), DomainState::new("coding"));
+        state
+            .domain_states
+            .insert("trading".into(), DomainState::new("trading"));
+        assert!(state.to_somatic_fingerprint().is_none());
+    }
+
+    #[test]
+    fn somatic_fingerprint_dimension_layout_locked() {
+        // Single-domain state with known values lets us assert each
+        // GUARD-7 dimension index produces the documented projection.
+        let mut state = empty_state();
+        state.global_arousal = 0.7;
+        state.buffer_size = 50; // → operational_load = 0.5
+        state.domain_states.insert(
+            "coding".into(),
+            domain_with(
+                "coding", 0.6, // valence_trend
+                0.8, // confidence
+                0.9, // alignment_score
+                0.4, // anomaly_level
+                0.75, // action_success_rate
+                10,  // signal_count
+            ),
+        );
+
+        let fp = state.to_somatic_fingerprint().expect("non-empty state");
+        let arr = fp.as_array();
+
+        // [0] valence
+        assert!((arr[0] - 0.6).abs() < 1e-5, "valence = {}", arr[0]);
+        // [1] arousal — direct passthrough of global_arousal
+        assert!((arr[1] - 0.7).abs() < 1e-5, "arousal = {}", arr[1]);
+        // [2] confidence
+        assert!((arr[2] - 0.8).abs() < 1e-5, "confidence = {}", arr[2]);
+        // [3] alignment
+        assert!((arr[3] - 0.9).abs() < 1e-5, "alignment = {}", arr[3]);
+        // [4] operational_load = buffer_size / 100
+        assert!(
+            (arr[4] - 0.5).abs() < 1e-5,
+            "operational_load = {}",
+            arr[4]
+        );
+        // [5] cognitive_flow = valence * confidence * alignment
+        let expected_flow = 0.6 * 0.8 * 0.9;
+        assert!(
+            (arr[5] - expected_flow as f32).abs() < 1e-5,
+            "cognitive_flow = {} (expected {})",
+            arr[5],
+            expected_flow
+        );
+        // [6] anomaly_arousal
+        assert!((arr[6] - 0.4).abs() < 1e-5, "anomaly_arousal = {}", arr[6]);
+        // [7] feedback_recent
+        assert!(
+            (arr[7] - 0.75).abs() < 1e-5,
+            "feedback_recent = {}",
+            arr[7]
+        );
+    }
+
+    #[test]
+    fn somatic_fingerprint_negative_valence_flips_flow() {
+        // Friction state: negative valence with otherwise-confident,
+        // aligned signals. The composite cognitive_flow should go
+        // negative — directional behavior expected by GOAL-5.6.
+        let mut state = empty_state();
+        state.domain_states.insert(
+            "trading".into(),
+            domain_with("trading", -0.5, 0.8, 0.8, 0.0, 0.5, 5),
+        );
+        let fp = state.to_somatic_fingerprint().unwrap();
+        let arr = fp.as_array();
+        assert!(arr[0] < 0.0, "valence stays negative");
+        assert!(
+            arr[5] < 0.0,
+            "cognitive_flow goes negative under negative valence: {}",
+            arr[5]
+        );
+    }
+
+    #[test]
+    fn somatic_fingerprint_weighted_by_signal_count() {
+        // Two domains with opposite valence; the heavier-weighted one
+        // dominates the average.
+        let mut state = empty_state();
+        state.domain_states.insert(
+            "coding".into(),
+            domain_with("coding", 1.0, 0.5, 0.5, 0.0, 0.5, 90),
+        );
+        state.domain_states.insert(
+            "trading".into(),
+            domain_with("trading", -1.0, 0.5, 0.5, 0.0, 0.5, 10),
+        );
+        let fp = state.to_somatic_fingerprint().unwrap();
+        // Weighted: (1.0 * 90 + -1.0 * 10) / 100 = 0.8
+        assert!(
+            (fp.valence() - 0.8).abs() < 1e-5,
+            "weighted valence = {}",
+            fp.valence()
+        );
+    }
+
+    #[test]
+    fn somatic_fingerprint_clamps_anomaly_above_one() {
+        // anomaly_level can exceed 1.0 (>2.0 documented as "high"),
+        // but the GUARD-7 dim 6 range is [0, 1]. Verify the clamp.
+        let mut state = empty_state();
+        state.domain_states.insert(
+            "coding".into(),
+            domain_with("coding", 0.0, 0.5, 0.5, 5.0, 0.5, 5),
+        );
+        let fp = state.to_somatic_fingerprint().unwrap();
+        let arr = fp.as_array();
+        assert!(
+            (arr[6] - 1.0).abs() < 1e-5,
+            "anomaly_arousal clamped to 1.0, got {}",
+            arr[6]
+        );
+    }
+
+    #[test]
+    fn somatic_fingerprint_operational_load_saturates() {
+        // Buffer over 100 entries should saturate operational_load at 1.0.
+        let mut state = empty_state();
+        state.buffer_size = 500;
+        state.domain_states.insert(
+            "coding".into(),
+            domain_with("coding", 0.0, 0.5, 0.5, 0.0, 0.5, 1),
+        );
+        let fp = state.to_somatic_fingerprint().unwrap();
+        let arr = fp.as_array();
+        assert!(
+            (arr[4] - 1.0).abs() < 1e-5,
+            "operational_load saturates, got {}",
+            arr[4]
+        );
     }
 
     // ── AdaptiveBaseline tests ────────────────────────────────────────
