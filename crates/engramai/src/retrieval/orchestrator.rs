@@ -556,7 +556,13 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
     ) -> crate::retrieval::plans::hybrid::SubPlanResult {
         use crate::retrieval::plans::hybrid::{HybridItem, SubPlanKind, SubPlanResult};
 
-        match kind {
+        log::info!(
+            target: "engramai::retrieval",
+            "hybrid_sub_plan ENTER sub_kind={:?}",
+            kind,
+        );
+
+        let result = match kind {
             SubPlanKind::Factual => {
                 let inputs = crate::retrieval::plans::factual::FactualPlanInputs {
                     query: &self.query.text,
@@ -652,7 +658,16 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                     .collect();
                 SubPlanResult { kind, items }
             }
-        }
+        };
+
+        log::info!(
+            target: "engramai::retrieval",
+            "hybrid_sub_plan EXIT  sub_kind={:?} items={}",
+            result.kind,
+            result.items.len(),
+        );
+
+        result
     }
 }
 
@@ -706,6 +721,24 @@ pub(crate) fn execute_plan(
 
     let now = query.query_time.unwrap_or_else(chrono::Utc::now);
 
+    // ISS-049-followup diagnostics: per-plan execution log so callers
+    // tailing `RUST_LOG=engramai::retrieval=info` can distinguish
+    //   (a) plan never dispatched (no log line at all)
+    //   (b) plan dispatched, returned 0 candidates (count=0 line)
+    //   (c) plan dispatched, returned N>0 candidates (count=N line)
+    //   (d) plan downgraded (outcome reflects the downgrade variant)
+    // Query text is truncated to 80 chars to keep log lines bounded;
+    // the full query is on the caller's side and can be correlated by
+    // timestamp + plan_kind if needed.
+    let q_log: String = query.text.chars().take(80).collect();
+    log::info!(
+        target: "engramai::retrieval",
+        "execute_plan ENTER plan_kind={} query_limit={} query=\"{}\"",
+        plan_kind.as_str(),
+        query.limit,
+        q_log,
+    );
+
     // Extract the budget controller out of the Arc<Mutex<_>>. Single
     // owner here — Hybrid sub-plans construct their own internally.
     let mut budget = match context.budget.lock() {
@@ -724,7 +757,7 @@ pub(crate) fn execute_plan(
         }
     };
 
-    match plan_kind {
+    let (scored, outcome) = match plan_kind {
         PlanKind::Factual => {
             let inputs = crate::retrieval::plans::factual::FactualPlanInputs {
                 query: &query.text,
@@ -891,7 +924,17 @@ pub(crate) fn execute_plan(
             };
             (scored, outcome)
         }
-    }
+    };
+
+    log::info!(
+        target: "engramai::retrieval",
+        "execute_plan EXIT  plan_kind={} candidates={} outcome={}",
+        plan_kind.as_str(),
+        scored.len(),
+        outcome.slug(),
+    );
+
+    (scored, outcome)
 }
 
 // ---------------------------------------------------------------------------

@@ -247,6 +247,16 @@ pub fn dispatch(query: GraphQuery, classifier: &HeuristicClassifier) -> Dispatch
     let plan_kind = PlanKind::from_intent(intent, hint);
     let context = PlanContext::from_query(&query);
 
+    log::debug!(
+        target: "engramai::retrieval",
+        "dispatch classified intent={:?} hint={:?} plan_kind={} method={:?} scores={:?}",
+        intent,
+        hint,
+        plan_kind.as_str(),
+        method,
+        scores,
+    );
+
     DispatchedQuery {
         intent,
         plan_kind,

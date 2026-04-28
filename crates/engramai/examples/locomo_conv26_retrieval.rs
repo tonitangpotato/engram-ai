@@ -147,6 +147,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut empty_results = 0usize;
     let mut total = 0usize;
 
+    // ISS-049-followup: per-plan stats so we can attribute hits/empties
+    // to specific plan paths. Distinguishes "Abstract was never selected"
+    // from "Abstract was selected but produced 0 candidates" — the
+    // server-side `engramai::retrieval` log lines complement this with
+    // the actual plan_kind dispatched (which may differ from `plan_used`
+    // after a downgrade).
+    use std::collections::BTreeMap;
+    let mut per_plan_total: BTreeMap<String, usize> = BTreeMap::new();
+    let mut per_plan_hits: BTreeMap<String, usize> = BTreeMap::new();
+    let mut per_plan_empty: BTreeMap<String, usize> = BTreeMap::new();
+    let mut per_outcome: BTreeMap<String, usize> = BTreeMap::new();
+
     for (idx, q) in qas.iter().enumerate() {
         let question = q["question"].as_str().unwrap_or("");
         let gold_answer = q["answer"].as_str().unwrap_or("");
@@ -184,9 +196,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Print compact result row
         let q_short: String = question.chars().take(70).collect();
         let mark = if hit { "✓" } else if resp.results.is_empty() { "∅" } else { "✗" };
+        let plan_label = format!("{:?}", resp.plan_used);
+        let outcome_label = resp.outcome.slug().to_string();
+
+        *per_plan_total.entry(plan_label.clone()).or_insert(0) += 1;
+        if hit {
+            *per_plan_hits.entry(plan_label.clone()).or_insert(0) += 1;
+        }
+        if resp.results.is_empty() {
+            *per_plan_empty.entry(plan_label.clone()).or_insert(0) += 1;
+        }
+        *per_outcome.entry(outcome_label.clone()).or_insert(0) += 1;
+
         println!(
-            "[{:>2}/{}] {} cat={} hit={} plan={:?} got={} | gold={:?} top={:?}",
-            idx + 1, qas.len(), mark, category, hit, resp.plan_used, resp.results.len(),
+            "[{:>2}/{}] {} cat={} hit={} plan={} outcome={} got={} | gold={:?} top={:?}",
+            idx + 1, qas.len(), mark, category, hit, plan_label, outcome_label, resp.results.len(),
             evidence.iter().take(2).collect::<Vec<_>>(), top_sources.iter().take(2).collect::<Vec<_>>(),
         );
         let _ = gold_answer;
@@ -198,6 +222,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Total queries:    {}", total);
     println!("  Hits @ {}:         {} ({:.1}%)", args.limit, hits, 100.0 * hits as f64 / total.max(1) as f64);
     println!("  Empty results:    {} ({:.1}%)", empty_results, 100.0 * empty_results as f64 / total.max(1) as f64);
+
+    println!();
+    println!("=== Per-plan breakdown ===");
+    println!("  (plan_used = the intent surfaced post-execution; may differ from dispatched plan_kind after downgrade)");
+    for (plan, n) in &per_plan_total {
+        let h = per_plan_hits.get(plan).copied().unwrap_or(0);
+        let e = per_plan_empty.get(plan).copied().unwrap_or(0);
+        let pct = if *n > 0 { 100.0 * h as f64 / *n as f64 } else { 0.0 };
+        println!(
+            "  {:<14} n={:<3} hits={:<3} ({:>5.1}%) empty={}",
+            plan, n, h, pct, e,
+        );
+    }
+
+    println!();
+    println!("=== Per-outcome breakdown ===");
+    println!("  (RetrievalOutcome slug; non-Ok values indicate plan downgrades or missing substrate)");
+    for (oc, n) in &per_outcome {
+        println!("  {:<28} n={}", oc, n);
+    }
+    println!();
+    println!("Tip: rerun with `RUST_LOG=engramai::retrieval=info` (or =debug for classifier scores) to see per-query plan_kind dispatch + sub-plan fan-out.");
+    println!("     This distinguishes (a) plan never dispatched, (b) dispatched + 0 candidates, (c) dispatched + downgraded.");
 
     Ok(())
 }
