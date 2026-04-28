@@ -134,6 +134,45 @@ pub struct MigrateOptions {
     /// Tool semver. Embedded in the lock row + report. Caller sets to
     /// [`env!("CARGO_PKG_VERSION")`] (or a fixed string in tests).
     pub tool_version: String,
+
+    // -- ISS-044: Phase 4 backfill wiring ------------------------------------
+    /// `--graph-db <PATH>` — path to the v0.3 graph SQLite store. If `None`,
+    /// auto-derived as `<db_path stem>.graph.db` next to the v0.2 DB
+    /// (mirrors `engram store`'s `default_graph_db_path`). The file is
+    /// created if missing — this is how a fresh migration produces its
+    /// graph DB.
+    pub graph_db_path: Option<PathBuf>,
+
+    /// `--extractor <KIND>` — triple/edge extractor backend used by
+    /// `ResolutionPipeline::resolve_for_backfill`. `None` ⇒ entity-only
+    /// (NoopTripleExtractor); the migration still produces entities and
+    /// mention rows but no edges. `anthropic` requires `auth_token` (or
+    /// `ANTHROPIC_API_KEY`); `ollama` uses local server.
+    pub extractor: Option<MigrateExtractor>,
+
+    /// `--extractor-model <MODEL>` — optional model override (e.g.
+    /// `claude-haiku-4-5-20251001` or `llama3.2:3b`). Defaults are picked
+    /// per backend in [`Self::build_triple_extractor`].
+    pub extractor_model: Option<String>,
+
+    /// `--auth-token <TOKEN>` — Anthropic API token. If `None` and
+    /// `extractor == Some(Anthropic)`, the runner falls back to
+    /// `ANTHROPIC_API_KEY` from the environment.
+    pub auth_token: Option<String>,
+
+    /// `--oauth` — when paired with `extractor=anthropic`, signals the
+    /// token is an OAuth bearer (as opposed to a direct API key). Mirrors
+    /// `engram store --oauth`.
+    pub oauth: bool,
+}
+
+/// Triple-extractor backend selection for Phase 4 backfill. Mirrors
+/// `engram store --extractor` so operators don't have to learn two flag
+/// vocabularies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrateExtractor {
+    Anthropic,
+    Ollama,
 }
 
 impl MigrateOptions {
@@ -154,6 +193,66 @@ impl MigrateOptions {
             dry_run_sample: 50,
             format: OutputFormat::Human,
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            graph_db_path: None,
+            extractor: None,
+            extractor_model: None,
+            auth_token: None,
+            oauth: false,
+        }
+    }
+
+    /// Resolve `graph_db_path`, defaulting to `<db_path stem>.graph.db`.
+    /// Centralised so CLI + tests + run_backfill all see the same value.
+    pub fn graph_db_path_resolved(&self) -> PathBuf {
+        if let Some(p) = &self.graph_db_path {
+            return p.clone();
+        }
+        let stem = self
+            .db_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "graph".to_string());
+        let parent = self
+            .db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        parent.join(format!("{}.graph.db", stem))
+    }
+
+    /// Build the triple extractor implied by `extractor` / `auth_token` /
+    /// `extractor_model`. Returns `Ok(None)` if no extractor was selected
+    /// (caller should substitute `NoopTripleExtractor`). `Err` is reserved
+    /// for misconfiguration the operator can fix (missing credentials).
+    pub fn build_triple_extractor(
+        &self,
+    ) -> Result<Option<std::sync::Arc<dyn engramai::TripleExtractor>>, MigrationError> {
+        match self.extractor {
+            None => Ok(None),
+            Some(MigrateExtractor::Anthropic) => {
+                let token = self
+                    .auth_token
+                    .clone()
+                    .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+                    .ok_or_else(|| {
+                        MigrationError::InvariantViolated(
+                            "extractor=anthropic requires --auth-token or \
+                             ANTHROPIC_API_KEY env var"
+                                .to_string(),
+                        )
+                    })?;
+                Ok(Some(std::sync::Arc::new(
+                    engramai::AnthropicTripleExtractor::new(&token, self.oauth),
+                )))
+            }
+            Some(MigrateExtractor::Ollama) => {
+                let model = self
+                    .extractor_model
+                    .as_deref()
+                    .unwrap_or("llama3.2:3b");
+                Ok(Some(std::sync::Arc::new(
+                    engramai::OllamaTripleExtractor::new(model),
+                )))
+            }
         }
     }
 
@@ -562,19 +661,30 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
     }
 
     fn run_backfill(&mut self, conn: &Connection) -> Result<(), MigrationError> {
-        // STUB: T9 (`task:mig-impl-backfill-perrecord`) is blocked on
-        // `ResolutionPipeline::resolve_for_backfill` not yet existing.
-        // The orchestrator (T8) is in place; we just lack the per-record
-        // processor it composes with.
+        // ISS-044: Phase 4 backfill. Iterates the v0.2 `memories` table,
+        // runs each row through the v0.3 resolution pipeline
+        // (`resolve_for_backfill`), and writes the resulting graph rows
+        // to the v0.3 graph DB via `PipelineRecordProcessor`.
         //
-        // For dry-run we report a projected-zero summary; for live runs
-        // we surface a hard error so operators don't get a silently-empty
-        // graph.
+        // Dry-run mode: skips real wiring (no graph DB open, no extractor
+        // build) and reports projected counts only. This preserves the
+        // pre-ISS-044 behaviour the smoke test relies on.
+
         let total_memories = count_or_zero(conn, "memories") as u64;
+
         if self.options.dry_run {
+            // Honour --dry-run-sample N: cap the projected sample by the
+            // configured limit (0 → no Phase 4 sampling at all). Real
+            // sampling (running N records through the pipeline without
+            // commit) is out of scope; the projection is sufficient for
+            // operators planning a run.
+            let projected = if self.options.dry_run_sample == 0 {
+                0
+            } else {
+                total_memories.min(self.options.dry_run_sample)
+            };
             self.warnings.push(format!(
-                "phase4: backfill stubbed (T9 blocked); projected {} memory rows would be processed",
-                total_memories
+                "phase4: dry-run, projected {projected}/{total_memories} memory rows would be processed"
             ));
             self.backfill = BackfillReport {
                 records_total: total_memories,
@@ -582,15 +692,229 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
             };
             self.phases_completed
                 .push(MigrationPhase::Backfill.tag().to_string());
-            Ok(())
-        } else {
-            Err(MigrationError::InvariantViolated(
-                "phase4: backfill not yet implemented (T9 blocked); \
-                 use --gate phase2 to run schema-only, or --dry-run to \
-                 plan the migration"
-                    .to_string(),
-            ))
+            return Ok(());
         }
+
+        // === Live path ======================================================
+        // Build everything the per-record processor needs:
+        //   1. Graph store (separate SQLite file by default)
+        //   2. Memory reader (reads v0.2 `memories` table)
+        //   3. Entity extractor (regex-based, default config)
+        //   4. Triple extractor (selected by --extractor flag)
+        //   5. ResolutionPipeline composing them
+        //   6. PipelineRecordProcessor wrapping the pipeline as an
+        //      Arc<dyn BackfillResolver>
+        //   7. BackfillOrchestrator iterating the cursor
+
+        use std::sync::{Arc, Mutex};
+        use engramai::graph::store::SqliteGraphStore;
+        use engramai::resolution::pipeline::{PipelineConfig, ResolutionPipeline};
+        use engramai::resolution::SqliteMemoryReader;
+        use engramai::entities::EntityExtractor;
+        use engramai::NoopTripleExtractor;
+
+        let graph_db_path = self.options.graph_db_path_resolved();
+        let main_db_path = self.options.db_path.clone();
+
+        // 1. Graph store. Mirror `Memory::with_pipeline_pool`'s leaked-
+        //    connection pattern: SqliteGraphStore borrows a connection
+        //    for its entire lifetime, and we need 'static here because
+        //    the orchestrator (and the pipeline) are owned by this
+        //    function only briefly but the BackfillResolver impl is
+        //    `Arc<ResolutionPipeline<S>>` requiring `S: 'static`.
+        //
+        //    The leak is intentional and bounded: one connection per
+        //    migrate() invocation, released when the process exits.
+        let graph_conn: &'static mut rusqlite::Connection = {
+            let gconn = rusqlite::Connection::open(&graph_db_path).map_err(|e| {
+                MigrationError::BackfillFatal(format!(
+                    "failed to open graph DB at {}: {e}",
+                    graph_db_path.display()
+                ))
+            })?;
+            // FK semantics: same-file → ON; separate-file → OFF (cross-
+            // file FKs are not supported by SQLite). Detect via presence
+            // of `memories` in the graph DB.
+            let has_memories: bool = gconn
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'")
+                .and_then(|mut s| s.exists([]))
+                .unwrap_or(false);
+            let fk_pragma = if has_memories {
+                "PRAGMA foreign_keys=ON;"
+            } else {
+                "PRAGMA foreign_keys=OFF;"
+            };
+            gconn
+                .execute_batch(&format!(
+                    "PRAGMA journal_mode=WAL; {fk_pragma} PRAGMA busy_timeout=5000;"
+                ))
+                .map_err(|e| {
+                    MigrationError::BackfillFatal(format!(
+                        "failed to set pragmas on graph DB: {e}"
+                    ))
+                })?;
+            // Idempotent v0.3 graph schema init (creates entities/edges/
+            // mentions tables on a fresh DB; no-op on an existing one).
+            engramai::graph::init_graph_tables(&gconn).map_err(|e| {
+                MigrationError::BackfillFatal(format!(
+                    "failed to init graph schema: {e}"
+                ))
+            })?;
+            Box::leak(Box::new(gconn))
+        };
+        let graph_store = SqliteGraphStore::new(graph_conn);
+        let store_arc: Arc<Mutex<SqliteGraphStore<'static>>> =
+            Arc::new(Mutex::new(graph_store));
+
+        // 2. Memory reader against the v0.2 main DB. Separate connection
+        //    (the orchestrator's `&mut conn` is reserved for the
+        //    processor's per-record write transaction).
+        let memory_reader: Arc<dyn engramai::resolution::pipeline::MemoryReader> =
+            Arc::new(SqliteMemoryReader::open(&main_db_path).map_err(|e| {
+                MigrationError::BackfillFatal(format!(
+                    "failed to open memory reader at {}: {e}",
+                    main_db_path.display()
+                ))
+            })?);
+
+        // 3. Entity extractor — default config (regex-based, no creds).
+        let entity_extractor = Arc::new(EntityExtractor::new(&Default::default()));
+
+        // 4. Triple extractor — selected by --extractor / --auth-token.
+        //    None ⇒ noop (entity-only graph; still answers entity-anchored
+        //    retrieval, which is what LoCoMo needs in absence of edges).
+        let triple_extractor: Arc<dyn engramai::TripleExtractor> = self
+            .options
+            .build_triple_extractor()?
+            .unwrap_or_else(|| Arc::new(NoopTripleExtractor::new()));
+
+        // Surface extractor choice in warnings so operators reading the
+        // report know whether edges were generated.
+        let extractor_label = match self.options.extractor {
+            Some(MigrateExtractor::Anthropic) => "anthropic",
+            Some(MigrateExtractor::Ollama) => "ollama",
+            None => "noop (entities only)",
+        };
+        self.warnings.push(format!(
+            "phase4: triple extractor = {extractor_label}, graph_db = {}",
+            graph_db_path.display()
+        ));
+
+        // 5. Pipeline.
+        let pipeline = Arc::new(ResolutionPipeline::new(
+            memory_reader,
+            entity_extractor,
+            triple_extractor,
+            store_arc,
+            PipelineConfig::default(),
+        ));
+
+        // 6. Per-record processor. The blanket `BackfillResolver` impl on
+        //    `Arc<ResolutionPipeline<S>>` (processor.rs §142) means
+        //    *`Arc<ResolutionPipeline<...>>` itself* is the implementer,
+        //    not `ResolutionPipeline<...>`. To put it behind
+        //    `Arc<dyn BackfillResolver>` we wrap once more so the
+        //    outer `Arc` carries the trait object.
+        let resolver_arc: Arc<dyn crate::processor::BackfillResolver> = Arc::new(pipeline);
+        let processor = crate::processor::PipelineRecordProcessor::new(resolver_arc)
+            .with_namespace("default"); // ISS-055: default ns until --namespace lands
+
+        // 7. Orchestrator.
+        let backfill_config = crate::backfill::BackfillConfig {
+            on_record_failure: if self.options.stop_on_failure {
+                crate::backfill::FailurePolicy::Stop
+            } else {
+                crate::backfill::FailurePolicy::Continue
+            },
+            ..Default::default()
+        };
+        let mut orchestrator = crate::backfill::BackfillOrchestrator::new(backfill_config);
+
+        // Phase machine hands us `&Connection`; the orchestrator + processor
+        // need `&mut Connection` (each `process_one` opens a per-record
+        // SQLite transaction). Open a dedicated write connection for the
+        // duration of Phase 4. This is consistent with §3.3's "each phase
+        // commits its own work atomically" — the phase machine's
+        // foreground conn is reserved for migration_state / lock writes,
+        // and the per-record loop owns its own.
+        let mut bf_conn = rusqlite::Connection::open(&main_db_path).map_err(|e| {
+            MigrationError::BackfillFatal(format!(
+                "failed to open backfill conn at {}: {e}",
+                main_db_path.display()
+            ))
+        })?;
+        bf_conn
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")
+            .map_err(|e| {
+                MigrationError::BackfillFatal(format!(
+                    "failed to set pragmas on backfill conn: {e}"
+                ))
+            })?;
+
+        // ISS-044 wiring fix: `PipelineRecordProcessor::process_one` calls
+        // `apply_graph_delta` through `bf_conn` (the v0.2 main DB), so the
+        // graph-layer tables (`graph_entities`, `graph_edges`,
+        // `graph_applied_deltas`, ...) MUST exist in this DB even when
+        // `--graph-db` selects a separate file for read-side queries. The
+        // call is idempotent (`CREATE TABLE IF NOT EXISTS`) so the no-op
+        // case (graph_db_path == main_db_path) is fine. Without this the
+        // first per-record persist hits `no such table:
+        // graph_applied_deltas` and aborts the whole backfill.
+        engramai::graph::init_graph_tables(&bf_conn).map_err(|e| {
+            MigrationError::BackfillFatal(format!(
+                "failed to init graph schema on backfill conn at {}: {e}",
+                main_db_path.display()
+            ))
+        })?;
+
+        // Best-effort progress callback — emit to stderr so operators see
+        // forward progress without `log` being wired. (Design §5.5
+        // "best-effort, panics not caught".) A future ticket can
+        // route this through the same progress bus the CLI uses for
+        // human output.
+        let mut on_progress = |p: &crate::progress::MigrationProgress| {
+            eprintln!(
+                "phase4 progress: {}/{} processed ({} succeeded, {} failed)",
+                p.records_processed, p.records_total, p.records_succeeded, p.records_failed,
+            );
+        };
+
+        let summary = orchestrator.run(
+            &mut bf_conn,
+            &processor,
+            Some(total_memories),
+            &mut on_progress,
+        )?;
+
+        // 8. Surface per-record outcome into the migration report.
+        self.backfill = BackfillReport {
+            records_total: total_memories,
+            records_processed: summary.records_processed,
+            records_succeeded: summary.records_succeeded,
+            records_failed: summary.records_failed,
+            // Failure-row taxonomy (retryable vs permanent) lives in
+            // `graph_extraction_failures.error_kind`. Phase 5 (verify)
+            // is the right place to break this down; Phase 4 reports
+            // raw counts only.
+            records_failed_retryable: 0,
+            records_failed_permanent: summary.records_failed,
+        };
+        if summary.stopped_on_failure {
+            self.warnings
+                .push("phase4: stopped on first per-record failure (--stop-on-failure)".to_string());
+            self.phases_completed
+                .push(MigrationPhase::Backfill.tag().to_string());
+            // Mirror the orchestrator's contract: stopping on failure
+            // surfaces as `FailuresPresent` to the phase machine, which
+            // maps to the documented exit code.
+            return Err(MigrationError::FailuresPresent {
+                count: summary.records_failed,
+            });
+        }
+
+        self.phases_completed
+            .push(MigrationPhase::Backfill.tag().to_string());
+        Ok(())
     }
 
     fn run_verify(&mut self, conn: &Connection) -> Result<(), MigrationError> {

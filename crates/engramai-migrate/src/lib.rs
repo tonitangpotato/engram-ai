@@ -40,7 +40,8 @@ pub use checkpoint::{
     NO_RECORDS_PROCESSED,
 };
 pub use cli::{
-    migrate, status, BackfillReport, CountsReport, MigrateOptions, MigrationReport,
+    migrate, status, BackfillReport, CountsReport, MigrateExtractor, MigrateOptions,
+    MigrationReport,
     OutputFormat, PostCounts, PreCounts, TopicCarryForwardReport,
 };
 pub use compat::{

@@ -36,7 +36,7 @@ pub const CHECKPOINT_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS migration_state (
     id                       INTEGER PRIMARY KEY CHECK (id = 1),
     current_phase            TEXT    NOT NULL,
-    last_processed_memory_id INTEGER,
+    last_processed_memory_id INTEGER,                  -- '' sentinel = none yet (TEXT in practice; SQLite dynamic typing)
     records_processed        INTEGER NOT NULL DEFAULT 0,
     records_succeeded        INTEGER NOT NULL DEFAULT 0,
     records_failed           INTEGER NOT NULL DEFAULT 0,
@@ -65,7 +65,7 @@ pub struct MigrationStateRow {
     /// Current phase tag (matches `MigrationPhase::tag()`, e.g. `"Phase4"`).
     pub current_phase: String,
     /// `-1` sentinel = no records processed yet (per design §5.4).
-    pub last_processed_memory_id: i64,
+    pub last_processed_memory_id: String,
     pub records_processed: i64,
     pub records_succeeded: i64,
     pub records_failed: i64,
@@ -94,9 +94,15 @@ pub struct PhaseDigestRow {
 // ---------------------------------------------------------------------------
 
 /// Sentinel value for `last_processed_memory_id` when no records have been
-/// processed yet. Design §5.4 specifies `-1` (not NULL) so the comparison
-/// `id > last_processed_memory_id` works without a NULL guard.
-pub const NO_RECORDS_PROCESSED: i64 = -1;
+/// processed yet. Empty string `""` so the lexicographic comparison
+/// `id > last_processed_memory_id` works without a NULL guard for any
+/// non-empty `memories.id` (v0.2 ids are UUIDs / content-hashes, never `""`).
+///
+/// **Type note:** the column is declared `INTEGER` for backward compatibility
+/// with already-deployed dev databases, but SQLite's dynamic typing accepts
+/// the empty string at write time and yields `Option<String>` at read time.
+/// See v03-migration design §5.4 "Type note" (2026-04-28).
+pub const NO_RECORDS_PROCESSED: &str = "";
 
 // ---------------------------------------------------------------------------
 // CheckpointStore
@@ -183,7 +189,7 @@ impl CheckpointStore {
     /// Counters are written as deltas to the existing row (monotone +=).
     pub fn update_backfill_progress(
         conn: &Connection,
-        last_processed_memory_id: i64,
+        last_processed_memory_id: &str,
         delta_processed: i64,
         delta_succeeded: i64,
         delta_failed: i64,
@@ -328,7 +334,9 @@ fn row_to_state(row: &Row<'_>) -> rusqlite::Result<MigrationStateRow> {
     Ok(MigrationStateRow {
         id: row.get(0)?,
         current_phase: row.get(1)?,
-        last_processed_memory_id: row.get::<_, Option<i64>>(2)?.unwrap_or(NO_RECORDS_PROCESSED),
+        last_processed_memory_id: row
+            .get::<_, Option<String>>(2)?
+            .unwrap_or_else(|| NO_RECORDS_PROCESSED.to_string()),
         records_processed: row.get(3)?,
         records_succeeded: row.get(4)?,
         records_failed: row.get(5)?,
@@ -436,7 +444,7 @@ mod tests {
         let c = fresh();
         let r0 = CheckpointStore::insert_initial_state(&c, MigrationPhase::Backup, T1).unwrap();
         // Mutate counters then advance — the advance must not reset them.
-        CheckpointStore::update_backfill_progress(&c, 100, 5, 4, 1, T2).unwrap();
+        CheckpointStore::update_backfill_progress(&c, "m100", 5, 4, 1, T2).unwrap();
         CheckpointStore::advance_phase(&c, MigrationPhase::Backfill, T3).unwrap();
         let r1 = CheckpointStore::load_state(&c).unwrap().unwrap();
         assert_eq!(r1.current_phase, "Phase4");
@@ -445,7 +453,7 @@ mod tests {
         assert_eq!(r1.records_processed, 5);
         assert_eq!(r1.records_succeeded, 4);
         assert_eq!(r1.records_failed, 1);
-        assert_eq!(r1.last_processed_memory_id, 100);
+        assert_eq!(r1.last_processed_memory_id, "m100");
         // started_at never changes after init.
         assert_eq!(r1.started_at, r0.started_at);
     }
@@ -455,14 +463,14 @@ mod tests {
         let c = fresh();
         CheckpointStore::insert_initial_state(&c, MigrationPhase::Backfill, T1).unwrap();
 
-        CheckpointStore::update_backfill_progress(&c, 10, 10, 9, 1, T2).unwrap();
-        CheckpointStore::update_backfill_progress(&c, 25, 15, 14, 1, T3).unwrap();
+        CheckpointStore::update_backfill_progress(&c, "m10", 10, 9, 1, T2).unwrap();
+        CheckpointStore::update_backfill_progress(&c, "m25", 15, 14, 1, T3).unwrap();
 
         let r = CheckpointStore::load_state(&c).unwrap().unwrap();
         assert_eq!(r.records_processed, 25, "10 + 15");
         assert_eq!(r.records_succeeded, 23, "9 + 14");
         assert_eq!(r.records_failed, 2, "1 + 1");
-        assert_eq!(r.last_processed_memory_id, 25);
+        assert_eq!(r.last_processed_memory_id, "m25");
         assert_eq!(
             r.records_processed,
             r.records_succeeded + r.records_failed,
@@ -606,7 +614,7 @@ mod tests {
         CheckpointStore::insert_initial_state(&c, MigrationPhase::Backfill, T1).unwrap();
 
         let tx = c.transaction().unwrap();
-        CheckpointStore::update_backfill_progress(&tx, 99, 50, 49, 1, T2).unwrap();
+        CheckpointStore::update_backfill_progress(&tx, "m99", 50, 49, 1, T2).unwrap();
         // Sanity inside the tx:
         let r_in_tx = CheckpointStore::load_state(&tx).unwrap().unwrap();
         assert_eq!(r_in_tx.records_processed, 50);
@@ -624,11 +632,11 @@ mod tests {
         CheckpointStore::insert_initial_state(&c, MigrationPhase::Backfill, T1).unwrap();
 
         let tx = c.transaction().unwrap();
-        CheckpointStore::update_backfill_progress(&tx, 99, 50, 49, 1, T2).unwrap();
+        CheckpointStore::update_backfill_progress(&tx, "m99", 50, 49, 1, T2).unwrap();
         tx.commit().unwrap();
 
         let r = CheckpointStore::load_state(&c).unwrap().unwrap();
         assert_eq!(r.records_processed, 50);
-        assert_eq!(r.last_processed_memory_id, 99);
+        assert_eq!(r.last_processed_memory_id, "m99");
     }
 }

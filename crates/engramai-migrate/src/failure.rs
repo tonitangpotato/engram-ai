@@ -234,7 +234,7 @@ pub struct FailureRecord {
     /// `"memory:<id>|"` prefix; `None` if the row was not written by
     /// migration (e.g., a live ingest failure copied here by some other
     /// path — retry won't run on it).
-    pub memory_id: Option<i64>,
+    pub memory_id: Option<String>,
     pub stage: String,
     pub error_category: String,
     pub error_detail: Option<String>,
@@ -299,7 +299,7 @@ pub struct RetrySummary {
 /// retry, breaking idempotence), we hash the memory_id under a stable v5
 /// namespace. Same `memory_id` → same UUID across runs, across processes,
 /// across machines.
-pub fn derive_failure_episode_id(memory_id: i64) -> Uuid {
+pub fn derive_failure_episode_id(memory_id: &str) -> Uuid {
     Uuid::new_v5(
         &NS_FAILURE,
         format!("memory:{memory_id}").as_bytes(),
@@ -329,7 +329,11 @@ pub fn derive_failure_id(namespace: &str, episode_id: Uuid, stage: &str) -> Uuid
 /// Format: `"memory:<id>|<message>"` where `<message>` is the
 /// processor-supplied detail (free-form). The leading `memory:<id>|` token
 /// is the only part this module relies on for round-tripping.
-pub fn format_error_detail(memory_id: i64, message: &str) -> String {
+pub fn format_error_detail(memory_id: &str, message: &str) -> String {
+    debug_assert!(
+        !memory_id.contains('|'),
+        "memory_id contains '|' which is the error_detail field separator: {memory_id:?}"
+    );
     format!("memory:{memory_id}|{message}")
 }
 
@@ -337,11 +341,15 @@ pub fn format_error_detail(memory_id: i64, message: &str) -> String {
 /// [`format_error_detail`]. Returns `None` if the row was written by some
 /// other code path (e.g., a live ingest failure not associated with a
 /// migration record).
-pub fn parse_memory_id_from_detail(detail: Option<&str>) -> Option<i64> {
+pub fn parse_memory_id_from_detail(detail: Option<&str>) -> Option<String> {
     let detail = detail?;
     let rest = detail.strip_prefix("memory:")?;
     let (id_str, _) = rest.split_once('|')?;
-    id_str.parse::<i64>().ok()
+    if id_str.is_empty() {
+        None
+    } else {
+        Some(id_str.to_string())
+    }
 }
 
 // ===========================================================================
@@ -353,7 +361,7 @@ pub fn parse_memory_id_from_detail(detail: Option<&str>) -> Option<i64> {
 /// trace pointer) doesn't ripple through every caller.
 #[derive(Debug, Clone)]
 pub struct FailureWrite<'a> {
-    pub memory_id: i64,
+    pub memory_id: &'a str,
     /// If the pipeline allocated an episode before failing, supply it here.
     /// `None` → [`record_failure`] derives a deterministic surrogate via
     /// [`derive_failure_episode_id`].
@@ -446,7 +454,7 @@ pub fn record_outcome_failure(
             message,
         } => {
             let write = FailureWrite {
-                memory_id: *record_id,
+                memory_id: record_id.as_str(),
                 episode_id: *episode_id,
                 stage,
                 error_category: kind,
@@ -490,7 +498,7 @@ pub fn bump_retry_count(
     failure_id: Uuid,
     new_occurred_at: DateTime<Utc>,
     new_message: Option<&str>,
-    memory_id_for_detail: i64,
+    memory_id_for_detail: &str,
 ) -> Result<(), MigrationError> {
     let detail = new_message.map(|m| format_error_detail(memory_id_for_detail, m));
     let now = dt_to_unix(new_occurred_at);
@@ -671,7 +679,7 @@ where
             continue;
         };
 
-        let Some(record) = load_memory_record(conn, memory_id)? else {
+        let Some(record) = load_memory_record(conn, &memory_id)? else {
             // memories row gone (manually deleted between Phase 4 and
             // --retry-failed). Skip; do not auto-resolve the failure
             // row — leaving it visible is the safer audit signal.
@@ -697,7 +705,7 @@ where
                     candidate.id,
                     Utc::now(),
                     Some(&message),
-                    memory_id,
+                    &memory_id,
                 )?;
                 tx.commit().map_err(map_sqlite)?;
                 summary.still_failing += 1;
@@ -765,13 +773,13 @@ fn bytes_to_uuid(bytes: &[u8]) -> Result<Uuid, std::io::Error> {
     Ok(Uuid::from_bytes(arr))
 }
 
-fn load_memory_record(conn: &Connection, id: i64) -> Result<Option<MemoryRecord>, MigrationError> {
+fn load_memory_record(conn: &Connection, id: &str) -> Result<Option<MemoryRecord>, MigrationError> {
     conn.query_row(
         "SELECT id, content, metadata, created_at FROM memories WHERE id = ?1",
         params![id],
         |row| {
             Ok(MemoryRecord {
-                id: row.get(0)?,
+                id: row.get::<_, String>(0)?,
                 content: row.get(1)?,
                 metadata: row.get(2)?,
                 created_at: row.get(3)?,
@@ -824,7 +832,7 @@ mod tests {
             ON graph_extraction_failures(occurred_at) WHERE resolved_at IS NULL;
 
         CREATE TABLE IF NOT EXISTS memories (
-            id          INTEGER PRIMARY KEY,
+            id          TEXT PRIMARY KEY,
             content     TEXT NOT NULL,
             metadata    TEXT,
             created_at  TEXT NOT NULL
@@ -843,7 +851,7 @@ mod tests {
 
     fn write_one(
         conn: &mut Connection,
-        memory_id: i64,
+        memory_id: &str,
         stage: &str,
         category: &str,
         message: &str,
@@ -901,16 +909,16 @@ mod tests {
 
     #[test]
     fn derive_failure_episode_id_is_deterministic() {
-        let a = derive_failure_episode_id(42);
-        let b = derive_failure_episode_id(42);
-        let c = derive_failure_episode_id(43);
+        let a = derive_failure_episode_id("m42");
+        let b = derive_failure_episode_id("m42");
+        let c = derive_failure_episode_id("m43");
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
     fn derive_failure_id_combines_episode_and_stage() {
-        let ep = derive_failure_episode_id(7);
+        let ep = derive_failure_episode_id("m7");
         let a = derive_failure_id(DEFAULT_NAMESPACE, ep, STAGE_ENTITY_EXTRACT);
         let b = derive_failure_id(DEFAULT_NAMESPACE, ep, STAGE_ENTITY_EXTRACT);
         let c = derive_failure_id(DEFAULT_NAMESPACE, ep, STAGE_EDGE_EXTRACT);
@@ -924,17 +932,23 @@ mod tests {
 
     #[test]
     fn format_and_parse_error_detail_round_trip() {
-        let formatted = format_error_detail(123, "llm timeout after 30s");
-        assert!(formatted.starts_with("memory:123|"));
+        let formatted = format_error_detail("m123", "llm timeout after 30s");
+        assert!(formatted.starts_with("memory:m123|"));
         let id = parse_memory_id_from_detail(Some(&formatted));
-        assert_eq!(id, Some(123));
+        assert_eq!(id, Some("m123".to_string()));
     }
 
     #[test]
     fn parse_memory_id_returns_none_for_unrelated_detail() {
         assert_eq!(parse_memory_id_from_detail(None), None);
         assert_eq!(parse_memory_id_from_detail(Some("nope")), None);
-        assert_eq!(parse_memory_id_from_detail(Some("memory:abc|x")), None);
+        // Empty id between "memory:" and "|" is treated as None.
+        assert_eq!(parse_memory_id_from_detail(Some("memory:|x")), None);
+        // Non-empty id (any string, e.g. UUID/hash) is parsed verbatim.
+        assert_eq!(
+            parse_memory_id_from_detail(Some("memory:abc|x")),
+            Some("abc".to_string())
+        );
     }
 
     // ------------- record_failure: write + idempotence -------------------
@@ -944,7 +958,7 @@ mod tests {
         let mut conn = fresh_db();
         write_one(
             &mut conn,
-            10,
+            "m10",
             STAGE_ENTITY_EXTRACT,
             CATEGORY_LLM_TIMEOUT,
             "boom",
@@ -962,10 +976,10 @@ mod tests {
     #[test]
     fn record_failure_is_idempotent_on_replay() {
         let mut conn = fresh_db();
-        let a = write_one(&mut conn, 10, STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "1");
+        let a = write_one(&mut conn, "m10", STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "1");
         let b = write_one(
             &mut conn,
-            10,
+            "m10",
             STAGE_ENTITY_EXTRACT,
             CATEGORY_LLM_TIMEOUT,
             "different message but same key",
@@ -984,8 +998,8 @@ mod tests {
     #[test]
     fn record_failure_separates_different_stages() {
         let mut conn = fresh_db();
-        write_one(&mut conn, 10, STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "x");
-        write_one(&mut conn, 10, STAGE_EDGE_EXTRACT, CATEGORY_LLM_TIMEOUT, "y");
+        write_one(&mut conn, "m10", STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "x");
+        write_one(&mut conn, "m10", STAGE_EDGE_EXTRACT, CATEGORY_LLM_TIMEOUT, "y");
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM graph_extraction_failures",
@@ -1003,7 +1017,7 @@ mod tests {
         let err = record_failure(
             &tx,
             &FailureWrite {
-                memory_id: 1,
+                memory_id: "m1",
                 episode_id: None,
                 stage: "fake",
                 error_category: CATEGORY_INTERNAL,
@@ -1043,7 +1057,7 @@ mod tests {
         let id = record_outcome_failure(
             &tx,
             &RecordOutcome::Failed {
-                record_id: 99,
+                record_id: "m99".to_string(),
                 kind: CATEGORY_LLM_TIMEOUT.into(),
                 stage: STAGE_PERSIST.into(),
                 episode_id: None,
@@ -1070,7 +1084,7 @@ mod tests {
     #[test]
     fn mark_resolved_sets_timestamp_and_is_monotone() {
         let mut conn = fresh_db();
-        let id = write_one(&mut conn, 1, STAGE_PERSIST, CATEGORY_DB_ERROR, "x");
+        let id = write_one(&mut conn, "m1", STAGE_PERSIST, CATEGORY_DB_ERROR, "x");
 
         let tx = conn.transaction().unwrap();
         let changed = mark_resolved(&tx, id, ts(2_000_000_000)).unwrap();
@@ -1098,10 +1112,10 @@ mod tests {
     #[test]
     fn bump_retry_count_increments_and_refreshes_detail() {
         let mut conn = fresh_db();
-        let id = write_one(&mut conn, 5, STAGE_PERSIST, CATEGORY_DB_ERROR, "first");
+        let id = write_one(&mut conn, "m5", STAGE_PERSIST, CATEGORY_DB_ERROR, "first");
 
         let tx = conn.transaction().unwrap();
-        bump_retry_count(&tx, id, ts(2_000_000_000), Some("second"), 5).unwrap();
+        bump_retry_count(&tx, id, ts(2_000_000_000), Some("second"), "m5").unwrap();
         tx.commit().unwrap();
 
         let (rc, detail, occurred): (i64, String, f64) = conn
@@ -1113,7 +1127,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rc, 1);
-        assert!(detail.starts_with("memory:5|"));
+        assert!(detail.starts_with("memory:m5|"));
         assert!(detail.contains("second"));
         assert_eq!(occurred, 2_000_000_000.0);
     }
@@ -1128,7 +1142,7 @@ mod tests {
         record_failure(
             &tx,
             &FailureWrite {
-                memory_id: 1,
+                memory_id: "m1",
                 episode_id: None,
                 stage: STAGE_PERSIST,
                 error_category: CATEGORY_DB_ERROR,
@@ -1141,7 +1155,7 @@ mod tests {
         record_failure(
             &tx,
             &FailureWrite {
-                memory_id: 2,
+                memory_id: "m2",
                 episode_id: None,
                 stage: STAGE_PERSIST,
                 error_category: CATEGORY_DB_ERROR,
@@ -1156,15 +1170,15 @@ mod tests {
         let rows = list_unresolved(&conn, DEFAULT_NAMESPACE, None).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows[0].occurred_at < rows[1].occurred_at);
-        assert_eq!(rows[0].memory_id, Some(2)); // older first
-        assert_eq!(rows[1].memory_id, Some(1));
+        assert_eq!(rows[0].memory_id, Some("m2".to_string())); // older first
+        assert_eq!(rows[1].memory_id, Some("m1".to_string()));
     }
 
     #[test]
     fn count_unresolved_excludes_resolved() {
         let mut conn = fresh_db();
-        let id_a = write_one(&mut conn, 1, STAGE_PERSIST, CATEGORY_DB_ERROR, "a");
-        let _id_b = write_one(&mut conn, 2, STAGE_PERSIST, CATEGORY_DB_ERROR, "b");
+        let id_a = write_one(&mut conn, "m1", STAGE_PERSIST, CATEGORY_DB_ERROR, "a");
+        let _id_b = write_one(&mut conn, "m2", STAGE_PERSIST, CATEGORY_DB_ERROR, "b");
         assert_eq!(count_unresolved(&conn, DEFAULT_NAMESPACE).unwrap(), 2);
 
         let tx = conn.transaction().unwrap();
@@ -1180,7 +1194,7 @@ mod tests {
         record_failure(
             &tx,
             &FailureWrite {
-                memory_id: 1,
+                memory_id: "m1",
                 episode_id: None,
                 stage: STAGE_PERSIST,
                 error_category: CATEGORY_DB_ERROR,
@@ -1193,7 +1207,7 @@ mod tests {
         record_failure(
             &tx,
             &FailureWrite {
-                memory_id: 1,
+                memory_id: "m1",
                 episode_id: None,
                 stage: STAGE_PERSIST,
                 error_category: CATEGORY_DB_ERROR,
@@ -1215,14 +1229,14 @@ mod tests {
     /// Test processor that records which memory_ids it saw and lets each
     /// test script the success/failure outcome by id.
     struct ScriptedProcessor {
-        succeed_for: std::collections::HashSet<i64>,
-        seen: std::cell::RefCell<Vec<i64>>,
+        succeed_for: std::collections::HashSet<String>,
+        seen: std::cell::RefCell<Vec<String>>,
     }
 
     impl ScriptedProcessor {
-        fn new(succeed_for: &[i64]) -> Self {
+        fn new(succeed_for: &[&str]) -> Self {
             Self {
-                succeed_for: succeed_for.iter().copied().collect(),
+                succeed_for: succeed_for.iter().map(|s| s.to_string()).collect(),
                 seen: Default::default(),
             }
         }
@@ -1234,7 +1248,7 @@ mod tests {
             _conn: &mut Connection,
             record: MemoryRecord,
         ) -> Result<RecordOutcome, MigrationError> {
-            self.seen.borrow_mut().push(record.id);
+            self.seen.borrow_mut().push(record.id.clone());
             if self.succeed_for.contains(&record.id) {
                 Ok(RecordOutcome::Succeeded {
                     entity_count: 1,
@@ -1252,7 +1266,7 @@ mod tests {
         }
     }
 
-    fn seed_memory(conn: &Connection, id: i64) {
+    fn seed_memory(conn: &Connection, id: &str) {
         conn.execute(
             "INSERT INTO memories (id, content, metadata, created_at)
              VALUES (?1, ?2, NULL, ?3)",
@@ -1264,12 +1278,12 @@ mod tests {
     #[test]
     fn retry_failed_resolves_succeeded_rows_and_bumps_failed() {
         let mut conn = fresh_db();
-        seed_memory(&conn, 1);
-        seed_memory(&conn, 2);
-        write_one(&mut conn, 1, STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "old");
-        write_one(&mut conn, 2, STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "old");
+        seed_memory(&conn, "m1");
+        seed_memory(&conn, "m2");
+        write_one(&mut conn, "m1", STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "old");
+        write_one(&mut conn, "m2", STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "old");
 
-        let processor = ScriptedProcessor::new(&[1]); // 1 succeeds, 2 fails
+        let processor = ScriptedProcessor::new(&["m1"]); // m1 succeeds, m2 fails
         let summary = retry_failed(&mut conn, &processor, &RetryConfig::default()).unwrap();
 
         assert_eq!(summary.considered, 2);
@@ -1284,7 +1298,7 @@ mod tests {
         let rc: i64 = conn
             .query_row(
                 "SELECT retry_count FROM graph_extraction_failures
-                 WHERE error_detail LIKE 'memory:2|%'",
+                 WHERE error_detail LIKE 'memory:m2|%'",
                 [],
                 |r| r.get(0),
             )
@@ -1295,8 +1309,8 @@ mod tests {
     #[test]
     fn retry_failed_respects_max_retries_cap() {
         let mut conn = fresh_db();
-        seed_memory(&conn, 1);
-        let id = write_one(&mut conn, 1, STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "x");
+        seed_memory(&conn, "m1");
+        let id = write_one(&mut conn, "m1", STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "x");
         // Hit the cap manually.
         conn.execute(
             "UPDATE graph_extraction_failures SET retry_count = 5 WHERE id = ?1",
@@ -1304,7 +1318,7 @@ mod tests {
         )
         .unwrap();
 
-        let processor = ScriptedProcessor::new(&[1]); // would succeed if attempted
+        let processor = ScriptedProcessor::new(&["m1"]); // would succeed if attempted
         let cfg = RetryConfig {
             max_retries: 5,
             ..Default::default()
@@ -1320,10 +1334,10 @@ mod tests {
     #[test]
     fn retry_failed_skips_when_memory_row_missing() {
         let mut conn = fresh_db();
-        // No `memories` row for id=42 — write only the failure row.
-        write_one(&mut conn, 42, STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "x");
+        // No `memories` row for id=m42 — write only the failure row.
+        write_one(&mut conn, "m42", STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "x");
 
-        let processor = ScriptedProcessor::new(&[42]);
+        let processor = ScriptedProcessor::new(&["m42"]);
         let summary = retry_failed(&mut conn, &processor, &RetryConfig::default()).unwrap();
 
         assert_eq!(summary.considered, 1);
@@ -1336,10 +1350,10 @@ mod tests {
     #[test]
     fn retry_failed_idempotent_on_repeat_when_all_resolved() {
         let mut conn = fresh_db();
-        seed_memory(&conn, 1);
-        write_one(&mut conn, 1, STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "x");
+        seed_memory(&conn, "m1");
+        write_one(&mut conn, "m1", STAGE_ENTITY_EXTRACT, CATEGORY_LLM_TIMEOUT, "x");
 
-        let processor = ScriptedProcessor::new(&[1]);
+        let processor = ScriptedProcessor::new(&["m1"]);
         let s1 = retry_failed(&mut conn, &processor, &RetryConfig::default()).unwrap();
         assert_eq!(s1.resolved, 1);
 
@@ -1352,12 +1366,12 @@ mod tests {
     #[test]
     fn retry_failed_limit_caps_iteration() {
         let mut conn = fresh_db();
-        seed_memory(&conn, 1);
-        seed_memory(&conn, 2);
-        seed_memory(&conn, 3);
+        seed_memory(&conn, "m1");
+        seed_memory(&conn, "m2");
+        seed_memory(&conn, "m3");
         // Distinct timestamps so ORDER BY is well-defined.
         let tx = conn.transaction().unwrap();
-        for (mid, t) in [(1i64, 100i64), (2, 200), (3, 300)] {
+        for (mid, t) in [("m1", 100i64), ("m2", 200), ("m3", 300)] {
             record_failure(
                 &tx,
                 &FailureWrite {
@@ -1374,7 +1388,7 @@ mod tests {
         }
         tx.commit().unwrap();
 
-        let processor = ScriptedProcessor::new(&[1, 2, 3]);
+        let processor = ScriptedProcessor::new(&["m1", "m2", "m3"]);
         let cfg = RetryConfig {
             limit: Some(2),
             ..Default::default()
@@ -1382,6 +1396,6 @@ mod tests {
         let summary = retry_failed(&mut conn, &processor, &cfg).unwrap();
         assert_eq!(summary.considered, 2);
         // Oldest two (1, 2) processed; 3 left for next call.
-        assert_eq!(processor.seen.borrow().clone(), vec![1, 2]);
+        assert_eq!(processor.seen.borrow().clone(), vec!["m1".to_string(), "m2".to_string()]);
     }
 }

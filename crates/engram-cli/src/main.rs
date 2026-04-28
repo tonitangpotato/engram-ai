@@ -622,7 +622,41 @@ enum Commands {
         /// Output format: human (default) or json (§9.4 schema for benchmarks).
         #[arg(long, default_value = "human")]
         format: MigrateFormat,
+
+        // -- ISS-044: Phase 4 backfill flags --------------------------------
+        /// Path to the v0.3 graph SQLite store. Defaults to
+        /// `<db stem>.graph.db` next to the v0.2 DB.
+        #[arg(long, value_name = "PATH")]
+        graph_db: Option<PathBuf>,
+
+        /// Triple/edge extractor backend for backfill. None ⇒ entity-only
+        /// (NoopTripleExtractor); the migration still produces entities and
+        /// mention rows, but no edges. `anthropic` requires --auth-token
+        /// (or ANTHROPIC_API_KEY); `ollama` uses local server.
+        #[arg(long, value_name = "KIND")]
+        extractor: Option<MigrateExtractorArg>,
+
+        /// Optional model override for the chosen extractor (e.g.
+        /// `claude-haiku-4-5-20251001`, `llama3.2:3b`).
+        #[arg(long, value_name = "MODEL")]
+        extractor_model: Option<String>,
+
+        /// Anthropic API token / OAuth bearer. Falls back to
+        /// ANTHROPIC_API_KEY env var.
+        #[arg(long, value_name = "TOKEN")]
+        auth_token: Option<String>,
+
+        /// Treat --auth-token as an OAuth bearer (vs direct API key).
+        #[arg(long)]
+        oauth: bool,
     },
+}
+
+/// `--extractor` argument for the `migrate` subcommand.
+#[derive(Clone, Debug, ValueEnum)]
+enum MigrateExtractorArg {
+    Anthropic,
+    Ollama,
 }
 
 /// `--format` argument for the `migrate` subcommand. Mapped to
@@ -926,6 +960,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dry_run,
         dry_run_sample,
         ref format,
+        ref graph_db,
+        ref extractor,
+        ref extractor_model,
+        ref auth_token,
+        oauth,
     } = cli.command
     {
         return run_migrate_subcommand(
@@ -941,6 +980,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             dry_run,
             dry_run_sample,
             format,
+            graph_db.clone(),
+            extractor.clone(),
+            extractor_model.clone(),
+            auth_token.clone(),
+            oauth,
         );
     }
 
@@ -2725,6 +2769,11 @@ fn run_migrate_subcommand(
     dry_run: bool,
     dry_run_sample: u64,
     format: &MigrateFormat,
+    graph_db: Option<PathBuf>,
+    extractor: Option<MigrateExtractorArg>,
+    extractor_model: Option<String>,
+    auth_token: Option<String>,
+    oauth: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use engramai_migrate::{migrate, status, MigrateOptions, OutputFormat};
     use engramai_migrate::progress::MigrationPhase;
@@ -2743,6 +2792,15 @@ fn run_migrate_subcommand(
         MigrateFormat::Human => OutputFormat::Human,
         MigrateFormat::Json => OutputFormat::Json,
     };
+    // ISS-044: Phase 4 wiring options.
+    opts.graph_db_path = graph_db;
+    opts.extractor = extractor.map(|e| match e {
+        MigrateExtractorArg::Anthropic => engramai_migrate::MigrateExtractor::Anthropic,
+        MigrateExtractorArg::Ollama => engramai_migrate::MigrateExtractor::Ollama,
+    });
+    opts.extractor_model = extractor_model;
+    opts.auth_token = auth_token;
+    opts.oauth = oauth;
     opts.gate = match gate {
         None => None,
         Some(0) => Some(MigrationPhase::PreFlight),

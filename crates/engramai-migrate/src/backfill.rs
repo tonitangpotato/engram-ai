@@ -112,7 +112,7 @@ pub enum FailurePolicy {
 /// the pipeline re-derives whatever it needs from `content`).
 #[derive(Debug, Clone)]
 pub struct MemoryRecord {
-    pub id: i64,
+    pub id: String,
     pub content: String,
     pub metadata: Option<String>,
     pub created_at: String,
@@ -141,7 +141,7 @@ pub enum RecordOutcome {
         edge_count: u32,
     },
     Failed {
-        record_id: i64,
+        record_id: String,
         /// Failure category — one of the `CATEGORY_*` constants from
         /// `crate::failure`. Free-form `String` here so this crate stays
         /// decoupled from v03-resolution's enum; validated at the
@@ -291,17 +291,16 @@ impl BackfillOrchestrator {
         //    transaction, and SQLite cannot have a read cursor and a write
         //    transaction interleaved on the same connection. Paging by
         //    `id > last_seen` is O(n log n) on the PK index — fast enough.
-        let mut last_seen: i64 = resume_after;
+        let mut last_seen: String = resume_after;
 
         loop {
-            let page = fetch_page(conn, last_seen, self.config.batch_size)?;
+            let page = fetch_page(conn, &last_seen, self.config.batch_size)?;
             if page.is_empty() {
                 break; // cursor exhausted — Phase 4 done
             }
 
             for record in page {
-                let record_id = record.id;
-                last_seen = record_id;
+                last_seen = record.id.clone();
 
                 // 3. Hand off to T9.
                 let outcome = processor.process_one(conn, record)?;
@@ -414,7 +413,7 @@ impl BackfillOrchestrator {
 
 fn fetch_page(
     conn: &Connection,
-    after_id: i64,
+    after_id: &str,
     limit: usize,
 ) -> Result<Vec<MemoryRecord>, MigrationError> {
     let mut stmt = conn
@@ -432,7 +431,7 @@ fn fetch_page(
     let rows = stmt
         .query_map(params![after_id, limit as i64], |row| {
             Ok(MemoryRecord {
-                id: row.get(0)?,
+                id: row.get::<_, String>(0)?,
                 content: row.get(1)?,
                 metadata: row.get::<_, Option<String>>(2)?,
                 created_at: row.get(3)?,
@@ -484,11 +483,13 @@ mod tests {
     use std::cell::RefCell;
 
     /// Test fixture: in-memory DB with `memories` + `migration_state` tables.
+    /// `memories.id` is `TEXT PRIMARY KEY` to match all real v0.2 schemas
+    /// (UUIDs / content-hashes — see v03-migration design §5.4 "Type note").
     fn fresh_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE memories (
-                id INTEGER PRIMARY KEY,
+                id TEXT PRIMARY KEY,
                 content TEXT NOT NULL,
                 metadata TEXT,
                 created_at TEXT NOT NULL
@@ -499,7 +500,7 @@ mod tests {
         conn
     }
 
-    fn insert_memory(conn: &Connection, id: i64, content: &str) {
+    fn insert_memory(conn: &Connection, id: &str, content: &str) {
         conn.execute(
             "INSERT INTO memories (id, content, metadata, created_at) \
              VALUES (?1, ?2, NULL, '2024-01-01T00:00:00Z')",
@@ -521,7 +522,7 @@ mod tests {
     /// containing "ok", Failed otherwise. Does NOT write to graph tables —
     /// just bumps the checkpoint counters so resume tests work.
     struct FakeProcessor {
-        seen: RefCell<Vec<i64>>,
+        seen: RefCell<Vec<String>>,
     }
 
     impl FakeProcessor {
@@ -538,7 +539,7 @@ mod tests {
             conn: &mut Connection,
             record: MemoryRecord,
         ) -> Result<RecordOutcome, MigrationError> {
-            self.seen.borrow_mut().push(record.id);
+            self.seen.borrow_mut().push(record.id.clone());
             let succeeded = record.content.contains("ok");
             // Simulate the atomic processor txn: advance checkpoint here.
             let tx = conn.transaction().map_err(|e| {
@@ -546,7 +547,7 @@ mod tests {
             })?;
             CheckpointStore::update_backfill_progress(
                 &tx,
-                record.id,
+                &record.id,
                 1,
                 if succeeded { 1 } else { 0 },
                 if succeeded { 0 } else { 1 },
@@ -576,7 +577,7 @@ mod tests {
     fn run_processes_all_records_in_id_order() {
         let mut conn = fresh_db();
         init_state(&conn);
-        for (i, c) in [(1, "ok one"), (2, "ok two"), (3, "ok three")] {
+        for (i, c) in [("m1", "ok one"), ("m2", "ok two"), ("m3", "ok three")] {
             insert_memory(&conn, i, c);
         }
         let proc = FakeProcessor::new();
@@ -586,7 +587,7 @@ mod tests {
         let summary = orch
             .run(&mut conn, &proc, Some(3), &mut on_progress)
             .unwrap();
-        assert_eq!(*proc.seen.borrow(), vec![1, 2, 3]);
+        assert_eq!(*proc.seen.borrow(), vec!["m1", "m2", "m3"]);
         assert_eq!(summary.records_processed, 3);
         assert_eq!(summary.records_succeeded, 3);
         assert_eq!(summary.records_failed, 0);
@@ -598,9 +599,9 @@ mod tests {
     fn run_continues_past_failures_under_continue_policy() {
         let mut conn = fresh_db();
         init_state(&conn);
-        insert_memory(&conn, 1, "ok one");
-        insert_memory(&conn, 2, "BAD"); // does not contain "ok"
-        insert_memory(&conn, 3, "ok three");
+        insert_memory(&conn, "m1", "ok one");
+        insert_memory(&conn, "m2", "BAD"); // does not contain "ok"
+        insert_memory(&conn, "m3", "ok three");
         let proc = FakeProcessor::new();
         let mut on_progress = |_: &MigrationProgress| {};
         let mut orch = BackfillOrchestrator::new(BackfillConfig::default());
@@ -617,9 +618,9 @@ mod tests {
     fn run_stops_on_first_failure_under_stop_policy() {
         let mut conn = fresh_db();
         init_state(&conn);
-        insert_memory(&conn, 1, "ok one");
-        insert_memory(&conn, 2, "BAD");
-        insert_memory(&conn, 3, "ok three"); // never reached
+        insert_memory(&conn, "m1", "ok one");
+        insert_memory(&conn, "m2", "BAD");
+        insert_memory(&conn, "m3", "ok three"); // never reached
         let proc = FakeProcessor::new();
         let mut on_progress = |_: &MigrationProgress| {};
         let mut orch = BackfillOrchestrator::new(BackfillConfig {
@@ -633,7 +634,7 @@ mod tests {
         assert_eq!(summary.records_succeeded, 1);
         assert_eq!(summary.records_failed, 1);
         assert!(summary.stopped_on_failure);
-        assert_eq!(*proc.seen.borrow(), vec![1, 2]); // record 3 not seen
+        assert_eq!(*proc.seen.borrow(), vec!["m1", "m2"]); // record 3 not seen
     }
 
     #[test]
@@ -643,17 +644,17 @@ mod tests {
         // Pretend a previous run got through record 2.
         CheckpointStore::update_backfill_progress(
             &conn,
-            2,
+            "m2",
             2,
             2,
             0,
             "2024-01-01T00:00:00Z",
         )
         .unwrap();
-        insert_memory(&conn, 1, "ok one"); // already done — skipped
-        insert_memory(&conn, 2, "ok two"); // already done — skipped
-        insert_memory(&conn, 3, "ok three"); // new
-        insert_memory(&conn, 4, "ok four"); // new
+        insert_memory(&conn, "m1", "ok one"); // already done — skipped
+        insert_memory(&conn, "m2", "ok two"); // already done — skipped
+        insert_memory(&conn, "m3", "ok three"); // new
+        insert_memory(&conn, "m4", "ok four"); // new
 
         let proc = FakeProcessor::new();
         let mut on_progress = |_: &MigrationProgress| {};
@@ -662,7 +663,7 @@ mod tests {
             .run(&mut conn, &proc, None, &mut on_progress)
             .unwrap();
         // Only records 3 and 4 should be seen.
-        assert_eq!(*proc.seen.borrow(), vec![3, 4]);
+        assert_eq!(*proc.seen.borrow(), vec!["m3", "m4"]);
         // Counters accumulate across runs (GOAL-4.5).
         assert_eq!(summary.records_processed, 4);
         assert_eq!(summary.records_succeeded, 4);
@@ -705,7 +706,7 @@ mod tests {
         init_state(&conn);
         // Insert 7 records with batch_size=3 → 3 pages (3+3+1).
         for i in 1..=7 {
-            insert_memory(&conn, i, "ok");
+            insert_memory(&conn, &format!("m{i}"), "ok");
         }
         let proc = FakeProcessor::new();
         let mut on_progress = |_: &MigrationProgress| {};
@@ -717,6 +718,6 @@ mod tests {
             .run(&mut conn, &proc, None, &mut on_progress)
             .unwrap();
         assert_eq!(summary.records_processed, 7);
-        assert_eq!(*proc.seen.borrow(), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(*proc.seen.borrow(), vec!["m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
     }
 }

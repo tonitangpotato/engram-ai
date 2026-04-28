@@ -275,8 +275,8 @@ pub(crate) struct BackfillConfig {
 
 The orchestrator's `run()` method is the Phase-4 entry point. It:
 
-1. Reads `checkpoint.last_processed_memory_id` (`-1` if fresh).
-2. Opens a streaming cursor over `SELECT id, content, metadata, created_at FROM memories WHERE id > ? ORDER BY id ASC`.
+1. Reads `checkpoint.last_processed_memory_id` (`""` empty-string sentinel if fresh — see §5.4).
+2. Opens a streaming cursor over `SELECT id, content, metadata, created_at FROM memories WHERE id > ? ORDER BY id ASC` (lexicographic TEXT comparison; `memories.id` is `TEXT PRIMARY KEY` in v0.2 schema).
 3. For each record, calls `process_one()` (§5.2), updates the checkpoint, emits progress.
 4. On exhaustion, signals Phase-4 gate (§3.2).
 
@@ -342,7 +342,7 @@ Backfill persists progress in a dedicated table so crashes and cooperative pause
 CREATE TABLE IF NOT EXISTS migration_state (
     id                       INTEGER PRIMARY KEY CHECK (id = 1),
     current_phase            TEXT    NOT NULL,         -- e.g. 'Phase4'
-    last_processed_memory_id INTEGER,                  -- -1 sentinel = none yet
+    last_processed_memory_id TEXT,                     -- '' sentinel = none yet; v0.2 memories.id is TEXT
     records_processed        INTEGER NOT NULL DEFAULT 0,
     records_succeeded        INTEGER NOT NULL DEFAULT 0,
     records_failed           INTEGER NOT NULL DEFAULT 0,
@@ -358,7 +358,9 @@ Invariants:
 - **Monotone counters.** `records_processed`, `records_succeeded`, `records_failed` only increase. `records_processed = records_succeeded + records_failed` is a tested invariant.
 - **Advance-after-commit.** The checkpoint is updated *inside the same transaction* as the per-record graph writes in §5.2 — a record is only marked "processed" if its graph delta successfully persisted, preventing lost-record scenarios on crash.
 
-On `--resume`, the orchestrator reads `current_phase`. If it's `Phase4`, it seeks `memories.id > last_processed_memory_id` and continues. The resumed run **does not reset any counters** — they accumulate across restarts, satisfying the "progress survives process restart" clause in GOAL-4.5.
+On `--resume`, the orchestrator reads `current_phase`. If it's `Phase4`, it seeks `memories.id > last_processed_memory_id` (lexicographic TEXT comparison; `""` sorts before any non-empty id, so a fresh resume sees all records) and continues. The resumed run **does not reset any counters** — they accumulate across restarts, satisfying the "progress survives process restart" clause in GOAL-4.5.
+
+> **Type note (ground-truth correction, 2026-04-28).** The original v03-migration design assumed `memories.id` was an `INTEGER` rowid, mirroring some early prototypes. **All shipped v0.2 schemas declare `memories.id TEXT PRIMARY KEY`** (UUIDs / content-hashes). The cursor, the checkpoint column, and the `MemoryRecord.id` Rust type are therefore `String`. The sentinel for "no records processed yet" is the empty string `""` rather than `-1`, because lexicographic ordering on TEXT places `""` strictly before every non-empty id, preserving the `id > last_processed_memory_id` semantics. The DDL above keeps the legacy `INTEGER` column declaration for backward compatibility with already-deployed dev databases — SQLite's dynamic typing accepts `TEXT` values in an `INTEGER`-declared column without conversion, so existing checkpoints continue to load. New deployments may safely treat the column as `TEXT`.
 
 **Phase digests for integrity across pauses.** The `schema_version` row alone cannot detect tampering or partial-write corruption between phases (e.g., migration paused overnight and the DB was opened by an external tool that wrote something, or Phase 3 committed the checkpoint but crashed before fsync of the topic data). To catch these, each completed phase writes a **digest row** into the `migration_state` table that summarizes the content that phase produced:
 

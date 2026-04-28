@@ -196,7 +196,7 @@ impl RecordProcessor for PipelineRecordProcessor {
         conn: &mut Connection,
         record: MemoryRecord,
     ) -> Result<RecordOutcome, MigrationError> {
-        let record_id = record.id;
+        let record_id: String = record.id.clone();
         let now = Utc::now();
 
         // ---- Convert v0.2 row → engramai MemoryRecord ----
@@ -209,7 +209,7 @@ impl RecordProcessor for PipelineRecordProcessor {
                 // Advance checkpoint as failed; emit failure row.
                 advance_checkpoint_as_failed(
                     conn,
-                    record_id,
+                    &record_id,
                     STAGE_ENTITY_EXTRACT,
                     CATEGORY_INTERNAL,
                     &parse_err,
@@ -237,7 +237,7 @@ impl RecordProcessor for PipelineRecordProcessor {
                 // but the contract permits it (forward-compat).
                 advance_checkpoint_as_failed(
                     conn,
-                    record_id,
+                    &record_id,
                     STAGE_DEDUP,
                     CATEGORY_INTERNAL,
                     &msg,
@@ -270,7 +270,7 @@ impl RecordProcessor for PipelineRecordProcessor {
         let (delta_succeeded, delta_failed) = if had_stage_failures { (0, 1) } else { (1, 0) };
         CheckpointStore::update_backfill_progress(
             conn,
-            record_id,
+            &record_id,
             1,
             delta_succeeded,
             delta_failed,
@@ -402,7 +402,7 @@ fn apply_delta_through_migration_conn(
 /// own small transactions (see module-level "Atomicity model").
 fn advance_checkpoint_as_failed(
     conn: &mut Connection,
-    record_id: i64,
+    record_id: &str,
     stage: &str,
     kind: &str,
     message: &str,
@@ -429,8 +429,7 @@ fn advance_checkpoint_as_failed(
     }
 
     // ---- Checkpoint advance ----
-    CheckpointStore::update_backfill_progress(conn, record_id, 1, 0, 1, &now.to_rfc3339())?;
-    Ok(())
+    CheckpointStore::update_backfill_progress(conn, record_id, 1, 0, 1, &now.to_rfc3339())?;    Ok(())
 }
 
 /// Map a [`StageFailureRow`] stage tag into the migration's `STAGE_*`
@@ -516,9 +515,11 @@ mod tests {
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
 
         // Minimal v0.2 memories table — matches T8's fetch_page schema.
+        // `id TEXT PRIMARY KEY` mirrors all real v0.2 schemas; see
+        // v03-migration design §5.4 "Type note" (2026-04-28).
         conn.execute_batch(
             "CREATE TABLE memories (
-                id INTEGER PRIMARY KEY,
+                id TEXT PRIMARY KEY,
                 content TEXT NOT NULL,
                 metadata TEXT,
                 created_at TEXT NOT NULL,
@@ -537,16 +538,16 @@ mod tests {
         conn.execute(
             "INSERT INTO migration_state \
              (id, current_phase, last_processed_memory_id, started_at, updated_at) \
-             VALUES (1, 'Phase4', -1, ?1, ?1)",
+             VALUES (1, 'Phase4', '', ?1, ?1)",
             rusqlite::params![now],
         )
         .unwrap();
         conn
     }
 
-    fn fixture_record(id: i64) -> RawRecord {
+    fn fixture_record(id: &str) -> RawRecord {
         RawRecord {
-            id,
+            id: id.to_string(),
             content: format!("memory {id} content"),
             metadata: None,
             created_at: Utc.with_ymd_and_hms(2026, 4, 26, 12, 0, 0).unwrap().to_rfc3339(),
@@ -558,13 +559,13 @@ mod tests {
     #[test]
     fn to_engramai_record_happy_path() {
         let raw = RawRecord {
-            id: 42,
+            id: "m42".to_string(),
             content: "hello".into(),
             metadata: Some(r#"{"memory_type":"episodic","importance":0.7}"#.into()),
             created_at: "2026-04-26T12:00:00Z".into(),
         };
         let r = to_engramai_record(&raw).unwrap();
-        assert_eq!(r.id, "42");
+        assert_eq!(r.id, "m42");
         assert_eq!(r.content, "hello");
         assert!(matches!(r.memory_type, MemoryType::Episodic));
         assert!((r.importance - 0.7).abs() < 1e-9);
@@ -573,7 +574,7 @@ mod tests {
 
     #[test]
     fn to_engramai_record_defaults_on_no_metadata() {
-        let raw = fixture_record(1);
+        let raw = fixture_record("m1");
         let r = to_engramai_record(&raw).unwrap();
         assert!(matches!(r.memory_type, MemoryType::Factual));
         assert!((r.importance - 0.5).abs() < 1e-9);
@@ -583,7 +584,7 @@ mod tests {
     fn to_engramai_record_tolerates_malformed_metadata() {
         // Malformed JSON → defaults applied, no error.
         let raw = RawRecord {
-            id: 7,
+            id: "m7".to_string(),
             content: "x".into(),
             metadata: Some("{not valid json".into()),
             created_at: "2026-04-26T12:00:00Z".into(),
@@ -596,7 +597,7 @@ mod tests {
     #[test]
     fn to_engramai_record_fails_on_bad_timestamp() {
         let raw = RawRecord {
-            id: 9,
+            id: "m9".to_string(),
             content: "x".into(),
             metadata: None,
             created_at: "not-a-timestamp".into(),
@@ -615,7 +616,7 @@ mod tests {
         let resolver = ScriptedResolver::new(vec![Ok(delta)]);
         let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>);
 
-        let outcome = proc.process_one(&mut conn, fixture_record(101)).unwrap();
+        let outcome = proc.process_one(&mut conn, fixture_record("m101")).unwrap();
         match outcome {
             RecordOutcome::Succeeded { entity_count, edge_count } => {
                 assert_eq!(entity_count, 0);
@@ -628,7 +629,7 @@ mod tests {
         assert_eq!(state.records_processed, 1);
         assert_eq!(state.records_succeeded, 1);
         assert_eq!(state.records_failed, 0);
-        assert_eq!(state.last_processed_memory_id, 101);
+        assert_eq!(state.last_processed_memory_id, "m101");
     }
 
     #[test]
@@ -649,10 +650,10 @@ mod tests {
         let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>)
             .with_namespace("default");
 
-        let outcome = proc.process_one(&mut conn, fixture_record(202)).unwrap();
+        let outcome = proc.process_one(&mut conn, fixture_record("m202")).unwrap();
         match outcome {
             RecordOutcome::Failed { record_id, kind, stage, .. } => {
-                assert_eq!(record_id, 202);
+                assert_eq!(record_id, "m202");
                 assert_eq!(kind, crate::failure::CATEGORY_LLM_TIMEOUT);
                 assert_eq!(stage, STAGE_ENTITY_EXTRACT);
             }
@@ -663,7 +664,7 @@ mod tests {
         assert_eq!(state.records_processed, 1);
         assert_eq!(state.records_succeeded, 0);
         assert_eq!(state.records_failed, 1);
-        assert_eq!(state.last_processed_memory_id, 202);
+        assert_eq!(state.last_processed_memory_id, "m202");
 
         // graph_applied_deltas should have the row (delta did commit).
         let applied: i64 = conn
@@ -688,17 +689,20 @@ mod tests {
             .with_namespace("default");
 
         let bad = RawRecord {
-            id: 303,
+            id: "m303".to_string(),
             content: "x".into(),
             metadata: None,
             created_at: "garbage-timestamp".into(),
         };
         let outcome = proc.process_one(&mut conn, bad).unwrap();
-        assert!(matches!(outcome, RecordOutcome::Failed { record_id: 303, .. }));
+        assert!(matches!(
+            &outcome,
+            RecordOutcome::Failed { record_id, .. } if record_id == "m303"
+        ));
 
         let state = CheckpointStore::load_state(&conn).unwrap().unwrap();
         assert_eq!(state.records_failed, 1);
-        assert_eq!(state.last_processed_memory_id, 303);
+        assert_eq!(state.last_processed_memory_id, "m303");
 
         // Failure row should be present in graph_extraction_failures.
         let unresolved = list_unresolved(&conn, "default", Some(100)).unwrap();
@@ -715,18 +719,18 @@ mod tests {
         ))]);
         let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>);
 
-        let err = proc.process_one(&mut conn, fixture_record(404)).unwrap_err();
+        let err = proc.process_one(&mut conn, fixture_record("m404")).unwrap_err();
         match err {
             MigrationError::BackfillFatal(msg) => {
                 assert!(msg.contains("disk full"), "msg: {msg}");
-                assert!(msg.contains("404"), "fatal msg should reference record id: {msg}");
+                assert!(msg.contains("m404"), "fatal msg should reference record id: {msg}");
             }
             other => panic!("expected BackfillFatal, got {other:?}"),
         }
 
         let state = CheckpointStore::load_state(&conn).unwrap().unwrap();
         assert_eq!(state.records_processed, 0, "checkpoint must not advance on fatal");
-        assert_eq!(state.last_processed_memory_id, -1);
+        assert_eq!(state.last_processed_memory_id, "");
     }
 
     #[test]
@@ -740,10 +744,10 @@ mod tests {
         let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>)
             .with_namespace("default");
 
-        let outcome = proc.process_one(&mut conn, fixture_record(505)).unwrap();
+        let outcome = proc.process_one(&mut conn, fixture_record("m505")).unwrap();
         match outcome {
             RecordOutcome::Failed { record_id, kind, stage, .. } => {
-                assert_eq!(record_id, 505);
+                assert_eq!(record_id, "m505");
                 assert_eq!(kind, CATEGORY_INTERNAL);
                 assert_eq!(stage, STAGE_DEDUP);
             }
@@ -769,8 +773,8 @@ mod tests {
         let resolver = ScriptedResolver::new(vec![Ok(delta1), Ok(delta2)]);
         let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>);
 
-        let _o1 = proc.process_one(&mut conn, fixture_record(606)).unwrap();
-        let _o2 = proc.process_one(&mut conn, fixture_record(606)).unwrap();
+        let _o1 = proc.process_one(&mut conn, fixture_record("m606")).unwrap();
+        let _o2 = proc.process_one(&mut conn, fixture_record("m606")).unwrap();
 
         let applied: i64 = conn
             .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| r.get(0))
