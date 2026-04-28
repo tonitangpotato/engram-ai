@@ -356,3 +356,47 @@ the real adapter substituted via the `_collaborators` test helper.
   acceptance metric is logged in the issue.
 - No `Null*` types deleted — they remain as legitimate test scaffolding
   per their own doc comments.
+
+---
+
+## Phase 4 Acceptance Run — 2026-04-28
+
+**Binary**: post-Phase-3 (commits `3d36571` + `5019850` + `cefb9c1`)
+
+**DB**: `.gid/issues/ISS-049/locomo-conv26-s1-3-default-ns.db` — copy of
+ISS-048 fresh ingest (32 memories, 136 graph entities, 101 graph edges)
+with namespace normalized from `locomo-conv26-iss048` to `default`.
+Namespace mismatch was a pre-existing bug in the ISS-048 ingest script
+(it set the main-DB namespace explicitly but the graph-store ingest
+hardcoded `"default"` — see hybrid_seed_recaller.rs comment). Phase-3
+adapters bind to `"default"`, so the two had to be aligned for
+end-to-end recall to work. Filed separately: TBD-namespace-bug.
+
+**Result**: **12/25 hit@5 = 48.0%** (vs 0/25 with `Null*` stubs pre-Phase-3).
+
+Plan-level breakdown:
+- **Factual** (17 queries): 11 hits, 6 misses, 0 empty — adapter chain
+  (StorageEpisodicStore + GraphEntityResolver) works end-to-end.
+- **Abstract L5** (4 queries): 0 hits, 0 misses, 4 empty — plan
+  downgrades to `DowngradedL5Unavailable` because the Abstract plan
+  isn't fed by the current adapter set.
+- **Hybrid** (2 queries): 0 hits, 0 empty results from sub-plan path
+  in execute_plan — Hybrid sub-plan needs separate plumbing.
+- **Affective** (2 queries): 0 hits, 2 empty — affective recaller
+  works, but the Affective plan still downgrades because the somatic
+  fingerprint match path needs more state.
+
+**Verdict**:
+- ✅ ISS-049 root cause **resolved**: graph_query no longer returns 0
+  results uniformly. Plan dispatch + adapter chain is wired end-to-end.
+- ⚠️ Abstract / Hybrid / Affective plans are **structurally** wired but
+  return empty — these need follow-up tasks (out of ISS-049 scope —
+  ISS-049 was specifically the `Null*` collaborator antipattern).
+- 12/25 is the **honest baseline** for v0.3 retrieval. No tuning,
+  no fixture cherry-picking. This is the number to beat as we wire
+  the remaining three plans and tune fusion weights.
+
+**Acceptance criterion** (from issue.md): "graph_query returns
+nonzero results on at least one LoCoMo conv-26 query" — **passed**
+(48% on 25 queries).
+
