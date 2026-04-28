@@ -31,6 +31,12 @@ engramai = { path = "../engramai" }
 # Migration driver consumes the migration tool's structured JSON output (design §3.6, §12.3).
 engramai-migrate = { path = "../engramai-migrate" }
 
+# Direct SQLite access for fixture seeding + count probes in the
+# migration_integrity driver (design §3.6 — pre/post row counts must be
+# captured from the source-of-truth tables, not via runtime APIs that
+# could mask bugs). Same version as engramai/-migrate.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # CLI surface — single binary with subcommands per design §7.1.
 clap = { version = "4.5", features = ["derive", "env"] }
 
@@ -78,10 +84,18 @@ regex = "1"
 # UUID for run identifiers when needed (mirrors workspace convention).
 uuid = { version = "1.10", features = ["v4", "serde"] }
 
-[dev-dependencies]
-# Fixture-only test scaffolding: temp directories, golden-file tests, mocked
-# scorers. Per §9.4: fixtures are test-only — these never leak into the binary.
+# Ephemeral fixture directories for the migration_integrity driver
+# (design §3.6 — v0.2 fixture DBs are seeded into a tempdir scoped to the
+# run, NOT into output_root which is reserved for committed artifacts).
+# Lives in [dependencies] (not dev-dependencies) because it is required
+# by driver runtime code under src/drivers/, not just tests. GUARD-9
+# scope is "deps must not leak into engramai" — engram-bench itself
+# may take whatever runtime deps its drivers genuinely need.
 tempfile = "3"
+
+[dev-dependencies]
+# Property-based test scaffolding for golden-file / fuzzed driver tests.
+# Per §9.4: dev-only — never leaks into the binary.
 proptest = "1.5"
 
 [lib]

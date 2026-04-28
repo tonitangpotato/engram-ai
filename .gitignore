@@ -35,3 +35,6 @@ __pycache__/
 # Pilot run logs — derived from runs, not source
 .gid/issues/**/pilot/*.log
 .gid/issues/**/pilot/nohup*.log
+
+# Benchmark run artifacts — local output, not versioned
+benchmarks/runs/

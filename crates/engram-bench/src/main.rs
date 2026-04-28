@@ -246,9 +246,12 @@ fn resolve_driver(driver: Driver) -> Option<Box<dyn BenchDriver>> {
         Driver::TestPreservation => Some(Box::new(
             engram_bench::drivers::test_preservation::TestPreservationDriver,
         )),
-        // The remaining two drivers are skeletons — surface clearly.
-        Driver::CognitiveRegression
-        | Driver::MigrationIntegrity => None,
+        Driver::CognitiveRegression => Some(Box::new(
+            engram_bench::drivers::cognitive_regression::CognitiveRegressionDriver,
+        )),
+        Driver::MigrationIntegrity => Some(Box::new(
+            engram_bench::drivers::migration_integrity::MigrationIntegrityDriver,
+        )),
     }
 }
 

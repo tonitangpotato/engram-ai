@@ -19,10 +19,17 @@
 //! `task:bench-impl-driver-test-preservation` — `cargo test` wrapper
 //! around v0.2.2's test sources, with skip-aware migration-tool
 //! detection (returns `blocked_by` when v03-migration is absent).
-//! The remaining `cognitive_regression` and `migration_integrity`
-//! drivers stay todo per the v03-benchmarks build plan T3 task table.
+//! `cognitive_regression` and `migration_integrity` landed in
+//! skip-aware form (2026-04-27): the call sites are wired but the
+//! real pipelines are gated on `task:retr-impl-orchestrator-*` (the
+//! `Memory::graph_query` orchestrator stub). Both drivers detect the
+//! stub and surface `GateStatus::Error` per GUARD-2 — never silent
+//! pass. When the orchestrator lands, the same drivers activate by
+//! probe-fall-through (no further code change to mod.rs).
 
+pub mod cognitive_regression;
 pub mod cost;
 pub mod locomo;
 pub mod longmemeval;
+pub mod migration_integrity;
 pub mod test_preservation;
