@@ -313,12 +313,44 @@ impl Memory {
         // (1) Leaked connection for the graph store. See doc comment for
         // the rationale — this is correct semantics, not a leak in the
         // resource-bug sense.
+        //
+        // ISS-046: foreign_keys handling depends on whether the graph DB
+        // is the *same file* as the main memories DB or a separate file.
+        // The graph schema has FK constraints into `memories(id)`. When
+        // the graph DB is co-located (same file), FKs ON enforces them.
+        // When separate (the v0.3 default for `with_pipeline_pool`), the
+        // referenced table lives in another file — SQLite errors at
+        // prepare time on any INSERT touching those FK columns. Since
+        // SQLite has no cross-file FK support, we turn FKs OFF for
+        // separate-file graph DBs and rely on application-level integrity
+        // (the resolution pipeline only writes graph rows whose memory_id
+        // came from a successful main-DB insert moments earlier).
         let graph_conn: &'static mut rusqlite::Connection = {
             let conn = rusqlite::Connection::open(db_path_ref)?;
-            // Match Storage::new pragmas. Critical for WAL coexistence.
-            conn.execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
-            )?;
+            // Detect whether the graph DB is co-located with the main
+            // memories DB: peek for a `memories` table. If present, we
+            // are sharing the file with `Storage::new`'s schema and FKs
+            // are meaningful. If absent, this is a separate-file graph
+            // DB → disable FK enforcement.
+            let has_memories: bool = conn
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'")
+                .and_then(|mut s| s.exists([]))
+                .unwrap_or(false);
+            let fk_pragma = if has_memories {
+                "PRAGMA foreign_keys=ON;"
+            } else {
+                "PRAGMA foreign_keys=OFF;"
+            };
+            conn.execute_batch(&format!(
+                "PRAGMA journal_mode=WAL; {fk_pragma} PRAGMA busy_timeout=5000;"
+            ))?;
+            // ISS-046: ensure v0.3 graph schema exists. Idempotent — safe to
+            // call on fresh DB or existing one. Without this, fresh-ingest
+            // through `with_pipeline_pool` produces 0-byte / empty DBs because
+            // SqliteGraphStore writes assume schema is already in place
+            // (Storage::new initializes the *main* DB schema, but the graph
+            // DB is a separate file when the user passes a distinct path).
+            crate::graph::init_graph_tables(&conn)?;
             Box::leak(Box::new(conn))
         };
         let graph_store = SqliteGraphStore::new(graph_conn);
@@ -333,8 +365,33 @@ impl Memory {
         self.graph_store = Some(Arc::clone(&store_arc));
 
         // (2) Memory reader (separate connection, internally Mutex-wrapped).
+        //
+        // ISS-046: the reader must point at the *main* memories DB, not the
+        // graph DB. When `with_pipeline_pool(graph_db)` is called with a
+        // graph DB path that differs from the main DB, naively reusing
+        // `db_path_ref` here makes the worker open a connection to the graph
+        // DB and fail on `no such table: memories` (and `access_log`) at
+        // first fetch. Resolve the main DB path from the foreground
+        // connection (`Connection::path`) — this is the canonical source of
+        // truth and works whether the user opened the DB via `Memory::new`
+        // or any builder variant.
+        let main_db_path: std::path::PathBuf = match self.storage.connection().path() {
+            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => {
+                // Fallback: in-memory or no-path connections (rare —
+                // typically only test scaffolding uses these). Falling
+                // back to db_path_ref preserves prior behavior, with an
+                // explicit warning.
+                log::warn!(
+                    "with_pipeline_pool: foreground connection has no file path; \
+                     memory reader will reuse graph DB path ({})",
+                    db_path_ref.display()
+                );
+                db_path_ref.to_path_buf()
+            }
+        };
         let memory_reader: Arc<dyn crate::resolution::pipeline::MemoryReader> =
-            Arc::new(SqliteMemoryReader::open(db_path_ref)?);
+            Arc::new(SqliteMemoryReader::open(&main_db_path)?);
 
         // (3) Build the pipeline. Entity extractor is freshly constructed
         //     from this Memory's existing config so the pipeline sees
@@ -434,9 +491,25 @@ impl Memory {
 
         let graph_conn: &'static mut rusqlite::Connection = {
             let conn = rusqlite::Connection::open(db_path.as_ref())?;
-            conn.execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
-            )?;
+            // ISS-046: see `with_pipeline_pool` for the same-file vs
+            // separate-file FK handling rationale.
+            let has_memories: bool = conn
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'")
+                .and_then(|mut s| s.exists([]))
+                .unwrap_or(false);
+            let fk_pragma = if has_memories {
+                "PRAGMA foreign_keys=ON;"
+            } else {
+                "PRAGMA foreign_keys=OFF;"
+            };
+            conn.execute_batch(&format!(
+                "PRAGMA journal_mode=WAL; {fk_pragma} PRAGMA busy_timeout=5000;"
+            ))?;
+            // ISS-046: schema init is idempotent. For read-only consumers
+            // pointing at an already-populated DB this is a no-op; for
+            // first-run consumers it ensures the schema exists so queries
+            // against missing tables don't error.
+            crate::graph::init_graph_tables(&conn)?;
             Box::leak(Box::new(conn))
         };
         let store = SqliteGraphStore::new(graph_conn);

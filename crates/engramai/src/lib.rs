@@ -164,7 +164,7 @@ pub use synthesis::types::{
     ProvenanceRecord, ProvenanceChain, UndoSynthesis,
 };
 pub use triple::{Triple, Predicate, TripleSource};
-pub use triple_extractor::{TripleExtractor, AnthropicTripleExtractor, OllamaTripleExtractor};
+pub use triple_extractor::{TripleExtractor, AnthropicTripleExtractor, OllamaTripleExtractor, NoopTripleExtractor};
 pub use promotion::PromotionCandidate;
 pub use metacognition::{MetaCognitionTracker, MetaCognitionReport, ParameterSuggestion, RecallEvent, SynthesisEvent};
 pub use lifecycle::{DecayReport, ForgetReport, AddResult, LifecycleError, PhaseReport, HealthReport, RebalanceReport};

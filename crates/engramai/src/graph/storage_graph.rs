@@ -47,11 +47,24 @@ pub fn init_graph_tables(conn: &Connection) -> Result<(), GraphError> {
     // Step 2: additive ALTERs on the existing `memories` table.
     // SQLite has no "ADD COLUMN IF NOT EXISTS" — guard each ALTER by tolerating
     // the "duplicate column" error from a prior run.
+    //
+    // ISS-046: the v0.3 graph layer can live in a *separate* SQLite file from
+    // the main memories DB (e.g. `Memory::with_pipeline_pool("foo.graph.db")`
+    // when memories live in `foo.db`). In that case the `memories` table
+    // does not exist in the graph-DB connection — that's fine, the ALTERs
+    // are no-ops because the storage layer that owns `memories` runs
+    // `init_graph_tables` against the main DB separately. Tolerate the
+    // "no such table" error here.
     for (col, ddl) in MEMORIES_ALTERS {
         match conn.execute(ddl, []) {
             Ok(_) => {}
             Err(e) if e.to_string().contains("duplicate column name") => {
                 // Column already added on a prior run; expected idempotent path.
+            }
+            Err(e) if e.to_string().contains("no such table: memories") => {
+                // Separate-file graph DB; memories table belongs to main DB.
+                // Skip the rest of MEMORIES_ALTERS — same outcome on every row.
+                break;
             }
             Err(e) => {
                 return Err(GraphError::Migration(format!(

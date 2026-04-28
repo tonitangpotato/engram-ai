@@ -15,6 +15,35 @@ pub trait TripleExtractor: Send + Sync {
     fn extract_triples(&self, content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>>;
 }
 
+/// A no-op triple extractor that always returns an empty list.
+///
+/// Useful when the resolution pipeline must be wired (so entities are
+/// extracted into the v0.3 graph layer) but no LLM is available for
+/// semantic triple/edge extraction. Entity-only retrieval still works;
+/// only semantic edge queries degrade.
+///
+/// Filed under ISS-046 (engram store CLI graph plumbing): the CLI installs
+/// this when `--graph-db` is set without `--triple-extractor`, so users
+/// can populate v0.3 graphs without configuring an LLM.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopTripleExtractor;
+
+impl NoopTripleExtractor {
+    /// Construct a new no-op extractor.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl TripleExtractor for NoopTripleExtractor {
+    fn extract_triples(
+        &self,
+        _content: &str,
+    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+        Ok(Vec::new())
+    }
+}
+
 /// Few-shot prompt for triple extraction.
 const TRIPLE_EXTRACTION_PROMPT: &str = r#"Extract subject-predicate-object triples from the following text.
 
