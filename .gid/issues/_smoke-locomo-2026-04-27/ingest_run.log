@@ -1,0 +1,17 @@
+[ingest] Conversation: conv-26 (Caroline & Melanie)
+[ingest] DB: /Users/potato/clawd/projects/engram/.gid/issues/_smoke-locomo-2026-04-27/locomo-conv26-s1-3-postd991715.db
+[ingest] Namespace: locomo-conv26-postd991715
+[ingest] Binary: /Users/potato/clawd/projects/engram/target/release/engram
+
+[ingest] session_1: 18 turns
+  [1/18] stored (1 total)  [2/18] stored (2 total)  [3/18] stored (3 total)  [4/18] stored (4 total)  [5/18] stored (5 total)  [6/18] stored (6 total)  [7/18] stored (7 total)  [8/18] stored (8 total)  [9/18] stored (9 total)  [10/18] stored (10 total)  [11/18] stored (11 total)  [12/18] stored (12 total)  [13/18] stored (13 total)  [14/18] stored (14 total)  [15/18] stored (15 total)  [16/18] stored (16 total)  [17/18] stored (17 total)  [18/18] stored (18 total)
+
+[ingest] session_2: 17 turns
+  [1/17] stored (19 total)  [2/17] stored (20 total)  [3/17] stored (21 total)  [4/17] stored (22 total)  [5/17] stored (23 total)  [6/17] stored (24 total)  [7/17] stored (25 total)  [8/17] stored (26 total)  [9/17] stored (27 total)  [10/17] stored (28 total)  [11/17] stored (29 total)  [12/17] stored (30 total)  [13/17] stored (31 total)  [14/17] stored (32 total)  [15/17] stored (33 total)  [16/17] stored (34 total)  [17/17] stored (35 total)
+
+[ingest] session_3: 23 turns
+  [1/23] stored (36 total)  [2/23] stored (37 total)  [3/23] stored (38 total)  [4/23] stored (39 total)  [5/23] stored (40 total)  [6/23] stored (41 total)  [7/23] stored (42 total)  [8/23] stored (43 total)  [9/23] stored (44 total)  [10/23] stored (45 total)  [11/23] stored (46 total)  [12/23] stored (47 total)  [13/23] stored (48 total)  [14/23] stored (49 total)  [15/23] stored (50 total)  [16/23] stored (51 total)  [17/23] stored (52 total)  [18/23] stored (53 total)  [19/23] stored (54 total)  [20/23] stored (55 total)  [21/23] stored (56 total)  [22/23] stored (57 total)  [23/23] stored (58 total)
+
+[ingest] Total: 58 turns in 107.1s (1.85s/turn)
+[ingest] DB at /Users/potato/clawd/projects/engram/.gid/issues/_smoke-locomo-2026-04-27/locomo-conv26-s1-3-postd991715.db
+[ingest] Full log at /Users/potato/clawd/projects/engram/.gid/issues/_smoke-locomo-2026-04-27/ingest.log

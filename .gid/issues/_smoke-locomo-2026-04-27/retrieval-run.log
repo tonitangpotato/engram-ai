@@ -1,0 +1,41 @@
+=== LoCoMo conv-26 retrieval smoke ===
+  DB:        /Users/potato/clawd/projects/engram/.gid/issues/_smoke-locomo-2026-04-27/locomo-conv26-s1-3-postd991715.db
+  Graph DB:  /Users/potato/clawd/projects/engram/.gid/issues/_smoke-locomo-2026-04-27/locomo-conv26-s1-3-postd991715.graph.db (will be created)
+  Dataset:   /Users/potato/clawd/projects/cogmembench/datasets/locomo/data/locomo10.json
+  Sessions:  1..=3
+  Top-K:     5
+
+Loaded 25 QAs (out of 199) with evidence in sessions 1..=3
+[2026-04-28T03:40:12Z INFO  engramai::memory] Ollama available at http://localhost:11434, embedding enabled
+Opened memory + installed graph store
+
+[ 1/25] ∅ cat=2 hit=false plan=Factual got=0 | gold=["D1:3"] top=[]
+[ 2/25] ∅ cat=2 hit=false plan=Factual got=0 | gold=["D1:12"] top=[]
+[ 3/25] ∅ cat=3 hit=false plan=Factual got=0 | gold=["D1:9", "D1:11"] top=[]
+[ 4/25] ∅ cat=1 hit=false plan=Abstract got=0 | gold=["D2:8"] top=[]
+[ 5/25] ∅ cat=1 hit=false plan=Factual got=0 | gold=["D1:5"] top=[]
+[ 6/25] ∅ cat=2 hit=false plan=Factual got=0 | gold=["D2:1"] top=[]
+[ 7/25] ∅ cat=2 hit=false plan=Factual got=0 | gold=["D2:7"] top=[]
+[ 8/25] ∅ cat=1 hit=false plan=Factual got=0 | gold=["D3:13", "D2:14"] top=[]
+[ 9/25] ∅ cat=2 hit=false plan=Factual got=0 | gold=["D3:1"] top=[]
+[10/25] ∅ cat=2 hit=false plan=Factual got=0 | gold=["D3:11"] top=[]
+[11/25] ∅ cat=2 hit=false plan=Factual got=0 | gold=["D3:13"] top=[]
+[12/25] ∅ cat=4 hit=false plan=Abstract got=0 | gold=["D2:2"] top=[]
+[13/25] ∅ cat=4 hit=false plan=Hybrid got=0 | gold=["D2:3"] top=[]
+[14/25] ∅ cat=4 hit=false plan=Factual got=0 | gold=["D2:5"] top=[]
+[15/25] ∅ cat=4 hit=false plan=Abstract got=0 | gold=["D2:8"] top=[]
+[16/25] ∅ cat=4 hit=false plan=Factual got=0 | gold=["D2:12"] top=[]
+[17/25] ∅ cat=4 hit=false plan=Factual got=0 | gold=["D2:12"] top=[]
+[18/25] ∅ cat=4 hit=false plan=Affective got=0 | gold=["D2:14"] top=[]
+[19/25] ∅ cat=4 hit=false plan=Factual got=0 | gold=["D2:15"] top=[]
+[20/25] ∅ cat=4 hit=false plan=Factual got=0 | gold=["D3:16"] top=[]
+[21/25] ∅ cat=5 hit=false plan=Hybrid got=0 | gold=["D2:3"] top=[]
+[22/25] ∅ cat=5 hit=false plan=Abstract got=0 | gold=["D2:8"] top=[]
+[23/25] ∅ cat=5 hit=false plan=Factual got=0 | gold=["D2:12"] top=[]
+[24/25] ∅ cat=5 hit=false plan=Factual got=0 | gold=["D2:12"] top=[]
+[25/25] ∅ cat=5 hit=false plan=Affective got=0 | gold=["D2:14"] top=[]
+
+=== Summary ===
+  Total queries:    25
+  Hits @ 5:         0 (0.0%)
+  Empty results:    25 (100.0%)

@@ -73,6 +73,10 @@ default = []
 name = "basic_usage"
 path = "examples/basic_usage.rs"
 
+[[example]]
+name = "locomo_conv26_retrieval"
+path = "examples/locomo_conv26_retrieval.rs"
+
 [lib]
 name = "engramai"
 path = "src/lib.rs"
