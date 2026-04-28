@@ -1,9 +1,17 @@
 # ISS-046: `engram store` CLI does not install pipeline pool — v0.3 graph stays empty on fresh ingest
 
-**Status**: open
+**Status**: closed
+**Closed**: 2026-04-28
 **Priority**: P0 (blocks ALL v0.3 retrieval on freshly ingested data; LoCoMo conv-26 0/25 hits)
 **Filed**: 2026-04-27
 **Filed by**: rustclaw (during LoCoMo conv-26 retrieval diagnosis)
+
+## Resolution
+
+Fixed in commit `950159d` — `feat(cli): ISS-046 wire v0.3 graph layer into engram store`.
+`engram store` now installs `with_pipeline_pool` + drain hooks (main.rs:1078-1196), so
+fresh ingest writes to both v0.2 `memories` table and v0.3 graph DB. LoCoMo conv-26
+re-validation: 32/32 pipeline runs succeeded, graph DB populated, no rollback.
 
 ## Symptom
 
