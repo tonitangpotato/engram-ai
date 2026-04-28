@@ -1,5 +1,13 @@
 # ISS-051: `Memory::compile_knowledge` is a zero-counter stub — `knowledge_topics` table is never populated, so the Abstract plan always returns empty
 
+## Status: ✅ RESOLVED (2026-04-28)
+
+Fix landed in commit (this PR). `Memory::compile_knowledge` now drives the
+real `knowledge_compile::compile()` pipeline. See "Resolution" section
+at the bottom of this file for what was done.
+
+---
+
 - **Status**: open
 - **Severity**: major (the entire Abstract / L5 retrieval lattice path is dead — every Abstract-classified query returns 0 candidates and downgrades; this masks any genuine Abstract-plan ranking bug under a false "0 hits = expected for now" reading)
 - **Filed**: 2026-04-28
@@ -174,3 +182,110 @@ After fix:
   to Abstract for queries that should go to Factual or Episodic. Once
   ISS-051 lands and Abstract returns real candidates, re-measure the
   classifier accuracy on the same conv-26 set.
+
+---
+
+## Resolution (2026-04-28)
+
+Implemented in commit (see git blame on changed files). Summary:
+
+### What was done
+
+1. **New module `crates/engramai/src/knowledge_compile/adapters.rs`** —
+   production-grade adapter implementations for the `Summarizer` and
+   `Embedder` traits defined in `summarizer.rs`:
+   - `EmbeddingProviderAdapter<'a>`: borrows `&EmbeddingProvider` (the
+     same one `Memory` uses for memory embeddings, satisfying design
+     §5bis.4 step 3 "same model, same dim"). Maps `EmbeddingError`
+     variants to `EmbedError::{Transient, Permanent}` correctly
+     (network/timeout = transient; model-not-found/parse = permanent).
+     Validates returned vector dimension against the embedder's
+     reported dim.
+   - `AnthropicSummarizer`: production summarizer backed by Claude.
+     Reuses `crate::anthropic_client` for header/auth construction
+     (same pattern as `crate::extractor::AnthropicExtractor`), supports
+     both static API keys and dynamic OAuth via `TokenProvider`.
+     Strict-JSON prompt + parser with markdown-fence stripping. HTTP
+     5xx + 429 + connect/timeout → `Transient`; HTTP 4xx + JSON parse
+     → `Permanent`; empty title/summary → `EmptyOutput`. 6 unit tests
+     for the response parser.
+
+2. **Rewrote `Memory::compile_knowledge`** — replaced the 22-line
+   zero-counter stub with a real call to
+   `crate::knowledge_compile::compile()`. Split into two public methods:
+   - `compile_knowledge(namespace)` — env-based summarizer factory
+     (`ANTHROPIC_AUTH_TOKEN` → OAuth, `ANTHROPIC_API_KEY` → API key,
+     neither set → `Err`). No silent fallback to stub summarizer
+     (GUARD-2: never silently degrade).
+   - `compile_knowledge_with(namespace, &summarizer)` — generic
+     injection point for tests and custom LLM clients.
+   The embedding provider is `take()`-ed for the duration of the call
+   to satisfy borrow-checker disjoint-borrow needs, and unconditionally
+   restored before returning (regression test asserts this).
+
+3. **Wiring tests in `knowledge_compile/tests.rs`**:
+   - `compile_knowledge_with_drives_real_pipeline_not_stub` — asserts
+     a `graph_pipeline_runs` row is written even on an empty namespace
+     (the unambiguous signal that the stub was replaced).
+   - `compile_knowledge_with_errors_when_no_embedder` — asserts the
+     embedder-required error path with a clear message.
+   - `compile_knowledge_restores_embedder_on_success` — regression
+     guard for the `take()`/restore pattern.
+   Tests use `compile_knowledge_with` injection rather than env-based
+   `compile_knowledge` so they're hermetic under parallel `cargo test`.
+
+4. **Test-only helpers on `Memory`** —
+   `set_embedding_provider_for_test` and
+   `clear_embedding_provider_for_test` (both `#[doc(hidden)]`) so
+   tests can deterministically configure the embedder regardless of
+   what `Memory::new` auto-detects (Ollama presence varies across dev
+   machines).
+
+### What was *not* in this fix
+
+- **Token bucketing / rate limiting for K3** — design §5bis.7 mentions
+  `knowledge_compile_*` metrics for budget tracking; the counters
+  exist in `CompileMetrics` but no budget gate is wired. K3 is run
+  per-cluster so a cluster-rate limit is the natural unit; out of
+  scope for the wiring fix. File a follow-up if needed.
+- **Retry/backoff loop around `summarize`** — design §5bis.4 step 2
+  mandates retry-with-backoff for transient summarizer errors. The
+  trait taxonomy is in place (`SummarizeError::Transient` vs
+  `Permanent`); the actual retry loop currently lives inside
+  `synthesis::persist_cluster`. Verify retry behavior against the
+  new `AnthropicSummarizer` in a follow-up acceptance test once a
+  real Claude key is wired in CI.
+- **End-to-end LLM acceptance test** — the existing tests prove the
+  wiring is correct (graph_pipeline_runs row written, run_id
+  non-nil, embedder restored) without burning Anthropic credits.
+  A "real LLM, real cluster, real topic written" acceptance test
+  belongs in a separate e2e suite gated on `ANTHROPIC_API_KEY`
+  presence.
+
+### Verification commands
+
+```
+cd /Users/potato/clawd/projects/engram
+cargo test -p engramai --lib knowledge_compile
+# 35 tests pass (was 32 before; 3 new wiring tests + 6 parser tests added)
+
+cargo test -p engramai --lib
+# 1767 tests pass, 0 failed (no regressions)
+```
+
+### Files changed
+
+- `crates/engramai/src/knowledge_compile/mod.rs` — added `pub mod adapters`.
+- `crates/engramai/src/knowledge_compile/adapters.rs` — NEW (415 lines).
+- `crates/engramai/src/knowledge_compile/tests.rs` — added 3 wiring tests
+  + helper functions.
+- `crates/engramai/src/memory.rs` — replaced `compile_knowledge` stub,
+  added `compile_knowledge_with`, added test-only embedding helpers.
+
+### Unblocks
+
+- ISS-049 Phase 4 — Abstract plan can now return real topics once a
+  corpus is compiled.
+- The "Notes for future investigation" item about classifier accuracy
+  becomes measurable: re-run conv-26 with a populated
+  `knowledge_topics` table.

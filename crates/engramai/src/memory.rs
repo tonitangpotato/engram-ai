@@ -5135,6 +5135,25 @@ impl Memory {
     pub fn embedding_provider(&self) -> Option<&EmbeddingProvider> {
         self.embedding.as_ref()
     }
+
+    /// Test-only: install an `EmbeddingProvider` directly. Used by the
+    /// knowledge_compile wiring tests to exercise paths that require
+    /// `Memory::embedding = Some(_)` without standing up a real Ollama
+    /// or OpenAI endpoint. Production code should configure providers
+    /// via `Memory::new` / `auto_configure_*`.
+    #[doc(hidden)]
+    pub fn set_embedding_provider_for_test(&mut self, provider: EmbeddingProvider) {
+        self.embedding = Some(provider);
+    }
+
+    /// Test-only: clear the embedding provider regardless of what
+    /// `Memory::new` auto-detected. Lets tests exercise the
+    /// "no embedder configured" error path deterministically across
+    /// dev machines (some have Ollama running, some don't).
+    #[doc(hidden)]
+    pub fn clear_embedding_provider_for_test(&mut self) {
+        self.embedding = None;
+    }
     
     /// Check if embedding support is enabled (provider was created).
     pub fn has_embedding_support(&self) -> bool {
@@ -6111,45 +6130,138 @@ impl Memory {
 
     /// Run the §5bis Knowledge Compiler on `namespace` (§6.2).
     ///
-    /// **Stub for `task:res-impl-memory-api`.** The full compiler body
-    /// lands in `task:res-impl-knowledge-compile` (§A.2 of the night
-    /// autopilot). Until then this returns a [`CompileReport`] whose
-    /// counters are all zero — equivalent to "no candidates found,
-    /// no work to do". Callers that need real compilation should
-    /// block on §A.2 (the build plan encodes the dependency).
+    /// Drives K1 (candidate selection) → K2 (clustering) → K3 (synthesis +
+    /// persist) on memories in `namespace`, writing `KnowledgeTopic` rows
+    /// into the v0.3 graph layer.
     ///
-    /// # Why a stub instead of `unimplemented!()`
+    /// # Adapters
     ///
-    /// `Memory::compile_knowledge` is a stable public surface that
-    /// downstream tasks (e.g. retrieval's L5 abstract plan, migration
-    /// post-flight) will start linking against. `unimplemented!()`
-    /// would panic at runtime; a zero-value report matches GUARD-2
-    /// (never silent degrade) — callers can detect "no work done"
-    /// from the empty counters and a follow-up `list_knowledge_topics`
-    /// call surfaces the same emptiness via the normal read path.
+    /// Production wiring follows design §5bis.4:
     ///
-    /// TODO(`task:res-impl-knowledge-compile` / §A.2): replace this
-    /// body with a real `crate::knowledge_compile::compile(namespace)`
-    /// invocation that drives K1→K3 and persists topics.
+    /// - **Clusterer**: [`crate::knowledge_compile::clusterer::EmbeddingInfomapClusterer`]
+    ///   with default thresholds — cosine-similarity edges + Infomap.
+    /// - **Embedder**: reuses this `Memory`'s [`EmbeddingProvider`] via
+    ///   [`crate::knowledge_compile::adapters::EmbeddingProviderAdapter`]
+    ///   so K3 summary vectors share the same model + dimensionality as
+    ///   memory embeddings (mandated by §5bis.4 step 3).
+    /// - **Summarizer**: env-based fallback chain mirroring
+    ///   [`Self::auto_configure_extractor`]:
+    ///   1. `ANTHROPIC_AUTH_TOKEN` → [`crate::knowledge_compile::adapters::AnthropicSummarizer`]
+    ///      in OAuth mode.
+    ///   2. `ANTHROPIC_API_KEY` → `AnthropicSummarizer` in API-key mode.
+    ///   3. Neither set → returns an `Err` indicating no LLM is configured.
+    ///      We **do not** silently fall back to `FirstSentenceSummarizer`
+    ///      in production: the operator asked for `compile_knowledge`,
+    ///      and producing topic titles from "first sentence" hurts more
+    ///      than it helps (GUARD-2: never silently degrade).
+    ///
+    /// # Test injection
+    ///
+    /// Callers that need to inject a different summarizer (deterministic
+    /// stub for tests, or a custom LLM client) should use
+    /// [`Self::compile_knowledge_with`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only on fatal errors per
+    /// [`crate::knowledge_compile::compile`] (cannot open run ledger,
+    /// cannot read candidates, missing LLM auth, missing embedder).
+    /// Per-cluster failures are recorded as `graph_extraction_failures`
+    /// rows and do not fail the whole run.
     pub fn compile_knowledge(
         &mut self,
         namespace: &str,
     ) -> Result<CompileReport, Box<dyn std::error::Error>> {
-        // Document the no-op intentionally — operators tailing logs
-        // should know they're hitting the stub and not a real run.
-        log::debug!(
-            "compile_knowledge({namespace}): A.1 stub — knowledge_compile module \
-             not yet implemented; returning zero-counter report"
-        );
-        Ok(CompileReport {
-            run_id: uuid::Uuid::new_v4(),
-            candidates_considered: 0,
-            clusters_formed: 0,
-            topics_written: 0,
-            topics_superseded: 0,
-            llm_calls: 0,
-            duration: std::time::Duration::ZERO,
-        })
+        use crate::knowledge_compile::adapters::{AnthropicSummarizer, AnthropicSummarizerConfig};
+
+        let model = std::env::var("ENGRAM_KNOWLEDGE_COMPILE_MODEL")
+            .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string());
+        let cfg = AnthropicSummarizerConfig {
+            model,
+            ..Default::default()
+        };
+        let summarizer = if let Ok(token) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
+            log::info!("compile_knowledge: AnthropicSummarizer (OAuth) from ANTHROPIC_AUTH_TOKEN");
+            AnthropicSummarizer::with_config(&token, true, cfg)
+        } else if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            log::info!("compile_knowledge: AnthropicSummarizer (API key) from ANTHROPIC_API_KEY");
+            AnthropicSummarizer::with_config(&key, false, cfg)
+        } else {
+            return Err("compile_knowledge: no Anthropic credentials in environment \
+                        (set ANTHROPIC_AUTH_TOKEN for OAuth or ANTHROPIC_API_KEY for API key)"
+                .into());
+        };
+
+        self.compile_knowledge_with(namespace, &summarizer)
+    }
+
+    /// Run the Knowledge Compiler with an injected [`Summarizer`].
+    ///
+    /// Same pipeline as [`Self::compile_knowledge`] but does not read
+    /// environment variables — useful for:
+    ///
+    /// - Tests that need a deterministic stub summarizer without
+    ///   touching process-global env state (which is racy under parallel
+    ///   `cargo test`).
+    /// - Production callers that wire their own LLM client (custom
+    ///   provider, ManagedToken with auto-refresh, mock for chaos
+    ///   testing, etc.).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only on fatal errors per
+    /// [`crate::knowledge_compile::compile`] (cannot open run ledger,
+    /// cannot read candidates, missing embedder). Per-cluster
+    /// summarizer failures are recorded and skipped per
+    /// [`crate::knowledge_compile::summarizer::SummarizeError`].
+    pub fn compile_knowledge_with<S>(
+        &mut self,
+        namespace: &str,
+        summarizer: &S,
+    ) -> Result<CompileReport, Box<dyn std::error::Error>>
+    where
+        S: crate::knowledge_compile::summarizer::Summarizer,
+    {
+        use crate::knowledge_compile::adapters::EmbeddingProviderAdapter;
+        use crate::knowledge_compile::clusterer::EmbeddingInfomapClusterer;
+        use crate::knowledge_compile::config::KnowledgeCompileConfig;
+        use crate::knowledge_compile::metrics::CompileMetrics;
+
+        // Embedder borrows from `self.embedding`. We `take()` it for the
+        // duration of the call so the rest of `Memory` (storage, etc.)
+        // can be borrowed mutably by the compile pipeline. The provider
+        // is unconditionally restored in the `finally`-style block below.
+        let embedding_provider = self
+            .embedding
+            .take()
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                "compile_knowledge: no embedding provider configured (Memory::embedding is None); \
+                 K3 needs an embedder to vectorize topic summaries (design §5bis.4 step 3)"
+                    .into()
+            })?;
+
+        let result = (|| -> Result<CompileReport, Box<dyn std::error::Error>> {
+            let embedder = EmbeddingProviderAdapter::new(&embedding_provider);
+            let clusterer = EmbeddingInfomapClusterer::default();
+            let config = KnowledgeCompileConfig::default();
+            let metrics = CompileMetrics::default();
+
+            crate::knowledge_compile::compile(
+                self,
+                namespace,
+                &config,
+                &clusterer,
+                summarizer,
+                &embedder,
+                &metrics,
+            )
+        })();
+
+        // Restore unconditionally — we don't want a transient compile error
+        // to leave `Memory` permanently without an embedder.
+        self.embedding = Some(embedding_provider);
+
+        result
     }
 
     /// List currently-live (or, optionally, historical) L5 knowledge

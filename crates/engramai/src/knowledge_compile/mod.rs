@@ -66,6 +66,7 @@
 //!   (`task:retr-impl-abstract-l5`), which *consumes* the
 //!   `knowledge_topics` rows this module produces.
 
+pub mod adapters;
 pub mod candidates;
 pub mod clusterer;
 pub mod config;
