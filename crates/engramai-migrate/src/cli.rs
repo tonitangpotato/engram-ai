@@ -801,11 +801,16 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
         ));
 
         // 5. Pipeline.
+        // ISS-058: clone `store_arc` so the processor (constructed below)
+        // can hold the same `Arc<Mutex<...>>` and route `apply_graph_delta`
+        // through it. Both handles point at the same SqliteGraphStore
+        // wrapping the leaked graph-DB connection, so reads (here) and
+        // writes (in the processor) target `--graph-db <path>`.
         let pipeline = Arc::new(ResolutionPipeline::new(
             memory_reader,
             entity_extractor,
             triple_extractor,
-            store_arc,
+            store_arc.clone(),
             PipelineConfig::default(),
         ));
 
@@ -816,8 +821,25 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
         //    `Arc<dyn BackfillResolver>` we wrap once more so the
         //    outer `Arc` carries the trait object.
         let resolver_arc: Arc<dyn crate::processor::BackfillResolver> = Arc::new(pipeline);
+        // ISS-058 root fix: thread the *same* `Arc<Mutex<SqliteGraphStore>>`
+        // the resolution pipeline uses for candidate reads into the
+        // processor, so `apply_graph_delta` writes (entities/edges/
+        // mentions) and pipeline reads both target `--graph-db <path>`.
+        // Pre-fix, the processor unconditionally wrote through `bf_conn`
+        // (the v0.2 main DB), splitting reads and writes across two
+        // different SQLite files.
+        //
+        // Trait-object coercion: `SqliteGraphStore<'static>` implements
+        // `GraphWrite + Send`, so we can re-wrap the concrete
+        // `Arc<Mutex<SqliteGraphStore<'static>>>` as
+        // `Arc<Mutex<dyn GraphWrite + Send>>`. We clone the Arc first so
+        // the pipeline keeps its read-side handle.
+        let processor_store: Arc<
+            Mutex<dyn engramai::graph::store::GraphWrite + Send>,
+        > = store_arc.clone();
         let processor = crate::processor::PipelineRecordProcessor::new(resolver_arc)
-            .with_namespace("default"); // ISS-055: default ns until --namespace lands
+            .with_namespace("default") // ISS-055: default ns until --namespace lands
+            .with_graph_store(processor_store);
 
         // 7. Orchestrator.
         let backfill_config = crate::backfill::BackfillConfig {
@@ -851,21 +873,15 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
                 ))
             })?;
 
-        // ISS-044 wiring fix: `PipelineRecordProcessor::process_one` calls
-        // `apply_graph_delta` through `bf_conn` (the v0.2 main DB), so the
-        // graph-layer tables (`graph_entities`, `graph_edges`,
-        // `graph_applied_deltas`, ...) MUST exist in this DB even when
-        // `--graph-db` selects a separate file for read-side queries. The
-        // call is idempotent (`CREATE TABLE IF NOT EXISTS`) so the no-op
-        // case (graph_db_path == main_db_path) is fine. Without this the
-        // first per-record persist hits `no such table:
-        // graph_applied_deltas` and aborts the whole backfill.
-        engramai::graph::init_graph_tables(&bf_conn).map_err(|e| {
-            MigrationError::BackfillFatal(format!(
-                "failed to init graph schema on backfill conn at {}: {e}",
-                main_db_path.display()
-            ))
-        })?;
+        // ISS-058 root fix: removed `init_graph_tables(&bf_conn)`. The
+        // graph-layer schema (`graph_entities`, `graph_edges`,
+        // `graph_applied_deltas`, ...) only needs to exist in the
+        // `--graph-db <path>` file; it's initialised on `gconn` above
+        // (cli.rs §init_graph_tables on the leaked graph conn). The
+        // backfill conn (`bf_conn`) only handles v0.2 reads + checkpoint
+        // writes (`migration_state`, `graph_extraction_failures`), so
+        // creating graph-layer tables here was dead schema that masked
+        // ISS-058: it kept writes on the wrong DB from crashing.
 
         // Best-effort progress callback — emit to stderr so operators see
         // forward progress without `log` being wired. (Design §5.5

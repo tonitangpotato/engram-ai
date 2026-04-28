@@ -103,7 +103,7 @@
 //!   [`engramai::types::MemoryType::default_importance`]. The pipeline
 //!   does not consult these for resolution.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
@@ -164,28 +164,66 @@ where
 /// Cheap to clone (all fields are `Arc` or shared handles); intended to be
 /// constructed once per migration run by the CLI layer (T11/T12) and
 /// passed by reference to [`crate::BackfillOrchestrator::run`].
+///
+/// ## Graph delta write target (ISS-058)
+///
+/// `graph_store` — when `Some`, [`GraphWrite::apply_graph_delta`] runs
+/// against this shared store under its mutex. Production wires this to the
+/// **same** `Arc<Mutex<SqliteGraphStore<'static>>>` that the resolution
+/// pipeline uses for candidate reads, so reads and writes both target
+/// `--graph-db <path>`. When `None`, the delta is written through the
+/// migration `conn` (`apply_delta_through_migration_conn`) — used by unit
+/// tests where the in-memory `conn` carries both the v0.2 schema and the
+/// graph-layer schema.
+///
+/// Before ISS-058, production unconditionally wrapped a fresh
+/// `SqliteGraphStore` over the migration `conn` (the v0.2 main DB), which
+/// caused entities/edges/mentions to land in the wrong file when a
+/// dedicated `--graph-db` was configured. See
+/// `.gid/issues/ISS-058-*/issue.md` for the post-mortem.
 pub struct PipelineRecordProcessor {
     resolver: Arc<dyn BackfillResolver>,
     /// Namespace tag passed to `record_failure` rows. Independent of the
     /// pipeline's own namespace because failure-row writes go through
     /// the migration conn, not the pipeline store.
     namespace: String,
+    /// Optional shared graph store. When set, delta writes go here instead
+    /// of through the migration `conn`. See struct-level docs.
+    graph_store: Option<Arc<Mutex<dyn GraphWrite + Send>>>,
 }
 
 impl PipelineRecordProcessor {
     /// Construct a processor wrapping any [`BackfillResolver`]. Production
     /// callers pass `Arc<ResolutionPipeline<S>>` (which has a blanket
     /// `BackfillResolver` impl); tests pass a scripted fake.
+    ///
+    /// Without a configured `graph_store`, delta writes target the
+    /// migration `conn` — see [`Self::with_graph_store`] for the
+    /// production wiring.
     pub fn new(resolver: Arc<dyn BackfillResolver>) -> Self {
         Self {
             resolver,
             namespace: String::new(),
+            graph_store: None,
         }
     }
 
     /// Override the namespace tag written to `graph_extraction_failures`.
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
+        self
+    }
+
+    /// Route graph-delta writes through `store` instead of the migration
+    /// `conn`. Production calls this with the same `Arc<Mutex<...>>` the
+    /// resolution pipeline holds, so candidate reads (during
+    /// `resolve_for_backfill`) and entity/edge/mention writes target the
+    /// same SQLite file. See struct-level docs and ISS-058.
+    pub fn with_graph_store(
+        mut self,
+        store: Arc<Mutex<dyn GraphWrite + Send>>,
+    ) -> Self {
+        self.graph_store = Some(store);
         self
     }
 }
@@ -261,7 +299,16 @@ impl RecordProcessor for PipelineRecordProcessor {
         };
 
         // ---- Persist delta atomically (own internal tx) ----
-        let report = apply_delta_through_migration_conn(conn, &delta)?;
+        //
+        // ISS-058: when a shared graph store is configured (production
+        // path), `apply_graph_delta` runs against that store, ensuring
+        // writes land in `--graph-db <path>` instead of the migration
+        // `conn` (v0.2 main DB). When unset (unit tests with an
+        // in-memory combined DB), fall back to writing through `conn`.
+        let report = match &self.graph_store {
+            Some(store) => apply_delta_through_shared_store(store, &delta)?,
+            None => apply_delta_through_migration_conn(conn, &delta)?,
+        };
 
         // ---- Inspect stage_failures: they may exist even with Ok(delta) ----
         let had_stage_failures = !delta.stage_failures.is_empty();
@@ -381,9 +428,16 @@ fn parse_metadata(raw: &str) -> (MemoryType, f64, Option<serde_json::Value>) {
 /// dance is contained.
 ///
 /// This temporarily constructs a `SqliteGraphStore` over the migration
-/// `conn` for the duration of the call. Any pipeline-internal
-/// `GraphStore` (used during `resolve_for_backfill` for candidate reads)
-/// must point at the *same* database — see module-level docs.
+/// `conn` for the duration of the call. Used by unit tests with an
+/// in-memory combined DB (v0.2 schema + graph layer in one connection).
+///
+/// **Production should not reach this path.** ISS-058: when a dedicated
+/// `--graph-db <path>` is configured, the CLI wires the processor with a
+/// shared `Arc<Mutex<SqliteGraphStore<'static>>>` via
+/// [`PipelineRecordProcessor::with_graph_store`], and writes go through
+/// [`apply_delta_through_shared_store`] instead. The pre-ISS-058 code
+/// always took this branch in production, which silently routed graph
+/// writes into the v0.2 main DB.
 fn apply_delta_through_migration_conn(
     conn: &mut Connection,
     delta: &GraphDelta,
@@ -392,6 +446,29 @@ fn apply_delta_through_migration_conn(
     // scope (the method lives on `GraphWrite`, not on the struct itself).
     let mut store = engramai::graph::SqliteGraphStore::new(conn);
     store
+        .apply_graph_delta(delta)
+        .map_err(|e| MigrationError::BackfillFatal(format!("apply_graph_delta: {e}")))
+}
+
+/// Apply `delta` through the shared graph store the resolution pipeline
+/// also reads from. Production path (ISS-058 fix): both candidate reads
+/// (during `resolve_for_backfill`) and entity/edge/mention writes target
+/// the same SQLite file (`--graph-db <path>`).
+///
+/// Locking: takes the mutex for the duration of the
+/// [`GraphWrite::apply_graph_delta`] call. `apply_graph_delta` opens its
+/// own SQLite transaction internally, so the lock is held only as long
+/// as that transaction runs. A poisoned mutex is treated as fatal.
+fn apply_delta_through_shared_store(
+    store: &Arc<Mutex<dyn GraphWrite + Send>>,
+    delta: &GraphDelta,
+) -> Result<ApplyReport, MigrationError> {
+    let mut guard = store.lock().map_err(|e| {
+        MigrationError::BackfillFatal(format!(
+            "graph_store mutex poisoned: {e}"
+        ))
+    })?;
+    guard
         .apply_graph_delta(delta)
         .map_err(|e| MigrationError::BackfillFatal(format!("apply_graph_delta: {e}")))
 }

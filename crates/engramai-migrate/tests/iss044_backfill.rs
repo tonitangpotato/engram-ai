@@ -6,9 +6,9 @@
 //!
 //! - **Smoke**: a populated v0.2 DB → migrate completes Phase 4 without
 //!   the stub error → `BackfillReport.records_processed == memories
-//!   row count` → main DB's `graph_entities` is populated proportional
-//!   to memories. (Note: writes go to main DB, not the separate
-//!   `graph.db` file; see ISS-058 for the split-brain follow-up.)
+//!   row count` → graph DB's `graph_entities` is populated proportional
+//!   to memories. (ISS-058 root fix: writes now land in `--graph-db
+//!   <path>`, not the v0.2 main DB.)
 //! - **Idempotency**: re-running migrate (after the first one finishes)
 //!   on a v0.3 DB does not double-write graph rows. Relies on
 //!   `Memory::with_pipeline_pool`'s no-op-on-v0.3 short-circuit.
@@ -133,15 +133,14 @@ fn test_backfill_completes_against_populated_v02_db() {
         report.backfill
     );
 
-    // Graph DB file is created (init_graph_tables runs on both conns).
+    // Graph DB file is created and carries the graph-layer schema.
     assert!(graph_db.exists(), "graph DB file must be created");
-    // Graph schema present in main DB (where apply_delta_through_migration_conn
-    // actually writes — see processor.rs `apply_delta_through_migration_conn`
-    // and ISS-046: graph tables must live alongside `memories` because
-    // joins like `entity_mentions JOIN memories` require same-DB FK).
+    // ISS-058 root fix: graph schema lives ONLY in the graph DB now.
+    // The pre-ISS-058 code redundantly initialised graph tables on the
+    // main DB to mask a split-brain bug; that's gone.
     assert!(
-        table_exists(&db, "graph_entities"),
-        "main DB must have graph_entities table after init_graph_tables on bf_conn"
+        table_exists(&graph_db, "graph_entities"),
+        "graph DB must have graph_entities table"
     );
 
     // Entity count: with the fixture's structural patterns (ISS-NNN,
@@ -151,16 +150,18 @@ fn test_backfill_completes_against_populated_v02_db() {
     // allowed to evolve — the contract is "non-empty proportional to
     // memories".
     //
-    // Writes land in main DB via `apply_delta_through_migration_conn`
-    // (processor.rs). The separate `graph_db` connection holds the
-    // pipeline's read-side store but writes never reach it — this is
-    // a known split-brain (ISS-058, follow-up to ISS-044). Once ISS-058
-    // routes apply_graph_delta through `graph_conn`, this assertion
-    // should switch to query `graph_db` instead of `db`.
-    let entity_count = count_rows(&db, "graph_entities");
+    // ISS-058 root fix: entities/edges/mentions land in `graph_db`
+    // (the file passed via `--graph-db <path>`), not the v0.2 main DB.
+    // Pre-fix this assertion targeted `&db` because the processor
+    // wrapped a fresh SqliteGraphStore over the main-DB conn — a
+    // known split-brain. The processor now shares the same
+    // `Arc<Mutex<SqliteGraphStore>>` the pipeline reads from, so reads
+    // and writes both target `graph_db`.
+    let entity_count = count_rows(&graph_db, "graph_entities");
     assert!(
         entity_count > 0,
-        "graph_entities table must be non-empty after backfill; got {entity_count}"
+        "graph_entities table must be non-empty in graph DB after backfill; \
+         got {entity_count}"
     );
 }
 
@@ -189,7 +190,8 @@ fn test_backfill_idempotent_on_v03_db() {
     let r1 = migrate(&opts).expect("first migrate");
     assert!(r1.migration_complete);
     assert_eq!(r1.backfill.records_processed, 3);
-    let entities_after_first = count_rows(&db, "graph_entities");
+    // ISS-058: query graph DB, not main DB.
+    let entities_after_first = count_rows(&graph_db, "graph_entities");
     assert!(entities_after_first > 0);
 
     // Second run (DB now at schema_version=3).
@@ -205,7 +207,7 @@ fn test_backfill_idempotent_on_v03_db() {
     );
 
     // Entity rows didn't grow.
-    let entities_after_second = count_rows(&db, "graph_entities");
+    let entities_after_second = count_rows(&graph_db, "graph_entities");
     assert_eq!(
         entities_after_first, entities_after_second,
         "running migrate twice must not double-write graph rows"

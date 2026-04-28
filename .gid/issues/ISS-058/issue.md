@@ -1,3 +1,6 @@
+---
+status: done
+---
 # ISS-058: `engram migrate` writes graph rows to main DB, not `--graph-db` (split-brain with read store)
 
 **Status**: open
@@ -105,3 +108,63 @@ Two-phase commit across two SQLite files is *not* required: graph_db
 writes commit in their own tx, then bf_conn writes the checkpoint advance
 in its own tx. On crash between them, the next run's `already_applied`
 check on `graph_applied_deltas` (in graph_db) makes replay safe.
+
+## Resolution (2026-04-28)
+
+**Status**: done. Implemented exactly the "Hypothesis for fix shape" above.
+
+### Changes
+
+1. `crates/engramai-migrate/src/processor.rs`:
+   - Added optional `graph_store: Option<Arc<Mutex<dyn GraphWrite + Send>>>`
+     field to `PipelineRecordProcessor` plus a `with_graph_store(...)`
+     builder method.
+   - New helper `apply_delta_through_shared_store(...)` calls
+     `GraphWrite::apply_graph_delta` under the mutex.
+   - `process_one` dispatches: shared store when configured (production
+     path, ISS-058 fix), migration `conn` otherwise (unit-test path with
+     in-memory combined DB).
+   - Module + struct + helper docs updated to describe the two paths and
+     point at this issue.
+
+2. `crates/engramai-migrate/src/cli.rs`:
+   - `store_arc.clone()` so the read-side `Arc<Mutex<SqliteGraphStore>>`
+     can be threaded into both the pipeline and the processor.
+   - `PipelineRecordProcessor::new(...).with_graph_store(processor_store)`
+     wires the trait-object-coerced store into the processor.
+   - **Removed** `init_graph_tables(&bf_conn)` (was cli.rs:863). The
+     graph-layer schema only needs to exist in `--graph-db <path>`; the
+     pre-fix init on `bf_conn` was the patch that masked the symptom.
+   - Updated comment block to reference ISS-058.
+
+3. `crates/engramai-migrate/tests/iss044_backfill.rs`:
+   - Assertions for `graph_entities` row counts now query `graph_db`
+     instead of `db` (main DB).
+   - File-level docs updated to reflect post-fix behavior.
+   - Idempotency test queries graph_db on both passes.
+
+### Verification
+
+- `cargo test -p engramai-migrate` — 188 lib tests + all integration tests
+  pass (including 3 ISS-044 backfill tests with flipped assertions).
+- `cargo test --workspace` — 2084 passed, 0 failed (1 pre-existing
+  ISS-047 failure unrelated to this fix).
+- `cargo build --bin engram` — clean.
+
+### Acceptance criteria
+
+- [x] After `engram migrate --graph-db /tmp/g.db v02.db`, `/tmp/g.db`
+      has `graph_entities` populated (covered by
+      `test_backfill_completes_against_populated_v02_db`).
+- [x] `v02.db` graph-layer tables are no longer created on the main DB.
+      The init call on `bf_conn` is gone; if migrate ever needs them
+      back on the main DB for cross-file FK reasons (it doesn't today)
+      that needs its own ticket.
+- [x] ISS-044 e2e tests updated to assert on graph_db.
+- [ ] Same-file mode regression check (`--graph-db == <main>`) — covered
+      conceptually by the unit tests using a single in-memory DB; no
+      explicit integration test exists yet. Filed as follow-up if needed.
+- [ ] Dedup observed (`entities_merged > 0` on overlapping content) —
+      requires a separate test harness that ingests the same memory
+      twice; out of scope for this fix, dedup correctness is a v03-resolution
+      concern, not a wiring concern.
