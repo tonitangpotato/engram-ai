@@ -135,6 +135,21 @@ pub struct GraphQuery {
     /// production hot path overhead-free.
     pub explain: bool,
 
+    /// Tenant / logical-space isolation boundary (ISS-056).
+    ///
+    /// When `Some(ns)`, retrieval adapters scope their SQL against that
+    /// namespace's `memories` / `graph_entities` / `graph_topics` rows.
+    /// When `None`, falls back to the literal `"default"` namespace —
+    /// matching pre-ISS-056 behavior so single-tenant callers are
+    /// unchanged.
+    ///
+    /// Multi-tenant callers (LoCoMo benchmark, multi-conversation
+    /// ingest, etc.) MUST set this via
+    /// [`GraphQuery::with_namespace`] — otherwise queries hit the
+    /// `default` namespace and return zero results against data
+    /// ingested under any other `--ns`.
+    pub namespace: Option<String>,
+
     /// Per-query override of the cognitive self-state passed into the
     /// affective retrieval plan (`task:retr-impl-cognitive-state-readback`
     /// / GOAL-5.6).
@@ -174,7 +189,18 @@ impl GraphQuery {
             query_time: None,
             explain: false,
             self_state_override: None,
+            namespace: None,
         }
+    }
+
+    /// Builder: tenant / logical-space namespace (ISS-056).
+    ///
+    /// Sets the namespace that retrieval adapters scope their SQL
+    /// against. Without this, the query hits the `"default"` namespace
+    /// regardless of where the underlying data was ingested.
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
     }
 
     /// Builder: top-K cutoff.
@@ -377,6 +403,13 @@ impl Memory {
         // Extract per-query self-state override before `dispatch` consumes
         // the query. `None` here means "fall back to live hub readback".
         let self_state_override = query.self_state_override;
+        // ISS-056: extract namespace before `query` is moved into
+        // `dispatch`. Falls back to `\"default\"` when unset, matching
+        // pre-ISS-056 single-tenant behavior.
+        let namespace: String = query
+            .namespace
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
 
         // Stage A: dispatch.
         let classifier =
@@ -428,7 +461,9 @@ impl Memory {
         let embedding_model_owned: String = embedding
             .map(|p| p.config().model_id())
             .unwrap_or_default();
-        let namespace: &str = "default";
+        // ISS-056: namespace was extracted from `query` before dispatch
+        // (see top of this fn). Re-borrow as `&str` for adapter ctors.
+        let namespace: &str = namespace.as_str();
 
         let (candidates, outcome) = self.with_graph_read(|graph| {
             let entity_resolver =
@@ -569,6 +604,8 @@ mod tests {
         assert!(q.tier.is_none());
         assert!(q.query_time.is_none());
         assert!(!q.explain);
+        // ISS-056: namespace defaults to None (→ "default" at runtime).
+        assert!(q.namespace.is_none());
     }
 
     #[test]
@@ -582,6 +619,48 @@ mod tests {
         assert_eq!(q.intent, Some(Intent::Factual));
         assert!(q.explain);
         assert_eq!(q.tier, Some(MemoryTier::Core));
+    }
+
+    /// ISS-056: `with_namespace` sets the namespace field.
+    #[test]
+    fn graph_query_with_namespace_sets_field() {
+        let q = GraphQuery::new("conv-26 query").with_namespace("conv26");
+        assert_eq!(q.namespace.as_deref(), Some("conv26"));
+    }
+
+    /// ISS-056: `with_namespace` accepts both `&str` and `String`.
+    #[test]
+    fn graph_query_with_namespace_accepts_into_string() {
+        let q1 = GraphQuery::new("a").with_namespace("ns_a");
+        let q2 = GraphQuery::new("b").with_namespace(String::from("ns_b"));
+        assert_eq!(q1.namespace.as_deref(), Some("ns_a"));
+        assert_eq!(q2.namespace.as_deref(), Some("ns_b"));
+    }
+
+    /// ISS-056: `with_namespace` is composable with other builders.
+    #[test]
+    fn graph_query_with_namespace_composes() {
+        let q = GraphQuery::new("locomo")
+            .with_namespace("conv26")
+            .with_limit(25)
+            .with_intent(Intent::Factual);
+        assert_eq!(q.namespace.as_deref(), Some("conv26"));
+        assert_eq!(q.limit, 25);
+        assert_eq!(q.intent, Some(Intent::Factual));
+    }
+
+    /// ISS-056: `Default` and the struct-literal pattern leave namespace
+    /// as `None`, which the retrieval entry point resolves to `"default"`.
+    /// This preserves pre-ISS-056 behavior for single-tenant callers.
+    #[test]
+    fn graph_query_default_namespace_is_none() {
+        let q1 = GraphQuery::default();
+        let q2 = GraphQuery {
+            text: "x".into(),
+            ..Default::default()
+        };
+        assert!(q1.namespace.is_none());
+        assert!(q2.namespace.is_none());
     }
 
     #[test]
