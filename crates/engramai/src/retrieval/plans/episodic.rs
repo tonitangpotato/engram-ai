@@ -133,6 +133,31 @@ pub trait EpisodicMemoryStore {
     }
 }
 
+// Blanket impl so `&T: EpisodicMemoryStore` whenever `T: EpisodicMemoryStore`.
+// Required by the orchestrator's `PlanCollaborators` bundle, which holds
+// `&dyn EpisodicMemoryStore` and constructs `EpisodicPlan<&dyn _>` per query
+// (ISS-049 phase 2).
+impl<T> EpisodicMemoryStore for &T
+where
+    T: EpisodicMemoryStore + ?Sized,
+{
+    fn memories_in_window(
+        &self,
+        window: &ResolvedWindow,
+        limit: usize,
+    ) -> Vec<MemoryId> {
+        (**self).memories_in_window(window, limit)
+    }
+
+    fn memories_mentioning_entities(
+        &self,
+        entities: &[EntityId],
+        limit: usize,
+    ) -> Option<Vec<MemoryId>> {
+        (**self).memories_mentioning_entities(entities, limit)
+    }
+}
+
 /// Inert default — used in unit tests / when episodic backend is absent.
 /// Always returns an empty vec; the plan surfaces
 /// [`EpisodicOutcome::Empty`].

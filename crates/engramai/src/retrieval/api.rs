@@ -410,9 +410,61 @@ impl Memory {
         let self_state =
             self_state_override.or_else(|| self.current_self_state());
 
+        // Phase-3 (ISS-049): construct the real graph/storage-backed
+        // adapters. The five `Null*` stubs from Phase 2 are gone; each
+        // collaborator now wraps live state (`Storage`, `EmbeddingProvider`,
+        // and the `&dyn GraphRead` borrowed inside `with_graph_read`).
+        //
+        // Namespace: bound to `"default"` as a Phase-3 interim. The
+        // resolution layer + fingerprinting work that wires real
+        // multi-namespace dispatch is Phase 4 (see ISS-049 plan).
+        //
+        // Embedding model: read off the live provider's config so the
+        // hybrid recallers query the same embedding row that ingestion
+        // wrote. If embeddings are disabled, we fall back to an empty
+        // model id — the hybrid path still serves keyword-only signal.
+        let storage = self.storage();
+        let embedding = self.embedding_provider();
+        let embedding_model_owned: String = embedding
+            .map(|p| p.config().model_id())
+            .unwrap_or_default();
+        let namespace: &str = "default";
+
         let (candidates, outcome) = self.with_graph_read(|graph| {
+            let entity_resolver =
+                crate::retrieval::adapters::GraphEntityResolver::new(graph);
+            let episodic_store =
+                crate::retrieval::adapters::StorageEpisodicStore::new(storage, graph);
+            let seed_recaller =
+                crate::retrieval::adapters::HybridSeedRecaller::new(
+                    storage,
+                    embedding,
+                    namespace,
+                    embedding_model_owned.as_str(),
+                );
+            let topic_searcher =
+                crate::retrieval::adapters::GraphTopicSearcher::new(graph, embedding);
+            let affective_recaller =
+                crate::retrieval::adapters::HybridAffectiveSeedRecaller::new(
+                    storage,
+                    embedding,
+                    namespace,
+                    embedding_model_owned.as_str(),
+                );
+            let collaborators =
+                crate::retrieval::orchestrator::PlanCollaborators {
+                    entity_resolver: &entity_resolver,
+                    episodic_store: &episodic_store,
+                    seed_recaller: &seed_recaller,
+                    topic_searcher: &topic_searcher,
+                    affective_recaller: &affective_recaller,
+                };
             crate::retrieval::orchestrator::execute_plan(
-                dispatched, graph, &loader, self_state,
+                dispatched,
+                graph,
+                &loader,
+                &collaborators,
+                self_state,
             )
         })?;
 

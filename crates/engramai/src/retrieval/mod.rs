@@ -19,6 +19,7 @@
 //!   added as their tasks complete; this `mod.rs` only declares what
 //!   currently exists so the crate keeps compiling at every step.
 
+pub mod adapters;
 pub mod api;
 pub mod budget;
 pub mod classifier;

@@ -152,6 +152,22 @@ pub trait TopicSearcher {
     ) -> (Vec<TopicHit>, TopicSearchStatus);
 }
 
+// Blanket impl: `&T: TopicSearcher` whenever `T: TopicSearcher`. Required by
+// the orchestrator's `PlanCollaborators` (ISS-049 phase 2).
+impl<T> TopicSearcher for &T
+where
+    T: TopicSearcher + ?Sized,
+{
+    fn search(
+        &self,
+        query: &GraphQuery,
+        namespace: &str,
+        top_k: usize,
+    ) -> (Vec<TopicHit>, TopicSearchStatus) {
+        (**self).search(query, namespace, top_k)
+    }
+}
+
 /// Empty-result searcher. Useful as a default for unit tests that
 /// want the plan's "L5 substrate is missing" behaviour without
 /// constructing a stub.

@@ -49,6 +49,73 @@ use crate::store_api::MemoryId;
 use crate::types::MemoryRecord;
 
 // ---------------------------------------------------------------------------
+// 0. PlanCollaborators — borrowed bundle of real-data adapter trait objects
+// ---------------------------------------------------------------------------
+
+/// Borrowed bundle of the five plan-collaborator trait objects that
+/// [`execute_plan`] (and [`HybridDispatchExecutor`] for Hybrid fan-out)
+/// need to read real data from the storage / graph backends.
+///
+/// Each plan in `crate::retrieval::plans::*` declares a small
+/// collaborator trait (e.g. [`EntityResolver`] for Factual,
+/// [`EpisodicMemoryStore`] for Episodic). Plans are *generic over* this
+/// trait so they can be unit-tested against `Null*` stubs without
+/// wiring real storage. The orchestrator's job is to bridge that gap:
+/// it holds one real implementation of each trait and passes the right
+/// borrow into each plan invocation.
+///
+/// # Why a struct, not five separate parameters?
+///
+/// `execute_plan` already has five parameters; adding five more would
+/// push the call sites past readability. A single struct also makes it
+/// obvious to readers that "if you build a `Memory`, you build *all*
+/// five collaborators together" — they share lifetimes and are
+/// consumed together.
+///
+/// # Lifetime
+///
+/// All members are `&dyn` references so the struct itself is cheap to
+/// construct per query. The single lifetime `'a` ties all five together
+/// — typically `&Memory` (for the storage / embedding-backed adapters)
+/// and the `&dyn GraphRead` lifted by `with_graph_read` (for the
+/// graph-backed adapters).
+///
+/// # Tests / null path
+///
+/// Tests that exercise the empty-result downgrade paths construct a
+/// `PlanCollaborators` whose five fields all point at the existing
+/// `Null*` types — `NullEntityResolver`, `NullEpisodicStore`,
+/// `NullSeedRecaller`, `NullTopicSearcher`, `NullAffectiveSeedRecaller`.
+/// This is behaviorally identical to the pre-ISS-049 hardcoded path
+/// and is the migration target for any test that doesn't need real
+/// data.
+pub(crate) struct PlanCollaborators<'a> {
+    /// Resolves a free-form query to candidate entity anchors for the
+    /// Factual plan (and the Hybrid Factual sub-plan).
+    pub entity_resolver:
+        &'a dyn crate::retrieval::plans::factual::EntityResolver,
+
+    /// Time-window memory lookup for the Episodic plan (and the Hybrid
+    /// Episodic sub-plan).
+    pub episodic_store:
+        &'a dyn crate::retrieval::plans::episodic::EpisodicMemoryStore,
+
+    /// Hybrid-search seed lookup for the Associative plan.
+    pub seed_recaller:
+        &'a dyn crate::retrieval::plans::associative::SeedRecaller,
+
+    /// L5 topic search for the Abstract plan (and the Hybrid Abstract
+    /// sub-plan).
+    pub topic_searcher:
+        &'a dyn crate::retrieval::plans::abstract_l5::TopicSearcher,
+
+    /// Affect-tagged seed recall for the Affective plan (and the
+    /// Hybrid Affective sub-plan).
+    pub affective_recaller:
+        &'a dyn crate::retrieval::plans::affective::AffectiveSeedRecaller,
+}
+
+// ---------------------------------------------------------------------------
 // 1. RecordLoader — hydrates `MemoryId` → `MemoryRecord`
 // ---------------------------------------------------------------------------
 
@@ -476,6 +543,10 @@ pub(crate) struct HybridDispatchExecutor<'a> {
     /// as an empty `items` list — correct behavior when cognitive state
     /// isn't installed.
     pub self_state: Option<crate::graph::affect::SomaticFingerprint>,
+    /// Real-data adapters for each plan-collaborator trait. Threaded in
+    /// from `execute_plan` (ISS-049 phase 2) so Hybrid sub-plans read
+    /// the same backends as direct dispatch.
+    pub collaborators: &'a PlanCollaborators<'a>,
 }
 
 impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchExecutor<'_> {
@@ -499,10 +570,10 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                     entity_filter: self.query.entity_filter.as_deref(),
                 };
                 let plan = crate::retrieval::plans::factual::FactualPlan::new();
-                let resolver = crate::retrieval::plans::factual::NullEntityResolver;
+                let resolver = self.collaborators.entity_resolver;
                 let mut budget = crate::retrieval::budget::BudgetController::with_defaults();
                 let result = plan
-                    .execute(&inputs, &resolver, self.graph, &mut budget)
+                    .execute(&inputs, resolver, self.graph, &mut budget)
                     .ok();
                 let items: Vec<HybridItem> = result
                     .map(|r| {
@@ -515,7 +586,10 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                 SubPlanResult { kind, items }
             }
             SubPlanKind::Episodic => {
-                let plan = crate::retrieval::plans::episodic::EpisodicPlan::default();
+                let plan = crate::retrieval::plans::episodic::EpisodicPlan::new(
+                    self.collaborators.episodic_store,
+                    crate::retrieval::plans::episodic::KnowledgeCutoff::default(),
+                );
                 let inputs = crate::retrieval::plans::episodic::EpisodicPlanInputs {
                     query: self.query,
                     time_window: self.query.time_window.clone(),
@@ -530,10 +604,16 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                 SubPlanResult { kind, items }
             }
             SubPlanKind::Abstract => {
-                let plan = crate::retrieval::plans::abstract_l5::AbstractPlan::default();
+                let plan = crate::retrieval::plans::abstract_l5::AbstractPlan::new(
+                    self.collaborators.topic_searcher,
+                );
                 let inputs = crate::retrieval::plans::abstract_l5::AbstractPlanInputs {
                     query: self.query,
-                    namespace: "",
+                    // ISS-049 Phase 3 interim: pin to `"default"` so Hybrid's
+                    // Abstract sub-plan reads the same namespace as the real
+                    // adapters constructed in `Memory::graph_query`. Phase 4
+                    // wires per-query namespace from the resolution layer.
+                    namespace: "default",
                     budget: crate::retrieval::budget::BudgetController::with_defaults(),
                 };
                 let result = plan.execute(inputs, self.graph);
@@ -552,7 +632,9 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                 SubPlanResult { kind, items }
             }
             SubPlanKind::Affective => {
-                let plan = crate::retrieval::plans::affective::AffectivePlan::default();
+                let plan = crate::retrieval::plans::affective::AffectivePlan::new(
+                    self.collaborators.affective_recaller,
+                );
                 let inputs = crate::retrieval::plans::affective::AffectivePlanInputs {
                     query: self.query,
                     self_state: self.self_state,
@@ -606,6 +688,7 @@ pub(crate) fn execute_plan(
     dispatched: crate::retrieval::dispatch::DispatchedQuery,
     graph: &dyn crate::graph::store::GraphRead,
     loader: &dyn RecordLoader,
+    collaborators: &PlanCollaborators<'_>,
     self_state: Option<crate::graph::affect::SomaticFingerprint>,
 ) -> (
     Vec<crate::retrieval::api::ScoredResult>,
@@ -655,8 +738,8 @@ pub(crate) fn execute_plan(
                 entity_filter: query.entity_filter.as_deref(),
             };
             let plan = crate::retrieval::plans::factual::FactualPlan::new();
-            let resolver = crate::retrieval::plans::factual::NullEntityResolver;
-            match plan.execute(&inputs, &resolver, graph, &mut budget) {
+            let resolver = collaborators.entity_resolver;
+            match plan.execute(&inputs, resolver, graph, &mut budget) {
                 Ok(result) => {
                     let scored = factual_to_scored(&result, loader);
                     let outcome = result
@@ -682,7 +765,10 @@ pub(crate) fn execute_plan(
                 time_window: query.time_window.clone(),
                 budget,
             };
-            let plan = crate::retrieval::plans::episodic::EpisodicPlan::default();
+            let plan = crate::retrieval::plans::episodic::EpisodicPlan::new(
+                collaborators.episodic_store,
+                crate::retrieval::plans::episodic::KnowledgeCutoff::default(),
+            );
             let result = plan.execute(inputs, now);
             let scored = episodic_to_scored(&result, loader);
             let outcome = result
@@ -695,7 +781,9 @@ pub(crate) fn execute_plan(
                 query: &query,
                 budget,
             };
-            let plan = crate::retrieval::plans::associative::AssociativePlan::default();
+            let plan = crate::retrieval::plans::associative::AssociativePlan::new(
+                collaborators.seed_recaller,
+            );
             let result = plan.execute(inputs, graph);
             let scored = associative_to_scored(&result, loader);
             let outcome = match result.outcome {
@@ -711,10 +799,16 @@ pub(crate) fn execute_plan(
         PlanKind::Abstract => {
             let inputs = crate::retrieval::plans::abstract_l5::AbstractPlanInputs {
                 query: &query,
-                namespace: "",
+                // ISS-049 Phase 3 interim: pin to `"default"` so the direct
+                // Abstract dispatch reads the same namespace as the real
+                // `GraphTopicSearcher` adapter wired in `Memory::graph_query`.
+                // Phase 4 wires per-query namespace.
+                namespace: "default",
                 budget,
             };
-            let plan = crate::retrieval::plans::abstract_l5::AbstractPlan::default();
+            let plan = crate::retrieval::plans::abstract_l5::AbstractPlan::new(
+                collaborators.topic_searcher,
+            );
             let result = plan.execute(inputs, graph);
             let scored = abstract_to_scored(&result);
             let outcome = match result.outcome {
@@ -741,7 +835,9 @@ pub(crate) fn execute_plan(
                 budget,
                 divergence_roll: 1.0,
             };
-            let plan = crate::retrieval::plans::affective::AffectivePlan::default();
+            let plan = crate::retrieval::plans::affective::AffectivePlan::new(
+                collaborators.affective_recaller,
+            );
             let result = plan.execute(inputs);
             let scored = affective_to_scored(&result, loader);
             let outcome = match result.outcome {
@@ -778,6 +874,7 @@ pub(crate) fn execute_plan(
                 _factual_budget: &mut budget,
                 topics_by_uuid: &mut topics_by_uuid,
                 self_state,
+                collaborators,
             };
             let inputs = crate::retrieval::plans::hybrid::HybridPlanInputs {
                 signals: &signals,

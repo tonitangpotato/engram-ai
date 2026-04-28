@@ -96,13 +96,19 @@ pub struct ResolvedAnchor {
 /// implicit caches that depend on call order. This is what makes Factual
 /// reproducible (design §5.4).
 ///
-/// **`Send + Sync`.** Held inside `Arc<dyn EntityResolver>` once the
-/// orchestrator wiring lands; the plan itself only borrows.
+/// **No `Send + Sync` bound.** The orchestrator holds `&dyn EntityResolver`
+/// inside a single synchronous closure (`Memory::with_graph_read`) and
+/// never moves it across threads — the Phase-1 doc-comment that said
+/// "held inside `Arc<dyn EntityResolver>`" was superseded by the
+/// `&dyn` wiring in `PlanCollaborators` (ISS-049 phase 2). Real
+/// adapters wrap rusqlite handles which are `!Sync`; requiring
+/// `Send + Sync` would force every adapter to add a Mutex layer that
+/// is never observably exercised.
 ///
 /// **Output ordering.** Implementations SHOULD return anchors sorted by
 /// `match_strength` descending — the plan applies a stable secondary sort
 /// on `entity_id` so duplicates are handled deterministically.
-pub trait EntityResolver: Send + Sync {
+pub trait EntityResolver {
     /// Resolve `query` to candidate anchors. Empty result is allowed
     /// (and triggers the §4.1 step 2 downgrade).
     fn resolve(&self, query: &str) -> Vec<ResolvedAnchor>;

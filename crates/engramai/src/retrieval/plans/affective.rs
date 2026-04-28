@@ -189,6 +189,22 @@ pub trait AffectiveSeedRecaller {
     ) -> (Vec<AffectiveSeedHit>, AffectiveSeedStatus);
 }
 
+// Blanket impl: `&T: AffectiveSeedRecaller` whenever
+// `T: AffectiveSeedRecaller`. Required by the orchestrator's
+// `PlanCollaborators` (ISS-049 phase 2).
+impl<T> AffectiveSeedRecaller for &T
+where
+    T: AffectiveSeedRecaller + ?Sized,
+{
+    fn recall(
+        &self,
+        query: &GraphQuery,
+        top_k: usize,
+    ) -> (Vec<AffectiveSeedHit>, AffectiveSeedStatus) {
+        (**self).recall(query, top_k)
+    }
+}
+
 /// Empty-result recaller. Useful as a default for unit tests that
 /// want the plan's "no seeds" behaviour without constructing a stub.
 #[derive(Debug, Clone, Default)]

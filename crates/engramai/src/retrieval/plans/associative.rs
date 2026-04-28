@@ -104,6 +104,23 @@ pub trait SeedRecaller {
     ) -> (Vec<SeedHit>, SeedRecallStatus);
 }
 
+// Blanket impl: `&T: SeedRecaller` whenever `T: SeedRecaller`. Required by
+// the orchestrator's `PlanCollaborators` (ISS-049 phase 2), which holds
+// `&dyn SeedRecaller` and feeds it as the type parameter on
+// `AssociativePlan<&dyn _>`.
+impl<T> SeedRecaller for &T
+where
+    T: SeedRecaller + ?Sized,
+{
+    fn recall(
+        &self,
+        query: &GraphQuery,
+        k_seed: usize,
+    ) -> (Vec<SeedHit>, SeedRecallStatus) {
+        (**self).recall(query, k_seed)
+    }
+}
+
 /// Inert default — used in unit tests / when the hybrid path is absent.
 /// Always returns an empty seed set with `Ok` status; the plan surfaces
 /// [`AssociativeOutcome::DowngradedNoSeeds`].
