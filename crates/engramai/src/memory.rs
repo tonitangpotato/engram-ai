@@ -827,6 +827,60 @@ impl Memory {
         }
     }
 
+    /// ISS-068: record a `graph_extraction_failures` row for the
+    /// `no_facts_extracted` case. The memory has already been admitted
+    /// — this row is purely an observability signal indicating the
+    /// extractor returned an empty fact set for that memory.
+    ///
+    /// Best-effort: any failure to record (no graph store wired,
+    /// connection issue, …) is logged at `debug` and swallowed.
+    /// Admission of the raw memory must not depend on observability
+    /// plumbing being healthy (GUARD-1).
+    fn record_no_facts_extraction_failure(&self, memory_id: &str) {
+        use crate::graph::audit::{
+            CATEGORY_NO_FACTS_EXTRACTED, ExtractionFailure, STAGE_ENTITY_EXTRACT,
+        };
+        use crate::graph::store::GraphWrite;
+        let Some(store_arc) = self.graph_store.as_ref() else {
+            // No graph store wired — nothing to record. Common in
+            // unit tests that build a bare `Memory`.
+            return;
+        };
+        let now = chrono::Utc::now();
+        let occurred_at = now.timestamp() as f64
+            + (now.timestamp_subsec_nanos() as f64) / 1_000_000_000.0;
+        let failure = ExtractionFailure {
+            id: uuid::Uuid::new_v4(),
+            // The memory id is an 8-char prefix string (not a full
+            // UUID), so we can't store it as `episode_id` directly.
+            // Stash it in `error_detail` for correlation, and use a
+            // synthetic UUID for `episode_id` (consistent with the
+            // pattern in `knowledge_compile/synthesis.rs`).
+            episode_id: uuid::Uuid::new_v4(),
+            stage: STAGE_ENTITY_EXTRACT.to_string(),
+            error_category: CATEGORY_NO_FACTS_EXTRACTED.to_string(),
+            error_detail: Some(format!("memory_id={}", memory_id)),
+            occurred_at,
+            resolved_at: None,
+        };
+        let mut store = match store_arc.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::debug!(
+                    "store_raw: graph_store mutex poisoned while recording no_facts failure; skipping"
+                );
+                poisoned.into_inner()
+            }
+        };
+        if let Err(e) = store.record_extraction_failure(&failure) {
+            log::debug!(
+                "store_raw: failed to record no_facts_extracted failure for memory {} ({}); admission preserved",
+                memory_id,
+                e
+            );
+        }
+    }
+
 
     /// Snapshot the current write-path counters.
     ///
@@ -2707,24 +2761,90 @@ impl Memory {
         if let Some(ref extractor) = self.extractor {
             match extractor.extract(content) {
                 Ok(facts) if facts.is_empty() => {
-                    // ISS-019 Step 8: demoted from info! — the
-                    // structured `Skipped{NoFactsExtracted}` event is
-                    // now the primary signal; the text log is only
-                    // useful when tailing the process.
+                    // ISS-068: the extractor produced zero facts, but
+                    // we still admit the raw content into memory so
+                    // FTS / embedding recall keep working. Without
+                    // this fallback, conversational chaff like
+                    // "1:46 pm" or short acknowledgements silently
+                    // disappear — and any LoCoMo-style gold evidence
+                    // pointing at those turns becomes unreachable.
+                    //
+                    // The contract:
+                    //   - persist via `EnrichedMemory::minimal` (same
+                    //     code path Path B uses when no extractor is
+                    //     configured)
+                    //   - record a `graph_extraction_failures` row
+                    //     with category `no_facts_extracted` so
+                    //     graph-quality observability still sees the
+                    //     event
+                    //   - emit `StoreEvent::Stored` (the memory IS
+                    //     stored) plus a paired
+                    //     `StoreEvent::ExtractionFailure` for write
+                    //     stats. We do **not** emit `Skipped` here
+                    //     anymore — that label was the bug.
                     log::debug!(
-                        "store_raw: extractor returned nothing for content ({}...)",
+                        "store_raw: extractor returned no facts; persisting raw memory ({}...)",
                         content.chars().take(50).collect::<String>()
                     );
-                    let content_hash = ContentHash::new(short_hash(content));
-                    self.emit_store_event(StoreEvent::Skipped {
-                        content_hash: content_hash.clone(),
-                        reason: SkipReason::NoFactsExtracted,
-                        ms_elapsed: duration_to_ms(t0.elapsed()),
+
+                    let importance_val = meta
+                        .importance_hint
+                        .map(crate::dimensions::Importance::new)
+                        .unwrap_or_else(|| {
+                            let base = meta
+                                .memory_type_hint
+                                .map(|mt| mt.default_importance())
+                                .unwrap_or(0.5);
+                            crate::dimensions::Importance::new(base)
+                        });
+
+                    let mut em = crate::enriched::EnrichedMemory::minimal(
+                        content,
+                        importance_val,
+                        meta.source.clone(),
+                        meta.namespace.clone(),
+                    )
+                    .map_err(|e| crate::store_api::StoreError::InvalidInput(e.to_string()))?;
+
+                    if let Some(mt) = meta.memory_type_hint {
+                        em.dimensions.type_weights = type_weights_favoring(mt);
+                    }
+                    em.user_metadata = meta.user_metadata.clone();
+
+                    let outcome = self.store_enriched(em)?;
+                    let merged_count = match &outcome {
+                        crate::store_api::StoreOutcome::Merged { .. } => 1,
+                        crate::store_api::StoreOutcome::Inserted { .. } => 0,
+                    };
+
+                    // Record extraction-failure row. Best-effort: if
+                    // the graph store is unavailable or the insert
+                    // fails, we log and continue — admission of the
+                    // raw memory must NOT depend on observability
+                    // plumbing being healthy (GUARD-1).
+                    self.record_no_facts_extraction_failure(outcome.id());
+
+                    let ms = duration_to_ms(t0.elapsed());
+                    self.emit_store_event(StoreEvent::Stored {
+                        id: outcome.id().clone(),
+                        fact_count: 0,
+                        merged_count,
+                        ms_elapsed: ms,
                     });
-                    return Ok(RawStoreOutcome::Skipped {
+                    self.emit_store_event(StoreEvent::ExtractionFailure {
                         reason: SkipReason::NoFactsExtracted,
-                        content_hash,
+                        ms_elapsed: ms,
                     });
+
+                    // v0.3 §3.1 Step C parity: enqueue resolution
+                    // for inserted memories so a future re-extract
+                    // can still attach facts if the extractor
+                    // improves. Failure is non-fatal.
+                    if let crate::store_api::StoreOutcome::Inserted { id } = &outcome {
+                        let _ = self.enqueue_pipeline_job(id);
+                    }
+
+                    return Ok(RawStoreOutcome::Stored(vec![outcome]));
                 }
                 Ok(facts) => {
                     // Cache emotion data for downstream consumers (parity

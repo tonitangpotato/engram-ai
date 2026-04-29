@@ -73,6 +73,10 @@ pub const CATEGORY_APPLY_GRAPH_DELTA_ERROR: &str = "apply_graph_delta_error";
 pub const CATEGORY_MISSING_CANONICAL: &str = "missing_canonical";
 pub const CATEGORY_UNRESOLVED_DEFER: &str = "unresolved_defer";
 pub const CATEGORY_QUEUE_FULL: &str = "queue_full";
+/// ISS-068: extractor ran successfully but produced zero facts. The raw
+/// memory is still persisted (so FTS / embedding recall still work) — this
+/// row only signals "graph extraction yielded nothing", not "write failed".
+pub const CATEGORY_NO_FACTS_EXTRACTED: &str = "no_facts_extracted";
 
 // Decision labels for ResolutionTrace.
 pub const DECISION_NEW: &str = "new";

@@ -73,6 +73,16 @@ pub enum StoreEvent {
         reason: QuarantineReason,
         ms_elapsed: u64,
     },
+    /// ISS-068: extractor ran successfully but produced zero facts.
+    /// The raw memory was still persisted (a separate `Stored` event
+    /// is emitted alongside this one); this variant exists so
+    /// observability can distinguish "graph extraction yielded
+    /// nothing" from "write skipped" without losing the signal.
+    /// Carries no `id` — correlate via the paired `Stored` event.
+    ExtractionFailure {
+        reason: SkipReason,
+        ms_elapsed: u64,
+    },
 }
 
 impl StoreEvent {
@@ -81,7 +91,8 @@ impl StoreEvent {
         match self {
             StoreEvent::Stored { ms_elapsed, .. }
             | StoreEvent::Skipped { ms_elapsed, .. }
-            | StoreEvent::Quarantined { ms_elapsed, .. } => *ms_elapsed,
+            | StoreEvent::Quarantined { ms_elapsed, .. }
+            | StoreEvent::ExtractionFailure { ms_elapsed, .. } => *ms_elapsed,
         }
     }
 }
@@ -128,6 +139,13 @@ pub struct WriteStats {
     pub quarantined_count: u64,
     /// Skip reason histogram. Sum of values == `skipped_count`.
     pub skipped_by_reason: HashMap<SkipReason, u64>,
+    /// ISS-068: extraction-failure reason histogram, recorded
+    /// **alongside** `Stored` events when the extractor returned
+    /// zero facts (or otherwise produced a recoverable failure).
+    /// The raw memory is still persisted in those cases — this
+    /// counter is for graph-quality observability only and does
+    /// **not** participate in `total_calls()` or `coverage()`.
+    pub extraction_failures_by_reason: HashMap<SkipReason, u64>,
     /// Total elapsed time across all recorded events, in ms. Useful
     /// for coarse throughput estimates (`total_calls / ms_total`).
     pub ms_total: u64,
@@ -210,6 +228,15 @@ impl EventSink for CountingSink {
             StoreEvent::Quarantined { .. } => {
                 stats.quarantined_count =
                     stats.quarantined_count.saturating_add(1);
+            }
+            StoreEvent::ExtractionFailure { reason, .. } => {
+                // ISS-068: paired with a `Stored` event — do NOT
+                // touch stored/skipped/quarantined counters here,
+                // only the dedicated histogram.
+                *stats
+                    .extraction_failures_by_reason
+                    .entry(reason)
+                    .or_insert(0) += 1;
             }
         }
     }

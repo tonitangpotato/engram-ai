@@ -161,24 +161,41 @@ fn whitespace_content_bumps_too_short_bucket() {
 }
 
 #[test]
-fn empty_extractor_result_bumps_no_facts_bucket() {
+fn empty_extractor_result_persists_raw_and_records_failure() {
+    // ISS-068: when the extractor returns an empty fact set, the raw
+    // memory must still be admitted (so FTS / embedding recall works
+    // for conversational chaff like "1:46 pm" or short
+    // acknowledgements). The "no facts extracted" signal moves from
+    // `skipped_by_reason` to `extraction_failures_by_reason`.
     let mut mem = new_mem();
     mem.set_extractor(Box::new(EmptyExtractor));
     let out = mem
         .store_raw("some input that the extractor shrugs at", default_meta())
         .expect("ok");
-    assert!(matches!(
-        out,
-        RawStoreOutcome::Skipped {
-            reason: SkipReason::NoFactsExtracted,
-            ..
-        }
-    ));
+    assert!(
+        matches!(out, RawStoreOutcome::Stored(ref outs) if outs.len() == 1),
+        "expected RawStoreOutcome::Stored with one outcome, got {:?}",
+        out
+    );
     let stats = mem.write_stats().unwrap();
-    assert_eq!(stats.skipped_count, 1);
+    // Memory was stored, not skipped.
+    assert_eq!(stats.stored_count, 1, "raw memory must be admitted");
+    assert_eq!(
+        stats.skipped_count, 0,
+        "no_facts_extracted no longer counts as skipped"
+    );
     assert_eq!(
         stats.skipped_by_reason.get(&SkipReason::NoFactsExtracted),
-        Some(&1)
+        None,
+        "skipped_by_reason must not be touched for no_facts_extracted"
+    );
+    // The graph-quality signal moved here.
+    assert_eq!(
+        stats
+            .extraction_failures_by_reason
+            .get(&SkipReason::NoFactsExtracted),
+        Some(&1),
+        "extraction_failures_by_reason must record the no-facts case"
     );
     // TooShort bucket must not be incremented.
     assert_eq!(stats.skipped_by_reason.get(&SkipReason::TooShort), None);
