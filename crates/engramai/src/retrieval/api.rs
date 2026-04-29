@@ -914,4 +914,70 @@ mod tests {
             resp.outcome
         );
     }
+
+    /// **Diagnostic test for ISS-063 (downgrade-to-fallback contract).**
+    ///
+    /// This test documents the *currently broken* behavior so it's
+    /// visible from the test suite. Per design §3.4 / §6.4, an
+    /// `Intent::Episodic` query with no time window should:
+    ///   1. Have `EpisodicPlan` emit `DowngradedFromEpisodic`, AND
+    ///   2. Have the orchestrator dispatch `Intent::Factual` as
+    ///      fallback, returning the Factual plan's results.
+    ///
+    /// Today only step 1 happens. The orchestrator translates the
+    /// downgrade into `RetrievalOutcome::DowngradedFromEpisodic` and
+    /// returns *empty results*. This is the actual root cause of
+    /// ISS-060 / ISS-061 in the LoCoMo conv-26 run.
+    ///
+    /// `#[ignore]` so CI stays green; ISS-063's fix flips the
+    /// assertions and removes the attribute.
+    ///
+    /// Cross-ref: `.gid/docs/retrieval-downgrade-contract-problem.md`.
+    #[test]
+    #[ignore = "documents ISS-063 broken contract; un-ignore as part of the fix"]
+    fn iss063_episodic_no_window_should_dispatch_factual_fallback() {
+        use crate::retrieval::classifier::Intent;
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("iss063-episodic.db");
+        let graph_db = tmp.path().join("iss063-episodic.graph.db");
+        let mem = Memory::new(db_path.to_str().unwrap(), None)
+            .expect("memory init")
+            .with_graph_store(&graph_db)
+            .expect("install graph store");
+
+        // Episodic intent, no time_window → plan emits
+        // DowngradedFromEpisodic. Per design, orchestrator must
+        // re-dispatch as Factual.
+        let q = GraphQuery::new("what did I work on")
+            .with_intent(Intent::Episodic);
+        let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
+
+        // Expected (post-fix): plan_used == Factual (the fallback).
+        // Actual (today): plan_used == Episodic, outcome ==
+        //   DowngradedFromEpisodic, results empty. Assert the broken
+        //   state explicitly so flipping it is the acceptance test.
+        assert_eq!(
+            resp.plan_used,
+            Intent::Episodic,
+            "ISS-063: today plan_used is the requested intent; \
+             post-fix it should be Intent::Factual"
+        );
+        assert!(
+            matches!(
+                resp.outcome,
+                RetrievalOutcome::DowngradedFromEpisodic { .. }
+            ),
+            "ISS-063: today outcome is bare DowngradedFromEpisodic; \
+             post-fix it should carry fallback_plan_used: Factual; \
+             got {:?}",
+            resp.outcome
+        );
+        assert!(
+            resp.results.is_empty(),
+            "ISS-063: today results are empty; post-fix Factual fallback \
+             should populate them (or return Empty if Factual also has \
+             nothing). got {} results",
+            resp.results.len()
+        );
+    }
 }

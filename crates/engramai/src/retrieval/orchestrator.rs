@@ -578,9 +578,18 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                 let plan = crate::retrieval::plans::factual::FactualPlan::new();
                 let resolver = self.collaborators.entity_resolver;
                 let mut budget = crate::retrieval::budget::BudgetController::with_defaults();
-                let result = plan
-                    .execute(&inputs, resolver, self.graph, &mut budget)
-                    .ok();
+                let exec_result = plan
+                    .execute(&inputs, resolver, self.graph, &mut budget);
+                // ISS-063 diagnostic: surface the plan-local outcome before
+                // it gets discarded by `SubPlanResult` (which only carries
+                // items, not outcome). Without this log a Factual sub-plan
+                // that returned 0 because of `NoEntityFound` is
+                // indistinguishable from one that found nothing organically.
+                let factual_outcome_slug = match &exec_result {
+                    Ok(r) => format!("{:?}", r.outcome),
+                    Err(e) => format!("err:{e}"),
+                };
+                let result = exec_result.ok();
                 let items: Vec<HybridItem> = result
                     .map(|r| {
                         r.memories
@@ -589,6 +598,12 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                             .collect()
                     })
                     .unwrap_or_default();
+                log::info!(
+                    target: "engramai::retrieval",
+                    "hybrid_sub_plan_outcome sub_kind=Factual outcome={} items={}",
+                    factual_outcome_slug,
+                    items.len(),
+                );
                 SubPlanResult { kind, items }
             }
             SubPlanKind::Episodic => {
@@ -602,6 +617,13 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                     budget: crate::retrieval::budget::BudgetController::with_defaults(),
                 };
                 let result = plan.execute(inputs, self.now);
+                // ISS-063 diagnostic — see Factual arm above.
+                log::info!(
+                    target: "engramai::retrieval",
+                    "hybrid_sub_plan_outcome sub_kind=Episodic outcome={:?} items={}",
+                    result.outcome,
+                    result.memories.len(),
+                );
                 let items: Vec<HybridItem> = result
                     .memories
                     .into_iter()
@@ -615,14 +637,28 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                 );
                 let inputs = crate::retrieval::plans::abstract_l5::AbstractPlanInputs {
                     query: self.query,
-                    // ISS-049 Phase 3 interim: pin to `"default"` so Hybrid's
-                    // Abstract sub-plan reads the same namespace as the real
-                    // adapters constructed in `Memory::graph_query`. Phase 4
-                    // wires per-query namespace from the resolution layer.
-                    namespace: "default",
+                    // ISS-059: thread per-query namespace from `GraphQuery`
+                    // so Hybrid's Abstract sub-plan reads the same namespace
+                    // as the real adapters constructed in `Memory::graph_query`.
+                    namespace: self
+                        .query
+                        .namespace
+                        .as_deref()
+                        .unwrap_or("default"),
                     budget: crate::retrieval::budget::BudgetController::with_defaults(),
                 };
                 let result = plan.execute(inputs, self.graph);
+                // ISS-063 diagnostic — see Factual arm above. This is the
+                // log line that would have surfaced ISS-060/ISS-061's
+                // root cause on first look (Abstract emitting
+                // DowngradedL5Unavailable inside Hybrid is currently
+                // invisible from the outside).
+                log::info!(
+                    target: "engramai::retrieval",
+                    "hybrid_sub_plan_outcome sub_kind=Abstract outcome={:?} items={}",
+                    result.outcome,
+                    result.candidates.len(),
+                );
                 let items: Vec<HybridItem> = result
                     .candidates
                     .iter()
@@ -651,6 +687,13 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                     divergence_roll: 1.0,
                 };
                 let result = plan.execute(inputs);
+                // ISS-063 diagnostic — see Factual arm above.
+                log::info!(
+                    target: "engramai::retrieval",
+                    "hybrid_sub_plan_outcome sub_kind=Affective outcome={:?} items={}",
+                    result.outcome,
+                    result.candidates.len(),
+                );
                 let items: Vec<HybridItem> = result
                     .candidates
                     .into_iter()
@@ -832,11 +875,11 @@ pub(crate) fn execute_plan(
         PlanKind::Abstract => {
             let inputs = crate::retrieval::plans::abstract_l5::AbstractPlanInputs {
                 query: &query,
-                // ISS-049 Phase 3 interim: pin to `"default"` so the direct
-                // Abstract dispatch reads the same namespace as the real
-                // `GraphTopicSearcher` adapter wired in `Memory::graph_query`.
-                // Phase 4 wires per-query namespace.
-                namespace: "default",
+                // ISS-059: thread per-query namespace from `GraphQuery` so the
+                // direct Abstract dispatch reads the same namespace as the
+                // real `GraphTopicSearcher` adapter wired in
+                // `Memory::graph_query`.
+                namespace: query.namespace.as_deref().unwrap_or("default"),
                 budget,
             };
             let plan = crate::retrieval::plans::abstract_l5::AbstractPlan::new(

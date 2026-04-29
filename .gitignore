@@ -38,3 +38,7 @@ __pycache__/
 
 # Benchmark run artifacts — local output, not versioned
 benchmarks/runs/
+
+# Local-only scratch under .gid/issues/ — RUN-NNNN smoke artifacts, test fixtures, etc.
+# Convention: any directory starting with `_` is local-only (kept out of git)
+.gid/issues/_*/
