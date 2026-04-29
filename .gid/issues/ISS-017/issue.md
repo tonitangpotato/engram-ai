@@ -1,10 +1,13 @@
 ---
-id: "ISS-017"
-title: "TopicDiscovery O(n²) Explosion Kills Process"
-status: open
+id: ISS-017
+title: TopicDiscovery O(n²) Explosion Kills Process
+status: closed
 priority: P0
 created: 2026-04-26
-component: "src/compiler/discovery.rs"
+component: src/compiler/discovery.rs
+closed: 2026-04-28
+fixed_in: 40bb499
+resolution: fixed
 ---
 # ISS-017: TopicDiscovery O(n²) Explosion Kills Process
 
