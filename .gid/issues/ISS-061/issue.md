@@ -2,7 +2,7 @@
 id: ISS-061
 title: Hybrid plan returns 0 candidates despite outcome=ok (2/25 LoCoMo conv-26 queries)
 kind: issue
-status: todo
+status: resolved
 severity: high
 discovered: 2026-04-28
 discovered_by: rustclaw
@@ -14,6 +14,8 @@ relates_to:
 - ISS-060
 superseded_by: .gid/issues/ISS-063/issue.md
 writeup: .gid/docs/retrieval-downgrade-contract-problem.md
+resolved: 2026-04-28
+resolved_by: ISS-063
 ---
 
 # ISS-061: Hybrid plan returns 0 candidates with outcome=ok (silent stub)
@@ -125,3 +127,17 @@ After ISS-063 lands, re-open this issue to:
    or whether `hybrid_to_scored` dropped them (bug to fix here).
 3. If sub-plans genuinely empty → decide Option A (sub-plan fallback) vs
    Option B (upstream Episodic relative-time + Abstract fixes).
+
+## Resolution (2026-04-28)
+
+Resolved by ISS-063 (commit 35435b9). The "Hybrid returns 0 candidates
+despite outcome=ok" surface was the orchestrator emitting `Ok` with
+empty results after Hybrid sub-plans all downgraded — no fallback was
+running. ISS-063 added the downgrade-to-fallback contract and the new
+`EmptyResultSet { reason: "hybrid_all_subplans_empty" }` terminal
+outcome.
+
+RUN-0002 (post-fix) shows Hybrid queries that legitimately have no
+sub-plan candidates now return `empty_result_set` (not silent `ok`).
+Hits @ 5 across the full smoke jumped from 0/25 → 14/25 (the prior
+0% was *also* polluted by the namespace mismatch noted in ISS-064).
