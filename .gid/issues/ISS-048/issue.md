@@ -1,3 +1,8 @@
+---
+resolved: 2026-04-28
+resolved_by: fresh-ingest produces 32 memories / 136 entities / 101 edges; acceptance criteria passed
+status: resolved
+---
 # ISS-048: EntityExtractor / EdgeExtractor architectural mismatch — pattern-based entities cannot keep up with LLM-extracted edge subjects/objects, causing 100% `unresolved_subject` failure on fresh-ingest
 
 - **Status**: in_progress

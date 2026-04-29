@@ -1,3 +1,10 @@
+---
+resolved: 2026-04-28
+resolved_by:
+- RUN-0002 (760b1d2) — 56% hit@5 on conv-26 with correct namespace
+- up from 12/25=48% at Phase 4 acceptance
+status: resolved
+---
 # ISS-049: Retrieval orchestrator wires `Null*` stubs for all five plan executors — every LoCoMo QA returns 0/25 because no plan has a real data-source adapter
 
 - **Status**: in_progress
