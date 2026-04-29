@@ -1,11 +1,13 @@
 ---
-id: "ISS-041"
-title: "Episode struct definition (v0.3 ingestion contract)"
-status: open
+id: ISS-041
+title: Episode struct definition (v0.3 ingestion contract)
+status: in_review
 priority: P1
 created: 2026-04-26
 component: crates/engramai/src/resolution/
-related: [v03-resolution, v03-graph-layer]
+related:
+- v03-resolution
+- v03-graph-layer
 ---
 
 # ISS-041: `Episode` struct — v0.3 ingestion input contract

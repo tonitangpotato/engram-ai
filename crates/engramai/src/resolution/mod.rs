@@ -88,7 +88,9 @@ pub mod candidate_retrieval;
 pub mod context;
 pub mod decision;
 pub mod edge_decision;
+pub mod episode;
 pub mod fusion;
+pub mod reextract;
 pub mod memory_reader;
 pub mod pipeline;
 pub mod queue;
@@ -107,7 +109,9 @@ pub use adapters::{
 pub use candidate_retrieval::{retrieve_candidates, RetrievalParams, ScoredCandidate};
 pub use context::{DraftEdge, DraftEntity, PipelineContext, PipelineStage, StageFailure};
 pub use decision::{decide, Decision, DecisionThresholds, ResolutionOutcome};
+pub use episode::Episode;
 pub use fusion::{fuse, FusionResult, Measurement, SignalWeights};
+pub use reextract::ReextractReport;
 pub use memory_reader::SqliteMemoryReader;
 pub use queue::{BoundedJobQueue, EnqueueError, JobMode, JobQueue, PipelineJob};
 pub use signals::{

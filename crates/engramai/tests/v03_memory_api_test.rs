@@ -171,37 +171,29 @@ fn reextract_failed_returns_zero_when_no_failed_runs_recorded() {
 }
 
 // ---------------------------------------------------------------------
-// compile_knowledge — §6.2 + §5bis (A.1 stub)
+// compile_knowledge — §6.2 + §5bis
 // ---------------------------------------------------------------------
-
-#[test]
-fn compile_knowledge_stub_returns_zero_counter_report() {
-    // §A.1 ships the API surface; §A.2 fills the body. Until then
-    // the contract is "no-op report with zero counters" — explicitly
-    // NOT `unimplemented!()` (GUARD-2: never silent panic).
-    let mut mem = new_mem();
-    let report = mem
-        .compile_knowledge("default")
-        .expect("stub returns Ok");
-
-    assert_eq!(report.candidates_considered, 0);
-    assert_eq!(report.clusters_formed, 0);
-    assert_eq!(report.topics_written, 0);
-    assert_eq!(report.topics_superseded, 0);
-    assert_eq!(report.llm_calls, 0);
-    assert_eq!(report.duration, std::time::Duration::ZERO);
-    assert!(!report.run_id.is_nil(), "run_id must be a fresh Uuid");
-}
-
-#[test]
-fn compile_knowledge_reports_have_unique_run_ids() {
-    // Even a stub must mint a fresh run_id per call so downstream
-    // logs can correlate (later, when bodies fill in).
-    let mut mem = new_mem();
-    let r1 = mem.compile_knowledge("default").unwrap();
-    let r2 = mem.compile_knowledge("default").unwrap();
-    assert_ne!(r1.run_id, r2.run_id);
-}
+//
+// The previous stub-era tests asserted "compile_knowledge returns Ok with
+// zero counters" — that contract was the §A.1 API-surface stub before
+// §A.2 filled in the body. ISS-051 (commit 3fea71c, "fix(knowledge_compile):
+// wire Memory::compile_knowledge to real pipeline") replaced the stub with
+// a real LLM-backed pipeline that requires Anthropic credentials, so the
+// "Ok with zero counters" assertion no longer matches the production
+// contract.
+//
+// Real-pipeline coverage now lives in
+// `crates/engramai/src/knowledge_compile/tests.rs`:
+//   - compile_knowledge_with_drives_real_pipeline_not_stub
+//   - compile_knowledge_with_errors_when_no_embedder
+//   - compile_knowledge_restores_embedder_on_success
+// Those tests use `compile_knowledge_with(FirstSentenceSummarizer, ...)`
+// which is the supported path for deterministic stub-summarizer tests.
+//
+// The two stub-era tests previously here were removed in 2026-04-29 (A4.7).
+// Do not reintroduce zero-counter assertions — they encode the obsolete
+// stub contract and would break again the next time `compile_knowledge`
+// is exercised end-to-end.
 
 // ---------------------------------------------------------------------
 // list_knowledge_topics — §6.2 (thin wrapper over GraphStore::list_topics)

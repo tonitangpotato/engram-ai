@@ -1,11 +1,13 @@
 ---
-id: "ISS-042"
-title: "ReextractReport struct definition (v0.3 retry surface)"
-status: open
+id: ISS-042
+title: ReextractReport struct definition (v0.3 retry surface)
+status: in_review
 priority: P1
 created: 2026-04-26
 component: crates/engramai/src/resolution/
-related: [v03-resolution, v03-graph-layer]
+related:
+- v03-resolution
+- v03-graph-layer
 ---
 
 # ISS-042: `ReextractReport` struct — v0.3 retry surface contract
