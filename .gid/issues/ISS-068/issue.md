@@ -1,7 +1,7 @@
 ---
 id: ISS-068
 title: "Pipeline extractor drops conversational turns referenced as gold evidence (LoCoMo conv-26 D1:12, D2:15, D3:16)"
-status: open
+status: resolved
 priority: P1
 filed: 2026-04-29
 filed_by: rustclaw (autopilot Phase B / RUN-0004)
@@ -194,3 +194,67 @@ without abandoning v0.3's graph-aware path. Filing as a sub-issue
 once design is reviewed — not a midnight one-shot, the change
 touches the core admission path and the public CLI return value
 (API impact).
+
+---
+
+## Resolution (2026-04-29)
+
+**Commit:** `6f5821a` — `fix(ingestion): persist raw memory when extractor returns no facts`
+
+### Fix shape
+
+In `Memory::store_raw`, the `Path A` branch where `extractor.extract(content)`
+returns `Ok(facts)` with `facts.is_empty()` no longer returns
+`RawStoreOutcome::Skipped { NoFactsExtracted }`. Instead it:
+
+1. Persists the raw content via `EnrichedMemory::minimal` →
+   `store_enriched` (mirroring Path B's no-extractor path), so
+   FTS / embedding indices receive the row.
+2. Calls a new helper `record_no_facts_extraction_failure(memory_id)`
+   that writes a `graph_extraction_failures` row with category
+   `no_facts_extracted` (newly added to `audit::CATEGORY_*` allowlist
+   and `validate_failure_closed_sets`).
+3. Emits `StoreEvent::Stored { id, fact_count: 0, … }` plus a paired
+   `StoreEvent::ExtractionFailure { reason: NoFactsExtracted, … }`
+   for write-stats observability. The new
+   `WriteStats::extraction_failures_by_reason` histogram replaces
+   the (semantically wrong) `skipped_by_reason[NoFactsExtracted]`
+   counter for this case.
+4. Returns `RawStoreOutcome::Stored(vec![outcome])`, so the CLI
+   shim (`add_to_namespace`) returns a real UUID instead of
+   `skipped:<hash>`.
+
+The graph-store insert is best-effort: if the graph store isn't wired
+or the insert fails, the helper logs at `debug` and admission still
+succeeds (GUARD-1: observability plumbing must not gate raw memory
+admission).
+
+### Verification
+
+Smoke harness: `.gid/issues/ISS-068/smoke_verify.py` (LoCoMo conv-26
+session_1 ingest with the fixed release binary).
+
+| Metric | Pre-fix | Post-fix | Acceptance |
+|---|---|---|---|
+| D1 turns persisted (distinct dia_ids) | 7 / 18 | **18 / 18** | ≥ 17 ✅ |
+| `D1:12` (gold evidence) reachable | ❌ | ✅ | required ✅ |
+| CLI `skipped:<hash>` returns | 30 / 58 | **0 / 18** | 0 ✅ |
+| `graph_extraction_failures` rows | 0 | 10 | > 0 (observability) ✅ |
+
+All four acceptance criteria from the original issue are met.
+
+### Tests
+
+Updated `crates/engramai/tests/iss019_write_stats_test.rs::empty_extractor_result_persists_raw_and_records_failure`
+(renamed from `_bumps_no_facts_bucket`) to assert the new behavior:
+`Stored` outcome, `stored_count == 1`, `skipped_count == 0`,
+`extraction_failures_by_reason[NoFactsExtracted] == 1`.
+
+Full engramai test suite (1791 unit + integration tests): 0 failures.
+
+### Next-step recall impact
+
+This unblocks the LoCoMo Hit@5 ceiling for Factual queries that depended
+on the dropped turns. A fresh end-to-end LoCoMo run (sessions 1+2+3 +
+retrieval) is the next verification — pre-fix baseline was 14/25 Hit@5.
+Tracked under retrieval execution, not this issue.
