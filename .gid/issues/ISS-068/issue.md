@@ -142,3 +142,55 @@ and understanding will be ideal for that role.") — not filler / greeting.
   problems by always returning empty regardless. Now closed; this
   issue is one of the things newly visible.
 - LoCoMo test log RUN-0003, RUN-0004 — primary evidence.
+
+## Diagnosis (confirmed 2026-04-29)
+
+Root cause located in `crates/engramai/src/memory.rs::store_raw`
+(lines ~2670–2730). When the memory extractor returns
+`Ok(vec![])` (no extractable facts), `store_raw` short-circuits to
+`RawStoreOutcome::Skipped { reason: NoFactsExtracted }` **before
+persisting the raw episodic content** to the `memories` table.
+The CLI surfaces this as `skipped:<content_hash>` and exits 0, so
+the Python ingest harness has no way to detect the drop.
+
+Evidence (from `_smoke-locomo-2026-04-28/ingest_iss058.log`):
+- 58 turns submitted to engram CLI
+- 30 returned `stdout: skipped:<hash>` (52% drop rate)
+- 28 returned a UUID
+- DB now has 31 rows in `memories` for `locomo/conv-26/D%`
+- `quarantine` table: 0 rows
+- `graph_extraction_failures`: 0 rows
+- All drops are `NoFactsExtracted` from the LLM extractor on
+  short conversational turns ("Yeah I painted that lake sunrise
+  last year! It's special to me.")
+
+Sample dropped turn (D1:12):
+```
+Melanie: You'd be a great counselor! Your empathy and
+understanding will really help the people you work with. By
+the way, take a look at this.
+```
+Content-rich for retrieval, but the extractor judged it
+contained no graph-worthy triples.
+
+The deeper design question: should `NoFactsExtracted` block raw
+admission? The extractor decides *graph extraction* viability,
+but the raw content still has FTS + embedding retrieval value.
+Two semantics are conflated in one decision.
+
+## Proposed fix (small scope)
+
+Split `Skipped { NoFactsExtracted }` into two paths:
+
+1. **Persist the raw memory row** (FTS + embedding indexable).
+2. **Skip graph extraction** — record a `graph_extraction_failures`
+   row with `error_category = 'no_facts_extracted'` so retries are
+   bounded and operators have a visible signal.
+3. CLI continues to return the row UUID (not `skipped:<hash>`) so
+   ingest harnesses don't silently lose data.
+
+This restores admission parity with v0.2 (which had no extractor)
+without abandoning v0.3's graph-aware path. Filing as a sub-issue
+once design is reviewed — not a midnight one-shot, the change
+touches the core admission path and the public CLI return value
+(API impact).
