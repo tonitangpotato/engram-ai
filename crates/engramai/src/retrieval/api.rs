@@ -776,8 +776,18 @@ mod tests {
         let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
         assert!(resp.results.is_empty(), "empty graph → no candidates");
         assert_eq!(resp.plan_used, Intent::Factual);
+        // ISS-063 (2026-04-28): Factual on an empty graph used to return
+        // `NoEntityFound`. New contract: Factual is empty → orchestrator
+        // runs Associative fallback (§3.4) → Associative is also empty
+        // on an empty graph → terminal `EmptyResultSet`. The reason
+        // string distinguishes "Factual emitted NoEntityFound, fallback
+        // also empty" from "Associative was the primary plan".
         assert!(
-            matches!(resp.outcome, RetrievalOutcome::NoEntityFound { .. }),
+            matches!(
+                resp.outcome,
+                RetrievalOutcome::EmptyResultSet { ref reason }
+                    if reason == "factual_then_associative_empty"
+            ),
             "got outcome {:?}",
             resp.outcome
         );
@@ -891,11 +901,16 @@ mod tests {
     }
 
     #[test]
-    fn graph_query_affective_without_state_yields_no_cognitive_state() {
+    fn graph_query_affective_without_state_falls_back_to_associative() {
         // Cold-start Memory + no override + Affective intent → the plan
-        // sees self_state == None and returns NoCognitiveState per §6.2.
-        // This is the contract the cognitive_regression driver checks
-        // against to detect regressions to a pure stub.
+        // sees self_state == None and emits its DowngradedNoSelfState
+        // marker. ISS-063 (2026-04-28): the orchestrator now runs
+        // Associative as the §3.4 fallback. On an empty graph the
+        // fallback also returns nothing → terminal `EmptyResultSet`
+        // with reason `"affective_then_associative_empty"`. Pre-ISS-063
+        // this returned `NoCognitiveState` directly; the cognitive_regression
+        // driver should now check the reason string instead of the
+        // legacy variant.
         use crate::retrieval::classifier::Intent;
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("retrieval-api-affective-cold.db");
@@ -909,8 +924,13 @@ mod tests {
         let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
         assert_eq!(resp.plan_used, Intent::Affective);
         assert!(
-            matches!(resp.outcome, RetrievalOutcome::NoCognitiveState { .. }),
-            "cold-start affective query → NoCognitiveState; got {:?}",
+            matches!(
+                resp.outcome,
+                RetrievalOutcome::EmptyResultSet { ref reason }
+                    if reason == "affective_then_associative_empty"
+            ),
+            "cold-start affective query on empty graph → EmptyResultSet \
+             (affective_then_associative_empty); got {:?}",
             resp.outcome
         );
     }
@@ -932,10 +952,15 @@ mod tests {
     /// `#[ignore]` so CI stays green; ISS-063's fix flips the
     /// assertions and removes the attribute.
     ///
-    /// Cross-ref: `.gid/docs/retrieval-downgrade-contract-problem.md`.
+    /// **ISS-063 fixed:** Episodic with no time window → fallback to
+    /// Associative (design §3.4). On an empty graph the fallback also
+    /// produces nothing → `EmptyResultSet { reason:
+    /// "episodic_then_associative_empty" }`. The `plan_used` is still
+    /// the originally classified intent (Episodic) — what changed is
+    /// the orchestrator no longer surfaces a bare `DowngradedFromEpisodic`
+    /// with empty results; it ran the fallback and reports the path.
     #[test]
-    #[ignore = "documents ISS-063 broken contract; un-ignore as part of the fix"]
-    fn iss063_episodic_no_window_should_dispatch_factual_fallback() {
+    fn iss063_episodic_no_window_falls_back_to_associative() {
         use crate::retrieval::classifier::Intent;
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("iss063-episodic.db");
@@ -945,39 +970,152 @@ mod tests {
             .with_graph_store(&graph_db)
             .expect("install graph store");
 
-        // Episodic intent, no time_window → plan emits
-        // DowngradedFromEpisodic. Per design, orchestrator must
-        // re-dispatch as Factual.
         let q = GraphQuery::new("what did I work on")
             .with_intent(Intent::Episodic);
         let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
 
-        // Expected (post-fix): plan_used == Factual (the fallback).
-        // Actual (today): plan_used == Episodic, outcome ==
-        //   DowngradedFromEpisodic, results empty. Assert the broken
-        //   state explicitly so flipping it is the acceptance test.
         assert_eq!(
             resp.plan_used,
             Intent::Episodic,
-            "ISS-063: today plan_used is the requested intent; \
-             post-fix it should be Intent::Factual"
+            "plan_used reflects the dispatched primary plan, not the \
+             fallback target (the fallback path is encoded in the \
+             outcome reason)"
         );
         assert!(
             matches!(
                 resp.outcome,
-                RetrievalOutcome::DowngradedFromEpisodic { .. }
+                RetrievalOutcome::EmptyResultSet { ref reason }
+                    if reason == "episodic_then_associative_empty"
             ),
-            "ISS-063: today outcome is bare DowngradedFromEpisodic; \
-             post-fix it should carry fallback_plan_used: Factual; \
-             got {:?}",
+            "Episodic-empty + empty graph → EmptyResultSet \
+             (episodic_then_associative_empty); got {:?}",
             resp.outcome
         );
+        assert!(resp.results.is_empty(), "empty graph → no candidates");
+    }
+
+    /// **ISS-063:** Abstract with no L5 topics installed →
+    /// `DowngradedL5Unavailable` from the plan → orchestrator runs
+    /// Associative → empty graph → `EmptyResultSet { reason:
+    /// "abstract_then_associative_empty" }`.
+    #[test]
+    fn iss063_abstract_no_l5_falls_back_to_associative() {
+        use crate::retrieval::classifier::Intent;
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("iss063-abstract.db");
+        let graph_db = tmp.path().join("iss063-abstract.graph.db");
+        let mem = Memory::new(db_path.to_str().unwrap(), None)
+            .expect("memory init")
+            .with_graph_store(&graph_db)
+            .expect("install graph store");
+
+        let q = GraphQuery::new("explain the architecture")
+            .with_intent(Intent::Abstract);
+        let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
+
+        assert_eq!(resp.plan_used, Intent::Abstract);
         assert!(
-            resp.results.is_empty(),
-            "ISS-063: today results are empty; post-fix Factual fallback \
-             should populate them (or return Empty if Factual also has \
-             nothing). got {} results",
-            resp.results.len()
+            matches!(
+                resp.outcome,
+                RetrievalOutcome::EmptyResultSet { ref reason }
+                    if reason == "abstract_then_associative_empty"
+            ),
+            "Abstract-empty + empty graph → EmptyResultSet \
+             (abstract_then_associative_empty); got {:?}",
+            resp.outcome
         );
+        assert!(resp.results.is_empty(), "empty graph → no candidates");
+    }
+
+    /// **ISS-063:** Associative as the *primary* plan (not fallback) →
+    /// empty graph → terminal `EmptyResultSet { reason:
+    /// "associative_empty" }`. Replaces the dead-code path
+    /// `Ok if !empty => Ok, _ => Ok` that hid empty results behind
+    /// `Ok` and made `Ok` ambiguous.
+    ///
+    /// **Note on dispatch:** `Associative` is a `PlanKind` leaf, *not* an
+    /// `Intent`. The classifier reaches `PlanKind::Associative` from
+    /// `(Intent::Factual, DowngradeHint::Associative)` — i.e. queries
+    /// with no strong signals (no entity, no time window, no topic, no
+    /// mood). A bare `GraphQuery::new("anything")` with no
+    /// `.with_intent()` and no entities/times/topics is exactly that
+    /// path: classifier sees zero strong signals → `Intent::Factual` +
+    /// `Associative` hint → `PlanKind::Associative` executes.
+    /// `plan_used` still reports the *intent* (`Factual`), not the
+    /// `PlanKind`; the distinguishing signal is the reason string
+    /// `"associative_empty"` (only the Associative leaf emits this).
+    #[test]
+    fn iss063_associative_direct_empty_returns_empty_result_set() {
+        use crate::retrieval::classifier::Intent;
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("iss063-associative.db");
+        let graph_db = tmp.path().join("iss063-associative.graph.db");
+        let mem = Memory::new(db_path.to_str().unwrap(), None)
+            .expect("memory init")
+            .with_graph_store(&graph_db)
+            .expect("install graph store");
+
+        // No `.with_intent()` and no entities/times/topics → classifier
+        // produces zero strong signals → (Intent::Factual,
+        // DowngradeHint::Associative) → PlanKind::Associative.
+        let q = GraphQuery::new("anything");
+        let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
+
+        // plan_used reports the dispatched *intent*, which is Factual
+        // (the intent that carries the Associative downgrade hint).
+        // The Associative leaf is identified by the reason string below.
+        assert_eq!(resp.plan_used, Intent::Factual);
+        assert!(
+            matches!(
+                resp.outcome,
+                RetrievalOutcome::EmptyResultSet { ref reason }
+                    if reason == "associative_empty"
+            ),
+            "Associative direct + empty graph → EmptyResultSet \
+             (associative_empty); got {:?}",
+            resp.outcome
+        );
+        assert!(resp.results.is_empty(), "empty graph → no candidates");
+    }
+
+    /// **ISS-063:** Hybrid with no signals → no sub-plans selected →
+    /// empty `scored` → `EmptyResultSet { reason:
+    /// "hybrid_all_subplans_empty" }`. Replaces the dead-code path
+    /// `if empty { Ok } else { Ok }` (both arms identical) that
+    /// silently dropped the empty signal.
+    ///
+    /// Hybrid sub-plan fallback (running Associative inside each empty
+    /// sub-plan) is intentionally NOT implemented here — see
+    /// ISS-061 for the diagnostic on whether that's needed.
+    #[test]
+    fn iss063_hybrid_all_empty_returns_empty_result_set() {
+        use crate::retrieval::classifier::Intent;
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("iss063-hybrid.db");
+        let graph_db = tmp.path().join("iss063-hybrid.graph.db");
+        let mem = Memory::new(db_path.to_str().unwrap(), None)
+            .expect("memory init")
+            .with_graph_store(&graph_db)
+            .expect("install graph store");
+
+        // Caller-override Hybrid skips classifier (signal_scores=None
+        // in execute_plan) → all-zero signals → 0 sub-plans selected
+        // → empty scored. This is exactly the dead-code path the fix
+        // replaces.
+        let q = GraphQuery::new("anything").with_intent(Intent::Hybrid);
+        let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
+
+        assert_eq!(resp.plan_used, Intent::Hybrid);
+        assert!(
+            matches!(
+                resp.outcome,
+                RetrievalOutcome::EmptyResultSet { ref reason }
+                    if reason == "hybrid_all_subplans_empty"
+            ),
+            "Hybrid all-empty → EmptyResultSet \
+             (hybrid_all_subplans_empty); got {:?}",
+            resp.outcome
+        );
+        assert!(resp.results.is_empty(), "no sub-plans → no candidates");
     }
 }

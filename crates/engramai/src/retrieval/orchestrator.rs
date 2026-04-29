@@ -815,24 +815,57 @@ pub(crate) fn execute_plan(
             };
             let plan = crate::retrieval::plans::factual::FactualPlan::new();
             let resolver = collaborators.entity_resolver;
-            match plan.execute(&inputs, resolver, graph, &mut budget) {
+            let (scored, primary_outcome, fallback_reason): (
+                Vec<crate::retrieval::api::ScoredResult>,
+                crate::retrieval::api::RetrievalOutcome,
+                Option<&'static str>,
+            ) = match plan.execute(&inputs, resolver, graph, &mut budget) {
                 Ok(result) => {
                     let scored = factual_to_scored(&result, loader);
                     let outcome = result
                         .outcome
                         .to_retrieval_outcome(scored.is_empty());
-                    (scored, outcome)
+                    // ISS-063: pick fallback trigger reason based on the
+                    // typed outcome variant. Empty `scored` is necessary
+                    // but not sufficient — `Cutoff` should not fall back
+                    // (we have a partial result the budget aborted).
+                    let reason = if scored.is_empty() {
+                        match &outcome {
+                            crate::retrieval::api::RetrievalOutcome::NoEntityFound { .. } => {
+                                Some("no_entity_resolved")
+                            }
+                            crate::retrieval::api::RetrievalOutcome::EntityFoundNoEdges { .. } => {
+                                Some("entity_found_no_edges")
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    (scored, outcome, reason)
                 }
-                // Storage error → surface as no-edges (typed downgrade,
-                // never `Err` per GUARD-9). The error itself is dropped
-                // here; `task:retr-impl-budget-cutoff` will plumb the
-                // detail into `RetrievalOutcome` once that surface lands.
+                // Storage error → fall back to Associative per design
+                // §3.4 ("zero resolved anchors → Associative mid-flight").
+                // The error itself is dropped here; ISS-062 / budget-cutoff
+                // followup will plumb the detail into `RetrievalOutcome`.
                 Err(_) => (
                     Vec::new(),
                     crate::retrieval::api::RetrievalOutcome::EntityFoundNoEdges {
                         entities: vec![],
                     },
+                    Some("factual_storage_error"),
                 ),
+            };
+            if let Some(reason) = fallback_reason {
+                run_associative_fallback(
+                    &query,
+                    graph,
+                    loader,
+                    collaborators,
+                    FallbackTrigger::Factual { reason },
+                )
+            } else {
+                (scored, primary_outcome)
             }
         }
         PlanKind::Episodic => {
@@ -850,7 +883,35 @@ pub(crate) fn execute_plan(
             let outcome = result
                 .outcome
                 .to_retrieval_outcome(scored.is_empty());
-            (scored, outcome)
+            // ISS-063: trigger fallback when Episodic emits its
+            // downgrade variant (`DowngradedFromEpisodic`) OR when
+            // `NoMemoriesInWindow` produced 0 results. `Ok` with
+            // 0 results is a contract violation we also catch.
+            let fallback_reason: Option<&'static str> = if scored.is_empty() {
+                match &outcome {
+                    crate::retrieval::api::RetrievalOutcome::DowngradedFromEpisodic { .. } => {
+                        Some("downgraded_from_episodic")
+                    }
+                    crate::retrieval::api::RetrievalOutcome::NoMemoriesInWindow { .. } => {
+                        Some("no_memories_in_window")
+                    }
+                    crate::retrieval::api::RetrievalOutcome::Ok => Some("episodic_empty"),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(reason) = fallback_reason {
+                run_associative_fallback(
+                    &query,
+                    graph,
+                    loader,
+                    collaborators,
+                    FallbackTrigger::Episodic { reason },
+                )
+            } else {
+                (scored, outcome)
+            }
         }
         PlanKind::Associative => {
             let inputs = crate::retrieval::plans::associative::AssociativePlanInputs {
@@ -862,13 +923,15 @@ pub(crate) fn execute_plan(
             );
             let result = plan.execute(inputs, graph);
             let scored = associative_to_scored(&result, loader);
-            let outcome = match result.outcome {
-                crate::retrieval::plans::associative::AssociativeOutcome::Ok
-                    if !scored.is_empty() =>
-                {
-                    crate::retrieval::api::RetrievalOutcome::Ok
+            // ISS-063: Associative is the terminal plan. If it returns
+            // empty, the entire fallback chain is exhausted —
+            // `EmptyResultSet`, NOT `Ok`.
+            let outcome = if scored.is_empty() {
+                crate::retrieval::api::RetrievalOutcome::EmptyResultSet {
+                    reason: "associative_empty".to_string(),
                 }
-                _ => crate::retrieval::api::RetrievalOutcome::Ok,
+            } else {
+                crate::retrieval::api::RetrievalOutcome::Ok
             };
             (scored, outcome)
         }
@@ -887,22 +950,41 @@ pub(crate) fn execute_plan(
             );
             let result = plan.execute(inputs, graph);
             let scored = abstract_to_scored(&result);
-            let outcome = match result.outcome {
+            let (primary_outcome, fallback_reason): (
+                crate::retrieval::api::RetrievalOutcome,
+                Option<&'static str>,
+            ) = match result.outcome {
                 crate::retrieval::plans::abstract_l5::AbstractOutcome::Ok
                     if !scored.is_empty() =>
                 {
-                    crate::retrieval::api::RetrievalOutcome::Ok
+                    (crate::retrieval::api::RetrievalOutcome::Ok, None)
                 }
                 crate::retrieval::plans::abstract_l5::AbstractOutcome::DowngradedL5Unavailable => {
-                    crate::retrieval::api::RetrievalOutcome::DowngradedFromAbstract {
-                        reason: "L5_unavailable".to_string(),
-                    }
+                    (
+                        crate::retrieval::api::RetrievalOutcome::DowngradedFromAbstract {
+                            reason: "L5_unavailable".to_string(),
+                        },
+                        Some("l5_unavailable"),
+                    )
                 }
-                _ => crate::retrieval::api::RetrievalOutcome::L5NotReady {
-                    missing_topic_domains: vec![],
-                },
+                _ => (
+                    crate::retrieval::api::RetrievalOutcome::L5NotReady {
+                        missing_topic_domains: vec![],
+                    },
+                    Some("l5_not_ready"),
+                ),
             };
-            (scored, outcome)
+            if let Some(reason) = fallback_reason {
+                run_associative_fallback(
+                    &query,
+                    graph,
+                    loader,
+                    collaborators,
+                    FallbackTrigger::Abstract { reason },
+                )
+            } else {
+                (scored, primary_outcome)
+            }
         }
         PlanKind::Affective => {
             let inputs = crate::retrieval::plans::affective::AffectivePlanInputs {
@@ -916,18 +998,37 @@ pub(crate) fn execute_plan(
             );
             let result = plan.execute(inputs);
             let scored = affective_to_scored(&result, loader);
-            let outcome = match result.outcome {
+            let (primary_outcome, fallback_reason): (
+                crate::retrieval::api::RetrievalOutcome,
+                Option<&'static str>,
+            ) = match result.outcome {
                 crate::retrieval::plans::affective::AffectiveOutcome::Ok
                     if !scored.is_empty() =>
                 {
-                    crate::retrieval::api::RetrievalOutcome::Ok
+                    (crate::retrieval::api::RetrievalOutcome::Ok, None)
                 }
                 crate::retrieval::plans::affective::AffectiveOutcome::DowngradedNoSelfState => {
-                    crate::retrieval::api::RetrievalOutcome::NoCognitiveState
+                    (
+                        crate::retrieval::api::RetrievalOutcome::NoCognitiveState,
+                        Some("no_self_state"),
+                    )
                 }
-                _ => crate::retrieval::api::RetrievalOutcome::Ok,
+                _ => (
+                    crate::retrieval::api::RetrievalOutcome::Ok,
+                    Some("affective_empty"),
+                ),
             };
-            (scored, outcome)
+            if let Some(reason) = fallback_reason {
+                run_associative_fallback(
+                    &query,
+                    graph,
+                    loader,
+                    collaborators,
+                    FallbackTrigger::Affective { reason },
+                )
+            } else {
+                (scored, primary_outcome)
+            }
         }
         PlanKind::Hybrid => {
             // Hybrid needs the classifier signal scores — without them
@@ -960,8 +1061,14 @@ pub(crate) fn execute_plan(
             let hybrid_plan = crate::retrieval::plans::hybrid::HybridPlan::new();
             let result = hybrid_plan.execute(inputs, &mut executor);
             let scored = hybrid_to_scored(&result, &topics_by_uuid, loader);
+            // ISS-063: replace dead code (`if empty { Ok } else { Ok }`).
+            // Sub-plan fallback inside Hybrid is deferred to ISS-061 —
+            // we surface the empty as a typed outcome here so callers
+            // can distinguish "Hybrid had results" from "Hybrid had none".
             let outcome = if scored.is_empty() {
-                crate::retrieval::api::RetrievalOutcome::Ok
+                crate::retrieval::api::RetrievalOutcome::EmptyResultSet {
+                    reason: "hybrid_all_subplans_empty".to_string(),
+                }
             } else {
                 crate::retrieval::api::RetrievalOutcome::Ok
             };
@@ -978,6 +1085,131 @@ pub(crate) fn execute_plan(
     );
 
     (scored, outcome)
+}
+
+// ---------------------------------------------------------------------------
+// 4a. Associative fallback — design §3.4 / §6.4 (ISS-063)
+// ---------------------------------------------------------------------------
+//
+// Every non-Associative plan that produces an empty `scored` re-runs the
+// query through the Associative plan ("downgrade to Associative"). This
+// implements the contract design §3.4 makes: "Plans may further downgrade
+// at execution time (e.g., `Factual` with zero resolved anchors →
+// `Associative` mid-flight)".
+//
+// **Depth = 1.** If the Associative fallback itself returns empty,
+// `EmptyResultSet { reason }` is the terminal outcome — no further
+// fallback chain (Associative IS the v0.2 known-good baseline).
+//
+// **Hybrid is intentionally excluded.** Sub-plan fallback inside Hybrid
+// is filed as a separate concern (ISS-061) — the Hybrid-empty symptom
+// may live in `hybrid_to_scored` ID mapping, not fallback routing, and
+// that needs to be diagnosed before we layer fallback on top.
+
+/// Identifies which primary plan triggered a fallback to Associative.
+/// Carries the reason string so the synthesised `RetrievalOutcome` can
+/// surface *why* the primary was empty.
+enum FallbackTrigger {
+    Factual { reason: &'static str },
+    Episodic { reason: &'static str },
+    Abstract { reason: &'static str },
+    Affective { reason: &'static str },
+}
+
+/// Run the Associative plan as a fallback for a primary plan that
+/// produced no candidates. Returns `(scored, outcome)`:
+///
+/// - If Associative finds candidates → `(scored, DowngradedFrom*)`
+///   carrying the original trigger reason.
+/// - If Associative is also empty → `(vec![], EmptyResultSet { reason })`
+///   with `reason` identifying the full path
+///   (`"factual_then_associative_empty"`, etc.).
+fn run_associative_fallback(
+    query: &crate::retrieval::api::GraphQuery,
+    graph: &dyn crate::graph::store::GraphRead,
+    loader: &dyn RecordLoader,
+    collaborators: &PlanCollaborators<'_>,
+    trigger: FallbackTrigger,
+) -> (
+    Vec<crate::retrieval::api::ScoredResult>,
+    crate::retrieval::api::RetrievalOutcome,
+) {
+    log::info!(
+        target: "engramai::retrieval",
+        "fallback ENTER trigger={} reason={}",
+        match &trigger {
+            FallbackTrigger::Factual { .. } => "factual",
+            FallbackTrigger::Episodic { .. } => "episodic",
+            FallbackTrigger::Abstract { .. } => "abstract",
+            FallbackTrigger::Affective { .. } => "affective",
+        },
+        match &trigger {
+            FallbackTrigger::Factual { reason }
+            | FallbackTrigger::Episodic { reason }
+            | FallbackTrigger::Abstract { reason }
+            | FallbackTrigger::Affective { reason } => reason,
+        },
+    );
+
+    // Fresh budget — primary plan consumed its allocation. Per design
+    // §7.3 cost caps we accept that fallback may push past the original
+    // budget envelope; surfacing 0 candidates would be a worse contract
+    // violation than a slightly larger budget.
+    let budget = crate::retrieval::budget::BudgetController::with_defaults();
+    let inputs = crate::retrieval::plans::associative::AssociativePlanInputs {
+        query,
+        budget,
+    };
+    let plan = crate::retrieval::plans::associative::AssociativePlan::new(
+        collaborators.seed_recaller,
+    );
+    let result = plan.execute(inputs, graph);
+    let scored = associative_to_scored(&result, loader);
+
+    let (outcome_label, empty_label) = match &trigger {
+        FallbackTrigger::Factual { reason } => (
+            crate::retrieval::api::RetrievalOutcome::DowngradedFromFactual {
+                reason: (*reason).to_string(),
+            },
+            "factual_then_associative_empty",
+        ),
+        FallbackTrigger::Episodic { reason } => (
+            crate::retrieval::api::RetrievalOutcome::DowngradedFromEpisodic {
+                reason: (*reason).to_string(),
+            },
+            "episodic_then_associative_empty",
+        ),
+        FallbackTrigger::Abstract { reason } => (
+            crate::retrieval::api::RetrievalOutcome::DowngradedFromAbstract {
+                reason: (*reason).to_string(),
+            },
+            "abstract_then_associative_empty",
+        ),
+        FallbackTrigger::Affective { reason: _ } => (
+            // Affective downgrade keeps its `NoCognitiveState` tag
+            // because §6.4 specifies that as the affective downgrade
+            // surface (rather than a generic `DowngradedFromAffective`).
+            crate::retrieval::api::RetrievalOutcome::NoCognitiveState,
+            "affective_then_associative_empty",
+        ),
+    };
+
+    let final_outcome = if scored.is_empty() {
+        crate::retrieval::api::RetrievalOutcome::EmptyResultSet {
+            reason: empty_label.to_string(),
+        }
+    } else {
+        outcome_label
+    };
+
+    log::info!(
+        target: "engramai::retrieval",
+        "fallback EXIT  candidates={} outcome={}",
+        scored.len(),
+        final_outcome.slug(),
+    );
+
+    (scored, final_outcome)
 }
 
 // ---------------------------------------------------------------------------

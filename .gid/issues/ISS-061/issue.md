@@ -108,3 +108,20 @@ real fix.** Option A is tempting but blurs the diagnostic signal.
 - Run log: `/tmp/conv26-run-fix-1917/v03.log`
 - DB pair: `.gid/issues/ISS-055/locomo-conv26-iss055.{db,graph.db}`, ns=`conv26`
 - Driver: `crates/engramai/examples/locomo_conv26_retrieval.rs`
+
+## 2026-04-28 — ISS-063 scope decision
+
+ISS-063 will fix the **silent `Ok` with empty `scored`** dead code in the
+Hybrid arm (replace with `EmptyResultSet { reason: HybridAllSubPlansEmpty }`
+— matches Option C above). ISS-063 will **NOT** add sub-plan fallback inside
+`HybridDispatchExecutor`. Reason: the 0-candidate symptom on conv-26 may
+not be a fallback issue at all — `hybrid_to_scored` ID-mapping is suspect
+and needs to be eliminated as a cause first.
+
+After ISS-063 lands, re-open this issue to:
+1. Confirm whether the conv-26 0-candidate cases now surface as
+   `EmptyResultSet`.
+2. If yes → diagnose whether sub-plans truly returned 0 items (genuine empty)
+   or whether `hybrid_to_scored` dropped them (bug to fix here).
+3. If sub-plans genuinely empty → decide Option A (sub-plan fallback) vs
+   Option B (upstream Episodic relative-time + Abstract fixes).

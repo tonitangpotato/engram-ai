@@ -80,7 +80,9 @@ use crate::retrieval::classifier::Intent;
 /// | `L5NotReady` | Abstract | searcher returned nothing for the query domain (synthesis hasn't covered it) |
 /// | `DowngradedFromAbstract` | Abstract | plan downgraded to Associative (e.g. `reason = "L5_unavailable"`) |
 /// | `DowngradedFromEpisodic` | Episodic | plan downgraded to Associative (e.g. `reason = "no_time_expression"`) |
+/// | `DowngradedFromFactual` | Factual | plan downgraded to Associative because no entity resolved or no edges remained (added 2026-04-28, ISS-063) |
 /// | `NoCognitiveState` | Affective | self-state absent — plan downgraded to Associative |
+/// | `EmptyResultSet` | any | terminal empty — even the Associative fallback returned nothing (added 2026-04-28, ISS-063) |
 ///
 /// `non_exhaustive`: the orchestrator and Hybrid plan may surface
 /// future variants (e.g. `HybridTruncated`) without a breaking change.
@@ -182,6 +184,42 @@ pub enum RetrievalOutcome {
     /// step 1. Read-path instantiation of GUARD-6: missing self-state
     /// is *never* an `Err`.
     NoCognitiveState,
+
+    /// **Factual.** Plan downgraded to Associative because the
+    /// primary plan produced no candidates. Distinct from
+    /// `NoEntityFound` / `EntityFoundNoEdges` — those say *why*
+    /// Factual itself was empty; this variant says "we ran the
+    /// fallback and the response is now populated from there."
+    /// Reason captures the trigger:
+    ///   - `"no_entity_resolved"` — Factual emitted `NoEntityFound`
+    ///   - `"entity_found_no_edges"` — Factual emitted that variant
+    ///   - `"factual_storage_error"` — graph store returned `Err`
+    ///
+    /// Added 2026-04-28 (ISS-063) to fill the §6.4 contract gap:
+    /// design §3.4 explicitly mentions Factual→Associative downgrade
+    /// but §6.4 had no corresponding variant.
+    DowngradedFromFactual {
+        /// Stable identifier for the downgrade reason (snake_case).
+        reason: String,
+    },
+
+    /// **All plans.** Even after running the Associative fallback,
+    /// no candidates were produced. This is the terminal empty-result
+    /// state — the orchestrator has no further fallback to try.
+    /// Replaces the dead `if scored.is_empty() { Ok } else { Ok }`
+    /// branch in single-plan / Hybrid arms (ISS-063).
+    ///
+    /// Reason identifies which path led here:
+    ///   - `"factual_then_associative_empty"`
+    ///   - `"episodic_then_associative_empty"`
+    ///   - `"abstract_then_associative_empty"`
+    ///   - `"affective_then_associative_empty"`
+    ///   - `"associative_empty"` — direct Associative call returned 0
+    ///   - `"hybrid_all_subplans_empty"` — every Hybrid sub-plan empty
+    EmptyResultSet {
+        /// Stable identifier for the path that ended empty.
+        reason: String,
+    },
 }
 
 impl RetrievalOutcome {
@@ -199,7 +237,9 @@ impl RetrievalOutcome {
             RetrievalOutcome::L5NotReady { .. } => "l5_not_ready",
             RetrievalOutcome::DowngradedFromAbstract { .. } => "downgraded_from_abstract",
             RetrievalOutcome::DowngradedFromEpisodic { .. } => "downgraded_from_episodic",
+            RetrievalOutcome::DowngradedFromFactual { .. } => "downgraded_from_factual",
             RetrievalOutcome::NoCognitiveState => "no_cognitive_state",
+            RetrievalOutcome::EmptyResultSet { .. } => "empty_result_set",
         }
     }
 
@@ -220,6 +260,7 @@ impl RetrievalOutcome {
             self,
             RetrievalOutcome::DowngradedFromAbstract { .. }
                 | RetrievalOutcome::DowngradedFromEpisodic { .. }
+                | RetrievalOutcome::DowngradedFromFactual { .. }
                 | RetrievalOutcome::NoCognitiveState
         )
     }

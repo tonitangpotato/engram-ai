@@ -1,7 +1,7 @@
 ---
 id: ISS-063
-title: Implement downgrade-to-fallback contract (Abstract→Associative, Episodic→Factual) per design §3.4 / §6.4
-status: todo
+title: Implement downgrade-to-fallback contract (all plans → Associative) per design §3.4 / §6.4
+status: in_progress
 severity: high
 priority: P1
 labels:
@@ -229,3 +229,63 @@ query that currently downgrades. Mitigation:
   correct; the empties come from sub-plans whose downgrades aren't
   routed. Re-target as the "Hybrid sub-plan outcome propagation" line
   item (§Scope item 4).
+
+## Resolution Plan (locked 2026-04-28 by RustClaw)
+
+After re-reading design §3.4, §4.7, §6.4 and the plan source comments,
+the canonical fallback target is **Associative** for every plan. This
+resolves a documentation conflict:
+
+- `episodic.rs` header comment says "Episodic → Factual" (legacy intent)
+- design §6.4 outcome table says "Episodic plan downgraded to Associative"
+
+§6.4 is treated as source of truth (it defines the public contract). The
+episodic.rs comment will be updated to match. Rationale: Associative is
+the v0.2 known-good baseline, depth=1 fallback to a single target is
+simple and predictable, and avoids transitive fallback chains.
+
+### Final scope (in this issue)
+
+1. **`RetrievalOutcome::EmptyResultSet { reason }`** — new variant for
+   the case where even the Associative fallback returns nothing. Replaces
+   the `if scored.is_empty() { Ok } else { Ok }` dead code in Hybrid and
+   the silent-empty paths in single plans.
+
+2. **`RetrievalOutcome::DowngradedFromFactual { reason }`** — new variant
+   to fill the §6.4 table gap (§3.4 explicitly mentions Factual→Associative
+   but no outcome variant existed).
+
+3. **Orchestrator implements 4 fallback edges (depth=1):**
+   - Factual: empty `scored` (NoEntityFound / EntityFoundNoEdges) → run
+     Associative, return `DowngradedFromFactual`.
+   - Episodic: empty `scored` or `DowngradedFromEpisodic` outcome → run
+     Associative, return `DowngradedFromEpisodic`.
+   - Abstract: `DowngradedL5Unavailable` or empty `scored` → run
+     Associative, return `DowngradedFromAbstract`.
+   - Affective: `DowngradedNoSelfState` → run Associative, return
+     `NoCognitiveState` (preserve existing tag, add fallback results).
+
+4. **Hybrid bug fix (NOT sub-plan fallback):** the dead code branch
+   `if scored.is_empty() { Ok } else { Ok }` becomes
+   `if scored.is_empty() { EmptyResultSet { reason: HybridAllSubPlansEmpty } }`.
+   Sub-plans inside Hybrid do **not** trigger fallback (out of scope —
+   filed as separate diagnostic against ISS-061).
+
+5. **Test coverage:** one test per fallback edge confirming
+   (a) outcome is the correct `Downgraded*` variant, (b) `scored` is
+   non-empty when Associative has results, (c) `EmptyResultSet` when
+   Associative is also empty.
+
+6. **Update `episodic.rs` doc comment** to say "Associative" instead of
+   "Factual" so code and design agree.
+
+### Out of scope (deferred)
+
+- Hybrid sub-plan fallback (would require running Associative inside
+  HybridDispatchExecutor and feeding RRF a non-empty Associative vector
+  per failed sub-plan). ISS-061 is independent — its 0-candidate
+  behaviour likely lives in `hybrid_to_scored` ID-mapping, not fallback
+  routing.
+- Fallback chains of depth > 1 (Associative is terminal).
+- LLM-driven re-classification on downgrade.
+

@@ -468,7 +468,9 @@ pub enum OutcomeLabel {
     L5NotReady,
     DowngradedFromAbstract,
     DowngradedFromEpisodic,
+    DowngradedFromFactual,
     NoCognitiveState,
+    EmptyResultSet,
 }
 
 impl OutcomeLabel {
@@ -482,7 +484,9 @@ impl OutcomeLabel {
             RetrievalOutcome::L5NotReady { .. } => Self::L5NotReady,
             RetrievalOutcome::DowngradedFromAbstract { .. } => Self::DowngradedFromAbstract,
             RetrievalOutcome::DowngradedFromEpisodic { .. } => Self::DowngradedFromEpisodic,
+            RetrievalOutcome::DowngradedFromFactual { .. } => Self::DowngradedFromFactual,
             RetrievalOutcome::NoCognitiveState => Self::NoCognitiveState,
+            RetrievalOutcome::EmptyResultSet { .. } => Self::EmptyResultSet,
         }
     }
 }
@@ -498,11 +502,13 @@ impl MetricLabel for OutcomeLabel {
             OutcomeLabel::L5NotReady => "l5_not_ready",
             OutcomeLabel::DowngradedFromAbstract => "downgraded_from_abstract",
             OutcomeLabel::DowngradedFromEpisodic => "downgraded_from_episodic",
+            OutcomeLabel::DowngradedFromFactual => "downgraded_from_factual",
             OutcomeLabel::NoCognitiveState => "no_cognitive_state",
+            OutcomeLabel::EmptyResultSet => "empty_result_set",
         }
     }
     fn all() -> &'static [Self] {
-        const ALL: [OutcomeLabel; 9] = [
+        const ALL: [OutcomeLabel; 11] = [
             OutcomeLabel::Ok,
             OutcomeLabel::NoEntityFound,
             OutcomeLabel::EntityFoundNoEdges,
@@ -511,7 +517,9 @@ impl MetricLabel for OutcomeLabel {
             OutcomeLabel::L5NotReady,
             OutcomeLabel::DowngradedFromAbstract,
             OutcomeLabel::DowngradedFromEpisodic,
+            OutcomeLabel::DowngradedFromFactual,
             OutcomeLabel::NoCognitiveState,
+            OutcomeLabel::EmptyResultSet,
         ];
         &ALL
     }
