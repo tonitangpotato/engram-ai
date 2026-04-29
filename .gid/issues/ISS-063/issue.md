@@ -1,7 +1,7 @@
 ---
 id: ISS-063
 title: Implement downgrade-to-fallback contract (all plans → Associative) per design §3.4 / §6.4
-status: in_progress
+status: done
 severity: high
 priority: P1
 labels:
@@ -14,6 +14,8 @@ relates_to:
 - ISS-062
 discovered: 2026-04-28
 writeup: .gid/docs/retrieval-downgrade-contract-problem.md
+resolved: 2026-04-28
+resolved_by: 35435b9
 ---
 
 # Implement downgrade-to-fallback contract
@@ -289,3 +291,26 @@ simple and predictable, and avoids transitive fallback chains.
 - Fallback chains of depth > 1 (Associative is terminal).
 - LLM-driven re-classification on downgrade.
 
+
+## Resolution (2026-04-28, commit 35435b9)
+
+Landed `run_associative_fallback` orchestrator helper + typed
+`FallbackTrigger` enum + new `DowngradedFromFactual` /
+`EmptyResultSet` outcome variants. All four primary plans
+(Factual / Episodic / Abstract / Affective) and the
+Associative-direct path now emit terminal outcomes with full
+path-traced reason strings. Six fallback tests in `api.rs`
+exercise every chain on an empty graph; all pass.
+
+Lib test count: 1775 passed, 0 failed. Pre-existing unrelated
+failure in `iss047_failure_label_allowlist_e2e` is unchanged
+(verified via git stash round-trip).
+
+Open follow-ups intentionally **not** in this commit:
+- ISS-062 (observability — log-line strengthening for stub vs
+  downgrade vs real-empty across plans). The new fallback helper
+  already emits ENTER/EXIT structured logs, but per-plan log
+  audit is still ISS-062 scope.
+- Re-running the LoCoMo conv-26 smoke (RUN-0001 → RUN-0002) to
+  confirm Hybrid-empty + Abstract-empty queries now return
+  recallable Associative candidates instead of 0.
