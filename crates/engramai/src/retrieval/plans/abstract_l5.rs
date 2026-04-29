@@ -402,7 +402,16 @@ where
             // no per-step error path back to the caller); a missing
             // topic is a transient race with the compiler / supersede
             // path, not a plan failure.
-            let Ok(Some(topic)) = graph.get_topic(hit.topic_id) else {
+            //
+            // ISS-059: hydrate via `get_topic_in(id, inputs.namespace)`
+            // instead of `get_topic(id)`. Single-row CRUD `get_topic`
+            // is pinned to the store's construction-time namespace
+            // (typically "default"), but Abstract must honour the
+            // per-query namespace already passed to `searcher.search`
+            // — otherwise topics in non-default namespaces are
+            // discovered by `list_topics` and then silently dropped
+            // here when re-fetched in the wrong namespace.
+            let Ok(Some(topic)) = graph.get_topic_in(hit.topic_id, inputs.namespace) else {
                 continue;
             };
             // Namespace re-check: a searcher backend MAY return rows

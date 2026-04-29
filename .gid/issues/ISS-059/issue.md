@@ -128,3 +128,38 @@ this issue closes them.
 - `crates/engramai/src/retrieval/orchestrator.rs:622,839`
 - `crates/engramai/src/retrieval/api.rs:410` (where namespace is extracted but not threaded)
 - /tmp/conv26-run-2026-04-28/v03-retrieval.log (symptom evidence)
+
+## Follow-up: incomplete fix discovered 2026-04-29
+
+The orchestrator-level `AbstractPlanInputs.namespace` threading (lines
+643 and 945) is in place. However the regression test
+(`crates/engramai/tests/iss059_retrieval_abstract_namespace_test.rs`)
+revealed a deeper layer that still ignores per-query namespace:
+
+`AbstractPlan::execute` at `plans/abstract_l5.rs:405` calls
+`graph.get_topic(hit.topic_id)`. The `SqliteGraphStore` impl at
+`graph/store.rs:2728` filters by `self.namespace` — the namespace
+the store was constructed with (always `"default"` because
+`Memory::with_graph_store` does not chain `.with_namespace()`),
+NOT the per-query namespace from `AbstractPlanInputs`.
+
+Effect: `list_topics(alpha)` correctly returns the alpha topic id,
+but the subsequent `get_topic(id)` lookup silently filters by
+"default" → returns None → topic candidate dropped → Abstract
+returns Empty → fallback chain produces
+`EmptyResultSet { reason: "abstract_then_associative_empty" }`.
+
+Test status:
+- `iss059_abstract_query_without_namespace_uses_default` — PASS
+- `iss059_abstract_query_with_namespace_finds_topic` — FAIL (correctly)
+
+Two possible root fixes:
+1. Add `get_topic_in_namespace(id, ns) -> Option<KnowledgeTopic>` to
+   `GraphRead`, plumb through to `AbstractPlan::execute`.
+2. Make `Memory::with_graph_store` accept (or `graph_query` set)
+   a per-query namespace on the underlying store before dispatch.
+
+Option 1 is the cleaner trait extension. Option 2 fights existing
+"single-row CRUD stays pinned to self.namespace" invariant
+(comment at `store.rs:2838`).
+

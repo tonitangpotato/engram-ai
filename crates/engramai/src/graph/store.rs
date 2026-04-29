@@ -348,6 +348,31 @@ pub trait GraphRead {
 
     // ------------------------------------------------- L5 Knowledge Topics
     fn get_topic(&self, id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError>;
+    /// Namespace-explicit variant of [`Self::get_topic`].
+    ///
+    /// `get_topic` filters by the store's *construction-time* namespace
+    /// (`SqliteGraphStore::with_namespace`). For retrieval orchestrators
+    /// that resolve the namespace per-query (ISS-056 / ISS-059 / ISS-066),
+    /// pass the query namespace explicitly so a single store handle can
+    /// serve any namespace without re-construction.
+    ///
+    /// Default impl falls back to `get_topic` and post-filters by
+    /// `topic.namespace` so existing mocks and non-Sqlite backends keep
+    /// working without code changes.
+    fn get_topic_in(
+        &self,
+        id: Uuid,
+        namespace: &str,
+    ) -> Result<Option<KnowledgeTopic>, GraphError> {
+        let Some(topic) = self.get_topic(id)? else {
+            return Ok(None);
+        };
+        if topic.namespace == namespace {
+            Ok(Some(topic))
+        } else {
+            Ok(None)
+        }
+    }
     fn list_topics(
         &self,
         namespace: &str,
@@ -2726,6 +2751,19 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
     }
 
     fn get_topic(&self, id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError> {
+        // Single-row CRUD pinned to the store's namespace (identity-bearing
+        // op — see `list_topics` doc-comment). The shared row-decode is in
+        // `get_topic_in` so per-query callers (retrieval orchestrator,
+        // ISS-066) can pass an explicit namespace without rebuilding a
+        // namespace-bound store handle.
+        self.get_topic_in(id, &self.namespace.clone())
+    }
+
+    fn get_topic_in(
+        &self,
+        id: Uuid,
+        namespace: &str,
+    ) -> Result<Option<KnowledgeTopic>, GraphError> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT topic_id, title, summary, embedding,
                     source_memories, contributing_entities, cluster_weights,
@@ -2736,7 +2774,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         )?;
         let row = stmt
             .query_row(
-                rusqlite::params![id.as_bytes().to_vec(), self.namespace],
+                rusqlite::params![id.as_bytes().to_vec(), namespace],
                 |row| {
                     let topic_blob: Vec<u8> = row.get(0)?;
                     let title: String = row.get(1)?;
