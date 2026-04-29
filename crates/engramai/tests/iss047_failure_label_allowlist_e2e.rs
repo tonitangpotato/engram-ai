@@ -178,11 +178,21 @@ impl TripleExtractor for UnresolvableSubjectExtractor {
         &self,
         _content: &str,
     ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
-        // "Caroline Martinez" is a personal name; pattern-based
-        // EntityExtractor in v0.2 does not match it, so the subject won't
-        // be in `entity_drafts` at resolution time.
+        // Whitespace-only subject: ISS-048's `lift_novel_endpoints` skips
+        // endpoints whose trimmed-lowercased key is empty (see
+        // `crates/engramai/src/resolution/pipeline.rs::lift_novel_endpoints`),
+        // so the subject is NOT lifted into entity_drafts and resolve_edges
+        // misses it in `name_to_id`, emitting an unresolved_subject failure
+        // — which is exactly what this test asserts the audit table records.
+        //
+        // Pre-ISS-048 this fixture used the personal name "Caroline Martinez";
+        // ISS-048 now lifts every novel endpoint into entity_drafts, so the
+        // old fixture stopped triggering unresolved_subject. The whitespace
+        // subject keeps the original test contract (the audit allowlist must
+        // accept (Resolve, unresolved_subject) and the row must persist) by
+        // bypassing the lift via the documented empty-key skip.
         Ok(vec![Triple::new(
-            "Caroline Martinez".to_string(),
+            "   ".to_string(),
             Predicate::RelatedTo,
             "topic-x".to_string(),
             0.9,

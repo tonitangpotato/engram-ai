@@ -1,3 +1,14 @@
+---
+id: ISS-047
+title: "closed-set failure-label allowlist mismatches pipeline producers — every stage failure rolls back the whole transaction"
+status: done
+severity: blocker
+filed: 2026-04-28
+closed: 2026-04-28
+related: [ISS-046, ISS-044, ISS-021]
+forward_link: ISS-048
+---
+
 # ISS-047: closed-set failure-label allowlist mismatches pipeline producers — every stage failure rolls back the whole transaction
 
 - **Status**: done
