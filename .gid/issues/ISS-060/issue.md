@@ -2,7 +2,7 @@
 id: ISS-060
 title: Abstract plan downgrade chain returns 0 candidates (4/25 LoCoMo conv-26 queries)
 kind: issue
-status: todo
+status: resolved
 severity: high
 discovered: 2026-04-28
 discovered_by: rustclaw
@@ -14,6 +14,8 @@ relates_to:
 - ISS-058
 superseded_by: .gid/issues/ISS-063/issue.md
 writeup: .gid/docs/retrieval-downgrade-contract-problem.md
+resolved: 2026-04-28
+resolved_by: ISS-063
 ---
 
 # ISS-060: Abstract plan returns 0 candidates via "downgraded_from_abstract"

@@ -80,6 +80,75 @@ For quick comparison without scrolling. Update only when a baseline is re-measur
 
 <!-- Add new runs ABOVE this line. Most recent first. -->
 
+## RUN-0002 — post-ISS-063 fallback contract, conv-26 s1-3 (2026-04-28 22:00 -04:00)
+
+**Issue / context**: ISS-063 (downgrade-to-fallback contract). Sibling: ISS-061 (resolved-by), ISS-060 (superseded-by), ISS-064 (filed from this run).
+**Goal**: Verify ISS-063 fix on real LoCoMo data — every non-Factual primary plan must run Associative fallback and surface an outcome label per design §3.4 / §6.4.
+**Hypothesis**: With the contract in place, RUN-0001's "0 / 25 hit@5 silent ok" should become either real hits via fallback or terminal `EmptyResultSet`.
+
+### Setup
+- **Repo**: engram @ `602ed91` (post 35435b9 ISS-063 impl + closeout)
+- **Workspace dirty?**: no
+- **Dataset**: LoCoMo `conv-26`, sessions 1-3, 25 queries (same as RUN-0001)
+- **Substrate**: reused RUN-0001's `.gid/issues/_smoke-locomo-2026-04-28/locomo-conv26-s1-3-iss058.{db,graph.db}` (no re-ingest)
+- **Driver**: `crates/engramai/examples/locomo_conv26_retrieval.rs`
+- **Namespace**: `locomo-conv26-iss058` (corrected — see "Discovered" below)
+
+### Headline results
+
+- **Hits @ 5: 14 / 25 (56.0%)** — up from **0 / 25 (0.0%)** in RUN-0001
+- **Empty results: 2 / 25 (8.0%)** — terminal `EmptyResultSet { reason="hybrid_all_subplans_empty" }`, no longer silent
+
+| Plan       | n  | Hits | Empty | Outcome distribution                            |
+|------------|----|------|-------|--------------------------------------------------|
+| Factual    | 17 | 12   | 0     | ok ×17                                           |
+| Abstract   | 4  | 2    | 0     | downgraded_from_abstract ×4 (each ran fallback)  |
+| Hybrid     | 2  | 0    | 2     | empty_result_set ×2                              |
+| Affective  | 2  | 0    | 0     | no_cognitive_state ×2 (label preserved per §6.4) |
+
+### What ISS-063 proved
+
+1. **Abstract→Associative fallback delivers candidates.** Pre-fix: `ok candidates=0`. Post-fix: 4 queries each return 5 candidates from the fallback path; 2 land hits @5.
+2. **Hybrid empties are observable.** Now `outcome=empty_result_set reason="hybrid_all_subplans_empty"` instead of silent `ok candidates=0`.
+3. **Affective preserves `no_cognitive_state`.** §6.4 surface label kept even though fallback ran.
+
+### Two compounding causes for the 0/25 → 14/25 jump
+
+The headline number includes a **second, independent fix** discovered mid-run (see ISS-064):
+
+- **Cause A (ISS-063 fix):** the fallback contract itself — without it, no plan except Factual could surface candidates.
+- **Cause B (namespace mismatch):** RUN-0001's driver invocation used `--ns conv26`, but the substrate ingest stored everything under `--ns locomo-conv26-iss058`. Retrieval silently filtered against a non-existent namespace and returned empty without warning. Fixed by passing the correct namespace.
+
+Both causes had to be fixed for hits to land. ISS-063 alone wouldn't have moved the number — but the silent namespace mismatch is itself a serious observability bug (filed as ISS-064).
+
+### Substrate health (re-checked, unchanged from RUN-0001)
+
+- `memories`: 31 (all in `locomo-conv26-iss058`)
+- `graph_entities`: 137 / `graph_edges`: 101
+- `graph_extraction_failures`: 0
+- `knowledge_topics`: 0 (L5 not built — explains all 4 `downgraded_from_abstract`)
+
+### Findings
+
+- **ISS-063 confirmed resolved** by behavior on real data, not just by unit tests.
+- **ISS-061** ("Hybrid 0 despite outcome=ok") symptom no longer reproduces — the new `EmptyResultSet { reason }` makes the same situation explicit. Closed as resolved-by-ISS-063.
+- **ISS-060** ("Abstract chain returns 0") — same root cause as ISS-061 (silent ok-empty), now superseded by ISS-063's contract.
+- **ISS-064 filed**: namespace mismatch is silently swallowed by retrieval. Driver/orchestrator should fail-fast or warn when `--ns` matches zero entities. This run almost gave a false negative on ISS-063.
+
+### Artifacts
+
+- Driver log: `.gid/issues/_smoke-locomo-2026-04-28/RUN-0002.log`
+- Detailed report: `.gid/issues/_smoke-locomo-2026-04-28/RUN-0002.md`
+- Substrate (reused): `.gid/issues/_smoke-locomo-2026-04-28/locomo-conv26-s1-3-iss058.{db,graph.db}`
+
+### Next
+
+- **ISS-064**: implement namespace-mismatch fail-fast / warn.
+- **L5 substrate gap** (4 `downgraded_from_abstract`): build `knowledge_topics` over the 31 memories so Abstract plan succeeds natively. Tracked under ISS-060's broader "Abstract path needs L5" angle (see follow-up).
+- Expand to more LoCoMo conversations once ISS-064 lands so we don't waste cycles on silent empty namespaces.
+
+---
+
 ## RUN-0001 — post-ISS-058 conv-26 sessions 1-3 smoke (2026-04-28 21:09 -04:00)
 
 **Issue / context**: ISS-058 (split-brain ingest fix, commit `986ca65`); compare against ISS-049 12/25 acceptance (`7a3f27a`).
