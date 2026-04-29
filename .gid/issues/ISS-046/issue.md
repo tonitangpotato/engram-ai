@@ -1,3 +1,13 @@
+---
+id: ISS-046
+title: "engram store CLI does not install pipeline pool — v0.3 graph stays empty on fresh ingest"
+status: closed
+priority: P0
+filed: 2026-04-27
+closed: 2026-04-28
+filed_by: rustclaw
+---
+
 # ISS-046: `engram store` CLI does not install pipeline pool — v0.3 graph stays empty on fresh ingest
 
 **Status**: closed

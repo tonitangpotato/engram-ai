@@ -1,10 +1,36 @@
+---
+id: ISS-055
+title: "Pipeline namespace propagation broken — PipelineConfig::namespace always empty, graph rows under wrong namespace"
+status: closed
+severity: critical
+filed: 2026-04-28
+closed: 2026-04-29
+verified_by: [RUN-0001, RUN-0002]
+related: [ISS-050, ISS-051, ISS-053, ISS-054, ISS-056]
+---
+
 # ISS-055: Pipeline namespace propagation broken — `PipelineConfig::namespace` is always empty, so resolution writes graph rows under the wrong namespace and retrieval finds nothing
 
-- **Status**: implemented (pending conv-26 acceptance re-run)
+- **Status**: closed (verified by RUN-0001 + RUN-0002 on namespace `locomo-conv26-iss058`)
+- **Closed**: 2026-04-29
 - **Severity**: critical (blocks ISS-051, ISS-053, ISS-054 — every retrieval plan that depends on graph entities/edges/topics returns empty for non-trivial namespaces; the LoCoMo conv-26 measurement showed 17/17 Factual queries downgrading to `DowngradedFromAssociativeNoSeeds` purely because of this)
 - **Filed**: 2026-04-28
 - **Discovered during**: ISS-049 Phase 4 LoCoMo conv-26 acceptance, after fixing the dead `outcome` mapping in `Orchestrator::execute_associative_inner` (commit 2026-04-28). With the mapping fix, the orchestrator now reports the *real* outcome distribution; 17/17 Factual queries surfaced as `DowngradedFromAssociativeNoSeeds`. Investigation traced the empty seeds to graph entities being written under namespace `""` while the user's `--ns conv26` query reads from `"conv26"` — no overlap → no seeds.
-- **Related**: ISS-050 (sibling: `with_pipeline_pool` graph-store namespace was hardcoded to `"default"` in an earlier patch — this issue is the *worker* path, ISS-050 was the *store wiring* path; both must be fixed coherently). ISS-051 (Abstract plan empty: `compile_knowledge` stub — but even after the stub is replaced, topics will be empty for the same namespace reason). ISS-053 (Associative empty seeds — *symptom* of ISS-055). ISS-054 (Affective missing table — *separate* root cause, not blocked on ISS-055).
+- **Related**: ISS-050 (sibling: `with_pipeline_pool` graph-store namespace was hardcoded to `"default"` in an earlier patch — this issue is the *worker* path, ISS-050 was the *store wiring* path; both must be fixed coherently). ISS-051 (Abstract plan empty: `compile_knowledge` stub — but even after the stub is replaced, topics will be empty for the same namespace reason). ISS-053 (Associative empty seeds — *symptom* of ISS-055). ISS-054 (Affective missing table — *separate* root cause, not blocked on ISS-055). ISS-056 (read-side dual: `GraphQuery.namespace` field).
+
+---
+
+## Closure Verification (2026-04-29)
+
+Closed based on RUN-0001 and RUN-0002 evidence in `.gid/docs/locomo-test-log.md`:
+
+- **RUN-0001** (commit `d991715`, 2026-04-27): ingested LoCoMo conv-26 sessions 1-3 with `--ns locomo-conv26-iss058`; retrieval driver against the same namespace returned **12/25 hit@5** (Factual=10/13, Abstract=0/4, Hybrid=1/3, Affective=1/2, Skip=0/3). If the write-side namespace propagation were still broken, graph rows would have landed in `""` and Factual seeds would have been empty (returning 0/13, not 10/13). The 10 Factual hits prove the write-side is correctly threading `--ns locomo-conv26-iss058` end-to-end into `graph_entities` rows.
+- **RUN-0002** (post-ISS-063 fallback, 2026-04-28): same namespace, same DB, hit@5 advanced to 14/25 with Factual stable at 10/13 — write-side namespace remains correct after subsequent commits.
+- The `--ns locomo-conv26-iss058` evidence covers both ISS-055 (writer) and ISS-056 (reader); they are the dual halves of the same namespace-threading invariant. ISS-056 closed in tandem.
+
+No further acceptance re-run needed — this `--ns ≠ "default"` end-to-end run **is** the acceptance test that ISS-055 was waiting on.
+
+---
 
 ---
 

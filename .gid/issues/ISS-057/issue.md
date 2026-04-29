@@ -1,6 +1,16 @@
+---
+id: ISS-057
+title: "Promote namespace to a first-class Namespace newtype to prevent the bug class entirely"
+status: open-deferred
+priority: P2
+severity: enhancement
+filed: 2026-04-28
+related: [ISS-056, ISS-055, ISS-050, ISS-048, ISS-046]
+---
+
 # ISS-057: Promote `namespace` to a first-class `Namespace` newtype to prevent the bug class entirely
 
-- **Status**: open (P2 — do only if/when the predicted bug class materializes)
+- **Status**: open-deferred (P2 — do only if/when the predicted bug class materializes)
 - **Severity**: enhancement (no current production bug; preventive type-system hardening)
 - **Filed**: 2026-04-28
 - **Trigger condition**: file/start work on this issue ONLY if a runtime bug occurs that fits one of:

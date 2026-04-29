@@ -1,11 +1,13 @@
 ---
-id: "ISS-044"
-title: "Wire MigrationOrchestrator::run_backfill to PipelineRecordProcessor"
-status: open
+id: ISS-044
+title: Wire MigrationOrchestrator::run_backfill to PipelineRecordProcessor
+status: in_review
 priority: P1
 created: 2026-04-27
 component: crates/engramai-migrate/src/cli.rs
-related: [v03-migration, ISS-043]
+related:
+- v03-migration
+- ISS-043
 ---
 
 # ISS-044: Wire MigrationOrchestrator::run_backfill to PipelineRecordProcessor

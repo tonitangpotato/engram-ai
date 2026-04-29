@@ -20,6 +20,10 @@ __pycache__/
 .gid/lsp-daemon.sock
 .gid/graph.db.before-*
 .gid/graph.db.wrong-*
+# Manual graph backups (timestamped) — git history is the real backup
+**/graph.db.bak-*
+**/graph.db.bak-*-shm
+**/graph.db.bak-*-wal
 .gid/extract-meta.json
 # Autopilot source-file backups (timestamped pre-edit snapshots) — git history is the real backup
 **/*.before-impl-*

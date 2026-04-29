@@ -1,0 +1,56 @@
+# A7.2 — SqliteGraphStore callsite inventory (raw grep output)
+# Generated: 2026-04-29 autopilot
+# Pattern: grep -rn "SqliteGraphStore<\|SqliteGraphStore::" crates/
+
+## Summary
+- Total matches: 241
+- Type usages `SqliteGraphStore<...>`: 27 (5 files, 2 crates)
+- Method/ctor calls `SqliteGraphStore::...`: 214
+- Crates touched: 2 (engramai, engramai-migrate)
+
+## Type usages by file (need generic param threaded if signature changes)
+   12 crates/engramai/src/memory.rs
+    9 crates/engramai/src/graph/store.rs           (definition site)
+    3 crates/engramai-migrate/src/cli.rs
+    2 crates/engramai-migrate/src/processor.rs
+    1 crates/engramai/src/graph/test_helpers.rs
+
+## All matches by file
+  173 crates/engramai/src/graph/store.rs           (definition + impl blocks + internal tests)
+   25 crates/engramai/src/memory.rs                (Memory struct + graph_mut + helpers)
+    9 crates/engramai/src/resolution/candidate_retrieval.rs   (test code)
+    5 crates/engramai/src/retrieval/adapters/storage_episodic_store.rs   (test code)
+    5 crates/engramai/src/retrieval/adapters/graph_topic_searcher.rs     (test code)
+    4 crates/engramai/src/retrieval/adapters/graph_entity_resolver.rs    (test code)
+    4 crates/engramai/src/knowledge_compile/synthesis.rs                  (test + prod)
+    4 crates/engramai-migrate/src/cli.rs
+    3 crates/engramai/src/knowledge_compile/mod.rs                        (prod)
+    3 crates/engramai-migrate/src/processor.rs
+    2 crates/engramai/tests/iss047_failure_label_allowlist_e2e.rs         (integration test)
+    1 crates/engramai/tests/iss059_retrieval_abstract_namespace_test.rs   (integration test)
+    1 crates/engramai/src/storage.rs                                       (`connection_mut` accessor)
+    1 crates/engramai/src/retrieval/plans/bitemporal.rs
+    1 crates/engramai/src/graph/test_helpers.rs
+
+## Public API impact
+- `Memory::graph_mut(&mut self) -> SqliteGraphStore<'_>` — memory.rs:657 — PUBLIC fn, lifetime-parameterised return type
+- `Memory.graph_store: Option<Arc<Mutex<SqliteGraphStore<'static>>>>` — memory.rs:176 — private field of public struct (constrains internals)
+- All other usages are crate-private or test code
+
+## Threshold evaluation (for A7.3)
+- callsites > 10 ............... YES (27 type uses; 214 calls)
+- crates > 3 .................... NO (2 crates)
+- public API affected ........... YES (Memory::graph_mut)
+- 2/3 conditions hit → BLOCKER per A7.3 rule
+
+## A7.3 decision (2026-04-29 autopilot)
+DEFER — BLOCKER conditions met (2/3):
+  ✅ callsites > 10 (27 type usages, 214 method calls)
+  ❌ crates > 3   (only 2: engramai + engramai-migrate)
+  ✅ public API   (Memory::graph_mut(&mut self) -> SqliteGraphStore<'_>)
+
+Rationale: Breaking public API change requires explicit human decision on
+evolution strategy (wrapper around graph_mut? parallel graph_reader method?
+direct break with semver bump?). Not safe to auto-execute in autopilot.
+
+Action: skip A7.4–A7.7. Surface to potato in next sync. Issue stays P2 open.

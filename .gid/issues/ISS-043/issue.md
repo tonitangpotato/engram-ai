@@ -1,11 +1,13 @@
 ---
-id: "ISS-043"
-title: "Restore literal single-tx atomicity in PipelineRecordProcessor (T9)"
-status: open
+id: ISS-043
+title: Restore literal single-tx atomicity in PipelineRecordProcessor (T9)
+status: wontfix
 priority: P2
 created: 2026-04-27
 component: crates/engramai-migrate/src/processor.rs
-related: [v03-migration, v03-graph-layer]
+related:
+- v03-migration
+- v03-graph-layer
 ---
 
 # ISS-043: Restore literal single-transaction atomicity in T9 backfill processor
@@ -103,3 +105,50 @@ Then `PipelineRecordProcessor::process_one` opens one outer tx, calls `_in_tx`, 
 ## Tracking task
 
 `task:mig-followup-graph-delta-borrowed-tx` (in `.gid-v03-context/graph.db`)
+
+---
+
+## 2026-04-29 Resolution: wontfix-by-design
+
+Investigated under autopilot A8 (rustclaw/tasks/2026-04-29-autopilot.md, items A8.1–A8.6).
+
+**Verdict:** literal "single-tx wraps apply + checkpoint advance" is not feasible in the prod call path, and the existing per-record-commit + idempotent-replay design is the *correct* contract — not a workaround.
+
+### Why literal fix is impossible (A8.3 finding)
+
+Prod path uses **two separate SQLite database files** with two independent `Connection`s:
+
+- v0.2 main DB (passed via `--db-path`, where memories + checkpoint table live)
+- graph DB (passed via `--graph-db`, where `apply_graph_delta` writes nodes/edges)
+
+A single `BEGIN`/`COMMIT` cannot span two SQLite Connections on two different files. SQLite has no native 2PC. Refactoring `apply_graph_delta` to accept a borrowed `&Transaction` (the original proposed fix) does not help because there's no shared tx to borrow against.
+
+Only the unit-test path (`graph_store: None`, `apply_delta_through_migration_conn`) reuses one Connection and could nominally support a single tx — but writing a "K-1 records rolled back" test (A8.5) for that path would contradict the prod contract. Per-record-commit + idempotency-as-atomicity is what should be tested, and that *is* tested.
+
+### Test evidence (A8.6)
+
+- `cargo test -p engramai`: 2058 / 0 / 8 ignored
+- `cargo test -p engramai-migrate`: 206 / 0 / 11 ignored
+
+Atomicity-equivalent semantics covered by:
+
+- `processor::tests::process_one_idempotent_on_replay`
+- `processor::tests::process_one_extraction_failure_advances_checkpoint`
+- `failure::tests::record_failure_is_idempotent_on_replay`
+- `checkpoint::tests::checkpoint_update_inside_transaction_rolls_back_on_abort`
+- `checkpoint::tests::checkpoint_update_inside_transaction_persists_on_commit`
+- `schema::tests::phase2_atomic_alter_rollback_when_version_step_fails_due_to_corrupt_pre_state`
+- `schema::tests::phase2_idempotent_on_replay`
+- `phase_machine::tests::run_aborts_on_phase_executor_error_and_leaves_checkpoint_at_failed_phase`
+- `phase_machine::tests::run_resumes_from_checkpointed_phase_and_skips_completed_phases`
+- integration: `test_backfill_idempotent_on_v03_db`, `test_resume_after_gate_continues_from_checkpoint`, `test_rollback_idempotent_on_double_restore`
+
+There are zero tests asserting "strict batch atomicity" — confirming current contract is *idempotent replay*, not *atomic batch*.
+
+### Follow-up (lightweight, non-blocking)
+
+File a doc-only task to update `processor.rs` rustdoc and `design.md §5.2` to state the *as-built* contract:
+
+> Atomicity contract: per-record commit on the graph DB, followed by per-record checkpoint advance on the main DB. Crash mid-record is recovered on replay via idempotency keys (`memory_id`, `delta_hash`); crash between graph commit and checkpoint advance is recovered by re-processing the same record (no double-write because of idempotency).
+
+That sentence becomes the contract; this issue is closed.

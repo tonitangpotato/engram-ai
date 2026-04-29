@@ -1,3 +1,13 @@
+---
+id: ISS-051
+title: "Memory::compile_knowledge is a zero-counter stub — knowledge_topics table never populated, Abstract plan always returns empty"
+status: resolved
+severity: major
+filed: 2026-04-28
+resolved: 2026-04-28
+related: [ISS-049, "task:res-impl-knowledge-compile", GOAL-2.10]
+---
+
 # ISS-051: `Memory::compile_knowledge` is a zero-counter stub — `knowledge_topics` table is never populated, so the Abstract plan always returns empty
 
 ## Status: ✅ RESOLVED (2026-04-28)
@@ -8,7 +18,6 @@ at the bottom of this file for what was done.
 
 ---
 
-- **Status**: open
 - **Severity**: major (the entire Abstract / L5 retrieval lattice path is dead — every Abstract-classified query returns 0 candidates and downgrades; this masks any genuine Abstract-plan ranking bug under a false "0 hits = expected for now" reading)
 - **Filed**: 2026-04-28
 - **Discovered during**: ISS-049 Phase 4 acceptance run on LoCoMo conv-26. The retrieval orchestrator wired the real `GraphTopicSearcher` adapter; Abstract-classified queries returned 0/0 across the entire run. Investigation traced this back to an empty `knowledge_topics` table, which traced back to `Memory::compile_knowledge` being an explicit A.1 stub that has never been replaced with the real `knowledge_compile::compile` body.

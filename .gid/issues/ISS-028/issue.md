@@ -1,86 +1,128 @@
 ---
 id: "ISS-028"
-title: "Issue status drift between `.gid/graph.db` and `.gid/issues/*.md`"
+title: "Graph node status drift — issues, tasks, and code reality out of sync"
 status: open
-priority: P2
+priority: P1
 created: 2026-04-23
-severity: low
-related: ["ISS-023", "ISS-027"]
+updated: 2026-04-29
+severity: medium
+related: ["ISS-023", "ISS-027", "ISS-044"]
 ---
-# ISS-028: Issue status drift between `.gid/graph.db` and `.gid/issues/*.md`
+# ISS-028: Graph node status drift — issues, tasks, and code reality out of sync
 
 **Status:** open
-**Severity:** low — not blocking work, but erodes graph usefulness over time
-**Related:** ISS-023 (consolidation), ISS-027 (ritual workspace)
+**Severity:** medium — actively misleads planning tools (`gid_plan`, `gid_advise`) and review docs
+**Priority:** P1 (was P2, raised 2026-04-29 — now actively causing wrong reads)
+**Related:** ISS-023 (consolidation), ISS-027 (ritual workspace), ISS-044 (mig backfill orchestrator — example of task-side drift)
 **Filed:** 2026-04-23
+**Updated:** 2026-04-29 — scope expanded to cover task-node drift after concrete misread
 
 ## Summary
 
-Issue status is currently tracked in two places, and they are out of sync:
+Graph node status drifts away from reality across **three node kinds**, all caused by the same root issue (no automated sync). Originally filed for issue-node drift; expanded 2026-04-29 after task-node drift produced a concrete wrong read in a status review.
 
-1. **Canonical source (in practice):** `**Status:**` field at the top of each `.gid/issues/ISS-NNN*.md` file.
-2. **Graph database:** `.gid/graph.db` has a `nodes` table with a `status` column, but only ISS-001 exists there. ISS-015 through ISS-028 are **not represented in the graph at all**.
+The three drift surfaces:
 
-Last `graph.db` mtime: 2026-04-19. Issue files have evolved daily since then. The graph has been effectively frozen for 4+ days with respect to issue tracking.
+1. **Issue-node drift** (original scope, 2026-04-23): markdown files at `.gid/issues/ISS-NNN/issue.md` evolve, graph nodes don't. Only ISS-001 exists in graph; ISS-015..ISS-068 live purely as markdown.
+2. **Task-node drift** (added 2026-04-29): `.gid-v03-context/graph.db` task nodes report `status=todo` while the underlying code is fully implemented. Concrete example: `task:mig-wire-backfill-orchestrator` is `todo` but `crates/engramai-migrate/src/cli.rs:663 run_backfill` is wired and complete (corresponding ISS-044 is `in_review`).
+3. **Code-vs-graph drift** (added 2026-04-29): code-layer nodes from `gid_extract` can lag behind file moves/renames. Lower priority but same family.
 
 ## Evidence
+
+### Issue-node drift (original)
 
 ```
 $ sqlite3 .gid/graph.db "SELECT id, status FROM nodes WHERE id LIKE 'iss-%' OR id LIKE 'ISS-%' ORDER BY id;"
 iss-001|done
 ```
 
-Only one issue in the graph. All other ISS-xxx entries live purely as markdown files.
+Only one issue in the graph. ISS-015..ISS-068 live purely as markdown.
 
-## Impact
+### Task-node drift (new, 2026-04-29)
 
-- `gid tasks` / `gid query` / any graph-based issue lookup returns stale or empty results for current work.
-- New agents/sessions that trust the graph as the source of truth will miss ~12 open issues.
-- There is no single-query answer to "what issues are open?" — one has to `grep` markdown files.
-- Cross-issue dependency tracking via graph edges is impossible when the nodes don't exist.
+```
+$ sqlite3 .gid-v03-context/graph.db \
+    "SELECT id, status FROM nodes WHERE id='task:mig-wire-backfill-orchestrator';"
+task:mig-wire-backfill-orchestrator|todo
+```
+
+But `crates/engramai-migrate/src/cli.rs:663` (`run_backfill`) is a complete, wired implementation that iterates `memories` from v0.2 and runs `PipelineRecordProcessor` per record. ISS-044 (the umbrella issue) is already `in_review`. The graph node never got the memo.
+
+**Concrete consequence:**
+- `tasks/2026-04-29-engram-v03-status.md` v1 read the graph and concluded "run_backfill is a stub" → wrong.
+- `gid_plan` reports `task:mig-followup-graph-delta-borrowed-tx` as critical-path ETA = 60 turns, weighted by `task:mig-wire-backfill-orchestrator` still being open. The estimate is built on stale state.
+- Required v2 rewrite of the status doc. This is the second time graph drift has produced a confidently-wrong document this month.
+
+## Impact (updated)
+
+- `gid_tasks` / `gid_plan` / `gid_advise` produce misleading critical paths.
+- Status review documents trust the graph and have to be retracted (concrete: 2026-04-29 v1 retracted).
+- "What's actually shippable?" cannot be answered from the graph alone — must cross-check code.
+- Cross-issue/task dependency tracking via graph edges is unreliable when status is wrong.
+- New agents starting fresh trust the graph and act on bad info; this is the #1 onboarding hazard for autopilot/sub-agent work.
 
 ## Root Cause (first-principles)
 
-No automated sync mechanism between issue markdown files and the graph. Issues are created by:
-- Agents writing markdown files directly
-- Manual `gid_add_task` calls (rare, usually forgotten)
+There is no automated sync mechanism between **any** of:
+- Markdown issue files ↔ graph issue nodes
+- Code reality (commits, file content) ↔ graph task nodes
+- Filesystem layout (file moves, deletions) ↔ graph code-layer nodes
 
-There is no hook/watcher/importer that keeps them aligned. The divergence is monotonic — it only gets worse.
+Status changes happen in:
+- Markdown files (agents edit `**Status:**` field directly)
+- Code (agents/PRs land implementations without touching the graph)
+- `gid_complete` / `gid_update_task` calls (rare; relies on agent remembering)
 
-## Options (not decided)
+The drift is **monotonic** — it only widens until someone manually reconciles. There is no canary, no PR-time check, no nightly job.
 
-**Option A — Markdown as single source of truth, drop issue nodes from graph.**
-- Pros: simplest; eliminates the drift problem by eliminating the duplicate.
-- Cons: loses graph querying (`gid tasks`, dependency edges between issues).
-- Cost: near-zero; just stop pretending the graph tracks issues.
+## Options
 
-**Option B — Issue importer / bidirectional sync.**
-- Scan `.gid/issues/*.md` → parse `**Status:**` + `**Related:**` → upsert into graph nodes/edges.
-- Run on commit hook or as part of ritual/heartbeat.
-- Pros: graph stays useful; single query answers "what's open".
-- Cons: parser to build+maintain; risk of conflicting edits (file vs graph write).
+### A. Markdown + code as source of truth, stop pretending graph tracks issue/task status
+- **Issues:** drop issue nodes from graph entirely; `gid_tasks` doesn't try to list issues.
+- **Tasks:** demote graph task `status` to "advisory only" — print a warning that it may be stale; tools should not trust it.
+- **Pros:** zero implementation cost; matches actual current behavior.
+- **Cons:** loses `gid_plan` / `gid_advise` usefulness for issue/task work; planning tools become decorative.
 
-**Option C — Graph as single source of truth, generate markdown from graph.**
-- Pros: one write path (graph), markdown is derived/rendered.
-- Cons: large refactor; breaks current workflow where agents edit markdown directly; issue narratives are rich text that doesn't round-trip well through structured fields.
-- Cost: high.
+### B. One-way importers (markdown/code → graph)
+- **Issue importer:** scan `.gid/issues/*.md`, parse frontmatter (`status:`, `priority:`, `related:`, `depends_on:`), upsert graph nodes + edges.
+- **Task importer:** when a task's referenced source file or function is materially complete (heuristic: file exists + non-stub + tests pass), suggest `status=done`.
+- **Run:** on `gid_validate`, on PR commit, or as part of ritual/heartbeat.
+- **Pros:** graph stays useful; planning tools work.
+- **Cons:** parsers + heuristics to build and maintain. Task-side heuristic is fuzzy ("is this code done?" is not a clean signal).
+
+### C. Graph as single source of truth, render markdown
+- Massive refactor, fights current agent workflow, doesn't compose with issue narratives that are rich text. **Rejected.**
+
+### D. Hybrid (recommended)
+- **Issues — Option B importer.** Cheap (~200 lines), markdown frontmatter has structured fields already, parse is straightforward. Run on `gid_validate` and as a ritual phase.
+- **Tasks — manual `gid_complete` + a drift detector** (rather than auto-importer). Detector runs in `gid_validate`: for each task with `file_path` metadata, check the file exists and has > N lines / contains the named function; if so but task is `todo`, warn. Don't auto-update — false positives (e.g., scaffolding without real impl) would corrupt state.
+- **Code-layer — re-extract on schedule.** `gid_extract` is idempotent; run weekly or after large refactors.
 
 ## Recommendation
 
-Lean Option A or Option B. Option C is overkill and fights current agent behavior.
+**Hybrid (Option D).** Cheap importer for issues + drift detector + manual completion for tasks + scheduled re-extract for code.
 
-- **Option A** if we decide issues don't need graph querying (they rarely have structured cross-references today; `Related:` lines in markdown already work).
-- **Option B** if we want `gid tasks` / `gid_query_impact` to work for issues, worth building a ~200-line importer.
-
-Decision deferred until someone actually needs the graph view of issues. Until then: **markdown is the source of truth**, graph is stale.
+This isolates the only fuzzy bit (task completion heuristic) and keeps it as a *warning*, not an automated mutator. Auto-mutating task status from "this file looks done" is too risky.
 
 ## Next Steps
 
-- [ ] Decide Option A vs B (not urgent)
-- [ ] If B: write `gid issue-import` subcommand that scans `.gid/issues/*.md` and upserts nodes
-- [ ] Either way: document the chosen source of truth in `.gid/docs/` so future agents don't waste time checking both places
+- [ ] **Phase 1 — Drift detector (priority).** Add `gid_validate` warnings for:
+  - Issue markdown files whose `status:` frontmatter doesn't match graph node status (or graph node missing entirely)
+  - Task nodes with `file_path` where the file is non-trivial but task is still `todo`
+  - Code nodes whose `file_path` no longer exists
+- [ ] **Phase 2 — Issue importer.** `gid issue-import` subcommand that scans `.gid/issues/*/issue.md`, upserts nodes + `related`/`depends_on` edges from frontmatter.
+- [ ] **Phase 3 — Doc the policy.** Write `.gid/docs/source-of-truth.md` declaring: markdown is canonical for issues, code is canonical for task completion, graph is a lossy projection.
+- [ ] **Phase 4 — Ritual integration.** Run drift detector at start of every ritual phase; refuse to plan if drift count > threshold.
+- [ ] **Immediate (today, separate from phases):** manually run `gid_complete` on `task:mig-wire-backfill-orchestrator` and any other task in the v0.3 graph whose code is verified complete. This is graph housekeeping, not a fix — but it un-blocks the v0.3 LoCoMo verification path.
+
+## Why Priority Was Raised (2026-04-29)
+
+When this was filed (2026-04-23) it was P2/low because issue-node drift didn't actively cause wrong decisions — markdown was canonical and people grep'd it.
+
+Today the drift produced a concretely wrong document (`tasks/2026-04-29-engram-v03-status.md` v1 said "run_backfill is a stub", retracted 2 hours later when source was checked). With autopilot/sub-agent workflows trusting `gid_plan` to choose what to work on, drift now actively misroutes work. P1.
 
 ## Notes
 
-- Discovered 2026-04-23 while verifying ISS-025 closure — noticed `gid_tasks` returned nothing for ISS-025/ISS-027, then checked graph.db directly and found only `iss-001`.
-- Not urgent because markdown-only works fine for current workflow. Filed so we don't rediscover the drift six months from now and wonder how bad it got.
+- 2026-04-23: Discovered while verifying ISS-025 closure — `gid_tasks` returned nothing for ISS-025/ISS-027.
+- 2026-04-29: Discovered task-side drift while writing v0.3 status review. v1 review retracted because graph said `task:mig-wire-backfill-orchestrator` was todo but code was wired.
+- This is also the same family as `cite-before-claim` skill (skill-level patch for unverified factual claims) — the pattern of "trust a structured datastore that's actually stale" recurs across systems.

@@ -80,6 +80,24 @@ For quick comparison without scrolling. Update only when a baseline is re-measur
 
 <!-- Add new runs ABOVE this line. Most recent first. -->
 
+## RUN-0004 — Phase B2 dig: 5 Factual misses split 3 ingest-gap + 2 retrieval-rank (2026-04-29 05:53 -04:00)
+
+**Headline:** hit@5 = 14/25 (56.0%), bit-identical to RUN-0003 → stagnation criterion met (Δ < 0.001). Per-plan: Abstract 2/4, Affective 0/2, Factual 12/17, Hybrid 0/2 (same as RUN-0003). Same substrate, same commit (`ac34db9` dirty), but `--ns locomo-conv26-iss058` (the actual ingest namespace) instead of `--ns conv26` — RUN-0002/0003 used the wrong flag and got data only because pre-ISS-064 namespace scoping was leaky. ISS-064 fast-fail (workspace edit, uncommitted) now correctly surfaces this.
+
+**Five Whys on the 5 Factual misses:** 3 of 5 (q2 D1:12, q19 D2:15, q20 D3:16) — gold dia_id is **not in the substrate at all**, dropped silently during ingestion (quarantine table empty, ~22 of 50 conv-26 s1-3 turns missing). 2 of 5 (q5 D1:5, q8 D2:14) — gold memory present but query embeddings don't bridge "identity"↔"transgender" / "relationship status"↔"single parent". **Filed ISS-068** (P1) for the ingestion-gap; deferred query-rewrite work for the rank-loss two.
+
+Full doc: `.gid/eval-runs/RUN-0004.md` · log: `.gid/issues/_smoke-locomo-2026-04-28/RUN-0004.log` · issue: `.gid/issues/ISS-068/issue.md`
+
+---
+
+## RUN-0003 — repro RUN-0002 + confirm Hybrid sub-plans genuinely empty (2026-04-29 05:46 -04:00)
+
+**Headline:** hit@5 = 14/25 (56%) — bit-identical to RUN-0002. Reproduces post-ISS-063 baseline; confirms Hybrid `empty_result_set` is genuine sub-plan-empty (Episodic `DowngradedFromEpisodic` + Abstract `DowngradedL5Unavailable`), not a `hybrid_to_scored` bug. **Filed ISS-067** to decide fallback contract (Option A flag vs upstream Episodic+Abstract fixes). Workspace dirty (issue.md + 4 src files) but no behavior change.
+
+Full doc: `.gid/eval-runs/RUN-0003.md` · log: `.gid/issues/_smoke-locomo-2026-04-28/RUN-0003.log` · issue: `.gid/issues/ISS-067/issue.md`
+
+---
+
 ## RUN-0002 — post-ISS-063 fallback contract, conv-26 s1-3 (2026-04-28 22:00 -04:00)
 
 **Issue / context**: ISS-063 (downgrade-to-fallback contract). Sibling: ISS-061 (resolved-by), ISS-060 (superseded-by), ISS-064 (filed from this run).

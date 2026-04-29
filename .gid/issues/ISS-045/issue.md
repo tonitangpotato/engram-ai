@@ -1,3 +1,13 @@
+---
+id: ISS-045
+title: "Fresh-ingest path does not write v0.3 graph layer (initial diagnosis incorrect)"
+status: closed-superseded
+priority: P1
+filed: 2026-04-27
+closed: 2026-04-27
+superseded_by: ISS-046
+---
+
 # ISS-045: ~~Fresh-ingest path does not write v0.3 graph layer~~ → Closed (initial diagnosis incorrect)
 
 **Status**: closed-superseded

@@ -1,10 +1,30 @@
+---
+id: ISS-056
+title: "Retrieval API hardcodes namespace=\"default\" — GraphQuery has no namespace field, multi-tenant retrieval impossible"
+status: closed
+severity: critical
+filed: 2026-04-28
+closed: 2026-04-29
+verified_by: [RUN-0001, RUN-0002]
+related: [ISS-049, ISS-055, ISS-046, ISS-048]
+---
+
 # ISS-056: Retrieval API hardcodes `namespace = "default"` — `GraphQuery` has no namespace field, so multi-tenant retrieval is impossible
 
-- **Status**: open
+- **Status**: closed (verified by RUN-0001 + RUN-0002 on namespace `locomo-conv26-iss058`)
+- **Closed**: 2026-04-29
 - **Severity**: critical (blocks every non-`default` namespace retrieval — including the LoCoMo conv-26 acceptance run after ISS-055 fix lands)
 - **Filed**: 2026-04-28
 - **Discovered during**: ISS-055 verification — even with the worker-side namespace propagation fix (commit `4526884`), conv-26 queries still return 0 hits because the retrieval entry point (`retrieval/api.rs:431`) constructs every adapter (`HybridSeedRecaller`, `HybridAffectiveSeedRecaller`) with the literal string `"default"`, regardless of which namespace the data actually lives in.
 - **Related**: ISS-049 (Phase 4 multi-namespace dispatch — explicitly deferred in the ISS-049 plan, see `api.rs:420` comment "multi-namespace dispatch is Phase 4"). ISS-055 (sibling — write-side namespace propagation, must land first; this issue is the read-side counterpart). ISS-046 (CLI write path — closed). ISS-048 (manual normalize-DB workaround — temporary, no longer needed after this lands).
+
+---
+
+## Closure Verification (2026-04-29)
+
+Closed in tandem with ISS-055 — same RUN-0001 / RUN-0002 evidence chain. The retrieval driver now passes `--ns locomo-conv26-iss058`, `GraphQuery.namespace` is an `Option<String>` plumbed end-to-end, and the literal `"default"` at `api.rs:412` is a documented fallback for callers that omit the namespace (single-tenant compatibility), no longer a hardcode. RUN-0001 returning 10/13 Factual hits against `locomo-conv26-iss058` proves the read path threads the user-supplied namespace through every adapter.
+
+---
 
 ---
 
