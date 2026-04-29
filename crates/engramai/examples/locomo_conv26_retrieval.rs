@@ -172,6 +172,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut per_plan_empty: BTreeMap<String, usize> = BTreeMap::new();
     let mut per_outcome: BTreeMap<String, usize> = BTreeMap::new();
 
+    // Phase-2 (2026-04-29): per-category breakdown.
+    // Categories (verified against locomo10.json + gemini_utils.py prompts):
+    //   1=Multi-hop, 2=Temporal, 3=Open-ended, 4=Single-hop, 5=Adversarial.
+    // Cat=5 hits are surfaced separately because "hit" semantics differ:
+    // for cat 1-4 a hit means the gold dialog was retrieved (= correctness signal);
+    // for cat=5 the gold answer is "unanswerable" — surfacing the dialog is a
+    // necessary precondition for answering correctly but NOT sufficient,
+    // so cat=5 hit-rate must not be averaged into the headline number.
+    let mut per_cat_total: BTreeMap<u64, usize> = BTreeMap::new();
+    let mut per_cat_hits: BTreeMap<u64, usize> = BTreeMap::new();
+
     for (idx, q) in qas.iter().enumerate() {
         let question = q["question"].as_str().unwrap_or("");
         let gold_answer = q["answer"].as_str().unwrap_or("");
@@ -224,6 +235,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         *per_outcome.entry(outcome_label.clone()).or_insert(0) += 1;
 
+        *per_cat_total.entry(category).or_insert(0) += 1;
+        if hit {
+            *per_cat_hits.entry(category).or_insert(0) += 1;
+        }
+
         println!(
             "[{:>2}/{}] {} cat={} hit={} plan={} outcome={} got={} | gold={:?} top={:?}",
             idx + 1, qas.len(), mark, category, hit, plan_label, outcome_label, resp.results.len(),
@@ -238,6 +254,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Total queries:    {}", total);
     println!("  Hits @ {}:         {} ({:.1}%)", args.limit, hits, 100.0 * hits as f64 / total.max(1) as f64);
     println!("  Empty results:    {} ({:.1}%)", empty_results, 100.0 * empty_results as f64 / total.max(1) as f64);
+
+    // Phase-2 per-category breakdown. Cat=5 (Adversarial) is reported separately
+    // because retrieval-hit ≠ correctness for adversarial questions: the "right"
+    // answer is "unanswerable", so surfacing the gold dialog is a necessary
+    // precondition but the LLM must still recognize the question is unanswerable.
+    println!();
+    println!("=== Per-category breakdown ===");
+    let cat_label = |c: u64| -> &'static str {
+        match c {
+            1 => "Multi-hop",
+            2 => "Temporal",
+            3 => "Open-ended",
+            4 => "Single-hop",
+            5 => "Adversarial",
+            _ => "?",
+        }
+    };
+    let mut headline_total = 0usize;
+    let mut headline_hits = 0usize;
+    for (cat, n) in &per_cat_total {
+        let h = per_cat_hits.get(cat).copied().unwrap_or(0);
+        let pct = 100.0 * h as f64 / (*n).max(1) as f64;
+        let note = if *cat == 5 {
+            "  ← retrieval hit ≠ correctness (gold answer is 'unanswerable')"
+        } else {
+            ""
+        };
+        println!("  cat={} {:<12} n={:<3} hits={:<3} ({:>5.1}%){}",
+                 cat, cat_label(*cat), n, h, pct, note);
+        if *cat != 5 {
+            headline_total += n;
+            headline_hits += h;
+        }
+    }
+    if per_cat_total.contains_key(&5) {
+        let pct = 100.0 * headline_hits as f64 / headline_total.max(1) as f64;
+        println!();
+        println!("  Headline hit@{} (cat 1-4 only): {}/{} = {:.1}%",
+                 args.limit, headline_hits, headline_total, pct);
+    }
 
     println!();
     println!("=== Per-plan breakdown ===");
