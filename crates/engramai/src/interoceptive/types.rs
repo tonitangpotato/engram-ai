@@ -136,6 +136,7 @@ impl InteroceptiveSignal {
 /// What triggered this signal — gives the hub richer information for
 /// somatic marker formation and regulation decisions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum SignalContext {
     /// An anomaly was detected on a specific metric.
     AnomalyDetected {
@@ -205,6 +206,51 @@ pub enum SignalContext {
         /// Speaker identifier (e.g., Telegram user ID).
         speaker_id: Option<String>,
     },
+
+    /// Context-window pressure from host agent (rustclaw ISS-060).
+    ///
+    /// Distinct from `TokenPressure`, which tracks budget burn rate. This
+    /// variant tracks the host agent's *prompt-window utilization* — how
+    /// close the next LLM call is to the model's hard context limit.
+    ///
+    /// Producers: rustclaw `ContextWindowMonitor` (and any host agent that
+    /// runs an LLM with a fixed context window). The signal is emitted via
+    /// `SignalSource::OperationalLoad` so the hub can route it through the
+    /// normal regulation pipeline.
+    ///
+    /// Severity ladder (informational; the regulator decides what to do):
+    /// - ratio < 0.7  → no signal emitted
+    /// - 0.7 ≤ ratio < 0.85 → `Severity::Soft`
+    /// - 0.85 ≤ ratio < 0.95 → `Severity::Hard`
+    /// - ratio ≥ 0.95 → `Severity::Critical`
+    ContextPressure {
+        /// Tokens currently consumed in the assembled prompt window.
+        used_tokens: u32,
+        /// Hard token limit for the active model's context window.
+        limit_tokens: u32,
+        /// `used_tokens / limit_tokens`, clamped to `[0.0, 1.0]`.
+        ratio: f64,
+        /// Discrete severity bucket — see ladder above.
+        severity: ContextPressureSeverity,
+    },
+}
+
+/// Severity bucket for [`SignalContext::ContextPressure`].
+///
+/// Kept as a separate enum (rather than reusing a generic Severity) so
+/// downstream regulators can pattern-match on the exact bucket without
+/// caring about other signals. The mapping from `ratio` → bucket is
+/// defined by the producer; the regulator should treat the bucket as
+/// authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ContextPressureSeverity {
+    /// Window is filling but no action needed yet (~0.70–0.85 utilization).
+    Soft,
+    /// Action recommended; user/agent should compress or pause (~0.85–0.95).
+    Hard,
+    /// Imminent overflow; refusal to continue without intervention (~≥0.95).
+    Critical,
 }
 
 // ── Domain State ──────────────────────────────────────────────────────
@@ -529,6 +575,7 @@ impl InteroceptiveState {
 /// These are advisory only — the caller (RustClaw hooks) decides whether
 /// to act on them. This separation keeps engramai a pure library.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum RegulationAction {
     /// Suggest updating SOUL.md based on persistent emotional patterns.
     SoulUpdateSuggestion {
@@ -588,6 +635,28 @@ pub enum RegulationAction {
         reason: String,
         /// Which domains contributed to this decision.
         domains: Vec<String>,
+    },
+
+    /// Pause autonomous execution and ask the human for direction.
+    ///
+    /// Emitted in response to [`SignalContext::ContextPressure`] (rustclaw
+    /// ISS-060) when the host agent's prompt window is too full to safely
+    /// continue without intervention. Unlike `Alert`, which is informational,
+    /// `PauseAndAsk` is **executable** — the host agent should stop the
+    /// current loop, surface `reason` + `suggested_options` to the user, and
+    /// wait for explicit guidance.
+    ///
+    /// engramai itself never *acts* on this — the regulator emits it, the
+    /// host agent (rustclaw) honors it. Keeping this as a distinct variant
+    /// (rather than overloading `Alert`) lets the host detect "this requires
+    /// human input" via pattern match alone.
+    PauseAndAsk {
+        /// Plain-text explanation surfaced to the user.
+        reason: String,
+        /// Pre-formed options the user can pick from (e.g., "compress
+        /// context", "summarize and continue", "abort"). Empty list means
+        /// "free-form response".
+        suggested_options: Vec<String>,
     },
 }
 
@@ -844,6 +913,68 @@ mod tests {
                 baseline_mean: 120.0,
             });
         assert!(sig.context.is_some());
+    }
+
+    #[test]
+    fn signal_context_pressure_round_trip() {
+        // ISS-060: rustclaw emits ContextPressure via OperationalLoad.
+        // Ensure the new variant constructs, serializes, and pattern-matches
+        // cleanly — it's the public contract host agents rely on.
+        let sig = InteroceptiveSignal::new(SignalSource::OperationalLoad, None, -0.4, 0.9)
+            .with_context(SignalContext::ContextPressure {
+                used_tokens: 168_000,
+                limit_tokens: 200_000,
+                ratio: 0.84,
+                severity: ContextPressureSeverity::Soft,
+            });
+
+        match &sig.context {
+            Some(SignalContext::ContextPressure { ratio, severity, .. }) => {
+                assert!((ratio - 0.84).abs() < 1e-9);
+                assert_eq!(*severity, ContextPressureSeverity::Soft);
+            }
+            _ => panic!("expected ContextPressure variant"),
+        }
+
+        // Round-trip through JSON to lock the serialized shape — downstream
+        // consumers (rustclaw hooks, dashboards) read this off the wire.
+        let json = serde_json::to_string(&sig).expect("serialize");
+        assert!(json.contains("ContextPressure"), "json: {}", json);
+        assert!(json.contains("\"ratio\":0.84"), "json: {}", json);
+        let back: InteroceptiveSignal = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(
+            back.context,
+            Some(SignalContext::ContextPressure { .. })
+        ));
+    }
+
+    #[test]
+    fn regulation_action_pause_and_ask_round_trip() {
+        // ISS-060: regulator emits PauseAndAsk in response to ContextPressure.
+        // Lock construction + JSON shape so the rustclaw hook layer can
+        // pattern-match without coupling to engramai internals.
+        let action = RegulationAction::PauseAndAsk {
+            reason: "context window 92% full".into(),
+            suggested_options: vec![
+                "summarize and continue".into(),
+                "compress retrieved memories".into(),
+                "abort current task".into(),
+            ],
+        };
+
+        match &action {
+            RegulationAction::PauseAndAsk { reason, suggested_options } => {
+                assert!(reason.contains("92%"));
+                assert_eq!(suggested_options.len(), 3);
+            }
+            _ => panic!("expected PauseAndAsk variant"),
+        }
+
+        let json = serde_json::to_string(&action).expect("serialize");
+        assert!(json.contains("PauseAndAsk"), "json: {}", json);
+        assert!(json.contains("suggested_options"), "json: {}", json);
+        let back: RegulationAction = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(back, RegulationAction::PauseAndAsk { .. }));
     }
 
     #[test]
