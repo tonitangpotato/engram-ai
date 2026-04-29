@@ -411,6 +411,41 @@ impl Memory {
             .clone()
             .unwrap_or_else(|| "default".to_string());
 
+        // ISS-064: fast-fail when caller explicitly targets a namespace
+        // that holds no memories AND no graph entities. Without this,
+        // queries silently return empty for typos like "defualt" with
+        // no signal in logs (§6 of ISS-064 trace). We only fast-fail
+        // when the caller *explicitly* passed a namespace — `None` is
+        // the implicit-default path which must keep working even when
+        // the DB is freshly initialized.
+        if query.namespace.is_some() {
+            let mem_has = self
+                .storage()
+                .list_namespaces()
+                .map(|ns| ns.iter().any(|n| n == &namespace))
+                .unwrap_or(false);
+            let graph_has = self.with_graph_read(|g| {
+                g.list_namespaces()
+                    .map(|ns| ns.iter().any(|n| n == &namespace))
+                    .unwrap_or(false)
+            })?;
+            if !mem_has && !graph_has {
+                log::warn!(
+                    target: "engramai::retrieval",
+                    "graph_query: namespace {:?} not found (no memories, no entities) — returning empty result set",
+                    namespace
+                );
+                return Ok(GraphQueryResponse {
+                    results: Vec::new(),
+                    plan_used: crate::retrieval::classifier::Intent::Episodic,
+                    outcome: crate::retrieval::outcomes::RetrievalOutcome::EmptyResultSet {
+                        reason: "namespace_not_found".to_string(),
+                    },
+                    trace: None,
+                });
+            }
+        }
+
         // Stage A: dispatch.
         let classifier =
             crate::retrieval::classifier::HeuristicClassifier::with_null_lookup();

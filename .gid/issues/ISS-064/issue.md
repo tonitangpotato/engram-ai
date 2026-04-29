@@ -1,7 +1,7 @@
 ---
 id: ISS-064
 title: Namespace mismatch in graph_query is silently swallowed (returns empty instead of warning)
-status: todo
+status: in_review
 severity: medium
 priority: P2
 labels:
