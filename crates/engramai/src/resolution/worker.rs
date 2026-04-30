@@ -485,12 +485,27 @@ fn worker_loop(
         match msg {
             WorkerMsg::Stop => return,
             WorkerMsg::Job(job) => {
+                // Capture identifying fields before `job` is moved into the
+                // processor — needed to log the failure with context (ISS-080).
+                let memory_id = job.memory_id.clone();
                 let result = processor.process(job);
                 match result {
                     Ok(()) => {
                         stats.jobs_processed.fetch_add(1, Ordering::Relaxed);
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        // ISS-080: every pipeline job error must be visible.
+                        // Previously this branch silently incremented the
+                        // failure counter, which made dim/namespace/schema
+                        // mismatches in the resolution pipeline invisible
+                        // (the upstream `Memory::add` returns Ok as soon as
+                        // the job is enqueued, so the caller has no signal).
+                        log::error!(
+                            "pipeline job failed: worker={} memory_id={} error={}",
+                            _idx,
+                            memory_id,
+                            e
+                        );
                         stats.jobs_failed.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -623,6 +638,71 @@ mod tests {
         assert_eq!(snap.jobs_processed, 2);
         assert_eq!(snap.jobs_failed, 1);
         assert_eq!(snap.jobs_in_flight, 0);
+    }
+
+    /// ISS-080: failures must be logged via `log::error!` with the
+    /// memory_id and the underlying error so silent swallow can never
+    /// regress. We install a tiny `log::Log` collector that captures
+    /// records and assert on its contents.
+    ///
+    /// `log::set_logger` may only be called once per process, so we install
+    /// a single `DispatchLogger` that forwards to whichever buffer is
+    /// currently registered in `ACTIVE_BUFFER`.
+    static LOG_INIT: std::sync::Once = std::sync::Once::new();
+    static ACTIVE_BUFFER: Mutex<Option<Arc<Mutex<Vec<String>>>>> = Mutex::new(None);
+
+    struct DispatchLogger;
+    impl log::Log for DispatchLogger {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            if record.level() <= log::Level::Error {
+                if let Some(buf) = ACTIVE_BUFFER.lock().unwrap().as_ref() {
+                    buf.lock().unwrap().push(record.args().to_string());
+                }
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    fn install_dispatch_logger() {
+        LOG_INIT.call_once(|| {
+            log::set_logger(&DispatchLogger).expect("install dispatch logger");
+            log::set_max_level(log::LevelFilter::Error);
+        });
+    }
+
+    #[test]
+    fn failures_are_logged_iss080() {
+        install_dispatch_logger();
+        let buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        *ACTIVE_BUFFER.lock().unwrap() = Some(buf.clone());
+
+        let q = Arc::new(BoundedJobQueue::new(4));
+        let proc = Arc::new(RecordingProcessor::new().fail_on("bad-mem"));
+        let pool = WorkerPool::start(
+            &cfg(1),
+            q.clone() as Arc<dyn JobQueue>,
+            proc.clone() as Arc<dyn JobProcessor>,
+        )
+        .unwrap();
+
+        enqueue_initial(&q, "bad-mem");
+
+        let snap = pool.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(snap.jobs_failed, 1);
+        assert_eq!(snap.jobs_in_flight, 0);
+
+        // Detach buffer before reading so concurrent test threads don't append.
+        *ACTIVE_BUFFER.lock().unwrap() = None;
+        let records = buf.lock().unwrap().clone();
+        assert!(
+            records.iter().any(|r| r.contains("pipeline job failed")
+                && r.contains("bad-mem")
+                && r.contains("stage failure: forced")),
+            "expected failure log line to contain memory_id and underlying error, got: {records:?}"
+        );
     }
 
     #[test]
