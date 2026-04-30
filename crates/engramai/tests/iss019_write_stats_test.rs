@@ -34,6 +34,7 @@ fn default_meta() -> StorageMeta {
         source: Some("test".to_string()),
         namespace: None,
         user_metadata: serde_json::Value::Null,
+        occurred_at: None,
     }
 }
 

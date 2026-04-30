@@ -6,6 +6,7 @@
 //!
 //! See design §3.1, §3.2, §4.2 of ISS-019.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -88,6 +89,25 @@ pub struct StorageMeta {
     /// preserve the old explicit-type behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_type_hint: Option<MemoryType>,
+
+    /// Logical event time for this memory.
+    ///
+    /// - `None` (default) → the write path uses wall-clock `Utc::now()`
+    ///   for `MemoryRecord.created_at`. This is the historical behavior
+    ///   and remains the right choice for live ingestion (chat, agent
+    ///   loops, telemetry).
+    /// - `Some(t)` → `MemoryRecord.created_at` is forced to `t`. Use
+    ///   this for **replay / backfill** scenarios (e.g. importing a
+    ///   2023 conversation log in 2026) so temporal scoring
+    ///   (`temporal_dim::parse_dimension_time`) anchors relative
+    ///   expressions like "yesterday" against the correct event time
+    ///   instead of wall-clock now.
+    ///
+    /// Field is purely additive — existing callers using
+    /// `StorageMeta::default()` or struct-update syntax retain the
+    /// pre-ISS-087 behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<DateTime<Utc>>,
 }
 
 // ---------------------------------------------------------------------
@@ -248,6 +268,7 @@ pub enum StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn store_outcome_id_accessor() {
@@ -269,7 +290,21 @@ mod tests {
         assert!(m.source.is_none());
         assert!(m.namespace.is_none());
         assert!(m.memory_type_hint.is_none());
+        assert!(m.occurred_at.is_none());
         assert_eq!(m.user_metadata, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn storage_meta_occurred_at_struct_update() {
+        // ISS-087: occurred_at is purely additive — struct-update
+        // syntax against Default keeps every old call site intact.
+        let t = chrono::Utc.with_ymd_and_hms(2023, 5, 8, 0, 0, 0).unwrap();
+        let m = StorageMeta {
+            occurred_at: Some(t),
+            ..StorageMeta::default()
+        };
+        assert_eq!(m.occurred_at, Some(t));
+        assert!(m.source.is_none());
     }
 
     #[test]

@@ -85,6 +85,13 @@ pub struct EnrichedMemory {
     /// namespace on disk, never colliding with engram internals.
     #[serde(default)]
     pub user_metadata: serde_json::Value,
+
+    /// ISS-087: optional override for the resulting record's
+    /// `created_at`. `None` → wall-clock `Utc::now()` at write time
+    /// (default, backward-compatible). `Some(t)` → record's
+    /// `created_at` is forced to `t` (replay / backfill anchoring).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl EnrichedMemory {
@@ -157,6 +164,7 @@ impl EnrichedMemory {
             source,
             namespace,
             user_metadata,
+            occurred_at: None,
         })
     }
 
@@ -182,6 +190,7 @@ impl EnrichedMemory {
             source,
             namespace,
             user_metadata: serde_json::Value::Null,
+            occurred_at: None,
         })
     }
 
@@ -204,7 +213,16 @@ impl EnrichedMemory {
             source,
             namespace,
             user_metadata,
+            occurred_at: None,
         }
+    }
+
+    /// ISS-087: builder-style override for the resulting record's
+    /// `created_at`. Returns `self` for chaining. Equivalent to
+    /// setting the `occurred_at` field directly.
+    pub fn with_occurred_at(mut self, t: chrono::DateTime<chrono::Utc>) -> Self {
+        self.occurred_at = Some(t);
+        self
     }
 
     // -----------------------------------------------------------------
@@ -326,6 +344,7 @@ impl EnrichedMemory {
             source: Some(record.source.clone()).filter(|s| !s.is_empty()),
             namespace: None,
             user_metadata,
+            occurred_at: None,
         })
     }
 

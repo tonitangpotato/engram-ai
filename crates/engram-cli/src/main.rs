@@ -146,6 +146,16 @@ enum Commands {
         /// Example: --meta dia_id=D1:3 --meta turn_index=5 --meta tags='["a","b"]'
         #[arg(long = "meta", value_name = "KEY=VALUE")]
         meta: Vec<String>,
+
+        /// ISS-087: override the memory's logical event time (replay/backfill).
+        /// Format: RFC 3339 (e.g. `2023-05-08T00:00:00Z`). When omitted, the
+        /// record's `created_at` is set to wall-clock now (default behavior).
+        ///
+        /// Use this when ingesting historical conversations so the temporal
+        /// scoring dimension anchors relative expressions ("yesterday") to
+        /// the original event date, not the ingestion date.
+        #[arg(long = "occurred-at", value_name = "RFC3339")]
+        occurred_at: Option<String>,
     },
 
     /// Recall memories by query
@@ -1217,7 +1227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         
-        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, graph_db, no_graph, graph_drain_timeout_secs, meta } => {
+        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, graph_db, no_graph, graph_drain_timeout_secs, meta, occurred_at } => {
             // === ISS-046: install v0.3 graph layer pipeline pool ===
             // Default ON: ingest writes to <main_db>.graph.db unless --no-graph.
             // Triple extractor: reuses --auth-token if Anthropic mode chosen,
@@ -1295,9 +1305,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let user_meta = parse_meta_kv(&meta)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-            // If emotion is provided, use add_with_emotion
+            // === ISS-087: parse --occurred-at RFC3339 if provided ===
+            let occurred_at_dt: Option<chrono::DateTime<chrono::Utc>> = match occurred_at.as_deref() {
+                Some(s) => Some(
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("--occurred-at must be RFC 3339 (e.g. '2023-05-08T00:00:00Z'); got '{}': {}", s, e).into()
+                        })?
+                        .with_timezone(&chrono::Utc),
+                ),
+                None => None,
+            };
+
+            // If emotion is provided, use add_with_emotion_at
             let id = if let (Some(em), Some(dom)) = (emotion, domain.as_ref()) {
-                mem.add_with_emotion(
+                mem.add_with_emotion_at(
                     &content,
                     r#type.into(),
                     importance,
@@ -1306,6 +1328,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(&ns),
                     em,
                     dom,
+                    occurred_at_dt,
+                )?
+            } else if occurred_at_dt.is_some() {
+                // No emotion but caller wants occurred_at override — route
+                // through add_with_emotion_at with neutral emotion so the
+                // override threads through.
+                mem.add_with_emotion_at(
+                    &content,
+                    r#type.into(),
+                    importance,
+                    source.as_deref(),
+                    user_meta,
+                    Some(&ns),
+                    0.0,
+                    "default",
+                    occurred_at_dt,
                 )?
             } else {
                 mem.add_to_namespace(

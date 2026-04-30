@@ -2225,6 +2225,7 @@ impl Memory {
             namespace: namespace.map(str::to_string),
             user_metadata: metadata.unwrap_or(serde_json::Value::Null),
             memory_type_hint: Some(memory_type),
+            occurred_at: None,
         };
 
         let outcome = self.store_raw(content, meta).map_err(|e| match e {
@@ -2316,6 +2317,7 @@ impl Memory {
         source: Option<&str>,
         metadata: Option<serde_json::Value>,
         namespace: Option<&str>,
+        occurred_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let ns = namespace.unwrap_or("default");
         let id = format!("{}", Uuid::new_v4())[..8].to_string();
@@ -2455,13 +2457,19 @@ impl Memory {
         }
 
         // Step 3: No duplicate found — create new memory record
+        //
+        // ISS-087: when the caller (via StorageMeta.occurred_at /
+        // EnrichedMemory.occurred_at) supplies a logical event time,
+        // honor it for `created_at`. Otherwise, use wall-clock now
+        // — the historical, backward-compatible default.
+        let created_at = occurred_at.unwrap_or_else(Utc::now);
         let record = MemoryRecord {
             id: id.clone(),
             content: content.to_string(),
             memory_type,
             layer: MemoryLayer::Working,
-            created_at: Utc::now(),
-            access_times: vec![Utc::now()],
+            created_at,
+            access_times: vec![created_at],
             working_strength: 1.0,
             core_strength: 0.0,
             importance,
@@ -2635,11 +2643,36 @@ impl Memory {
         emotion: f64,
         domain: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
+        self.add_with_emotion_at(
+            content, memory_type, importance, source, metadata, namespace,
+            emotion, domain, None,
+        )
+    }
+
+    /// ISS-087: like `add_with_emotion`, but accepts an explicit `occurred_at`
+    /// override. When `Some`, the resulting record's `created_at` is set to
+    /// that value (replay/backfill scenarios). When `None`, behavior is
+    /// identical to `add_with_emotion` (wall-clock now).
+    pub fn add_with_emotion_at(
+        &mut self,
+        content: &str,
+        memory_type: MemoryType,
+        importance: Option<f64>,
+        source: Option<&str>,
+        metadata: Option<serde_json::Value>,
+        namespace: Option<&str>,
+        emotion: f64,
+        domain: &str,
+        occurred_at: Option<chrono::DateTime<Utc>>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         // Store via the typed write path (the shim forwards to store_raw,
         // which gives us dedup + entity + association discovery identical
         // to the pre-ISS-019 behavior).
         #[allow(deprecated)]
-        let id = self.add_to_namespace(content, memory_type, importance, source, metadata, namespace)?;
+        let id = self.add_raw(
+            content, memory_type, importance, source, metadata, namespace,
+            occurred_at,
+        )?;
 
         // Record emotion if bus is attached — unchanged.
         if let Some(ref bus) = self.empathy_bus {
@@ -2697,6 +2730,7 @@ impl Memory {
                 source_opt.as_deref(),
                 Some(metadata_json),
                 namespace_opt.as_deref(),
+                mem.occurred_at,
             )
             .map_err(boxed_err_to_store_error)?;
 
@@ -3164,6 +3198,7 @@ impl Memory {
                 namespace: row.namespace.clone(),
                 user_metadata,
                 memory_type_hint,
+                occurred_at: None,
             };
 
             // Re-run store_raw on the preserved content.
