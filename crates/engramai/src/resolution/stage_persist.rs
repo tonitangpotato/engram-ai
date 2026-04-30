@@ -429,6 +429,27 @@ fn build_new_entity(draft: &DraftEntity, now: DateTime<Utc>, ctx: &PipelineConte
             );
         }
     }
+    // ISS-072 GOAL-2 (A-clean): persist `kind_source` provenance.
+    //
+    // CRITICAL: this is the ONLY place §1–§7 of ISS-072 writes provenance.
+    // The merge path (`merge_into_canonical`) does NOT update `kind` or
+    // `attributes["kind_source"]` on existing canonical rows — see design §8
+    // for why this is benign today (dictionary path empty in production +
+    // triple path always loses to itself: TripleHint == TripleHint, first
+    // writer wins) and what the GOAL-2.b PR must add.
+    //
+    // Serialization uses `#[derive(Serialize)]` + `#[serde(rename_all =
+    // "PascalCase")]` on `KindSource` (see context.rs) — NOT `format!("{:?}",
+    // ...)`. Rust does not promise stable `Debug` output across compiler
+    // versions or refactors; persisting the variant via serde makes the
+    // on-disk string an explicit contract.
+    if let serde_json::Value::Object(map) = &mut e.attributes {
+        map.insert(
+            "kind_source".to_string(),
+            serde_json::to_value(draft.kind_source)
+                .expect("KindSource serialize is infallible"),
+        );
+    }
     // Identity confidence starts at the §3.4 fusion convention for fresh
     // rows: 1.0 (we're certain this is a *new* identity, not that we've
     // verified it). Calibration happens on subsequent merges.
