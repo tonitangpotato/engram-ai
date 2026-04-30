@@ -1,0 +1,2513 @@
+--- D1:1 (session_1) ---
+stdout: 8c4d808a
+
+stderr: [2026-04-30T18:46:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8c4d808a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:2 (session_1) ---
+stdout: 52b90959
+
+stderr: [2026-04-30T18:46:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=52b90959 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:3 (session_1) ---
+stdout: 27cd98fb
+
+stderr: [2026-04-30T18:46:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=27cd98fb error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:4 (session_1) ---
+stdout: ad310773
+
+stderr: [2026-04-30T18:46:32Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ad310773 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:5 (session_1) ---
+stdout: 2e96fbda
+
+stderr: [2026-04-30T18:46:35Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2e96fbda error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:6 (session_1) ---
+stdout: b2330051
+
+stderr: [2026-04-30T18:46:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b2330051 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:7 (session_1) ---
+stdout: 2ddbde7d
+
+stderr: [2026-04-30T18:46:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2ddbde7d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:8 (session_1) ---
+stdout: e082888e
+
+stderr: [2026-04-30T18:46:44Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e082888e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:9 (session_1) ---
+stdout: d8a0dd35
+
+stderr: [2026-04-30T18:46:47Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d8a0dd35 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:10 (session_1) ---
+stdout: ef9b2b1d
+
+stderr: [2026-04-30T18:46:51Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ef9b2b1d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:11 (session_1) ---
+stdout: b9fe7edc
+
+stderr: [2026-04-30T18:46:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b9fe7edc error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:12 (session_1) ---
+stdout: 39ab1bb1
+
+stderr: [2026-04-30T18:46:57Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=39ab1bb1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:13 (session_1) ---
+stdout: 6bd2103d
+
+stderr: [2026-04-30T18:47:01Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6bd2103d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:14 (session_1) ---
+stdout: 102d58e2
+
+stderr: [2026-04-30T18:47:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=102d58e2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:15 (session_1) ---
+stdout: 0e24f3ce
+
+stderr: [2026-04-30T18:47:06Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0e24f3ce error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:16 (session_1) ---
+stdout: 88b97f06
+
+stderr: [2026-04-30T18:47:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=88b97f06 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D1:17 (session_1) ---
+stdout: cccb4fec
+
+stderr: [2026-04-30T18:47:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=cccb4fec error=stage failure: persist: invariant violation: entity embedding dim mismatch
+
+
+--- D1:18 (session_1) ---
+stdout: b3d69262
+
+stderr: [2026-04-30T18:47:16Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b3d69262 error=stage failure: persist: invariant violation: entity embedding dim mismatch
+
+
+--- D2:1 (session_2) ---
+stdout: 2a7caa59
+
+stderr: [2026-04-30T18:47:20Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2a7caa59 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:2 (session_2) ---
+stdout: 5e12cec4
+
+stderr: [2026-04-30T18:47:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5e12cec4 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:3 (session_2) ---
+stdout: d2c7b8d8
+
+stderr: [2026-04-30T18:47:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d2c7b8d8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:4 (session_2) ---
+stdout: 14b6c186
+
+stderr: [2026-04-30T18:47:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=14b6c186 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:5 (session_2) ---
+stdout: cfd6200f
+
+stderr: [2026-04-30T18:47:35Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=cfd6200f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:6 (session_2) ---
+stdout: bfe6393e
+
+stderr: [2026-04-30T18:47:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bfe6393e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:7 (session_2) ---
+stdout: ba3fe73f
+
+stderr: [2026-04-30T18:47:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ba3fe73f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:8 (session_2) ---
+stdout: 9b3c2208
+
+stderr: [2026-04-30T18:47:45Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9b3c2208 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:9 (session_2) ---
+stdout: 82eff51b
+
+stderr: [2026-04-30T18:47:49Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=82eff51b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:10 (session_2) ---
+stdout: 0a4df2d8
+
+stderr: [2026-04-30T18:47:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0a4df2d8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:11 (session_2) ---
+stdout: 533d5c1a
+
+stderr: [2026-04-30T18:47:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=533d5c1a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:12 (session_2) ---
+stdout: e6e78e4d
+
+stderr: [2026-04-30T18:48:09Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e6e78e4d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:13 (session_2) ---
+stdout: d39d5c73
+
+stderr: [2026-04-30T18:48:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d39d5c73 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:14 (session_2) ---
+stdout: 1ce8710c
+
+stderr: [2026-04-30T18:48:16Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1ce8710c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:15 (session_2) ---
+stdout: 352fd220
+
+stderr: [2026-04-30T18:48:19Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=352fd220 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:16 (session_2) ---
+stdout: 08c62654
+
+stderr: [2026-04-30T18:48:23Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=08c62654 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D2:17 (session_2) ---
+stdout: cff4945f
+
+stderr: [2026-04-30T18:48:27Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=cff4945f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:1 (session_3) ---
+stdout: 4ef378b8
+
+stderr: [2026-04-30T18:48:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4ef378b8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:2 (session_3) ---
+stdout: 56f2644f
+
+stderr: [2026-04-30T18:48:36Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=56f2644f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:3 (session_3) ---
+stdout: d9ce9ac2
+
+stderr: [2026-04-30T18:48:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d9ce9ac2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:4 (session_3) ---
+stdout: 3852ac28
+
+stderr: [2026-04-30T18:48:47Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=3852ac28 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:5 (session_3) ---
+stdout: 13535354
+
+stderr: [2026-04-30T18:48:52Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=13535354 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:6 (session_3) ---
+stdout: 4c3a5f49
+
+stderr: [2026-04-30T18:48:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4c3a5f49 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:7 (session_3) ---
+stdout: bff0e2e1
+
+stderr: [2026-04-30T18:49:05Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bff0e2e1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:8 (session_3) ---
+stdout: 455a5d87
+
+stderr: [2026-04-30T18:49:10Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=455a5d87 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:9 (session_3) ---
+stdout: 60c7eb3a
+
+stderr: [2026-04-30T18:49:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=60c7eb3a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:10 (session_3) ---
+stdout: fe316c5b
+
+stderr: [2026-04-30T18:49:15Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=fe316c5b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:11 (session_3) ---
+stdout: ccbe6c70
+
+stderr: [2026-04-30T18:49:20Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ccbe6c70 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:12 (session_3) ---
+stdout: 0f347914
+
+stderr: [2026-04-30T18:49:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0f347914 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:13 (session_3) ---
+stdout: 8b31f457
+
+stderr: [2026-04-30T18:49:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8b31f457 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:14 (session_3) ---
+stdout: bf197c14
+
+stderr: [2026-04-30T18:49:32Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bf197c14 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:15 (session_3) ---
+stdout: 7568036e
+
+stderr: [2026-04-30T18:49:35Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7568036e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:16 (session_3) ---
+stdout: eb1c73f7
+
+stderr: [2026-04-30T18:49:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=eb1c73f7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:17 (session_3) ---
+stdout: 07cd5140
+
+stderr: [2026-04-30T18:49:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=07cd5140 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:18 (session_3) ---
+stdout: a7df9271
+
+stderr: [2026-04-30T18:49:43Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a7df9271 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:19 (session_3) ---
+stdout: b6ea3077
+
+stderr: [2026-04-30T18:49:46Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b6ea3077 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:20 (session_3) ---
+stdout: 84dbca5a
+
+stderr: [2026-04-30T18:49:48Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=84dbca5a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:21 (session_3) ---
+stdout: 83afac62
+
+stderr: [2026-04-30T18:49:55Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=83afac62 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:22 (session_3) ---
+stdout: 957024aa
+
+stderr: [2026-04-30T18:49:57Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=957024aa error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D3:23 (session_3) ---
+stdout: 336e295d
+
+stderr: [2026-04-30T18:49:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=336e295d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:1 (session_4) ---
+stdout: 1bb72cd5
+
+stderr: [2026-04-30T18:50:01Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1bb72cd5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:2 (session_4) ---
+stdout: b6fbd8a7
+
+stderr: [2026-04-30T18:50:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b6fbd8a7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:3 (session_4) ---
+stdout: 6b05eb85
+
+stderr: [2026-04-30T18:50:09Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6b05eb85 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:4 (session_4) ---
+stdout: f3d3e1bb
+
+stderr: [2026-04-30T18:50:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f3d3e1bb error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:5 (session_4) ---
+stdout: d86fd81c
+
+stderr: [2026-04-30T18:50:17Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d86fd81c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:6 (session_4) ---
+stdout: 925c3a37
+
+stderr: [2026-04-30T18:50:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=925c3a37 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:7 (session_4) ---
+stdout: a37b05ce
+
+stderr: [2026-04-30T18:50:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a37b05ce error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:8 (session_4) ---
+stdout: 1788648e
+
+stderr: [2026-04-30T18:50:29Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1788648e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:9 (session_4) ---
+stdout: 691b32b0
+
+stderr: [2026-04-30T18:50:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=691b32b0 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:10 (session_4) ---
+stdout: cca7411e
+
+stderr: [2026-04-30T18:50:34Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=cca7411e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:11 (session_4) ---
+stdout: 6b2d7763
+
+stderr: [2026-04-30T18:50:40Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6b2d7763 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:12 (session_4) ---
+stdout: 08316a48
+
+stderr: [2026-04-30T18:50:48Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=08316a48 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:13 (session_4) ---
+stdout: e6249b3c
+
+stderr: [2026-04-30T18:50:55Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e6249b3c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:14 (session_4) ---
+stdout: d2467c02
+
+stderr: [2026-04-30T18:50:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d2467c02 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:15 (session_4) ---
+stdout: e8e2e797
+
+stderr: [2026-04-30T18:51:05Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e8e2e797 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:16 (session_4) ---
+stdout: f0b6ee17
+
+stderr: [2026-04-30T18:51:09Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f0b6ee17 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:17 (session_4) ---
+stdout: 19177d49
+
+stderr: [2026-04-30T18:51:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=19177d49 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D4:18 (session_4) ---
+stdout: 67699a30
+
+stderr: [2026-04-30T18:51:16Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=67699a30 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:1 (session_5) ---
+stdout: 25028a42
+
+stderr: [2026-04-30T18:51:20Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=25028a42 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:2 (session_5) ---
+stdout: 43bcee96
+
+stderr: [2026-04-30T18:51:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=43bcee96 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:3 (session_5) ---
+stdout: b090348f
+
+stderr: [2026-04-30T18:51:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b090348f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:4 (session_5) ---
+stdout: 10b6982d
+
+stderr: [2026-04-30T18:51:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=10b6982d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:5 (session_5) ---
+stdout: d2ce2516
+
+stderr: [2026-04-30T18:51:33Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d2ce2516 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:6 (session_5) ---
+stdout: 93c66550
+
+stderr: [2026-04-30T18:51:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=93c66550 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:7 (session_5) ---
+stdout: f9d0a90f
+
+stderr: [2026-04-30T18:51:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f9d0a90f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:8 (session_5) ---
+stdout: 2c0266d1
+
+stderr: [2026-04-30T18:51:46Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2c0266d1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:9 (session_5) ---
+stdout: a9fffd7c
+
+stderr: [2026-04-30T18:51:49Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a9fffd7c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:10 (session_5) ---
+stdout: 54f30d3a
+
+stderr: [2026-04-30T18:51:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=54f30d3a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:11 (session_5) ---
+stdout: 45dd11ad
+
+stderr: [2026-04-30T18:51:57Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=45dd11ad error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:12 (session_5) ---
+stdout: 7674a68d
+
+stderr: [2026-04-30T18:52:00Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7674a68d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:13 (session_5) ---
+stdout: de222748
+
+stderr: [2026-04-30T18:52:03Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=de222748 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:14 (session_5) ---
+stdout: c65bbf62
+
+stderr: [2026-04-30T18:52:05Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c65bbf62 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:15 (session_5) ---
+stdout: 841af3d6
+
+stderr: [2026-04-30T18:52:07Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=841af3d6 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D5:16 (session_5) ---
+stdout: 8526b223
+
+stderr: [2026-04-30T18:52:08Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8526b223 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:1 (session_6) ---
+stdout: 3c6dfa13
+
+stderr: [2026-04-30T18:52:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=3c6dfa13 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:2 (session_6) ---
+stdout: 6f15fb1d
+
+stderr: [2026-04-30T18:52:13Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6f15fb1d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:3 (session_6) ---
+stdout: 5c7da48e
+
+stderr: [2026-04-30T18:52:16Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5c7da48e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:4 (session_6) ---
+stdout: 4a4a410a
+
+stderr: [2026-04-30T18:52:20Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4a4a410a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:5 (session_6) ---
+stdout: 5d0f3654
+
+stderr: [2026-04-30T18:52:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5d0f3654 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:6 (session_6) ---
+stdout: 3e464d8a
+
+stderr: [2026-04-30T18:52:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=3e464d8a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:7 (session_6) ---
+stdout: a43a2941
+
+stderr: [2026-04-30T18:52:32Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a43a2941 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:8 (session_6) ---
+stdout: 0b0bb5f3
+
+stderr: [2026-04-30T18:52:35Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0b0bb5f3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:9 (session_6) ---
+stdout: b0abe33e
+
+stderr: [2026-04-30T18:52:37Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b0abe33e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:10 (session_6) ---
+stdout: d9ab7bce
+
+stderr: [2026-04-30T18:52:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d9ab7bce error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:11 (session_6) ---
+stdout: 19d664ff
+
+stderr: [2026-04-30T18:52:44Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=19d664ff error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:12 (session_6) ---
+stdout: 44d77c9c
+
+stderr: [2026-04-30T18:52:48Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=44d77c9c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:13 (session_6) ---
+stdout: 27221aba
+
+stderr: [2026-04-30T18:52:51Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=27221aba error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:14 (session_6) ---
+stdout: a05f9a21
+
+stderr: [2026-04-30T18:52:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a05f9a21 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:15 (session_6) ---
+stdout: 0241bbb5
+
+stderr: [2026-04-30T18:52:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0241bbb5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D6:16 (session_6) ---
+stdout: be0c7bdc
+
+stderr: [2026-04-30T18:53:00Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=be0c7bdc error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:1 (session_7) ---
+stdout: 798a5169
+
+stderr: [2026-04-30T18:53:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=798a5169 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:2 (session_7) ---
+stdout: e93c54f2
+
+stderr: [2026-04-30T18:53:08Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e93c54f2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:3 (session_7) ---
+stdout: 32a62966
+
+stderr: [2026-04-30T18:53:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=32a62966 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:4 (session_7) ---
+stdout: b4508167
+
+stderr: [2026-04-30T18:53:15Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b4508167 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:5 (session_7) ---
+stdout: 3a772527
+
+stderr: [2026-04-30T18:53:19Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=3a772527 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:6 (session_7) ---
+stdout: 0264f3b6
+
+stderr: [2026-04-30T18:53:23Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0264f3b6 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:7 (session_7) ---
+stdout: 587ee986
+
+stderr: [2026-04-30T18:53:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=587ee986 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:8 (session_7) ---
+stdout: 4a6d0d7e
+
+stderr: [2026-04-30T18:53:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4a6d0d7e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:9 (session_7) ---
+stdout: 6b2da9e7
+
+stderr: [2026-04-30T18:53:36Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6b2da9e7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:10 (session_7) ---
+stdout: 1896ffd7
+
+stderr: [2026-04-30T18:53:39Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1896ffd7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:11 (session_7) ---
+stdout: 2d09f943
+
+stderr: [2026-04-30T18:53:44Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2d09f943 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:12 (session_7) ---
+stdout: 9fe59315
+
+stderr: [2026-04-30T18:53:47Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9fe59315 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:13 (session_7) ---
+stdout: ab351abd
+
+stderr: [2026-04-30T18:53:52Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ab351abd error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:14 (session_7) ---
+stdout: 9f1e2813
+
+stderr: [2026-04-30T18:53:55Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9f1e2813 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:15 (session_7) ---
+stdout: 62564201
+
+stderr: [2026-04-30T18:53:57Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=62564201 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:16 (session_7) ---
+stdout: 845091e8
+
+stderr: [2026-04-30T18:54:00Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=845091e8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:17 (session_7) ---
+stdout: 12b75511
+
+stderr: [2026-04-30T18:54:02Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=12b75511 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:18 (session_7) ---
+stdout: 81d3ba22
+
+stderr: [2026-04-30T18:54:05Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=81d3ba22 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:19 (session_7) ---
+stdout: bf496c0c
+
+stderr: [2026-04-30T18:54:10Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bf496c0c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:20 (session_7) ---
+stdout: e6d6e8e1
+
+stderr: [2026-04-30T18:54:15Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e6d6e8e1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:21 (session_7) ---
+stdout: 5fbc92d6
+
+stderr: [2026-04-30T18:54:18Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5fbc92d6 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:22 (session_7) ---
+stdout: c16b1b2d
+
+stderr: [2026-04-30T18:54:21Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c16b1b2d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:23 (session_7) ---
+stdout: f2a62015
+
+stderr: [2026-04-30T18:54:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f2a62015 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:24 (session_7) ---
+stdout: edea82d3
+
+stderr: [2026-04-30T18:54:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=edea82d3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:25 (session_7) ---
+stdout: bb9449c7
+
+stderr: [2026-04-30T18:54:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bb9449c7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:26 (session_7) ---
+stdout: ba349817
+
+stderr: [2026-04-30T18:54:35Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ba349817 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D7:27 (session_7) ---
+stdout: 6cf5267a
+
+stderr: [2026-04-30T18:54:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6cf5267a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:1 (session_8) ---
+stdout: c0ef0f41
+
+stderr: [2026-04-30T18:54:40Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c0ef0f41 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:2 (session_8) ---
+stdout: 7f8e7799
+
+stderr: [2026-04-30T18:54:43Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7f8e7799 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:3 (session_8) ---
+stdout: c129daea
+
+stderr: [2026-04-30T18:54:46Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c129daea error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:4 (session_8) ---
+stdout: 39dc0856
+
+stderr: [2026-04-30T18:54:50Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=39dc0856 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:5 (session_8) ---
+stdout: c072d4b4
+
+stderr: [2026-04-30T18:54:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c072d4b4 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:6 (session_8) ---
+stdout: dd27dce0
+
+stderr: [2026-04-30T18:54:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=dd27dce0 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:7 (session_8) ---
+stdout: 43649b63
+
+stderr: [2026-04-30T18:55:02Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=43649b63 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:8 (session_8) ---
+stdout: fcb80a89
+
+stderr: [2026-04-30T18:55:07Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=fcb80a89 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:9 (session_8) ---
+stdout: ff68cf65
+
+stderr: [2026-04-30T18:55:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ff68cf65 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:10 (session_8) ---
+stdout: 130272e3
+
+stderr: [2026-04-30T18:55:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=130272e3 error=stage failure: persist: invariant violation: entity embedding dim mismatch
+
+
+--- D8:11 (session_8) ---
+stdout: c6e2573d
+
+stderr: [2026-04-30T18:55:17Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c6e2573d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:12 (session_8) ---
+stdout: 20efa75f
+
+stderr: [2026-04-30T18:55:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=20efa75f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:13 (session_8) ---
+stdout: 13ddf395
+
+stderr: [2026-04-30T18:55:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=13ddf395 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:14 (session_8) ---
+stdout: 5ea8cc98
+
+stderr: [2026-04-30T18:55:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5ea8cc98 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:15 (session_8) ---
+stdout: b051a170
+
+stderr: [2026-04-30T18:55:33Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b051a170 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:16 (session_8) ---
+stdout: b3719ccd
+
+stderr: [2026-04-30T18:55:37Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b3719ccd error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:17 (session_8) ---
+stdout: 6453dcb5
+
+stderr: [2026-04-30T18:55:53Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6453dcb5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:18 (session_8) ---
+stdout: 5240e9aa
+
+stderr: [2026-04-30T18:55:56Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5240e9aa error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:19 (session_8) ---
+stdout: e696cbe5
+
+stderr: [2026-04-30T18:55:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e696cbe5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:20 (session_8) ---
+stdout: 32ddd59e
+
+stderr: [2026-04-30T18:56:03Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=32ddd59e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:21 (session_8) ---
+stdout: 688ac5ff
+
+stderr: [2026-04-30T18:56:07Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=688ac5ff error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:22 (session_8) ---
+stdout: 737b4fc7
+
+stderr: [2026-04-30T18:56:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=737b4fc7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:23 (session_8) ---
+stdout: 5e83f49f
+
+stderr: [2026-04-30T18:56:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5e83f49f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:24 (session_8) ---
+stdout: 09087a51
+
+stderr: [2026-04-30T18:56:17Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=09087a51 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:25 (session_8) ---
+stdout: 7ce53317
+
+stderr: [2026-04-30T18:56:21Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7ce53317 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:26 (session_8) ---
+stdout: 87792196
+
+stderr: [2026-04-30T18:56:27Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=87792196 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:27 (session_8) ---
+stdout: 04db9df9
+
+stderr: [2026-04-30T18:56:30Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=04db9df9 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:28 (session_8) ---
+stdout: 9e4d01ca
+
+stderr: [2026-04-30T18:56:33Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9e4d01ca error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:29 (session_8) ---
+stdout: b5ca7190
+
+stderr: [2026-04-30T18:56:36Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b5ca7190 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:30 (session_8) ---
+stdout: 65e8ee1c
+
+stderr: [2026-04-30T18:56:39Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=65e8ee1c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:31 (session_8) ---
+stdout: 679e0476
+
+stderr: [2026-04-30T18:56:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=679e0476 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:32 (session_8) ---
+stdout: 03b0bc28
+
+stderr: [2026-04-30T18:56:46Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=03b0bc28 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:33 (session_8) ---
+stdout: 96a318f9
+
+stderr: [2026-04-30T18:56:50Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=96a318f9 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:34 (session_8) ---
+stdout: 4adcbee9
+
+stderr: [2026-04-30T18:56:53Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4adcbee9 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:35 (session_8) ---
+stdout: 73dec572
+
+stderr: [2026-04-30T18:56:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=73dec572 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:36 (session_8) ---
+stdout: 1993d094
+
+stderr: [2026-04-30T18:57:01Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1993d094 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:37 (session_8) ---
+stdout: f57cdbbd
+
+stderr: [2026-04-30T18:57:03Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f57cdbbd error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:38 (session_8) ---
+stdout: e18487f1
+
+stderr: [2026-04-30T18:57:06Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e18487f1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D8:39 (session_8) ---
+stdout: a8223433
+
+stderr: [2026-04-30T18:57:08Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a8223433 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:1 (session_9) ---
+stdout: 7647cf3a
+
+stderr: [2026-04-30T18:57:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7647cf3a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:2 (session_9) ---
+stdout: 08ef9804
+
+stderr: [2026-04-30T18:57:16Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=08ef9804 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:3 (session_9) ---
+stdout: 6d0701f5
+
+stderr: [2026-04-30T18:57:19Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6d0701f5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:4 (session_9) ---
+stdout: 3c37ad44
+
+stderr: [2026-04-30T18:57:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=3c37ad44 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:5 (session_9) ---
+stdout: a5a0669d
+
+stderr: [2026-04-30T18:57:26Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a5a0669d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:6 (session_9) ---
+stdout: af7af874
+
+stderr: [2026-04-30T18:57:35Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=af7af874 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:7 (session_9) ---
+stdout: 086d3c5a
+
+stderr: [2026-04-30T18:57:39Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=086d3c5a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:8 (session_9) ---
+stdout: 8cc4e138
+
+stderr: [2026-04-30T18:57:45Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8cc4e138 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:9 (session_9) ---
+stdout: 9e89aa7b
+
+stderr: [2026-04-30T18:57:47Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9e89aa7b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:10 (session_9) ---
+stdout: cfcc0018
+
+stderr: [2026-04-30T18:57:52Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=cfcc0018 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:11 (session_9) ---
+stdout: 2bf5b804
+
+stderr: [2026-04-30T18:57:56Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2bf5b804 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:12 (session_9) ---
+stdout: ac78209e
+
+stderr: [2026-04-30T18:57:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ac78209e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:13 (session_9) ---
+stdout: eb67b701
+
+stderr: [2026-04-30T18:58:03Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=eb67b701 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:14 (session_9) ---
+stdout: 8de51077
+
+stderr: [2026-04-30T18:58:06Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8de51077 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:15 (session_9) ---
+stdout: deb8c238
+
+stderr: [2026-04-30T18:58:08Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=deb8c238 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:16 (session_9) ---
+stdout: 65c1559b
+
+stderr: [2026-04-30T18:58:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=65c1559b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D9:17 (session_9) ---
+stdout: 24252194
+
+stderr: [2026-04-30T18:58:16Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=24252194 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:1 (session_10) ---
+stdout: 5046af1d
+
+stderr: [2026-04-30T18:58:18Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5046af1d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:2 (session_10) ---
+stdout: b694f9f9
+
+stderr: [2026-04-30T18:58:20Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b694f9f9 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:3 (session_10) ---
+stdout: e47ba4e5
+
+stderr: [2026-04-30T18:58:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e47ba4e5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:4 (session_10) ---
+stdout: d6b595e2
+
+stderr: [2026-04-30T18:58:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d6b595e2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:5 (session_10) ---
+stdout: 0e251046
+
+stderr: [2026-04-30T18:58:34Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0e251046 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:6 (session_10) ---
+stdout: 47e9d77f
+
+stderr: [2026-04-30T18:58:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=47e9d77f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:7 (session_10) ---
+stdout: fd436620
+
+stderr: [2026-04-30T18:58:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=fd436620 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:8 (session_10) ---
+stdout: 008e9bc7
+
+stderr: [2026-04-30T18:58:44Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=008e9bc7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:9 (session_10) ---
+stdout: b24a824e
+
+stderr: [2026-04-30T18:58:47Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b24a824e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:10 (session_10) ---
+stdout: 9e248300
+
+stderr: [2026-04-30T18:58:51Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9e248300 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:11 (session_10) ---
+stdout: b597ce39
+
+stderr: [2026-04-30T18:58:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b597ce39 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:12 (session_10) ---
+stdout: 2162d169
+
+stderr: [2026-04-30T18:58:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2162d169 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:13 (session_10) ---
+stdout: c6b962e3
+
+stderr: [2026-04-30T18:59:01Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c6b962e3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:14 (session_10) ---
+stdout: da2f4d52
+
+stderr: [2026-04-30T18:59:05Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=da2f4d52 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:15 (session_10) ---
+stdout: b481401d
+
+stderr: [2026-04-30T18:59:09Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b481401d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:16 (session_10) ---
+stdout: 872fa2d3
+
+stderr: [2026-04-30T18:59:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=872fa2d3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:17 (session_10) ---
+stdout: 7d1d1fe5
+
+stderr: [2026-04-30T18:59:17Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7d1d1fe5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:18 (session_10) ---
+stdout: bbd95de9
+
+stderr: [2026-04-30T18:59:21Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bbd95de9 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:19 (session_10) ---
+stdout: 3dc89ce1
+
+stderr: [2026-04-30T18:59:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=3dc89ce1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:20 (session_10) ---
+stdout: 5e890f4d
+
+stderr: [2026-04-30T18:59:29Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5e890f4d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:21 (session_10) ---
+stdout: 36e07a0c
+
+stderr: [2026-04-30T18:59:32Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=36e07a0c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:22 (session_10) ---
+stdout: 259ec7ce
+
+stderr: [2026-04-30T18:59:34Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=259ec7ce error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:23 (session_10) ---
+stdout: a64ca03d
+
+stderr: [2026-04-30T18:59:37Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a64ca03d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D10:24 (session_10) ---
+stdout: 29bb0735
+
+stderr: [2026-04-30T18:59:39Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=29bb0735 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:1 (session_11) ---
+stdout: 2d1e0437
+
+stderr: [2026-04-30T18:59:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2d1e0437 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:2 (session_11) ---
+stdout: 48b601de
+
+stderr: [2026-04-30T18:59:46Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=48b601de error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:3 (session_11) ---
+stdout: 4a02b94b
+
+stderr: [2026-04-30T18:59:49Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4a02b94b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:4 (session_11) ---
+stdout: 2ca66b9e
+
+stderr: [2026-04-30T18:59:53Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2ca66b9e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:5 (session_11) ---
+stdout: 5edbf27b
+
+stderr: [2026-04-30T18:59:57Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5edbf27b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:6 (session_11) ---
+stdout: 5fd42d51
+
+stderr: [2026-04-30T19:00:01Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5fd42d51 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:7 (session_11) ---
+stdout: 1a1d6ea7
+
+stderr: [2026-04-30T19:00:05Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1a1d6ea7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:8 (session_11) ---
+stdout: 1221b72b
+
+stderr: [2026-04-30T19:00:13Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1221b72b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:9 (session_11) ---
+stdout: 87fff46a
+
+stderr: [2026-04-30T19:00:17Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=87fff46a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:10 (session_11) ---
+stdout: 0b77a651
+
+stderr: [2026-04-30T19:00:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0b77a651 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:11 (session_11) ---
+stdout: 9f0fdfe0
+
+stderr: [2026-04-30T19:00:27Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9f0fdfe0 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:12 (session_11) ---
+stdout: 95738f95
+
+stderr: [2026-04-30T19:00:33Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=95738f95 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:13 (session_11) ---
+stdout: f8e18446
+
+stderr: [2026-04-30T19:00:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f8e18446 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:14 (session_11) ---
+stdout: 5cc63f85
+
+stderr: [2026-04-30T19:00:47Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5cc63f85 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:15 (session_11) ---
+stdout: 11f8c434
+
+stderr: [2026-04-30T19:00:51Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=11f8c434 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:16 (session_11) ---
+stdout: 8f66ba4f
+
+stderr: [2026-04-30T19:00:55Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8f66ba4f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D11:17 (session_11) ---
+stdout: 31ecf769
+
+stderr: [2026-04-30T19:00:56Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=31ecf769 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:1 (session_12) ---
+stdout: 9db73179
+
+stderr: [2026-04-30T19:01:01Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9db73179 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:2 (session_12) ---
+stdout: 842a1cc8
+
+stderr: [2026-04-30T19:01:06Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=842a1cc8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:3 (session_12) ---
+stdout: a92a269a
+
+stderr: [2026-04-30T19:01:10Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a92a269a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:4 (session_12) ---
+stdout: d90e4144
+
+stderr: [2026-04-30T19:01:16Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d90e4144 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:5 (session_12) ---
+stdout: 8b327c69
+
+stderr: [2026-04-30T19:01:18Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8b327c69 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:6 (session_12) ---
+stdout: 556d81df
+
+stderr: [2026-04-30T19:01:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=556d81df error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:7 (session_12) ---
+stdout: 86687652
+
+stderr: [2026-04-30T19:01:27Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=86687652 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:8 (session_12) ---
+stdout: fbcc9dfe
+
+stderr: [2026-04-30T19:01:32Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=fbcc9dfe error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:9 (session_12) ---
+stdout: 949288ec
+
+stderr: [2026-04-30T19:01:36Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=949288ec error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:10 (session_12) ---
+stdout: 8139cb37
+
+stderr: [2026-04-30T19:01:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8139cb37 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:11 (session_12) ---
+stdout: 4f971c33
+
+stderr: [2026-04-30T19:01:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4f971c33 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:12 (session_12) ---
+stdout: 1001471b
+
+stderr: [2026-04-30T19:01:44Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1001471b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:13 (session_12) ---
+stdout: 9dcff3b0
+
+stderr: [2026-04-30T19:01:46Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9dcff3b0 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:14 (session_12) ---
+stdout: a8c42a9f
+
+stderr: [2026-04-30T19:01:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a8c42a9f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:15 (session_12) ---
+stdout: 65b98db0
+
+stderr: [2026-04-30T19:01:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=65b98db0 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:16 (session_12) ---
+stdout: 7b6a6194
+
+stderr: [2026-04-30T19:02:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7b6a6194 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:17 (session_12) ---
+stdout: 597bde8a
+
+stderr: [2026-04-30T19:02:08Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=597bde8a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:18 (session_12) ---
+stdout: 5004c892
+
+stderr: [2026-04-30T19:02:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5004c892 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:19 (session_12) ---
+stdout: 7629070a
+
+stderr: [2026-04-30T19:02:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7629070a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:20 (session_12) ---
+stdout: d173697d
+
+stderr: [2026-04-30T19:02:17Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d173697d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D12:21 (session_12) ---
+stdout: d372d9e0
+
+stderr: [2026-04-30T19:02:21Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d372d9e0 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:1 (session_13) ---
+stdout: bbc6de55
+
+stderr: [2026-04-30T19:02:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bbc6de55 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:2 (session_13) ---
+stdout: 2683f536
+
+stderr: [2026-04-30T19:02:30Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2683f536 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:3 (session_13) ---
+stdout: 4ab6eaff
+
+stderr: [2026-04-30T19:02:32Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4ab6eaff error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:4 (session_13) ---
+stdout: 5f1c7dd4
+
+stderr: [2026-04-30T19:02:37Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5f1c7dd4 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:5 (session_13) ---
+stdout: bdccba9a
+
+stderr: [2026-04-30T19:02:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bdccba9a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:6 (session_13) ---
+stdout: eb221aac
+
+stderr: [2026-04-30T19:02:50Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=eb221aac error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:7 (session_13) ---
+stdout: 1234a892
+
+stderr: [2026-04-30T19:02:56Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1234a892 error=stage failure: persist: invariant violation: entity embedding dim mismatch
+
+
+--- D13:8 (session_13) ---
+stdout: ebbbec42
+
+stderr: [2026-04-30T19:02:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ebbbec42 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:9 (session_13) ---
+stdout: df25592d
+
+stderr: [2026-04-30T19:03:02Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=df25592d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:10 (session_13) ---
+stdout: f3f66d7e
+
+stderr: [2026-04-30T19:03:10Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f3f66d7e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:11 (session_13) ---
+stdout: 8e992f88
+
+stderr: [2026-04-30T19:03:15Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8e992f88 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:12 (session_13) ---
+stdout: 960ca9e1
+
+stderr: [2026-04-30T19:03:19Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=960ca9e1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:13 (session_13) ---
+stdout: b73d907d
+
+stderr: [2026-04-30T19:03:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b73d907d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:14 (session_13) ---
+stdout: 77b5187a
+
+stderr: [2026-04-30T19:03:30Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=77b5187a error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:15 (session_13) ---
+stdout: ea28d8c7
+
+stderr: [2026-04-30T19:03:36Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ea28d8c7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:16 (session_13) ---
+stdout: 304acb10
+
+stderr: [2026-04-30T19:03:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=304acb10 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:17 (session_13) ---
+stdout: 48df2d5d
+
+stderr: [2026-04-30T19:03:44Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=48df2d5d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D13:18 (session_13) ---
+stdout: 9fb82ad7
+
+stderr: [2026-04-30T19:03:46Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=9fb82ad7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:1 (session_14) ---
+stdout: 92adeee9
+
+stderr: [2026-04-30T19:03:49Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=92adeee9 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:2 (session_14) ---
+stdout: 6d0d943c
+
+stderr: [2026-04-30T19:03:53Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6d0d943c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:3 (session_14) ---
+stdout: 6c3792a7
+
+stderr: [2026-04-30T19:03:55Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6c3792a7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:4 (session_14) ---
+stdout: 09f34fee
+
+stderr: [2026-04-30T19:03:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=09f34fee error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:5 (session_14) ---
+stdout: 696be3bf
+
+stderr: [2026-04-30T19:04:01Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=696be3bf error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:6 (session_14) ---
+stdout: 75acb991
+
+stderr: [2026-04-30T19:04:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=75acb991 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:7 (session_14) ---
+stdout: a5325ae7
+
+stderr: [2026-04-30T19:04:09Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a5325ae7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:8 (session_14) ---
+stdout: 4ec48477
+
+stderr: [2026-04-30T19:04:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4ec48477 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:9 (session_14) ---
+stdout: b2a7ee47
+
+stderr: [2026-04-30T19:04:18Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b2a7ee47 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:10 (session_14) ---
+stdout: faeaa3a2
+
+stderr: [2026-04-30T19:04:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=faeaa3a2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:11 (session_14) ---
+stdout: e9eb1b72
+
+stderr: [2026-04-30T19:04:26Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e9eb1b72 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:12 (session_14) ---
+stdout: 060a6120
+
+stderr: [2026-04-30T19:04:30Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=060a6120 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:13 (session_14) ---
+stdout: 8ec1cc33
+
+stderr: [2026-04-30T19:04:36Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8ec1cc33 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:14 (session_14) ---
+stdout: 32b9b9a8
+
+stderr: [2026-04-30T19:04:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=32b9b9a8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:15 (session_14) ---
+stdout: 389f5a65
+
+stderr: [2026-04-30T19:04:47Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=389f5a65 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:16 (session_14) ---
+stdout: aa1c7ff1
+
+stderr: [2026-04-30T19:04:50Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=aa1c7ff1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:17 (session_14) ---
+stdout: a75a7d1f
+
+stderr: [2026-04-30T19:04:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a75a7d1f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:18 (session_14) ---
+stdout: 02193285
+
+stderr: [2026-04-30T19:04:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=02193285 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:19 (session_14) ---
+stdout: a7a23ec4
+
+stderr: [2026-04-30T19:05:02Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a7a23ec4 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:20 (session_14) ---
+stdout: 0951ef09
+
+stderr: [2026-04-30T19:05:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0951ef09 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:21 (session_14) ---
+stdout: 6929576c
+
+stderr: [2026-04-30T19:05:09Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6929576c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:22 (session_14) ---
+stdout: dc87a1ad
+
+stderr: [2026-04-30T19:05:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=dc87a1ad error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:23 (session_14) ---
+stdout: 546c80d3
+
+stderr: [2026-04-30T19:05:16Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=546c80d3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:24 (session_14) ---
+stdout: 038aec37
+
+stderr: [2026-04-30T19:05:19Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=038aec37 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:25 (session_14) ---
+stdout: b8ff462c
+
+stderr: [2026-04-30T19:05:21Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b8ff462c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:26 (session_14) ---
+stdout: ebc165ec
+
+stderr: [2026-04-30T19:05:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ebc165ec error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:27 (session_14) ---
+stdout: 78eb66fd
+
+stderr: [2026-04-30T19:05:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=78eb66fd error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:28 (session_14) ---
+stdout: 060c1b86
+
+stderr: [2026-04-30T19:05:30Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=060c1b86 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:29 (session_14) ---
+stdout: b9f0bb32
+
+stderr: [2026-04-30T19:05:33Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b9f0bb32 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:30 (session_14) ---
+stdout: b6c29af3
+
+stderr: [2026-04-30T19:05:37Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b6c29af3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:31 (session_14) ---
+stdout: 62b10bd7
+
+stderr: [2026-04-30T19:05:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=62b10bd7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:32 (session_14) ---
+stdout: a0493195
+
+stderr: [2026-04-30T19:05:45Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a0493195 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:33 (session_14) ---
+stdout: ac78209e
+
+stderr: 
+
+--- D14:34 (session_14) ---
+stdout: 67fdf4e5
+
+stderr: [2026-04-30T19:05:50Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=67fdf4e5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D14:35 (session_14) ---
+stdout: 7dd7ebd1
+
+stderr: [2026-04-30T19:05:54Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7dd7ebd1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:1 (session_15) ---
+stdout: c7325812
+
+stderr: [2026-04-30T19:05:58Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c7325812 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:2 (session_15) ---
+stdout: ecbf6ac9
+
+stderr: [2026-04-30T19:06:30Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ecbf6ac9 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:3 (session_15) ---
+stdout: e81759fa
+
+stderr: [2026-04-30T19:06:34Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=e81759fa error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:4 (session_15) ---
+stdout: 331a3aff
+
+stderr: [2026-04-30T19:06:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=331a3aff error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:5 (session_15) ---
+stdout: dd1018fe
+
+stderr: [2026-04-30T19:06:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=dd1018fe error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:6 (session_15) ---
+stdout: 57e6dea7
+
+stderr: [2026-04-30T19:06:45Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=57e6dea7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:7 (session_15) ---
+stdout: d49124cd
+
+stderr: [2026-04-30T19:06:49Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d49124cd error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:8 (session_15) ---
+stdout: 42136082
+
+stderr: [2026-04-30T19:06:52Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=42136082 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:9 (session_15) ---
+stdout: 1bd68962
+
+stderr: [2026-04-30T19:06:56Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1bd68962 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:10 (session_15) ---
+stdout: 5e119864
+
+stderr: [2026-04-30T19:06:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5e119864 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:11 (session_15) ---
+stdout: 78c9809d
+
+stderr: [2026-04-30T19:07:02Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=78c9809d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:12 (session_15) ---
+stdout: 665f8181
+
+stderr: [2026-04-30T19:07:05Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=665f8181 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:13 (session_15) ---
+stdout: ce0fa484
+
+stderr: [2026-04-30T19:07:07Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ce0fa484 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:14 (session_15) ---
+stdout: 18400d1d
+
+stderr: [2026-04-30T19:07:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=18400d1d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:15 (session_15) ---
+stdout: bd0ad563
+
+stderr: [2026-04-30T19:07:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bd0ad563 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:16 (session_15) ---
+stdout: 6b677337
+
+stderr: [2026-04-30T19:07:18Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6b677337 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:17 (session_15) ---
+stdout: dcb88cc1
+
+stderr: [2026-04-30T19:07:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=dcb88cc1 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:18 (session_15) ---
+stdout: 2fd3d91d
+
+stderr: [2026-04-30T19:07:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2fd3d91d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:19 (session_15) ---
+stdout: f71e972f
+
+stderr: [2026-04-30T19:07:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f71e972f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:20 (session_15) ---
+stdout: 114b3dc2
+
+stderr: [2026-04-30T19:07:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=114b3dc2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:21 (session_15) ---
+stdout: 94a869ab
+
+stderr: [2026-04-30T19:07:35Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=94a869ab error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:22 (session_15) ---
+stdout: 0c2d82cb
+
+stderr: [2026-04-30T19:07:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0c2d82cb error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:23 (session_15) ---
+stdout: 20844412
+
+stderr: [2026-04-30T19:07:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=20844412 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:24 (session_15) ---
+stdout: 552df5bf
+
+stderr: [2026-04-30T19:07:45Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=552df5bf error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:25 (session_15) ---
+stdout: b76fcc34
+
+stderr: [2026-04-30T19:07:48Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b76fcc34 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:26 (session_15) ---
+stdout: f9c1dd13
+
+stderr: [2026-04-30T19:07:52Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f9c1dd13 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:27 (session_15) ---
+stdout: 981c338f
+
+stderr: [2026-04-30T19:07:56Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=981c338f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D15:28 (session_15) ---
+stdout: a10abc14
+
+stderr: [2026-04-30T19:07:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a10abc14 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:1 (session_16) ---
+stdout: 72edbdda
+
+stderr: [2026-04-30T19:08:03Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=72edbdda error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:2 (session_16) ---
+stdout: 630d2487
+
+stderr: [2026-04-30T19:08:07Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=630d2487 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:3 (session_16) ---
+stdout: 5c40a437
+
+stderr: [2026-04-30T19:08:09Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5c40a437 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:4 (session_16) ---
+stdout: 0cfa0141
+
+stderr: [2026-04-30T19:08:13Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0cfa0141 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:5 (session_16) ---
+stdout: 6a1cd4c2
+
+stderr: [2026-04-30T19:08:18Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6a1cd4c2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:6 (session_16) ---
+stdout: c749464c
+
+stderr: [2026-04-30T19:08:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c749464c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:7 (session_16) ---
+stdout: f2a6ad86
+
+stderr: [2026-04-30T19:08:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=f2a6ad86 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:8 (session_16) ---
+stdout: 4f1bf084
+
+stderr: [2026-04-30T19:08:29Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4f1bf084 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:9 (session_16) ---
+stdout: 48e25ec3
+
+stderr: [2026-04-30T19:08:35Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=48e25ec3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:10 (session_16) ---
+stdout: 8d8a2348
+
+stderr: [2026-04-30T19:08:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8d8a2348 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:11 (session_16) ---
+stdout: 09215d53
+
+stderr: [2026-04-30T19:08:46Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=09215d53 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:12 (session_16) ---
+stdout: 1ee4e6d2
+
+stderr: [2026-04-30T19:08:50Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1ee4e6d2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:13 (session_16) ---
+stdout: 025b7707
+
+stderr: [2026-04-30T19:08:56Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=025b7707 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:14 (session_16) ---
+stdout: de04b2ca
+
+stderr: [2026-04-30T19:09:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=de04b2ca error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:15 (session_16) ---
+stdout: b071492c
+
+stderr: [2026-04-30T19:09:10Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b071492c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:16 (session_16) ---
+stdout: 80cfa8b7
+
+stderr: [2026-04-30T19:09:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=80cfa8b7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:17 (session_16) ---
+stdout: 44fbf4ee
+
+stderr: [2026-04-30T19:09:18Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=44fbf4ee error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:18 (session_16) ---
+stdout: a50c5301
+
+stderr: [2026-04-30T19:09:20Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a50c5301 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:19 (session_16) ---
+stdout: b51757fc
+
+stderr: [2026-04-30T19:09:24Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b51757fc error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D16:20 (session_16) ---
+stdout: 52124ba8
+
+stderr: [2026-04-30T19:09:26Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=52124ba8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:1 (session_17) ---
+stdout: ee5ba9f7
+
+stderr: [2026-04-30T19:09:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ee5ba9f7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:2 (session_17) ---
+stdout: 700ac737
+
+stderr: [2026-04-30T19:09:34Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=700ac737 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:3 (session_17) ---
+stdout: 3be76c26
+
+stderr: [2026-04-30T19:09:37Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=3be76c26 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:4 (session_17) ---
+stdout: 045e941f
+
+stderr: [2026-04-30T19:09:42Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=045e941f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:5 (session_17) ---
+stdout: 34c2e467
+
+stderr: [2026-04-30T19:09:47Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=34c2e467 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:6 (session_17) ---
+stdout: 7dfad45c
+
+stderr: [2026-04-30T19:09:50Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7dfad45c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:7 (session_17) ---
+stdout: 0bfaeac5
+
+stderr: [2026-04-30T19:09:55Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0bfaeac5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:8 (session_17) ---
+stdout: a2c47c02
+
+stderr: [2026-04-30T19:10:00Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a2c47c02 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:9 (session_17) ---
+stdout: afd4342d
+
+stderr: [2026-04-30T19:10:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=afd4342d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:10 (session_17) ---
+stdout: 5d48cf3f
+
+stderr: [2026-04-30T19:10:08Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5d48cf3f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:11 (session_17) ---
+stdout: 3305d775
+
+stderr: [2026-04-30T19:10:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=3305d775 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:12 (session_17) ---
+stdout: 73603382
+
+stderr: [2026-04-30T19:10:15Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=73603382 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:13 (session_17) ---
+stdout: 5585b6f7
+
+stderr: [2026-04-30T19:10:18Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5585b6f7 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:14 (session_17) ---
+stdout: 07b6f0cd
+
+stderr: [2026-04-30T19:10:23Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=07b6f0cd error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:15 (session_17) ---
+stdout: 4e369c40
+
+stderr: [2026-04-30T19:10:27Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4e369c40 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:16 (session_17) ---
+stdout: 0b2ff624
+
+stderr: [2026-04-30T19:10:31Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=0b2ff624 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:17 (session_17) ---
+stdout: cefbb2bb
+
+stderr: [2026-04-30T19:10:34Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=cefbb2bb error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:18 (session_17) ---
+stdout: 048f7e0d
+
+stderr: [2026-04-30T19:10:38Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=048f7e0d error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:19 (session_17) ---
+stdout: dddd7123
+
+stderr: [2026-04-30T19:10:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=dddd7123 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:20 (session_17) ---
+stdout: 68266f07
+
+stderr: [2026-04-30T19:10:44Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=68266f07 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:21 (session_17) ---
+stdout: bc2dd0fe
+
+stderr: [2026-04-30T19:10:48Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=bc2dd0fe error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:22 (session_17) ---
+stdout: de906974
+
+stderr: [2026-04-30T19:10:51Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=de906974 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:23 (session_17) ---
+stdout: 53f73d6f
+
+stderr: [2026-04-30T19:10:55Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=53f73d6f error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:24 (session_17) ---
+stdout: 33bdee66
+
+stderr: [2026-04-30T19:10:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=33bdee66 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:25 (session_17) ---
+stdout: 603848b0
+
+stderr: [2026-04-30T19:11:02Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=603848b0 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D17:26 (session_17) ---
+stdout: 6062dbdf
+
+stderr: [2026-04-30T19:11:04Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6062dbdf error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:1 (session_18) ---
+stdout: 056a7fcd
+
+stderr: [2026-04-30T19:11:08Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=056a7fcd error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:2 (session_18) ---
+stdout: 280cd249
+
+stderr: [2026-04-30T19:11:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=280cd249 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:3 (session_18) ---
+stdout: fb9a059e
+
+stderr: [2026-04-30T19:11:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=fb9a059e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:4 (session_18) ---
+stdout: 66ec8697
+
+stderr: [2026-04-30T19:11:17Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=66ec8697 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:5 (session_18) ---
+stdout: 5d5a048b
+
+stderr: [2026-04-30T19:11:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5d5a048b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:6 (session_18) ---
+stdout: 2ceeab56
+
+stderr: [2026-04-30T19:11:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2ceeab56 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:7 (session_18) ---
+stdout: ac53186e
+
+stderr: [2026-04-30T19:11:32Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=ac53186e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:8 (session_18) ---
+stdout: 58967514
+
+stderr: [2026-04-30T19:11:36Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=58967514 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:9 (session_18) ---
+stdout: 85fc0d6c
+
+stderr: [2026-04-30T19:11:39Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=85fc0d6c error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:10 (session_18) ---
+stdout: eabc36a8
+
+stderr: [2026-04-30T19:11:41Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=eabc36a8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:11 (session_18) ---
+stdout: df97adf4
+
+stderr: [2026-04-30T19:11:45Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=df97adf4 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:12 (session_18) ---
+stdout: 4cacae90
+
+stderr: [2026-04-30T19:11:48Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=4cacae90 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:13 (session_18) ---
+stdout: 29537419
+
+stderr: [2026-04-30T19:11:51Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=29537419 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:14 (session_18) ---
+stdout: 16225031
+
+stderr: [2026-04-30T19:11:55Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=16225031 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:15 (session_18) ---
+stdout: 6318dadc
+
+stderr: [2026-04-30T19:11:57Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=6318dadc error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:16 (session_18) ---
+stdout: 84e2c655
+
+stderr: [2026-04-30T19:11:59Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=84e2c655 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:17 (session_18) ---
+stdout: 10687ea3
+
+stderr: [2026-04-30T19:12:02Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=10687ea3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:18 (session_18) ---
+stdout: 1f7204bb
+
+stderr: [2026-04-30T19:12:07Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=1f7204bb error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:19 (session_18) ---
+stdout: 83d405e8
+
+stderr: [2026-04-30T19:12:11Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=83d405e8 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:20 (session_18) ---
+stdout: 7bfc5835
+
+stderr: [2026-04-30T19:12:14Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=7bfc5835 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:21 (session_18) ---
+stdout: b99f4a86
+
+stderr: [2026-04-30T19:12:20Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b99f4a86 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:22 (session_18) ---
+stdout: 63aafd55
+
+stderr: [2026-04-30T19:12:23Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=63aafd55 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:23 (session_18) ---
+stdout: b2bc299b
+
+stderr: [2026-04-30T19:12:25Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b2bc299b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D18:24 (session_18) ---
+stdout: 78dea82e
+
+stderr: [2026-04-30T19:12:28Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=78dea82e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:1 (session_19) ---
+stdout: 22f806d6
+
+stderr: [2026-04-30T19:12:34Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=22f806d6 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:2 (session_19) ---
+stdout: 8d1baef3
+
+stderr: [2026-04-30T19:12:37Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=8d1baef3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:3 (session_19) ---
+stdout: d0be8b36
+
+stderr: [2026-04-30T19:12:44Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d0be8b36 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:4 (session_19) ---
+stdout: 474ca4d5
+
+stderr: [2026-04-30T19:12:49Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=474ca4d5 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:5 (session_19) ---
+stdout: a9ddc2b3
+
+stderr: [2026-04-30T19:12:53Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=a9ddc2b3 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:6 (session_19) ---
+stdout: d18e9e9e
+
+stderr: [2026-04-30T19:12:57Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d18e9e9e error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:7 (session_19) ---
+stdout: 2318c00b
+
+stderr: [2026-04-30T19:13:02Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2318c00b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:8 (session_19) ---
+stdout: d2e8f9dc
+
+stderr: [2026-04-30T19:13:06Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=d2e8f9dc error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:9 (session_19) ---
+stdout: c6efb410
+
+stderr: [2026-04-30T19:13:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c6efb410 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:10 (session_19) ---
+stdout: c0ddf495
+
+stderr: [2026-04-30T19:13:15Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=c0ddf495 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:11 (session_19) ---
+stdout: b8258263
+
+stderr: [2026-04-30T19:13:17Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b8258263 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:12 (session_19) ---
+stdout: 5f33c162
+
+stderr: [2026-04-30T19:13:20Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=5f33c162 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:13 (session_19) ---
+stdout: 61197f1b
+
+stderr: [2026-04-30T19:13:22Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=61197f1b error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:14 (session_19) ---
+stdout: adafead2
+
+stderr: [2026-04-30T19:13:26Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=adafead2 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+
+--- D19:15 (session_19) ---
+stdout: 47432b03
+
+stderr: [2026-04-30T19:13:34Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=47432b03 error=processor error: finish_pipeline_run: invariant violation: finish_pipeline_run: run not found
+
+

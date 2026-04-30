@@ -1,0 +1,120 @@
+=== Spreading-Activation Prototype ===
+  graph-db:  .gid/eval-runs/RUN-0008-substrate/locomo-conv26-iss076.graph.db
+  memory-db: .gid/eval-runs/RUN-0008-substrate/locomo-conv26-iss076.db
+  dataset:   /Users/potato/clawd/projects/cogmembench/datasets/locomo/data/locomo10.json
+  namespace: locomo-conv26-iss076
+
+[graph] mentions-table rows loaded: 167
+[graph] ns=locomo-conv26-iss076 entities=113 edges=116 (literal-object skipped for spreading: 0) name_index_keys=113
+[memdb] ns=locomo-conv26-iss076 memories=64
+[graph] distinct predicates in spreading set:
+  caused_by      kind=canonical  count=1    conductance=0.70
+  depends_on     kind=canonical  count=5    conductance=0.60
+  is_a           kind=canonical  count=10   conductance=0.50
+  leads_to       kind=canonical  count=46   conductance=0.70
+  part_of        kind=canonical  count=4    conductance=0.70
+  related_to     kind=canonical  count=34   conductance=0.20
+  uses           kind=canonical  count=16   conductance=0.60
+
+[dataset] in-window multi-hop QAs: 3
+[dataset] running on first 3 in-window multi-hop questions:
+  q1: "What did Caroline research?"  evidence=["D2:8"]
+  q2: "What is Caroline's identity?"  evidence=["D1:5"]
+  q3: "What is Caroline's relationship status?"  evidence=["D3:13", "D2:14"]
+
+=== Question q1: "What did Caroline research?" ===
+Anchors injected (total = 1 entity instances across 1 surface forms):
+  - caroline                       matched 1 entities, total strength=1.000
+Step 0: 1 active, max_act=1.000, sum|act|=1.000 (post-injection)
+Step 1: 36 active, max_act=0.700, sum|act|=7.080, max_delta=0.3350
+Step 2: 56 active, max_act=0.490, sum|act|=10.274, max_delta=0.2100
+Step 3: 57 active, max_act=0.492, sum|act|=11.533, max_delta=0.1470
+Step 4: 57 active, max_act=0.460, sum|act|=11.560, max_delta=0.1029
+Step 5: 60 active, max_act=0.402, sum|act|=10.914, max_delta=0.0720
+Step 6: 60 active, max_act=0.338, sum|act|=9.875, max_delta=0.0643
+Step 7: 60 active, max_act=0.294, sum|act|=8.670, max_delta=0.0619
+Step 8: 60 active, max_act=0.274, sum|act|=7.441, max_delta=0.0552
+Step 9: 60 active, max_act=0.247, sum|act|=6.159, max_delta=0.0469
+Step 10: 60 active, max_act=0.222, sum|act|=4.718, max_delta=0.0521
+Did not converge in 10 steps; using final state.
+Top 5 entities by |activation|:
+  - helping people                 act=+0.222 kind={"other":"unknown"}
+  - providing a loving home to children in need act=+0.216 kind="concept"
+  - school event                   act=+0.208 kind="event"
+  - acceptance                     act=+0.208 kind="concept"
+  - supportive community           act=+0.208 kind="concept"
+Top 5 memory candidates:
+    70719a87 score=1.647 src=D3:5 snippet="Caroline values sharing personal experiences to promote understanding, acceptance, and build supportive commun"
+    e787aea2 score=1.123 src=D3:1 snippet="Caroline gave a talk at a school event about her transgender journey and encouraged student involvement in the"
+  ✓ c7032dd9 score=0.969 src=D2:8 snippet="Caroline is researching adoption agencies with the goal of building a family and providing a loving home to ch"
+    a3b4a9bd score=0.953 src=D1:12 snippet="Melanie: You'd be a great counselor! Your empathy and understanding will really help the people you work with."
+    d0824923 score=0.772 src=D3:3 snippet="Caroline gave a talk where she shared her personal journey, struggles, and development since coming out, which"
+Gold evidence: ["D2:8"]
+Hit@5: YES (D2:8 matched memory c7032dd9)
+Query time: 0 ms
+
+=== Question q2: "What is Caroline's identity?" ===
+Anchors injected (total = 1 entity instances across 1 surface forms):
+  - caroline                       matched 1 entities, total strength=1.000
+Step 0: 1 active, max_act=1.000, sum|act|=1.000 (post-injection)
+Step 1: 36 active, max_act=0.700, sum|act|=7.080, max_delta=0.3350
+Step 2: 56 active, max_act=0.490, sum|act|=10.274, max_delta=0.2100
+Step 3: 57 active, max_act=0.492, sum|act|=11.533, max_delta=0.1470
+Step 4: 57 active, max_act=0.460, sum|act|=11.560, max_delta=0.1029
+Step 5: 60 active, max_act=0.402, sum|act|=10.914, max_delta=0.0720
+Step 6: 60 active, max_act=0.338, sum|act|=9.875, max_delta=0.0643
+Step 7: 60 active, max_act=0.294, sum|act|=8.670, max_delta=0.0619
+Step 8: 60 active, max_act=0.274, sum|act|=7.441, max_delta=0.0552
+Step 9: 60 active, max_act=0.247, sum|act|=6.159, max_delta=0.0469
+Step 10: 60 active, max_act=0.222, sum|act|=4.718, max_delta=0.0521
+Did not converge in 10 steps; using final state.
+Top 5 entities by |activation|:
+  - helping people                 act=+0.222 kind={"other":"unknown"}
+  - providing a loving home to children in need act=+0.216 kind="concept"
+  - school event                   act=+0.208 kind="event"
+  - acceptance                     act=+0.208 kind="concept"
+  - understanding                  act=+0.208 kind="concept"
+Top 5 memory candidates:
+    70719a87 score=1.647 src=D3:5 snippet="Caroline values sharing personal experiences to promote understanding, acceptance, and build supportive commun"
+    e787aea2 score=1.123 src=D3:1 snippet="Caroline gave a talk at a school event about her transgender journey and encouraged student involvement in the"
+    c7032dd9 score=0.969 src=D2:8 snippet="Caroline is researching adoption agencies with the goal of building a family and providing a loving home to ch"
+    a3b4a9bd score=0.953 src=D1:12 snippet="Melanie: You'd be a great counselor! Your empathy and understanding will really help the people you work with."
+    d0824923 score=0.772 src=D3:3 snippet="Caroline gave a talk where she shared her personal journey, struggles, and development since coming out, which"
+Gold evidence: ["D1:5"]
+Hit@5: NO
+Query time: 0 ms
+
+=== Question q3: "What is Caroline's relationship status?" ===
+Anchors injected (total = 1 entity instances across 1 surface forms):
+  - caroline                       matched 1 entities, total strength=1.000
+Step 0: 1 active, max_act=1.000, sum|act|=1.000 (post-injection)
+Step 1: 36 active, max_act=0.700, sum|act|=7.080, max_delta=0.3350
+Step 2: 56 active, max_act=0.490, sum|act|=10.274, max_delta=0.2100
+Step 3: 57 active, max_act=0.492, sum|act|=11.533, max_delta=0.1470
+Step 4: 57 active, max_act=0.460, sum|act|=11.560, max_delta=0.1029
+Step 5: 60 active, max_act=0.402, sum|act|=10.914, max_delta=0.0720
+Step 6: 60 active, max_act=0.338, sum|act|=9.875, max_delta=0.0643
+Step 7: 60 active, max_act=0.294, sum|act|=8.670, max_delta=0.0619
+Step 8: 60 active, max_act=0.274, sum|act|=7.441, max_delta=0.0552
+Step 9: 60 active, max_act=0.247, sum|act|=6.159, max_delta=0.0469
+Step 10: 60 active, max_act=0.222, sum|act|=4.718, max_delta=0.0521
+Did not converge in 10 steps; using final state.
+Top 5 entities by |activation|:
+  - helping people                 act=+0.222 kind={"other":"unknown"}
+  - providing a loving home to children in need act=+0.216 kind="concept"
+  - school event                   act=+0.208 kind="event"
+  - acceptance                     act=+0.208 kind="concept"
+  - understanding                  act=+0.208 kind="concept"
+Top 5 memory candidates:
+    70719a87 score=1.647 src=D3:5 snippet="Caroline values sharing personal experiences to promote understanding, acceptance, and build supportive commun"
+    e787aea2 score=1.123 src=D3:1 snippet="Caroline gave a talk at a school event about her transgender journey and encouraged student involvement in the"
+    c7032dd9 score=0.969 src=D2:8 snippet="Caroline is researching adoption agencies with the goal of building a family and providing a loving home to ch"
+    a3b4a9bd score=0.953 src=D1:12 snippet="Melanie: You'd be a great counselor! Your empathy and understanding will really help the people you work with."
+    d0824923 score=0.772 src=D3:3 snippet="Caroline gave a talk where she shared her personal journey, struggles, and development since coming out, which"
+Gold evidence: ["D3:13", "D2:14"]
+Hit@5: NO
+Query time: 0 ms
+
+=== Overall ===
+hit@5: 1/3 (33.3%)
+Avg query time: 0 ms

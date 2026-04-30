@@ -1,0 +1,765 @@
+=== LoCoMo conv-26 retrieval smoke ===
+  DB:        /Users/potato/clawd/projects/engram/.gid/eval-runs/RUN-0009-substrate/locomo-conv26-full.db
+  Graph DB:  /Users/potato/clawd/projects/engram/.gid/eval-runs/RUN-0009-substrate/locomo-conv26-full.graph.db (will be created)
+  Dataset:   /Users/potato/clawd/projects/cogmembench/datasets/locomo/data/locomo10.json
+  Sessions:  1..=19
+  Top-K:     5
+
+Loaded 197 QAs (out of 199) with evidence in sessions 1..=19
+[2026-04-30T19:19:22Z INFO  engramai::memory] Ollama available at http://localhost:11434, embedding enabled
+Opened memory + installed graph store
+
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline go to the LGBTQ support group?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[ 1/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D1:3"] top=["D1:3", "D10:3"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie paint a sunrise?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[ 2/197] ✗ cat=2 hit=false plan=Factual outcome=ok got=5 | gold=["D1:12"] top=["D1:14", "D14:6"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What fields would Caroline be likely to pursue in her educaton?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[ 3/197] ✗ cat=3 hit=false plan=Factual outcome=ok got=5 | gold=["D1:9", "D1:11"] top=["D17:8", "D13:7"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Caroline research?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[ 4/197] ✗ cat=1 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D2:8"] top=["D1:17", "D17:8"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What is Caroline's identity?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[ 5/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D1:5"] top=["D11:12", "D15:15"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie run a charity race?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[ 6/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D2:1"] top=["D2:2", "D2:1"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When is Melanie planning on going camping?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[ 7/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D2:7"] top=["D2:7", "D8:32"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What is Caroline's relationship status?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[ 8/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D3:13", "D2:14"] top=["D15:15", "D7:15"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline give a speech at a school?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[ 9/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D3:1"] top=["D3:1", "D10:15"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline meet up with her friends, family, and mentors?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[10/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D3:11"] top=["D3:11", "D3:11"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How long has Caroline had her current group of friends for?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[11/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D3:13"] top=["D3:13", "D3:11"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=episodic query_limit=5 query="Where did Caroline move from 4 years ago?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] fallback ENTER trigger=episodic reason=downgraded_from_episodic
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_episodic
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=episodic candidates=10 outcome=downgraded_from_episodic
+[12/197] ✓ cat=1 hit=true plan=Episodic outcome=downgraded_from_episodic got=5 | gold=["D3:13", "D4:3"] top=["D3:13", "D8:29"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How long ago was Caroline's 18th birthday?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[13/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D4:5"] top=["D4:5", "D11:1"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What career path has Caroline decided to persue?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[14/197] ✓ cat=1 hit=true plan=Factual outcome=ok got=5 | gold=["D1:11", "D4:13"] top=["D6:3", "D4:11"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Would Caroline still want to pursue counseling as a career if she hadn't receive"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[15/197] ✗ cat=3 hit=false plan=Factual outcome=ok got=5 | gold=["D4:15", "D3:5"] top=["D7:7", "D5:3"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What activities does Melanie partake in?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[16/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D9:1", "D1:18"] top=["D17:10", "D15:10"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie sign up for a pottery class?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[17/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D5:4"] top=["D5:4", "D14:4"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When is Caroline going to the transgender conference?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[18/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D5:13"] top=["D5:13", "D17:19"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Where has Melanie camped?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[19/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D6:16", "D4:6"] top=["D10:14", "D3:2"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What do Melanie's kids like?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[20/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D4:8", "D6:6"] top=["D8:3", "D10:9"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie go to the museum?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[21/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D6:4"] top=["D6:4", "D1:17"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline have a picnic?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[22/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D6:11"] top=["D6:11", "D10:15"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Would Caroline likely have Dr. Seuss books on her bookshelf?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[23/197] ✓ cat=3 hit=true plan=Factual outcome=ok got=5 | gold=["D6:9"] top=["D6:8", "D7:9"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What books has Melanie read?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[24/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D6:10", "D7:8"] top=["D6:8", "D6:9"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Melanie do to destress?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[25/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D5:4", "D7:22"] top=["D7:20", "D17:22"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline go to the LGBTQ conference?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[26/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D7:1"] top=["D7:1", "D5:13"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie read the book "nothing is impossible"?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[27/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D7:8"] top=["D7:11", "D17:10"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Would Caroline pursue writing as a career option?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[28/197] ✗ cat=3 hit=false plan=Factual outcome=ok got=5 | gold=["D7:9", "D7:5"] top=["D1:9", "D4:11"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline go to the adoption meeting?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[29/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D8:9"] top=["D8:9", "D13:1"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie go to the pottery workshop?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[30/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D8:2"] top=["D8:2", "D14:4"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie go camping in June?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[31/197] ✗ cat=2 hit=false plan=Factual outcome=ok got=5 | gold=["D4:8"] top=["D8:32", "D16:2"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What LGBTQ+ events has Caroline participated in?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[32/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D8:17", "D3:1"] top=["D3:2", "D10:5"]
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=5 query="When did Caroline go to a pride parade during the summer?"
+[2026-04-30T19:19:22Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+[33/197] ✓ cat=2 hit=true plan=Affective outcome=no_cognitive_state got=5 | gold=["D5:1"] top=["D8:17", "D5:1"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What events has Caroline participated in to help children?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[34/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D3:3", "D9:2"] top=["D8:4", "D7:3"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie go camping in July?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[35/197] ✗ cat=2 hit=false plan=Factual outcome=ok got=5 | gold=["D9:1"] top=["D8:32", "D16:2"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline join a mentorship program?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[36/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D9:2"] top=["D9:2", "D14:12"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Melanie paint recently?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[37/197] ✗ cat=1 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D8:6; D9:17"] top=["D13:8", "D14:30"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What activities has Melanie done with her family?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[38/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D8:6", "D1:18"] top=["D2:5", "D3:10"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="In what ways is Caroline participating in the LGBTQ community?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[39/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D9:12", "D9:2"] top=["D3:2", "D14:34"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How many times has Melanie gone to the beach in 2023?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[40/197] ✓ cat=1 hit=true plan=Factual outcome=ok got=5 | gold=["D10:8", "D6:16"] top=["D10:8", "D14:8"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline join a new activist group?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[41/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D10:3"] top=["D10:3", "D1:3"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="Would Melanie be more interested in going to a national park or a theme park?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[42/197] ✗ cat=3 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D10:12", "D10:14"] top=["D15:2", "D16:19"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of art does Caroline make?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[43/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D11:8", "D9:14"] top=["D11:9", "D17:22"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When is Melanie's daughter's birthday?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[44/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D11:1"] top=["D11:1", "D10:20"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=5 query="When did Caroline attend a pride parade in August?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+[45/197] ✓ cat=2 hit=true plan=Affective outcome=no_cognitive_state got=5 | gold=["D11:4"] top=["D8:17", "D5:1"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Who supports Caroline when she has a negative experience?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[46/197] ✓ cat=1 hit=true plan=Factual outcome=ok got=5 | gold=["D12:1", "D3:11"] top=["D12:1", "D12:1"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What types of pottery have Melanie and her kids made?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[47/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D12:14", "D8:4"] top=["D8:2", "D14:4"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=5 query="When did Caroline and Melanie go to a pride fesetival together?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+[48/197] ✓ cat=2 hit=true plan=Affective outcome=no_cognitive_state got=5 | gold=["D12:15"] top=["D9:6", "D12:15"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What would Caroline's political leaning likely be?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[49/197] ✗ cat=3 hit=false plan=Factual outcome=ok got=5 | gold=["D12:1"] top=["D13:6", "D14:24"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What has Melanie painted?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[50/197] ✗ cat=1 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D8:6", "D1:12"] top=["D8:8", "D17:14"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What are Melanie's pets' names?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[51/197] ✓ cat=1 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D7:18", "D13:4"] top=["D7:18", "D7:17"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline apply to adoption agencies?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[52/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D13:1"] top=["D13:1", "D2:10"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline draw a self-portrait?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[53/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D13:11"] top=["D13:11", "D13:11"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What subject have Caroline and Melanie both painted?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[54/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D14:5", "D8:6"] top=["D8:8", "D1:14"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What symbols are important to Caroline?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[55/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D14:15", "D4:1"] top=["D14:13", "D18:4"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline encounter people on a hike and have a negative experience?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[56/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D14:1"] top=["D14:1", "D12:1"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie make a plate in pottery class?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[57/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D14:4"] top=["D14:4", "D5:4"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Would Caroline be considered religious?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[58/197] ✓ cat=3 hit=true plan=Factual outcome=ok got=5 | gold=["D12:1", "D14:19"] top=["D12:1", "D14:24"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What instruments does Melanie play?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[59/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D15:26", "D2:5"] top=["D15:25", "D15:18"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What musical artists/bands has Melanie seen?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[60/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D15:16", "D11:3"] top=["D14:35", "D15:15"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie go to the park?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[61/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D15:2"] top=["D16:19", "D15:2"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When is Caroline's youth center putting on a talent show?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[62/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D15:11"] top=["D15:11", "D15:9"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Would Melanie likely enjoy the song "The Four Seasons" by Vivaldi?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[63/197] ✗ cat=3 hit=false plan=Factual outcome=ok got=5 | gold=["D15:28"] top=["D15:16", "D8:39"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What are some changes Caroline has faced during her transition journey?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[64/197] ✓ cat=1 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D11:14", "D16:15"] top=["D3:2", "D6:15"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Melanie do with her family on hikes?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[65/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D16:4", "D10:12"] top=["D8:32", "D18:20"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline go biking with friends?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[66/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D16:1"] top=["D16:1", "D3:11"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How long has Melanie been practicing art?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[67/197] ✗ cat=2 hit=false plan=Factual outcome=ok got=5 | gold=["D16:8"] top=["D16:7", "D6:1"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What personality traits might Melanie say Caroline has?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[68/197] ✗ cat=3 hit=false plan=Factual outcome=ok got=5 | gold=["D13:16", "D7:4"] top=["D3:2", "D10:1"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What transgender-specific events has Caroline attended?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[69/197] ✓ cat=1 hit=true plan=Factual outcome=ok got=5 | gold=["D17:19", "D15:13"] top=["D5:13", "D17:19"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What book did Melanie read from Caroline's suggestion?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[70/197] ✓ cat=1 hit=true plan=Factual outcome=ok got=5 | gold=["D7:11", "D17:10"] top=["D17:10", "D6:9"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie's friend adopt a child?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[71/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D17:3"] top=["D17:4", "D17:4"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie get hurt?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[72/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D17:8"] top=["D17:8", "D10:15"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie's family go on a roadtrip?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[73/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D18:1"] top=["D18:1", "D8:32"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How many children does Melanie have?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[74/197] ✗ cat=1 hit=false plan=Factual outcome=ok got=5 | gold=["D18:1", "D18:7"] top=["D13:2", "D2:14"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=episodic query_limit=5 query="When did Melanie go on a hike after the roadtrip?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=episodic reason=downgraded_from_episodic
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_episodic
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=episodic candidates=10 outcome=downgraded_from_episodic
+[75/197] ✓ cat=1 hit=true plan=Episodic outcome=downgraded_from_episodic got=5 | gold=["D18:17"] top=["D18:17", "D12:1"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Would Melanie go on another roadtrip soon?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[76/197] ✓ cat=3 hit=true plan=Factual outcome=ok got=5 | gold=["D18:1", "D18:3"] top=["D18:1", "D1:18"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What items has Melanie bought?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[77/197] ✓ cat=1 hit=true plan=Factual outcome=ok got=5 | gold=["D19:2", "D7:18"] top=["D3:2", "D19:2"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Caroline pass the adoption interview?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[78/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D19:1"] top=["D19:1", "D19:2"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="When did Melanie buy the figurines?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[79/197] ✓ cat=2 hit=true plan=Factual outcome=ok got=5 | gold=["D19:2"] top=["D19:2", "D18:6"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Would Caroline want to move back to her home country soon?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[80/197] ✓ cat=3 hit=true plan=Factual outcome=ok got=5 | gold=["D19:3", "D19:1"] top=["D3:13", "D8:29"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did the charity race raise awareness for?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[81/197] ✓ cat=4 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D2:2"] top=["D2:2", "D2:1"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="What did Melanie realize after the charity race?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[82/197] ∅ cat=4 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D2:3"] top=[]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How does Melanie prioritize self-care?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[83/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D2:5"] top=["D2:4", "D2:3"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What are Caroline's plans for the summer?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[84/197] ✗ cat=4 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D2:8"] top=["D1:9", "D17:20"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What type of individuals does the adoption agency Caroline is considering suppor"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[85/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D2:12"] top=["D17:4", "D19:2"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Why did Caroline choose the adoption agency?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[86/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D2:12"] top=["D19:1", "D19:2"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=5 query="What is Caroline excited about in the adoption process?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+[87/197] ✗ cat=4 hit=false plan=Affective outcome=no_cognitive_state got=5 | gold=["D2:14"] top=["D2:13", "D19:2"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Melanie think about Caroline's decision to adopt?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[88/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D2:15"] top=["D17:3", "D12:20"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How long have Mel and her husband been married?"
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[89/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D3:16"] top=["D3:15", "D3:17"]
+[2026-04-30T19:19:23Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Caroline's necklace symbolize?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[90/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D4:3"] top=["D4:2", "D4:3"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What country is Caroline's grandma from?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[91/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D4:3"] top=["D3:13", "D9:9"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was grandma's gift to Caroline?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[92/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D4:3"] top=["D4:3", "D19:11"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What is Melanie's hand-painted bowl a reminder of?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[93/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D4:5"] top=["D4:5", "D4:5"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Melanie and her family do while camping?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[94/197] ✗ cat=4 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D4:8"] top=["D8:32", "D4:6"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of counseling and mental health services is Caroline interested in pur"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[95/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D4:13"] top=["D1:11", "D4:12"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What workshop did Caroline attend recently?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[96/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D4:13"] top=["D4:13", "D8:2"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was discussed in the LGBTQ+ counseling workshop?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[97/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D4:13"] top=["D4:13", "D1:11"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What motivated Caroline to pursue counseling?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[98/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D4:15"] top=["D4:14", "D1:11"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of place does Caroline want to create for people?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[99/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D4:15"] top=["D4:12", "D19:5"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Did Melanie make the black and white bowl in the photo?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[100/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D5:8"] top=["D5:7", "D12:5"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of books does Caroline have in her library?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[101/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D6:9"] top=["D6:8", "D6:9"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was Melanie's favorite book from her childhood?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[102/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D6:10"] top=["D6:9", "D9:9"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What book did Caroline recommend to Melanie?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[103/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D7:11"] top=["D17:10", "D7:11"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Caroline take away from the book "Becoming Nicole"?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[104/197] ✗ cat=4 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D7:13"] top=["D7:11", "D7:12"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What are the new shoes that Melanie got used for?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[105/197] ✗ cat=4 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D7:19"] top=["D7:18", "D1:8"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What is Melanie's reason for getting into running?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[106/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D7:21"] top=["D7:21", "D13:14"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Melanie say running has been great for?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[107/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D7:24"] top=["D7:21", "D7:20"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Mel and her kids make during the pottery workshop?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[108/197] ✓ cat=4 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D8:2"] top=["D8:2", "D8:4"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of pot did Mel and her kids make with clay?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[109/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D8:4"] top=["D8:4", "D18:6"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What creative project do Mel and her kids do together besides pottery?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[110/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D8:5"] top=["D8:5", "D12:2"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Mel and her kids paint in their latest project in July 2023?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[111/197] ✗ cat=4 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D8:6"] top=["D8:2", "D12:2"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Caroline see at the council meeting for adoption?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[112/197] ✓ cat=4 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D8:9"] top=["D8:9", "D17:7"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What do sunflowers represent according to Caroline?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[113/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D8:11"] top=["D8:11", "D8:12"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Why are flowers important to Melanie?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[114/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D8:12"] top=["D8:12", "D14:26"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What inspired Caroline's painting for the art show?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[115/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D9:16"] top=["D9:14", "D9:12"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How often does Melanie go to the beach with her kids?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[116/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D10:10"] top=["D10:8", "D10:10"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="What did Melanie and her family see during their camping trip last year?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[117/197] ∅ cat=4 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D10:14"] top=[]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=5 query="How did Melanie feel while watching the meteor shower?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+[118/197] ✗ cat=4 hit=false plan=Affective outcome=no_cognitive_state got=5 | gold=["D10:18"] top=["D10:16", "D10:14"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Whose birthday did Melanie celebrate recently?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[119/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D11:1"] top=["D8:14", "D11:1"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Who performed at the concert at Melanie's daughter's birthday?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[120/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D11:3"] top=["D11:1", "D3:1"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="Why did Melanie choose to use colors and patterns in her pottery project?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[121/197] ✗ cat=4 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D12:6"] top=["D12:2", "D12:5"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What pet does Caroline have?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[122/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D13:3"] top=["D7:15", "D13:2"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What pets does Melanie have?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[123/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D13:4"] top=["D7:16", "D7:15"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Where did Oliver hide his bone once?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[124/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D13:6"] top=["D13:6", "D14:22"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What activity did Caroline used to do with her dad?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[125/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D13:7"] top=["D13:7", "D10:9"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Caroline make for a local church?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[126/197] ✗ cat=4 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D14:17"] top=["D14:19", "D14:28"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Caroline find in her neighborhood during her walk?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[127/197] ✓ cat=4 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D14:23"] top=["D14:23", "D14:22"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Which song motivates Caroline to be courageous?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[128/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D15:23"] top=["D15:24", "D4:11"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Which  classical musicians does Melanie enjoy listening to?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[129/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D15:28"] top=["D15:28", "D8:39"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Who is Melanie a fan of in terms of modern music?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[130/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D15:28"] top=["D15:28", "D15:18"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How long has Melanie been creating art?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[131/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D16:7"] top=["D16:7", "D13:11"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What precautionary sign did Melanie see at the café?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[132/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D16:16"] top=["D16:18", "D16:17"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What advice does Caroline give for getting started with adoption?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[133/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D17:7"] top=["D17:1", "D13:1"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What setback did Melanie face in October 2023?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[134/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D17:8"] top=["D10:15", "D8:18"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Melanie do to keep herself busy during her pottery break?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[135/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D17:10"] top=["D17:8", "D17:10"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What painting did Melanie show to Caroline on October 13, 2023?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[136/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D17:12"] top=["D9:14", "D8:6"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of painting did Caroline share with Melanie on October 13, 2023?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[137/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D17:14"] top=["D8:6", "D8:7"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was the poetry reading that Caroline attended about?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[138/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D17:18"] top=["D17:17", "D17:19"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did the posters at the poetry reading say?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[139/197] ✓ cat=4 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D17:19"] top=["D17:17", "D17:20"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Caroline's drawing symbolize for her?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[140/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D17:23"] top=["D17:22", "D17:23"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How do Melanie and Caroline describe their journey through life together?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[141/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D17:25"] top=["D3:8", "D17:26"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What happened to Melanie's son on their road trip?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[142/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D18:1"] top=["D18:1", "D18:3"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How did Melanie's son handle the accident?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[143/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D18:6", "D18:7"] top=["D18:1", "D18:2"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="How did Melanie feel about her family after the accident?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Affective
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Affective outcome=DowngradedNoSelfState items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Affective items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[144/197] ∅ cat=4 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D18:5"] top=[]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How did Melanie's children handle the accident?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[145/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D18:7"] top=["D18:6", "D18:1"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="How did Melanie feel after the accident?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Affective
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Affective outcome=DowngradedNoSelfState items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Affective items=0
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[146/197] ∅ cat=4 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D18:5"] top=[]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was Melanie's reaction to her children enjoying the Grand Canyon?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[147/197] ✓ cat=4 hit=true plan=Factual outcome=ok got=5 | gold=["D18:5"] top=["D18:5", "D10:9"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What do Melanie's family give her?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[148/197] ✗ cat=4 hit=false plan=Factual outcome=ok got=5 | gold=["D18:9"] top=["D8:32", "D2:10"]
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=5 query="How did Melanie feel about her family supporting her?"
+[2026-04-30T19:19:24Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+[149/197] ✗ cat=4 hit=false plan=Affective outcome=no_cognitive_state got=5 | gold=["D18:13"] top=["D3:10", "D8:32"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="What did Melanie do after the road trip to relax?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[150/197] ∅ cat=4 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D18:17"] top=[]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="What did Caroline realize after her charity race?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[151/197] ∅ cat=5 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D2:3"] top=[]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What are Melanie's plans for the summer with respect to adoption?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[152/197] ✗ cat=5 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D2:8"] top=["D13:1", "D17:1"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What type of individuals does the adoption agency Melanie is considering support"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[153/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D2:12"] top=["D17:4", "D19:2"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Why did Melanie choose the adoption agency?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[154/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D2:12"] top=["D19:1", "D19:2"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=5 query="What is Melanie excited about in her adoption process?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+[155/197] ✗ cat=5 hit=false plan=Affective outcome=no_cognitive_state got=5 | gold=["D2:14"] top=["D2:13", "D19:2"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Melanie's necklace symbolize?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[156/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D4:3"] top=["D4:2", "D4:3"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What country is Melanie's grandma from?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[157/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D4:3"] top=["D3:13", "D9:9"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was grandma's gift to Melanie?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[158/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D4:3"] top=["D4:3", "D19:11"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was grandpa's gift to Caroline?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[159/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D4:3"] top=["D4:3", "D19:11"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What is Caroline's hand-painted bowl a reminder of?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[160/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D4:5"] top=["D4:5", "D4:5"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Caroline and her family do while camping?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[161/197] ✗ cat=5 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D4:8"] top=["D8:32", "D4:6"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of counseling and mental health services is Melanie interested in purs"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[162/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D4:13"] top=["D1:11", "D4:12"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of counseling workshop did Melanie attend recently?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[163/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D4:13"] top=["D4:13", "D4:12"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What motivated Melanie to pursue counseling?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[164/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D4:15"] top=["D4:14", "D1:11"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What kind of place does Melanie want to create for people?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[165/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D4:15"] top=["D4:12", "D19:5"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Did Caroline make the black and white bowl in the photo?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[166/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D5:8"] top=["D5:7", "D12:5"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What are the new shoes that Caroline got used for?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[167/197] ✗ cat=5 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D7:19"] top=["D7:18", "D1:8"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What is Caroline's reason for getting into running?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[168/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D7:21"] top=["D7:21", "D13:14"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Caroline say running has been great for?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[169/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D7:24"] top=["D7:21", "D7:20"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Melanie see at the council meeting for adoption?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[170/197] ✓ cat=5 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D8:9"] top=["D8:9", "D17:7"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What inspired Melanie's painting for the art show?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[171/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D9:16"] top=["D9:14", "D9:12"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What inspired Caroline's sculpture for the art show?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[172/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D9:16"] top=["D9:14", "D9:12"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How often does Caroline go to the beach with her kids?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[173/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D10:10"] top=["D10:8", "D10:10"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="What did Caroline and her family see during their camping trip last year?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[174/197] ∅ cat=5 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D10:14"] top=[]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=5 query="How did Caroline feel while watching the meteor shower?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+[175/197] ✗ cat=5 hit=false plan=Affective outcome=no_cognitive_state got=5 | gold=["D10:18"] top=["D10:16", "D10:14"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="Why did Caroline choose to use colors and patterns in her pottery project?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[176/197] ✗ cat=5 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D12:6"] top=["D12:2", "D12:5"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Is Oscar Melanie's pet?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[177/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D13:3"] top=["D7:15", "D13:3"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Where did Oscar hide his bone once?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[178/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D13:6"] top=["D13:6", "D10:15"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What activity did Melanie used to do with her dad?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[179/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D13:7"] top=["D13:7", "D10:9"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Melanie make for a local church?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[180/197] ✗ cat=5 hit=false plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D14:17"] top=["D14:19", "D14:28"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=5 query="What did Melanie find in her neighborhood during her walk?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+[181/197] ✓ cat=5 hit=true plan=Abstract outcome=downgraded_from_abstract got=5 | gold=["D14:23"] top=["D14:23", "D14:22"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Which song motivates Melanie to be courageous?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[182/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D15:23"] top=["D15:24", "D4:11"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What type of instrument does Caroline play?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[183/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D15:26"] top=["D15:18", "D15:25"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Which classical musicians does Caroline enjoy listening to?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[184/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D15:28"] top=["D15:28", "D8:39"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="Who is Caroline a fan of in terms of modern music?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[185/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D15:28"] top=["D15:28", "D15:18"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What precautionary sign did Caroline see at the café?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[186/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D16:16"] top=["D16:18", "D16:17"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What setback did Caroline face recently?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[187/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D17:8"] top=["D10:15", "D7:18"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Caroline do to keep herself busy during her pottery break?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[188/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D17:10"] top=["D17:8", "D17:10"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was the poetry reading that Melanie attended about?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[189/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D17:18"] top=["D17:17", "D17:19"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What happened to Caroline's son on their road trip?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[190/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D18:1"] top=["D18:1", "D18:3"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How did Caroline's son handle the accident?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[191/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D18:7", "D18:6"] top=["D18:1", "D18:2"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="How did Caroline feel about her family after the accident?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Affective
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Affective outcome=DowngradedNoSelfState items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Affective items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[192/197] ∅ cat=5 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D18:5"] top=[]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="How did Caroline's children handle the accident?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[193/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D18:7"] top=["D18:6", "D18:1"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="How did Caroline feel after the accident?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Affective
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Affective outcome=DowngradedNoSelfState items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Affective items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[194/197] ∅ cat=5 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D18:5"] top=[]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What was Caroline's reaction to her children enjoying the Grand Canyon?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[195/197] ✓ cat=5 hit=true plan=Factual outcome=ok got=5 | gold=["D18:5"] top=["D18:5", "D10:9"]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=5 query="What did Caroline do after the road trip to relax?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=DowngradedFromEpisodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=0 outcome=empty_result_set
+[196/197] ∅ cat=5 hit=false plan=Hybrid outcome=empty_result_set got=0 | gold=["D18:17"] top=[]
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=5 query="What does Caroline love most about camping with her family?"
+[2026-04-30T19:19:25Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+[197/197] ✗ cat=5 hit=false plan=Factual outcome=ok got=5 | gold=["D18:21"] top=["D18:20", "D4:6"]
+
+=== Summary ===
+  Total queries:    197
+  Hits @ 5:         100 (50.8%)
+  Empty results:    10 (5.1%)
+
+=== Per-category breakdown ===
+  cat=1 Multi-hop    n=32  hits=10  ( 31.2%)
+  cat=2 Temporal     n=37  hits=33  ( 89.2%)
+  cat=3 Open-ended   n=11  hits=4   ( 36.4%)
+  cat=4 Single-hop   n=70  hits=32  ( 45.7%)
+  cat=5 Adversarial  n=47  hits=21  ( 44.7%)  ← retrieval hit ≠ correctness (gold answer is 'unanswerable')
+
+  Headline hit@5 (cat 1-4 only): 79/150 = 52.7%
+
+=== Per-plan breakdown ===
+  (plan_used = the intent surfaced post-execution; may differ from dispatched plan_kind after downgrade)
+  Abstract       n=25  hits=9   ( 36.0%) empty=0
+  Affective      n=8   hits=3   ( 37.5%) empty=0
+  Episodic       n=2   hits=2   (100.0%) empty=0
+  Factual        n=152 hits=86  ( 56.6%) empty=0
+  Hybrid         n=10  hits=0   (  0.0%) empty=10
+
+=== Per-outcome breakdown ===
+  (RetrievalOutcome slug; non-Ok values indicate plan downgrades or missing substrate)
+  downgraded_from_abstract     n=25
+  downgraded_from_episodic     n=2
+  empty_result_set             n=10
+  no_cognitive_state           n=8
+  ok                           n=152
+
+Tip: rerun with `RUST_LOG=engramai::retrieval=info` (or =debug for classifier scores) to see per-query plan_kind dispatch + sub-plan fan-out.
+     This distinguishes (a) plan never dispatched, (b) dispatched + 0 candidates, (c) dispatched + downgraded.
