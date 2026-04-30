@@ -1,8 +1,12 @@
 # LoCoMo Evaluation Protocol v2 — Plan
 
+> **⚠️ SUPERSEDED 2026-04-30** by [`../docs/locomo-protocol.md`](../docs/locomo-protocol.md).
+> This doc is preserved for historical context (it captures the reasoning
+> that led to the v2 protocol). Do **not** edit. For current protocol, see the link above.
+
 **Date:** 2026-04-29
 **Author:** rustclaw (decided with potato)
-**Status:** Step 1 closed (2026-04-29) — see Verdict at bottom
+**Status:** Step 1 closed (2026-04-29) — see Verdict at bottom; full protocol superseded 2026-04-30.
 **Context:** RUN-0001..0005 showed hit@5 too noisy on n=25 to drive engram v0.3 retrieval decisions. This doc records the chosen fix BEFORE doing it, so we don't forget mid-execution.
 
 ---

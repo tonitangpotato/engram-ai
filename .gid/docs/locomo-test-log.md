@@ -1,5 +1,8 @@
 # LoCoMo Test Log
 
+> **➡️ Protocol lives at [`locomo-protocol.md`](./locomo-protocol.md).** Read that first.
+> This file is the append-only run log it references.
+
 > Append-only log of every LoCoMo benchmark / smoke test run.
 > One entry per run. Most recent at top.
 
