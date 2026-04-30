@@ -135,8 +135,19 @@ enum Commands {
         /// next run (§5.1.1 crash recovery).
         #[arg(long, default_value = "60")]
         graph_drain_timeout_secs: u64,
+
+        /// Caller-owned metadata side-channel (repeatable). Format: `key=value`.
+        /// Values are parsed as JSON when valid (numbers, bools, arrays, objects),
+        /// otherwise stored as a string. Stored under `user_metadata` in the
+        /// memory record — opaque to engram's logic, used for back-mapping by
+        /// callers (benchmark adapters, RAG pipelines, etc.). Repeating a key
+        /// keeps the last value. See docs/metadata-channel.md.
+        ///
+        /// Example: --meta dia_id=D1:3 --meta turn_index=5 --meta tags='["a","b"]'
+        #[arg(long = "meta", value_name = "KEY=VALUE")]
+        meta: Vec<String>,
     },
-    
+
     /// Recall memories by query
     Recall {
         /// Search query
@@ -939,6 +950,94 @@ fn default_graph_db_path(main_db: &std::path::Path) -> PathBuf {
     parent.join(format!("{}.graph.db", stem))
 }
 
+/// Parse repeated `--meta key=value` arguments into a JSON object suitable
+/// for `StorageMeta::user_metadata` (see docs/metadata-channel.md).
+///
+/// Each entry is split on the first `=` (so values may contain `=`).
+/// Values are parsed as JSON when valid (numbers, bools, null, arrays,
+/// objects, quoted strings); otherwise stored as a JSON string preserving
+/// the raw text. Empty keys are an error. Repeated keys: last write wins.
+///
+/// Returns `Ok(None)` when the input vector is empty so callers can pass
+/// `None` to library APIs unchanged in the common case.
+fn parse_meta_kv(entries: &[String]) -> Result<Option<serde_json::Value>, String> {
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let mut map = serde_json::Map::with_capacity(entries.len());
+    for raw in entries {
+        let (k, v) = raw
+            .split_once('=')
+            .ok_or_else(|| format!("--meta '{raw}': missing '='; expected key=value"))?;
+        let key = k.trim();
+        if key.is_empty() {
+            return Err(format!("--meta '{raw}': empty key"));
+        }
+        // Try JSON parse first so callers can pass numbers, bools, arrays
+        // verbatim; fall back to raw string preserves the LoCoMo adapter's
+        // habit of `--meta dia_id=D1:3` (unquoted string).
+        let value: serde_json::Value = match serde_json::from_str(v) {
+            Ok(parsed) => parsed,
+            Err(_) => serde_json::Value::String(v.to_string()),
+        };
+        map.insert(key.to_string(), value);
+    }
+    Ok(Some(serde_json::Value::Object(map)))
+}
+
+#[cfg(test)]
+mod meta_kv_tests {
+    use super::parse_meta_kv;
+    use serde_json::json;
+
+    #[test]
+    fn empty_input_returns_none() {
+        assert!(parse_meta_kv(&[]).unwrap().is_none());
+    }
+
+    #[test]
+    fn parses_string_number_and_json_array() {
+        let out = parse_meta_kv(&[
+            "dia_id=D1:3".to_string(),
+            "turn_index=5".to_string(),
+            "tags=[\"a\",\"b\"]".to_string(),
+            "is_first=true".to_string(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(out["dia_id"], json!("D1:3"));
+        assert_eq!(out["turn_index"], json!(5));
+        assert_eq!(out["tags"], json!(["a", "b"]));
+        assert_eq!(out["is_first"], json!(true));
+    }
+
+    #[test]
+    fn value_with_equals_sign_kept_intact() {
+        let out = parse_meta_kv(&["url=https://x.com/a?b=c".to_string()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(out["url"], json!("https://x.com/a?b=c"));
+    }
+
+    #[test]
+    fn last_write_wins_on_duplicate_key() {
+        let out = parse_meta_kv(&["k=1".to_string(), "k=2".to_string()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(out["k"], json!(2));
+    }
+
+    #[test]
+    fn missing_equals_is_error() {
+        assert!(parse_meta_kv(&["bare_key".to_string()]).is_err());
+    }
+
+    #[test]
+    fn empty_key_is_error() {
+        assert!(parse_meta_kv(&["=value".to_string()]).is_err());
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
@@ -1118,7 +1217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         
-        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, graph_db, no_graph, graph_drain_timeout_secs } => {
+        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, graph_db, no_graph, graph_drain_timeout_secs, meta } => {
             // === ISS-046: install v0.3 graph layer pipeline pool ===
             // Default ON: ingest writes to <main_db>.graph.db unless --no-graph.
             // Triple extractor: reuses --auth-token if Anthropic mode chosen,
@@ -1190,6 +1289,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             
+            // === Parse --meta KEY=VALUE side-channel (ISS-081) ===
+            // Caller-owned opaque metadata. Stored verbatim under
+            // user_metadata for back-mapping. See docs/metadata-channel.md.
+            let user_meta = parse_meta_kv(&meta)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
             // If emotion is provided, use add_with_emotion
             let id = if let (Some(em), Some(dom)) = (emotion, domain.as_ref()) {
                 mem.add_with_emotion(
@@ -1197,7 +1302,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     r#type.into(),
                     importance,
                     source.as_deref(),
-                    None,
+                    user_meta.clone(),
                     Some(&ns),
                     em,
                     dom,
@@ -1208,7 +1313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     r#type.into(),
                     importance,
                     source.as_deref(),
-                    None,
+                    user_meta,
                     Some(&ns),
                 )?
             };
