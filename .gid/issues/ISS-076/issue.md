@@ -83,3 +83,51 @@ sqlite3 .gid/eval-runs/RUN-0007-substrate/locomo-conv26-iss072.graph.db \
 # Expected (current): 125 | 113
 # Expected (fixed):   0   | 0
 ```
+
+---
+
+## Phase A retrieval impact (RUN-0008, 2026-04-30)
+
+After applying the dangling-UUID fix (commit `f95480b`) and re-ingesting LoCoMo conv-26, ran the same 25-query retrieval suite as RUN-0007 baseline. Compared head-to-head:
+
+**Plumbing (AC-1/2/3): all green**
+- Dangling subject edges: 125 → **0**
+- Dangling object edges: 113 → **0**
+- Caroline entity copies: 27 → **1** (deduped via canonical alias)
+- Caroline outgoing edges: 0 (on any single copy) → **>0** (on the deduped entity)
+
+**Retrieval hit@5: essentially flat**
+
+| Metric | RUN-0007 baseline | RUN-0008 post-fix | Δ |
+|---|---|---|---|
+| Total hit@5 | 12/25 (48.0%) | 13/25 (52.0%) | +1 |
+| Headline hit@5 (cat 1–4) | 10/20 (50.0%) | 10/20 (50.0%) | 0 |
+| Empty result sets | 2 | 2 | 0 |
+
+The single +1 hit moved on Q22 (cat=5 Adversarial / Abstract plan, downgraded) — a boundary case, not a structural improvement. Per-category and per-plan breakdowns are otherwise identical to baseline.
+
+**What this falsifies**
+
+The hypothesis that *entity dedup is a retrieval bottleneck* on this dataset. Headline hit@5 is dominated by the Factual plan (17/25 queries), which retrieves chunks via text/embedding similarity directly — entity-level edges don't sit on that path. Multiplying Caroline 27× was a real defect (and a genuine substrate bug), but it wasn't the thing holding hit@k back.
+
+**What's still broken (separate root causes, not blocked on ISS-076)**
+
+- **Hybrid plan: 0/2, both `empty_result_set`** (`DowngradedFromEpisodic` → `DowngradedL5Unavailable`). Plan dispatch falls off a cliff before any retrieval substrate is consulted.
+- **Multi-hop (cat=1): 0/3.** No graph traversal ever fires; queries are answered by Factual plan with chunk similarity only.
+- **Affective: 0/2, no_cognitive_state.** Substrate not wired.
+
+These are the actual hit@k levers. Tracked separately:
+
+- ISS-075 Phase B (sync embedding wiring on entities) — necessary but probably *not* sufficient on its own; will help Hybrid only after Hybrid stops downgrading.
+- Hybrid/Multi-hop plan executor wiring — likely the bigger lever; needs separate diagnostic before scoping.
+
+**Conclusion**
+
+ISS-076 is **substantively complete** — the bug it described is fixed and verified end-to-end. Its retrieval impact is null/marginal on this benchmark, which is a useful negative result: it tells us where the next lever is *not*.
+
+Closing with status = fixed-validated; downstream work tracked under ISS-075 Phase B and a (yet-to-be-filed) Hybrid-plan-downgrade investigation.
+
+**Artifacts**
+- Substrate: `.gid/eval-runs/RUN-0008-substrate/locomo-conv26-iss076.{db,graph.db}`
+- Ingestion log: `.gid/eval-runs/RUN-0008-substrate/ingest.log`
+- Retrieval log: `.gid/eval-runs/RUN-0008-substrate/RUN-0008-post-fix.log`
