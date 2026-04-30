@@ -44,7 +44,7 @@ pub fn insert_test_entity(
     last_seen: DateTime<Utc>,
     embedding: Option<Vec<f32>>,
 ) -> Entity {
-    let mut e = Entity::new(name.into(), kind, last_seen);
+    let mut e = Entity::new_random_id(name.into(), kind, last_seen);
     e.last_seen = last_seen;
     e.embedding = embedding;
     store.insert_entity(&e).expect("insert ok");

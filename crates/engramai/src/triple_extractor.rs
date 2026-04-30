@@ -7,6 +7,7 @@ use std::error::Error;
 use std::time::Duration;
 
 use crate::extractor::TokenProvider;
+use crate::graph::EntityKind;
 use crate::triple::{Predicate, Triple, TripleSource};
 
 /// Trait for extracting triples from memory content.
@@ -49,15 +50,22 @@ const TRIPLE_EXTRACTION_PROMPT: &str = r#"Extract subject-predicate-object tripl
 
 Allowed predicates: is_a, part_of, uses, depends_on, caused_by, leads_to, implements, contradicts, related_to
 
+Allowed entity kinds (optional, for subject_kind and object_kind):
+  Person, Organization, Place, Concept, Artifact, Event, Topic
+
+If the entity kind is unclear or doesn't fit the above, OMIT the field — do not
+guess. Anything outside this allowlist is dropped (it does NOT fall through to
+an "Other" bucket).
+
 Return ONLY a JSON array (no markdown, no explanation):
-[{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.X}]
+[{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.X, "subject_kind": "Person", "object_kind": "Organization"}]
 
 Examples:
 Input: "Rust's borrow checker prevents data races at compile time"
-Output: [{"subject": "borrow checker", "predicate": "part_of", "object": "Rust", "confidence": 0.9}, {"subject": "borrow checker", "predicate": "leads_to", "object": "prevention of data races", "confidence": 0.8}]
+Output: [{"subject": "borrow checker", "predicate": "part_of", "object": "Rust", "confidence": 0.9, "object_kind": "Artifact"}, {"subject": "borrow checker", "predicate": "leads_to", "object": "prevention of data races", "confidence": 0.8}]
 
 Input: "The Memory struct uses SQLite for persistence"
-Output: [{"subject": "Memory struct", "predicate": "uses", "object": "SQLite", "confidence": 0.9}, {"subject": "SQLite", "predicate": "implements", "object": "persistence", "confidence": 0.8}]
+Output: [{"subject": "Memory struct", "predicate": "uses", "object": "SQLite", "confidence": 0.9, "object_kind": "Artifact"}, {"subject": "SQLite", "predicate": "implements", "object": "persistence", "confidence": 0.8, "subject_kind": "Artifact", "object_kind": "Concept"}]
 
 If nothing worth extracting, return empty array [].
 
@@ -96,6 +104,10 @@ fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + S
         predicate: String,
         object: String,
         confidence: f64,
+        #[serde(default)]
+        subject_kind: Option<String>,
+        #[serde(default)]
+        object_kind: Option<String>,
     }
 
     match serde_json::from_str::<Vec<RawTriple>>(json_to_parse) {
@@ -104,6 +116,8 @@ fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + S
                 .into_iter()
                 .filter(|t| !t.subject.is_empty() && !t.object.is_empty())
                 .map(|t| {
+                    let subject_kind_hint = parse_kind_hint(t.subject_kind.as_deref());
+                    let object_kind_hint = parse_kind_hint(t.object_kind.as_deref());
                     let mut triple = Triple::new(
                         t.subject,
                         Predicate::from_str_lossy(&t.predicate),
@@ -111,6 +125,8 @@ fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + S
                         t.confidence,
                     );
                     triple.source = TripleSource::Llm;
+                    triple.subject_kind_hint = subject_kind_hint;
+                    triple.object_kind_hint = object_kind_hint;
                     triple
                 })
                 .collect();
@@ -119,6 +135,42 @@ fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + S
         Err(e) => {
             log::warn!("Failed to parse triple extraction JSON: {} - content: {}", e, json_to_parse);
             Ok(vec![])
+        }
+    }
+}
+
+/// Map the LLM's `subject_kind` / `object_kind` string (from `RawTriple`) to
+/// `EntityKind`. Returns `None` for empty / unknown / out-of-allowlist strings;
+/// callers fall back to `KindSource::Default`.
+///
+/// The allowlist mirrors the canonical `EntityKind` variants exactly (see
+/// `graph/entity.rs`). `Other(_)` is intentionally excluded — the LLM must
+/// not be able to mint arbitrary kinds via this path. Pressure to add a new
+/// kind should turn into a real variant via code review, not a smuggled
+/// `Other` string.
+///
+/// Out-of-allowlist hits are logged at debug level for observability — if the
+/// LLM keeps suggesting `"Animal"`, that's a signal we should add the variant,
+/// not patch the prompt.
+pub(crate) fn parse_kind_hint(s: Option<&str>) -> Option<EntityKind> {
+    let s = s?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    match s {
+        "Person" => Some(EntityKind::Person),
+        "Organization" => Some(EntityKind::Organization),
+        "Place" => Some(EntityKind::Place),
+        "Concept" => Some(EntityKind::Concept),
+        "Artifact" => Some(EntityKind::Artifact),
+        "Event" => Some(EntityKind::Event),
+        "Topic" => Some(EntityKind::Topic),
+        other => {
+            log::debug!(
+                "triple_extractor: dropping out-of-allowlist kind hint: {:?}",
+                other
+            );
+            None
         }
     }
 }
@@ -346,5 +398,78 @@ mod tests {
         let response = r#"[{"subject": "X", "predicate": "uses", "object": "Y", "confidence": 1.5}]"#;
         let triples = parse_triple_response(response).unwrap();
         assert!((triples[0].confidence - 1.0).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // ISS-072 GOAL-2 (A-clean) — kind hint propagation tests.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_kind_hint_recognizes_all_canonical_variants() {
+        // Design test #4 — every canonical EntityKind variant maps from its
+        // PascalCase string. Other(_) is intentionally NOT mappable.
+        assert_eq!(parse_kind_hint(Some("Person")), Some(EntityKind::Person));
+        assert_eq!(
+            parse_kind_hint(Some("Organization")),
+            Some(EntityKind::Organization)
+        );
+        assert_eq!(parse_kind_hint(Some("Place")), Some(EntityKind::Place));
+        assert_eq!(parse_kind_hint(Some("Concept")), Some(EntityKind::Concept));
+        assert_eq!(parse_kind_hint(Some("Artifact")), Some(EntityKind::Artifact));
+        assert_eq!(parse_kind_hint(Some("Event")), Some(EntityKind::Event));
+        assert_eq!(parse_kind_hint(Some("Topic")), Some(EntityKind::Topic));
+    }
+
+    #[test]
+    fn parse_kind_hint_drops_out_of_allowlist_strings() {
+        // Design test #5 — out-of-allowlist hits return None (drop), they do
+        // NOT fall through to EntityKind::Other. The LLM must not mint kinds.
+        assert_eq!(parse_kind_hint(Some("Animal")), None);
+        assert_eq!(parse_kind_hint(Some("Location")), None); // common alias
+        assert_eq!(parse_kind_hint(Some("person")), None); // case-sensitive
+        assert_eq!(parse_kind_hint(Some("")), None);
+        assert_eq!(parse_kind_hint(Some("   ")), None);
+        assert_eq!(parse_kind_hint(None), None);
+    }
+
+    #[test]
+    fn parse_triple_response_propagates_kind_hints_onto_triple() {
+        // Design test #7 — kind hints in the JSON show up on the parsed
+        // Triple via subject_kind_hint / object_kind_hint.
+        let response = r#"[{"subject": "Caroline", "predicate": "works_at", "object": "Acme", "confidence": 0.9, "subject_kind": "Person", "object_kind": "Organization"}]"#;
+        let triples = parse_triple_response(response).unwrap();
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].subject_kind_hint, Some(EntityKind::Person));
+        assert_eq!(triples[0].object_kind_hint, Some(EntityKind::Organization));
+    }
+
+    #[test]
+    fn parse_triple_response_omitted_kind_yields_none_hint() {
+        // Design test #8 — old fixtures (no subject_kind/object_kind) still
+        // parse via #[serde(default)], yielding None hints. Wire-compatible.
+        let response = r#"[{"subject": "X", "predicate": "uses", "object": "Y", "confidence": 0.8}]"#;
+        let triples = parse_triple_response(response).unwrap();
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].subject_kind_hint, None);
+        assert_eq!(triples[0].object_kind_hint, None);
+    }
+
+    #[test]
+    fn parse_triple_response_partial_hint_only_one_side() {
+        // Design test #9 — LLM may give a hint for one endpoint but not the
+        // other; both sides handled independently.
+        let response = r#"[{"subject": "Rust", "predicate": "is_a", "object": "language", "confidence": 0.9, "subject_kind": "Artifact"}]"#;
+        let triples = parse_triple_response(response).unwrap();
+        assert_eq!(triples[0].subject_kind_hint, Some(EntityKind::Artifact));
+        assert_eq!(triples[0].object_kind_hint, None);
+    }
+
+    #[test]
+    fn parse_triple_response_unknown_kind_drops_silently() {
+        // Out-of-allowlist kind doesn't break parsing — just drops the hint.
+        let response = r#"[{"subject": "Rex", "predicate": "is_a", "object": "dog", "confidence": 0.9, "subject_kind": "Animal"}]"#;
+        let triples = parse_triple_response(response).unwrap();
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].subject_kind_hint, None); // "Animal" dropped
     }
 }

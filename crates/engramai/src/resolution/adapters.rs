@@ -16,7 +16,7 @@ use crate::entities::{EntityType as V02EntityType, ExtractedEntity};
 use crate::graph::{CanonicalPredicate, EntityKind, Predicate, SomaticFingerprint};
 use crate::triple::Predicate as V02Predicate;
 
-use super::context::DraftEntity;
+use super::context::{DraftEntity, KindSource};
 
 /// Map a v0.2 `EntityType` to a v0.3 `EntityKind`.
 ///
@@ -142,9 +142,20 @@ pub fn draft_entity_from_mention(
         kind,
         aliases: vec![mention.normalized.clone()],
         subtype_hint,
+        // ISS-072 GOAL-2: mention path = curated dictionary / structural regex,
+        // both stronger than a pure LLM-triple guess. The dictionary is
+        // currently empty in production (`EntityConfig::default()`), so this
+        // value is benign today; it becomes load-bearing when the dictionary
+        // is populated or enrichment LLM ships (see design §8).
+        kind_source: KindSource::DictionaryMatch,
         first_seen: occurred_at,
         last_seen: occurred_at,
         somatic_fingerprint: affect_snapshot,
+        // Filled by `stage_extract::extract_entities` after the lift, via
+        // the injected `Embedder`. Keeping the adapter pure (no embedder
+        // dependency) so unit tests of name→draft mapping don't need a
+        // mock.
+        embedding: None,
     }
 }
 
@@ -169,6 +180,7 @@ pub fn draft_entity_from_triple_endpoint(
     name: &str,
     occurred_at: DateTime<Utc>,
     affect_snapshot: Option<SomaticFingerprint>,
+    kind_hint: Option<EntityKind>,
 ) -> DraftEntity {
     // Normalization mirrors `draft_entity_from_mention` aliases: lowercase
     // (which is what `normalize_entity_name` produces for the default case).
@@ -178,14 +190,27 @@ pub fn draft_entity_from_triple_endpoint(
     let trimmed = name.trim();
     let alias = trimmed.to_lowercase();
 
+    // ISS-072 GOAL-2: when the LLM gave us a per-endpoint kind hint, use it
+    // and tag the source as `TripleHint`. Otherwise fall back to the legacy
+    // `Other("unknown")` placeholder and tag as `Default` so future merge
+    // precedence (design §8) can correctly upgrade it.
+    let (kind, kind_source) = match kind_hint {
+        Some(k) => (k, KindSource::TripleHint),
+        None => (EntityKind::other("unknown"), KindSource::Default),
+    };
+
     DraftEntity {
         canonical_name: trimmed.to_string(),
-        kind: EntityKind::other("unknown"),
+        kind,
         aliases: vec![alias],
         subtype_hint: None,
+        kind_source,
         first_seen: occurred_at,
         last_seen: occurred_at,
         somatic_fingerprint: affect_snapshot,
+        // See `draft_entity_from_mention`: embedding is filled by
+        // `stage_extract` after the lift.
+        embedding: None,
     }
 }
 
@@ -426,7 +451,7 @@ mod tests {
         // canonical_name must match what `DraftEdge::subject_name` carries
         // (raw triple string), so `resolve_edges` can do exact-string lookup.
         let now = Utc::now();
-        let draft = draft_entity_from_triple_endpoint("Caroline Martinez", now, None);
+        let draft = draft_entity_from_triple_endpoint("Caroline Martinez", now, None, None);
         assert_eq!(draft.canonical_name, "Caroline Martinez");
     }
 
@@ -435,7 +460,7 @@ mod tests {
         // Alias is the dedup key against pattern-matched mentions, whose
         // aliases are `mention.normalized` (lowercase for default types).
         let now = Utc::now();
-        let draft = draft_entity_from_triple_endpoint("Caroline Martinez", now, None);
+        let draft = draft_entity_from_triple_endpoint("Caroline Martinez", now, None, None);
         assert_eq!(draft.aliases, vec!["caroline martinez".to_string()]);
     }
 
@@ -443,7 +468,7 @@ mod tests {
     fn draft_entity_from_triple_endpoint_trims_whitespace() {
         // LLM edge outputs can have stray whitespace; trim before storing.
         let now = Utc::now();
-        let draft = draft_entity_from_triple_endpoint("  Acme  ", now, None);
+        let draft = draft_entity_from_triple_endpoint("  Acme  ", now, None, None);
         assert_eq!(draft.canonical_name, "Acme");
         assert_eq!(draft.aliases, vec!["acme".to_string()]);
     }
@@ -453,16 +478,19 @@ mod tests {
         // The LLM's edge call didn't classify the entity; we default to
         // `Other("unknown")` (NFKC+lowercase via the sanctioned constructor).
         let now = Utc::now();
-        let draft = draft_entity_from_triple_endpoint("Anything", now, None);
+        let draft = draft_entity_from_triple_endpoint("Anything", now, None, None);
         assert_eq!(draft.kind, EntityKind::Other("unknown".into()));
         assert!(draft.subtype_hint.is_none());
+        // ISS-072 GOAL-2: no hint → source must be Default so future merge
+        // precedence (design §8) can correctly upgrade it.
+        assert_eq!(draft.kind_source, KindSource::Default);
     }
 
     #[test]
     fn draft_entity_from_triple_endpoint_first_seen_eq_last_seen() {
         // Single-mention semantics: first_seen == last_seen at draft time.
         let now = Utc::now();
-        let draft = draft_entity_from_triple_endpoint("Foo", now, None);
+        let draft = draft_entity_from_triple_endpoint("Foo", now, None, None);
         assert_eq!(draft.first_seen, now);
         assert_eq!(draft.last_seen, now);
     }
@@ -471,7 +499,7 @@ mod tests {
     fn draft_entity_from_triple_endpoint_carries_affect_snapshot() {
         let fp = SomaticFingerprint([0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let now = Utc::now();
-        let draft = draft_entity_from_triple_endpoint("Foo", now, Some(fp));
+        let draft = draft_entity_from_triple_endpoint("Foo", now, Some(fp), None);
         assert!(draft.somatic_fingerprint.is_some());
         assert_eq!(draft.somatic_fingerprint.unwrap().0[0], 0.9);
     }
@@ -492,9 +520,52 @@ mod tests {
             entity_type: V02EntityType::Organization,
         };
         let mention_draft = draft_entity_from_mention(&mention, now, None);
-        let lifted_draft = draft_entity_from_triple_endpoint("Acme Corp", now, None);
+        let lifted_draft = draft_entity_from_triple_endpoint("Acme Corp", now, None, None);
 
         // Same alias key → dedup will collapse them.
         assert_eq!(mention_draft.aliases, lifted_draft.aliases);
+    }
+
+    // -----------------------------------------------------------------------
+    // ISS-072 GOAL-2 (A-clean) — kind_source provenance tests.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_with_kind_hint_sets_triple_hint_source() {
+        // Design test #1 — when the LLM gave a per-endpoint kind, the draft
+        // must carry that kind AND mark the source as TripleHint so future
+        // merge precedence (design §8) can reason about provenance.
+        let now = Utc::now();
+        let draft =
+            draft_entity_from_triple_endpoint("Caroline", now, None, Some(EntityKind::Person));
+        assert_eq!(draft.kind, EntityKind::Person);
+        assert_eq!(draft.kind_source, KindSource::TripleHint);
+    }
+
+    #[test]
+    fn draft_entity_from_triple_endpoint_without_hint_sets_default_source() {
+        // Design test #2 — no hint means we still emit a draft, but with
+        // the legacy `Other("unknown")` placeholder and source = Default
+        // so any later signal wins on merge.
+        let now = Utc::now();
+        let draft = draft_entity_from_triple_endpoint("???", now, None, None);
+        assert_eq!(draft.kind, EntityKind::Other("unknown".into()));
+        assert_eq!(draft.kind_source, KindSource::Default);
+    }
+
+    #[test]
+    fn draft_entity_from_mention_sets_dictionary_match_source() {
+        // Design test #3 — the v0.2 mention path (curated dictionary +
+        // structural regex patterns) is conceptually the dictionary path.
+        // Tagged DictionaryMatch so it outranks raw triple hints when the
+        // GOAL-2.b merge precedence lands.
+        let now = Utc::now();
+        let mention = ExtractedEntity {
+            name: "Acme".into(),
+            normalized: "acme".into(),
+            entity_type: V02EntityType::Organization,
+        };
+        let draft = draft_entity_from_mention(&mention, now, None);
+        assert_eq!(draft.kind_source, KindSource::DictionaryMatch);
     }
 }

@@ -213,7 +213,7 @@ mod tests {
         let topic_id = Uuid::new_v4();
         // graph_topics.id has a FK on graph_entities(id). Mirror a Topic
         // entity row before upserting (production path: synthesis.rs §230).
-        let mut e = Entity::new(title.to_string(), EntityKind::Topic, Utc::now());
+        let mut e = Entity::new_random_id(title.to_string(), EntityKind::Topic, Utc::now());
         e.id = topic_id;
         store.insert_entity(&e).expect("insert mirror entity");
 

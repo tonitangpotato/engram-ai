@@ -142,11 +142,21 @@ pub struct Entity {
 }
 
 impl Entity {
-    /// Construct a new canonical entity. All timestamps collapse to `now`,
-    /// scalars zero-out, and provenance / fingerprint start empty.
-    pub fn new(canonical_name: String, kind: EntityKind, now: DateTime<Utc>) -> Self {
+    /// Construct a new canonical entity with a caller-supplied id.
+    ///
+    /// **Why caller-supplied?** ISS-076 root cause: the resolution pipeline
+    /// mints entity ids in `resolve_edges` (so edges can carry `subject_id`
+    /// before persist runs), but persist used to call `Entity::new` which
+    /// minted a *second* random id — the edge endpoints then pointed at
+    /// nonexistent UUIDs. Forcing the caller to provide an id makes that
+    /// class of bug structurally impossible: there is exactly one mint
+    /// site per entity, and downstream code reuses it.
+    ///
+    /// For test code that does not care about id stability, use
+    /// [`Entity::new_random_id`] which generates a v4 UUID for you.
+    pub fn new(id: Uuid, canonical_name: String, kind: EntityKind, now: DateTime<Utc>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id,
             canonical_name,
             kind,
             summary: String::new(),
@@ -167,6 +177,15 @@ impl Entity {
             somatic_fingerprint: None,
             embedding: None,
         }
+    }
+
+    /// Construct a new canonical entity with a freshly minted random id.
+    ///
+    /// **Use only for tests / fixtures that don't care about id provenance.**
+    /// Production code should use [`Entity::new`] with an id minted by the
+    /// resolution pipeline (see ISS-076 for why).
+    pub fn new_random_id(canonical_name: String, kind: EntityKind, now: DateTime<Utc>) -> Self {
+        Self::new(Uuid::new_v4(), canonical_name, kind, now)
     }
 
     /// True iff this entity has been merged into another (i.e. is a merge loser).
@@ -244,7 +263,7 @@ mod tests {
     #[test]
     fn new_entity_invariants() {
         let now = Utc::now();
-        let e = Entity::new("Alice".into(), EntityKind::Person, now);
+        let e = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
         assert!(e.summary.is_empty());
         assert_eq!(e.attributes, serde_json::Value::Object(Default::default()));
         assert!(e.attributes.as_object().unwrap().is_empty());
@@ -313,7 +332,7 @@ mod tests {
     #[test]
     fn serde_roundtrip_entity() {
         let now = Utc::now();
-        let mut e = Entity::new("Alice".into(), EntityKind::Person, now);
+        let mut e = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
         // Use plain finite values; NaN would break PartialEq on the manually
         // compared scalar fields below.
         e.activation = 0.25;
@@ -366,7 +385,7 @@ mod tests {
     #[test]
     fn is_merged_reflects_merged_into() {
         let now = Utc::now();
-        let mut e = Entity::new("X".into(), EntityKind::Concept, now);
+        let mut e = Entity::new_random_id("X".into(), EntityKind::Concept, now);
         assert!(!e.is_merged());
         e.merged_into = Some(Uuid::new_v4());
         assert!(e.is_merged());
@@ -409,7 +428,7 @@ mod tests {
     #[test]
     fn new_entity_has_no_embedding() {
         let now = Utc::now();
-        let e = Entity::new("Alice".into(), EntityKind::Person, now);
+        let e = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
         assert!(e.embedding.is_none());
     }
 
@@ -444,7 +463,7 @@ mod tests {
         // The full `serde_roundtrip_entity` test above doesn't exercise
         // `embedding`; this test pins the new field's wire format.
         let now = Utc::now();
-        let mut e = Entity::new("Topic".into(), EntityKind::Topic, now);
+        let mut e = Entity::new_random_id("Topic".into(), EntityKind::Topic, now);
         e.embedding = Some(vec![0.1, -0.2, 0.3, 0.4]);
 
         let s = serde_json::to_string(&e).unwrap();

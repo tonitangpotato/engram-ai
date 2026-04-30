@@ -71,15 +71,20 @@ fn fixture_draft(name: &str, kind: EntityKind) -> DraftEntity {
         kind,
         aliases: vec![name.to_lowercase()],
         subtype_hint: None,
+        kind_source: crate::resolution::context::KindSource::Default,
         first_seen: now,
         last_seen: now,
         somatic_fingerprint: None,
+        // Default fixture stays embedding-free; tests that assert
+        // embedding flow (build_new_entity wiring, alias upsert in delta)
+        // construct DraftEntity inline with `embedding: Some(...)`.
+        embedding: None,
     }
 }
 
 fn fixture_canonical(name: &str, kind: EntityKind) -> Entity {
     let now = Utc.with_ymd_and_hms(2026, 4, 1, 8, 0, 0).unwrap();
-    let mut e = Entity::new(name.into(), kind, now);
+    let mut e = Entity::new_random_id(name.into(), kind, now);
     e.id = Uuid::new_v4();
     e.identity_confidence = 0.9;
     e
@@ -150,12 +155,7 @@ fn build_delta_empty_inputs_yields_empty_delta() {
 fn build_delta_create_new_emits_one_entity_and_mention() {
     let ctx = fixture_ctx("mem-1");
     let draft = fixture_draft("Alice", EntityKind::Person);
-    let res = EntityResolution {
-        draft_index: 0,
-        draft: draft.clone(),
-        decision: Decision::CreateNew,
-        canonical: None,
-    };
+    let res = EntityResolution::for_test(0, draft.clone(), Decision::CreateNew, None);
     let delta = build_delta(&ctx, &[res], &[]);
     assert_eq!(delta.entities.len(), 1);
     assert_eq!(delta.entities[0].canonical_name, "Alice");
@@ -173,12 +173,12 @@ fn build_delta_merge_into_emits_updated_canonical_and_mention() {
     let canonical = fixture_canonical("Alice", EntityKind::Person);
     let canonical_id = canonical.id;
     let draft = fixture_draft("Alice", EntityKind::Person);
-    let res = EntityResolution {
-        draft_index: 0,
+    let res = EntityResolution::for_test(
+        0,
         draft,
-        decision: Decision::MergeInto { candidate_id: canonical_id },
-        canonical: Some(canonical),
-    };
+        Decision::MergeInto { candidate_id: canonical_id },
+        Some(canonical),
+    );
     let delta = build_delta(&ctx, &[res], &[]);
     assert_eq!(delta.entities.len(), 1, "MergeInto upserts the canonical row");
     assert_eq!(delta.entities[0].id, canonical_id);
@@ -196,12 +196,12 @@ fn build_delta_merge_into_emits_updated_canonical_and_mention() {
 fn build_delta_merge_into_without_canonical_records_failure_skips_mention() {
     let ctx = fixture_ctx("mem-3");
     let draft = fixture_draft("Bob", EntityKind::Person);
-    let res = EntityResolution {
-        draft_index: 0,
+    let res = EntityResolution::for_test(
+        0,
         draft,
-        decision: Decision::MergeInto { candidate_id: Uuid::new_v4() },
-        canonical: None, // bug: caller forgot to load it
-    };
+        Decision::MergeInto { candidate_id: Uuid::new_v4() },
+        None, // bug: caller forgot to load it
+    );
     let delta = build_delta(&ctx, &[res], &[]);
     assert!(delta.entities.is_empty());
     assert!(delta.mentions.is_empty());
@@ -214,12 +214,12 @@ fn build_delta_merge_into_without_canonical_records_failure_skips_mention() {
 fn build_delta_defer_to_llm_records_failure_no_entity_no_mention() {
     let ctx = fixture_ctx("mem-4");
     let draft = fixture_draft("Charlie", EntityKind::Person);
-    let res = EntityResolution {
-        draft_index: 0,
+    let res = EntityResolution::for_test(
+        0,
         draft,
-        decision: Decision::DeferToLlm { candidate_id: Uuid::new_v4() },
-        canonical: None,
-    };
+        Decision::DeferToLlm { candidate_id: Uuid::new_v4() },
+        None,
+    );
     let delta = build_delta(&ctx, &[res], &[]);
     assert!(delta.entities.is_empty());
     assert!(delta.mentions.is_empty());
@@ -232,16 +232,66 @@ fn build_delta_create_new_carries_subtype_hint_into_attributes() {
     let ctx = fixture_ctx("mem-5");
     let mut draft = fixture_draft("README.md", EntityKind::Artifact);
     draft.subtype_hint = Some("file".into());
-    let res = EntityResolution {
-        draft_index: 0,
+    let res = EntityResolution::for_test(
+        0,
         draft,
-        decision: Decision::CreateNew,
-        canonical: None,
-    };
+        Decision::CreateNew,
+        None,
+    );
     let delta = build_delta(&ctx, &[res], &[]);
     let attrs = &delta.entities[0].attributes;
     let hint = attrs.get("subtype_hint").and_then(|v| v.as_str());
     assert_eq!(hint, Some("file"));
+}
+
+#[test]
+fn build_delta_create_new_persists_kind_source_via_serde() {
+    // ISS-072 GOAL-2 design test #6 — kind_source must be persisted into
+    // attributes["kind_source"] using serde (PascalCase variant name), NOT
+    // Debug formatting. The on-disk string is an explicit contract; the
+    // GOAL-2.b merge precedence will round-trip via the same contract.
+    let ctx = fixture_ctx("mem-7");
+    let mut draft = fixture_draft("Caroline", EntityKind::Person);
+    draft.kind_source = crate::resolution::context::KindSource::TripleHint;
+    let res = EntityResolution::for_test(
+        0,
+        draft,
+        Decision::CreateNew,
+        None,
+    );
+    let delta = build_delta(&ctx, &[res], &[]);
+    let attrs = &delta.entities[0].attributes;
+    let raw = attrs
+        .get("kind_source")
+        .expect("kind_source must be persisted on every new entity");
+    // Must be a JSON string (NOT a number, object, or quoted Debug output)
+    assert_eq!(raw.as_str(), Some("TripleHint"));
+    // Round-trip via serde must give back the original variant.
+    let round_trip: crate::resolution::context::KindSource =
+        serde_json::from_value(raw.clone()).expect("round-trip parse");
+    assert_eq!(round_trip, crate::resolution::context::KindSource::TripleHint);
+}
+
+#[test]
+fn build_delta_create_new_persists_kind_source_default_when_no_hint() {
+    // Even when the source is Default (no hint), the field must be present —
+    // otherwise the GOAL-2.b merge logic can't distinguish "no signal" from
+    // "missing field, must backfill".
+    let ctx = fixture_ctx("mem-8");
+    let mut draft = fixture_draft("Unknown thing", EntityKind::Other("unknown".into()));
+    draft.kind_source = crate::resolution::context::KindSource::Default;
+    let res = EntityResolution::for_test(
+        0,
+        draft,
+        Decision::CreateNew,
+        None,
+    );
+    let delta = build_delta(&ctx, &[res], &[]);
+    let attrs = &delta.entities[0].attributes;
+    assert_eq!(
+        attrs.get("kind_source").and_then(|v| v.as_str()),
+        Some("Default")
+    );
 }
 
 #[test]
@@ -253,12 +303,12 @@ fn build_delta_mention_text_uses_extracted_entity_name_when_available() {
         entity_type: EntityType::Person,
     });
     let draft = fixture_draft("Alice", EntityKind::Person);
-    let res = EntityResolution {
-        draft_index: 0,
+    let res = EntityResolution::for_test(
+        0,
         draft,
-        decision: Decision::CreateNew,
-        canonical: None,
-    };
+        Decision::CreateNew,
+        None,
+    );
     let delta = build_delta(&ctx, &[res], &[]);
     assert_eq!(delta.mentions[0].mention_text, "Alice K.");
 }
@@ -267,12 +317,12 @@ fn build_delta_mention_text_uses_extracted_entity_name_when_available() {
 fn build_delta_mention_text_falls_back_to_canonical_when_extracted_missing() {
     let ctx = fixture_ctx("mem-7"); // no extracted_entities
     let draft = fixture_draft("Alice", EntityKind::Person);
-    let res = EntityResolution {
-        draft_index: 0,
+    let res = EntityResolution::for_test(
+        0,
         draft,
-        decision: Decision::CreateNew,
-        canonical: None,
-    };
+        Decision::CreateNew,
+        None,
+    );
     let delta = build_delta(&ctx, &[res], &[]);
     assert_eq!(delta.mentions[0].mention_text, "Alice");
 }
@@ -548,12 +598,12 @@ fn build_delta_combines_ctx_failures_and_locally_generated() {
         "candidate_retrieval",
         "store unavailable",
     ));
-    let res = EntityResolution {
-        draft_index: 0,
-        draft: fixture_draft("Bob", EntityKind::Person),
-        decision: Decision::DeferToLlm { candidate_id: Uuid::new_v4() },
-        canonical: None,
-    };
+    let res = EntityResolution::for_test(
+        0,
+        fixture_draft("Bob", EntityKind::Person),
+        Decision::DeferToLlm { candidate_id: Uuid::new_v4() },
+        None,
+    );
     let delta = build_delta(&ctx, &[res], &[]);
     // Should have both the carried Resolve failure and the persist-stage
     // unresolved_defer.
@@ -591,18 +641,18 @@ fn build_delta_full_run_combines_entities_edges_mentions_predicates() {
     let bob_canonical = fixture_canonical("Bob", EntityKind::Person);
     let bob_id = bob_canonical.id;
     let entity_decisions = vec![
-        EntityResolution {
-            draft_index: 0,
-            draft: fixture_draft("Alice", EntityKind::Person),
-            decision: Decision::CreateNew,
-            canonical: None,
-        },
-        EntityResolution {
-            draft_index: 1,
-            draft: fixture_draft("Bob", EntityKind::Person),
-            decision: Decision::MergeInto { candidate_id: bob_id },
-            canonical: Some(bob_canonical),
-        },
+        EntityResolution::for_test(
+            0,
+            fixture_draft("Alice", EntityKind::Person),
+            Decision::CreateNew,
+            None,
+        ),
+        EntityResolution::for_test(
+            1,
+            fixture_draft("Bob", EntityKind::Person),
+            Decision::MergeInto { candidate_id: bob_id },
+            Some(bob_canonical),
+        ),
     ];
 
     let prior = fixture_prior_edge(
@@ -748,12 +798,12 @@ impl ApplyDelta for MockApplier {
 fn drive_persist_ok_returns_outcome_with_delta_and_report() {
     let mut store = MockApplier::ok();
     let mut ctx = fixture_ctx("mem-drive-1");
-    let er = EntityResolution {
-        draft_index: 0,
-        draft: fixture_draft("Alice", EntityKind::Person),
-        decision: Decision::CreateNew,
-        canonical: None,
-    };
+    let er = EntityResolution::for_test(
+        0,
+        fixture_draft("Alice", EntityKind::Person),
+        Decision::CreateNew,
+        None,
+    );
     let outcome = drive_persist(&mut store, &mut ctx, &[er], &[]).expect("ok");
     assert_eq!(outcome.delta.entities.len(), 1);
     assert_eq!(store.deltas.len(), 1);
@@ -765,12 +815,12 @@ fn drive_persist_ok_returns_outcome_with_delta_and_report() {
 fn drive_persist_records_failure_on_apply_error() {
     let mut store = MockApplier::err("boom");
     let mut ctx = fixture_ctx("mem-drive-2");
-    let er = EntityResolution {
-        draft_index: 0,
-        draft: fixture_draft("Alice", EntityKind::Person),
-        decision: Decision::CreateNew,
-        canonical: None,
-    };
+    let er = EntityResolution::for_test(
+        0,
+        fixture_draft("Alice", EntityKind::Person),
+        Decision::CreateNew,
+        None,
+    );
     let result = drive_persist(&mut store, &mut ctx, &[er], &[]);
     assert!(result.is_err());
     assert!(ctx.has_failures());
@@ -786,12 +836,12 @@ fn drive_persist_passes_built_delta_verbatim_to_store() {
     // receives. Guards against accidental mutation in the driver.
     let mut store = MockApplier::ok();
     let mut ctx = fixture_ctx("mem-drive-3");
-    let er = EntityResolution {
-        draft_index: 0,
-        draft: fixture_draft("Alice", EntityKind::Person),
-        decision: Decision::CreateNew,
-        canonical: None,
-    };
+    let er = EntityResolution::for_test(
+        0,
+        fixture_draft("Alice", EntityKind::Person),
+        Decision::CreateNew,
+        None,
+    );
     let outcome = drive_persist(&mut store, &mut ctx, &[er], &[]).expect("ok");
     assert_eq!(store.deltas[0].memory_id, outcome.delta.memory_id);
     assert_eq!(store.deltas[0].entities.len(), outcome.delta.entities.len());
@@ -809,4 +859,130 @@ fn drive_persist_empty_inputs_still_calls_apply() {
     assert_eq!(store.deltas.len(), 1);
     assert!(outcome.delta.entities.is_empty());
     assert!(outcome.delta.edges.is_empty());
+}
+
+// ─── ISS-075 regression tests ─────────────────────────────────────────
+//
+// The pipeline must emit alias rows whenever an entity is touched and
+// must propagate the embedding from the draft into the persisted entity.
+// Without these, `search_candidates` returns empty and every mention
+// takes the `CreateNew` shortcut, producing duplicate-entity bugs like
+// the 27× Caroline duplication observed in cogmembench (ISS-075).
+
+#[test]
+fn build_delta_create_new_emits_alias_upsert_for_each_surface_form() {
+    let ctx = fixture_ctx("mem-iss075-create");
+    // Draft with two surface forms: the normalized canonical and a
+    // separate normalized variant. `draft_entity_from_mention` only ever
+    // seeds one alias per draft today, but the algebra must handle Vec
+    // length ≥ 1 generically — covered by this fixture.
+    let mut draft = fixture_draft("Caroline", EntityKind::Person);
+    draft.aliases = vec!["caroline".into(), "carol".into()];
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
+
+    let delta = build_delta(&ctx, &[res], &[]);
+
+    assert_eq!(delta.aliases.len(), 2, "one alias upsert per surface form");
+    let canonical_id = delta.entities[0].id;
+    for alias in &delta.aliases {
+        assert_eq!(
+            alias.canonical_id, canonical_id,
+            "alias must point at the same id stage_extract minted (ISS-076 single-mint)"
+        );
+        assert_eq!(alias.alias_raw, "Caroline", "raw form is the canonical_name");
+        assert_eq!(
+            alias.source_episode,
+            Some(ctx.episode_id),
+            "source_episode tracks where the alias was first observed"
+        );
+    }
+    let normalized: Vec<&str> = delta.aliases.iter().map(|a| a.normalized.as_str()).collect();
+    assert!(normalized.contains(&"caroline"));
+    assert!(normalized.contains(&"carol"));
+}
+
+#[test]
+fn build_delta_merge_into_emits_alias_upsert_to_accrete_new_surface_form() {
+    // MergeInto path: the canonical entity already exists, but this
+    // mention may have arrived under a surface form not yet aliased.
+    // `upsert_alias` is idempotent on the normalized PK, so re-emitting
+    // an existing alias is harmless; emitting a new one accretes the
+    // alias set so future mentions of that form will hit on the merge
+    // path instead of taking the CreateNew shortcut.
+    let ctx = fixture_ctx("mem-iss075-merge");
+    let canonical = fixture_canonical("Caroline", EntityKind::Person);
+    let canonical_id = canonical.id;
+    let mut draft = fixture_draft("Caroline", EntityKind::Person);
+    // Imagine a later episode mentioning her as "Carol" — a new alias
+    // that should be persisted against the same canonical id.
+    draft.canonical_name = "Carol".into();
+    draft.aliases = vec!["carol".into()];
+    let res = EntityResolution::for_test(
+        0,
+        draft,
+        Decision::MergeInto { candidate_id: canonical_id },
+        Some(canonical),
+    );
+
+    let delta = build_delta(&ctx, &[res], &[]);
+
+    assert_eq!(delta.aliases.len(), 1, "one new surface form → one upsert");
+    assert_eq!(delta.aliases[0].canonical_id, canonical_id);
+    assert_eq!(delta.aliases[0].normalized, "carol");
+    assert_eq!(delta.aliases[0].alias_raw, "Carol");
+    assert_eq!(delta.aliases[0].source_episode, Some(ctx.episode_id));
+}
+
+#[test]
+fn build_delta_create_new_with_empty_alias_list_emits_no_alias_rows() {
+    // Defensive: if a future code path produces a draft with no aliases,
+    // we must not insert a degenerate alias row (would violate the
+    // graph_entity_aliases NOT NULL constraint on `normalized`).
+    let ctx = fixture_ctx("mem-iss075-empty");
+    let mut draft = fixture_draft("Alice", EntityKind::Person);
+    draft.aliases = vec![];
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
+
+    let delta = build_delta(&ctx, &[res], &[]);
+
+    assert_eq!(delta.entities.len(), 1, "entity row still emitted");
+    assert!(delta.aliases.is_empty(), "no alias seeds → no alias rows");
+}
+
+#[test]
+fn build_delta_create_new_propagates_embedding_into_entity_row() {
+    // ISS-075 root fix: the embedding computed in stage_extract must
+    // land on the persisted Entity. Without this, every entity is
+    // written embedding-less and the s4 fusion signal is permanently
+    // dark, even if alias rows are present.
+    let ctx = fixture_ctx("mem-iss075-emb");
+    let mut draft = fixture_draft("Alice", EntityKind::Person);
+    let emb: Vec<f32> = (0..384).map(|i| (i as f32) * 0.001).collect();
+    draft.embedding = Some(emb.clone());
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
+
+    let delta = build_delta(&ctx, &[res], &[]);
+
+    assert_eq!(delta.entities.len(), 1);
+    assert_eq!(
+        delta.entities[0].embedding.as_ref(),
+        Some(&emb),
+        "draft.embedding must be copied into the persisted entity (else s4 dark)"
+    );
+}
+
+#[test]
+fn build_delta_create_new_without_embedding_yields_none_on_entity() {
+    // Negative case: if extract failed to produce an embedding (e.g.
+    // embedder transient error), the pipeline is non-fatal — the entity
+    // still persists, just with `embedding: None`.
+    let ctx = fixture_ctx("mem-iss075-emb-none");
+    let draft = fixture_draft("Alice", EntityKind::Person);
+    assert!(draft.embedding.is_none(), "fixture starts embedding-free");
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
+
+    let delta = build_delta(&ctx, &[res], &[]);
+
+    assert_eq!(delta.entities.len(), 1);
+    assert!(delta.entities[0].embedding.is_none());
 }

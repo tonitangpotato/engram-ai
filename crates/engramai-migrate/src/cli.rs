@@ -811,6 +811,7 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
             entity_extractor,
             triple_extractor,
             store_arc.clone(),
+            engramai::resolution::default_embedder(),
             PipelineConfig::default(),
         ));
 

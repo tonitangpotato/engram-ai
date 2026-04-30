@@ -214,6 +214,8 @@ mod tests {
             object: "B".into(),
             confidence: 1.5, // intentional out-of-range
             source: TripleSource::Llm,
+            subject_kind_hint: None,
+            object_kind_hint: None,
         }]);
         let mut ctx = ctx_for("A relates to B.");
         extract_edges(&extractor, &mut ctx).unwrap();

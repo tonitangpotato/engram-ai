@@ -28,6 +28,15 @@ pub struct StageError;
 /// `ExtractedEntity` mentions into `ctx.extracted_entities`, and lift each
 /// one into a `DraftEntity` placed (in order) into `ctx.entity_drafts`.
 ///
+/// **ISS-076 Phase B:** after each draft is constructed, this stage asks
+/// the injected `Embedder` for a vector over `canonical_name` and stores
+/// it on `DraftEntity::embedding`. Embedder failures are non-fatal — the
+/// draft proceeds with `embedding = None`, alias-exact lookup carries
+/// resolution, and a warning is logged so an enrichment pass can repair
+/// later. Vector source is the canonical name (not mention context) so
+/// two mentions of the same surface form embed identically and can fuse
+/// across episodes (see `DraftEntity::embedding` doc comment).
+///
 /// Returns `Ok(())` on success. The v0.2 extractor never errors (it returns
 /// an empty vec on no matches), so `Err` is reserved for future LLM-backed
 /// extractors. When that happens, the failure is recorded on `ctx.failures`
@@ -35,6 +44,7 @@ pub struct StageError;
 /// short-circuit or continue with empty results.
 pub fn extract_entities(
     extractor: &EntityExtractor,
+    embedder: &(dyn crate::knowledge_compile::Embedder + Send + Sync),
     ctx: &mut PipelineContext,
 ) -> Result<(), StageError> {
     let _span_memory_id = &ctx.memory.id;
@@ -49,8 +59,36 @@ pub fn extract_entities(
     ctx.entity_drafts.clear();
     ctx.entity_drafts.reserve(mentions.len());
     for m in &mentions {
-        ctx.entity_drafts
-            .push(draft_entity_from_mention(m, occurred_at, affect));
+        let mut draft = draft_entity_from_mention(m, occurred_at, affect);
+        // Embed canonical_name. Failure is non-fatal: warn + leave None
+        // so alias-exact lookup still works on the next mention. We
+        // don't try to record the embedder error on `ctx.failures` —
+        // that channel is reserved for stage-fatal failures, and a
+        // missing embedding is a degraded-but-correct state.
+        match embedder.embed(&draft.canonical_name) {
+            Ok(vec) => {
+                if vec.len() == embedder.dim() {
+                    draft.embedding = Some(vec);
+                } else {
+                    log::warn!(
+                        target: "resolution.stage_extract",
+                        "embedder returned wrong dim for '{}': expected {} got {}",
+                        draft.canonical_name,
+                        embedder.dim(),
+                        vec.len()
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    target: "resolution.stage_extract",
+                    "embedder failed for '{}': {}",
+                    draft.canonical_name,
+                    e
+                );
+            }
+        }
+        ctx.entity_drafts.push(draft);
     }
 
     ctx.extracted_entities = mentions;
@@ -71,10 +109,16 @@ mod tests {
     use super::*;
     use crate::entities::{EntityConfig, EntityExtractor};
     use crate::graph::EntityKind;
+    use crate::knowledge_compile::IdentityEmbedder;
     use crate::resolution::context::PipelineContext;
     use crate::types::{MemoryLayer, MemoryRecord, MemoryType};
     use chrono::Utc;
     use uuid::Uuid;
+
+    /// Test embedder: deterministic, hash-based, dim 16. Cheap.
+    fn embedder() -> IdentityEmbedder {
+        IdentityEmbedder::new(16)
+    }
 
     fn fixture_memory(content: &str) -> MemoryRecord {
         MemoryRecord {
@@ -112,7 +156,7 @@ mod tests {
     fn extracts_no_drafts_on_empty_content() {
         let extractor = EntityExtractor::new(&EntityConfig::default());
         let mut ctx = ctx_for("");
-        extract_entities(&extractor, &mut ctx).unwrap();
+        extract_entities(&extractor, &embedder(), &mut ctx).unwrap();
         assert!(ctx.extracted_entities.is_empty());
         assert!(ctx.entity_drafts.is_empty());
     }
@@ -121,7 +165,7 @@ mod tests {
     fn drafts_one_per_mention_in_order() {
         let extractor = extractor_with_people(&["Alice", "Bob"]);
         let mut ctx = ctx_for("Alice met Bob at the office.");
-        extract_entities(&extractor, &mut ctx).unwrap();
+        extract_entities(&extractor, &embedder(), &mut ctx).unwrap();
         assert_eq!(ctx.extracted_entities.len(), ctx.entity_drafts.len());
         assert!(
             ctx.entity_drafts.len() >= 2,
@@ -137,7 +181,7 @@ mod tests {
     fn draft_kind_matches_v02_to_v03_adapter() {
         let extractor = extractor_with_people(&["Charlie"]);
         let mut ctx = ctx_for("Charlie shipped the patch.");
-        extract_entities(&extractor, &mut ctx).unwrap();
+        extract_entities(&extractor, &embedder(), &mut ctx).unwrap();
         let draft = ctx
             .entity_drafts
             .iter()
@@ -150,9 +194,9 @@ mod tests {
     fn rerun_overwrites_drafts_does_not_accumulate() {
         let extractor = extractor_with_people(&["Alice"]);
         let mut ctx = ctx_for("Alice.");
-        extract_entities(&extractor, &mut ctx).unwrap();
+        extract_entities(&extractor, &embedder(), &mut ctx).unwrap();
         let n1 = ctx.entity_drafts.len();
-        extract_entities(&extractor, &mut ctx).unwrap();
+        extract_entities(&extractor, &embedder(), &mut ctx).unwrap();
         let n2 = ctx.entity_drafts.len();
         assert_eq!(n1, n2, "second run should not double up drafts");
     }
@@ -162,7 +206,7 @@ mod tests {
         let extractor = extractor_with_people(&["Dana"]);
         let mut ctx = ctx_for("Dana wrote the spec.");
         let memory_t = ctx.memory.created_at;
-        extract_entities(&extractor, &mut ctx).unwrap();
+        extract_entities(&extractor, &embedder(), &mut ctx).unwrap();
         let draft = ctx
             .entity_drafts
             .iter()

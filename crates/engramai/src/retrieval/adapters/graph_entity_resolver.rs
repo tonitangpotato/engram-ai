@@ -174,7 +174,7 @@ mod tests {
         canonical_name: &str,
         ns: &str,
     ) -> uuid::Uuid {
-        let mut e = Entity::new(canonical_name.to_string(), EntityKind::Person, Utc::now());
+        let mut e = Entity::new_random_id(canonical_name.to_string(), EntityKind::Person, Utc::now());
         let id = e.id;
         // The default identity_confidence is 0.0; bump to 1.0 so the
         // search_candidates path treats it as a high-confidence anchor.

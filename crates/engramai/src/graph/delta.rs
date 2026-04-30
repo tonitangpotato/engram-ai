@@ -51,7 +51,17 @@ use crate::graph::{Edge, Entity, GraphError};
 /// `graph_applied_deltas` PK includes this column (§5bis schema addition
 /// note). Matched on all three PK columns by `apply_graph_delta`'s
 /// idempotence short-circuit, so a v1-row will not satisfy a v2 replay.
-pub const GRAPH_DELTA_SCHEMA_VERSION: u32 = 1;
+///
+/// **History**:
+/// - v1 (original): entities, merges, edges, edges_to_invalidate, mentions,
+///   proposed_predicates, stage_failures.
+/// - v2 (ISS-076): added `aliases: Vec<AliasUpsert>`. Required so that
+///   `CreateNew` decisions in resolution can push a canonical-name alias
+///   row through the same atomic transaction as the entity upsert.
+///   Without this, alias lookup misses on the second mention of the same
+///   surface form → every mention re-resolves to `CreateNew` → dangling
+///   edge UUIDs (ISS-076 root cause).
+pub const GRAPH_DELTA_SCHEMA_VERSION: u32 = 2;
 
 /// The complete graph-state change produced by resolving one memory.
 ///
@@ -112,6 +122,20 @@ pub struct GraphDelta {
     /// as part of the same transaction.
     #[serde(default)]
     pub stage_failures: Vec<StageFailureRow>,
+
+    /// Alias upserts to apply (ISS-076). One row per `CreateNew` decision
+    /// so the canonical name of the new entity is immediately searchable
+    /// by alias-lookup on the next mention. Without this, `search_candidates`
+    /// returns no candidates for the second mention of the same surface
+    /// form → `CreateNew` repeats → graph_edges endpoints become dangling
+    /// (the symptom ISS-076 documents).
+    ///
+    /// Schema v2 field. Older v1 deltas deserialize with an empty vec via
+    /// `#[serde(default)]`, but they will not satisfy the v2-keyed
+    /// idempotence check in `apply_graph_delta` (different schema_version
+    /// PK column).
+    #[serde(default)]
+    pub aliases: Vec<AliasUpsert>,
 }
 
 impl GraphDelta {
@@ -127,6 +151,7 @@ impl GraphDelta {
             mentions: vec![],
             proposed_predicates: vec![],
             stage_failures: vec![],
+            aliases: vec![],
         }
     }
 
@@ -264,6 +289,32 @@ impl GraphDelta {
             })
             .collect();
         root.insert("proposed_predicates".into(), Value::Array(preds));
+
+        // aliases[].normalized, alias_raw, canonical_id, source_episode
+        // (ISS-076, schema v2). Frozen subset for hash stability so two
+        // deltas differing only in alias rows produce different hashes.
+        let aliases: Vec<Value> = self
+            .aliases
+            .iter()
+            .map(|a| {
+                let mut o = Map::new();
+                o.insert("normalized".into(), Value::String(a.normalized.clone()));
+                o.insert("alias_raw".into(), Value::String(a.alias_raw.clone()));
+                o.insert(
+                    "canonical_id".into(),
+                    Value::String(a.canonical_id.to_string()),
+                );
+                o.insert(
+                    "source_episode".into(),
+                    match a.source_episode {
+                        Some(u) => Value::String(u.to_string()),
+                        None => Value::Null,
+                    },
+                );
+                Value::Object(o)
+            })
+            .collect();
+        root.insert("aliases".into(), Value::Array(aliases));
 
         // serde_json::Map preserves insertion order, but to guarantee §5bis
         // rule 1 (lex byte order), rebuild with sorted keys.
@@ -415,6 +466,27 @@ pub struct StageFailureRow {
     pub occurred_at: f64,
 }
 
+/// One alias-row upsert carried in a `GraphDelta` (ISS-076).
+///
+/// Mirrors the columns of `graph_entity_aliases` (§3.4): the
+/// `(namespace, normalized, canonical_id)` triple is the composite PK,
+/// `alias` is the raw surface form (refreshed on conflict), and
+/// `source_episode` is an audit field (first observation wins).
+///
+/// `normalized` MUST already be NFKC-folded by the producer
+/// (`normalize_alias`); `apply_graph_delta` re-normalizes defensively but
+/// callers should treat that as belt-and-suspenders, not an excuse to skip
+/// it. `canonical_id` is the entity UUID this alias points to (the
+/// `assigned_id` of the matching `EntityResolution` for `CreateNew`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AliasUpsert {
+    pub normalized: String,
+    pub alias_raw: String,
+    pub canonical_id: Uuid,
+    pub source_episode: Option<Uuid>,
+}
+
 /// Outcome report of a single `apply_graph_delta` call. Counters reflect
 /// rows actually written (not requested) so callers can distinguish a
 /// no-op replay (`already_applied = true`, all counters zero) from a
@@ -430,6 +502,11 @@ pub struct ApplyReport {
     pub mentions_inserted: u32,
     pub predicates_registered: u32,
     pub failures_recorded: u32,
+    /// ISS-076: alias rows upserted as part of the same atomic
+    /// transaction as entity upserts. One per `CreateNew` decision in
+    /// well-formed v0.3 deltas.
+    #[serde(default)]
+    pub aliases_upserted: u32,
     pub tx_duration_us: u64,
 }
 
@@ -445,6 +522,7 @@ impl ApplyReport {
             mentions_inserted: 0,
             predicates_registered: 0,
             failures_recorded: 0,
+            aliases_upserted: 0,
             tx_duration_us: 0,
         }
     }
@@ -461,6 +539,7 @@ impl ApplyReport {
             mentions_inserted: 0,
             predicates_registered: 0,
             failures_recorded: 0,
+            aliases_upserted: 0,
             tx_duration_us: 0,
         }
     }
@@ -477,8 +556,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_version_constant_is_one() {
-        assert_eq!(GRAPH_DELTA_SCHEMA_VERSION, 1);
+    fn schema_version_constant_is_two() {
+        // ISS-076: bumped from v1 to v2 when `aliases` was added to GraphDelta.
+        // v1-keyed rows in `graph_applied_deltas` won't satisfy v2 idempotence —
+        // intentional: replays must re-derive the alias rows.
+        assert_eq!(GRAPH_DELTA_SCHEMA_VERSION, 2);
     }
 
     #[test]

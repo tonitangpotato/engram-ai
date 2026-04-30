@@ -258,3 +258,33 @@ This unblocks the LoCoMo Hit@5 ceiling for Factual queries that depended
 on the dropped turns. A fresh end-to-end LoCoMo run (sessions 1+2+3 +
 retrieval) is the next verification — pre-fix baseline was 14/25 Hit@5.
 Tracked under retrieval execution, not this issue.
+
+### Post-verification correction (RUN-0005, 2026-04-29)
+
+End-to-end re-ingest + retrieval (RUN-0005, see
+`.gid/eval-runs/RUN-0005.md`) confirmed the **data-layer fix works**
+(58/58 turns admitted; D1:12, D2:15, D3:16 all present in substrate)
+**but produced no Hit@5 improvement** — in fact hit@5 went 14/25 → 12/25
+(−2 queries).
+
+Root cause of the non-lift:
+
+1. **0 of 3 newly-admitted gold turns surface in top-5.** The
+   query↔content embedding gap for q2/q19/q20 is too large for the
+   current FTS+embedding retrieval to bridge (e.g. q19 "What does
+   Melanie think about Caroline's adoption?" vs gold "Creating a
+   family for those kids is so lovely" — no shared lemmas).
+2. **2 previously-passing queries regressed (q14, q22)** because the 19
+   newly-admitted turns enlarged the candidate pool and pushed the
+   correct gold turn out of top-5 in favor of semantically-similar
+   distractors.
+
+So: ISS-068 is legitimately resolved at the **admission / data
+integrity** layer (the original symptom — silent drops — is gone,
+acceptance criteria all met). The earlier optimistic estimate that this
+would lift hit@5 by ~12% was based on assuming retrieval could surface
+the now-present turns. It cannot, with the current ranking. That is a
+separate problem (filed as the retrieval-ranking-instability issue).
+
+**Do not read the ISS-068 fix as a retrieval improvement.** It's a
+prerequisite for retrieval improvements that don't yet exist.

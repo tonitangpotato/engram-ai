@@ -4741,6 +4741,49 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
             report.entities_upserted += 1;
         }
 
+        // ---- (3b) Alias upserts (ISS-076 / GraphDelta v2) ----
+        // One row per `CreateNew` decision: makes the canonical name of
+        // the freshly-minted entity searchable on the next mention's
+        // `search_candidates` call. Without this, `CreateNew` on every
+        // mention of "Caroline" → graph_edges endpoints become dangling
+        // because edges point at the minted UUID but no alias row binds
+        // it to the surface form, so cogmembench's search APIs return
+        // empty for those entities.
+        //
+        // SQL mirrors `SqliteGraphStore::upsert_alias` — composite PK
+        // `(namespace, normalized, canonical_id)`; on conflict refresh
+        // `alias` (raw form may differ across mentions: "Caroline" vs
+        // "caroline") and leave `first_seen` / `source_episode` alone
+        // (audit fields, first-observation-wins).
+        //
+        // Defensive re-normalization: even though the producer
+        // (`stage_persist::build_delta`) is required to send NFKC-folded
+        // `normalized` already, we re-normalize here so a buggy producer
+        // can't corrupt the alias index with mixed casings.
+        for alias in &delta.aliases {
+            let norm = normalize_alias(&alias.normalized);
+            let canonical_blob = alias.canonical_id.as_bytes().to_vec();
+            let source_blob: Option<Vec<u8>> =
+                alias.source_episode.map(|u| u.as_bytes().to_vec());
+            tx.execute(
+                "INSERT INTO graph_entity_aliases (
+                    normalized, canonical_id, alias,
+                    former_canonical_id, first_seen, source_episode, namespace
+                ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)
+                ON CONFLICT(namespace, normalized, canonical_id) DO UPDATE SET
+                    alias = excluded.alias",
+                rusqlite::params![
+                    norm,
+                    canonical_blob,
+                    alias.alias_raw,
+                    now_unix,
+                    source_blob,
+                    self.namespace,
+                ],
+            )?;
+            report.aliases_upserted += 1;
+        }
+
         // ---- (4) Edge inserts ----
         // Track the inserted edge ids so we can write the cache update at
         // the end (memories.edge_ids JSON array).
@@ -5133,7 +5176,7 @@ mod tests {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn);
         let now = Utc::now();
-        let mut e = Entity::new("Alice".into(), EntityKind::Person, now);
+        let mut e = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
         e.summary = "rolling".into();
         e.attributes = json!({"role": "ceo"});
         e.activation = 0.4;
@@ -5169,7 +5212,7 @@ mod tests {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn);
         let now = Utc::now();
-        let mut e = Entity::new("X".into(), EntityKind::Concept, now);
+        let mut e = Entity::new_random_id("X".into(), EntityKind::Concept, now);
         // history is a reserved key promoted to a typed field; if we let it
         // through `attributes`, two writers could update history with no
         // audit trail and silently clobber merge invariants (§3.1).
@@ -5184,7 +5227,7 @@ mod tests {
     fn insert_entity_persists_namespace_isolation() {
         let mut conn = fresh_conn();
         let now = Utc::now();
-        let e = Entity::new("Alice".into(), EntityKind::Person, now);
+        let e = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
 
         // Write through `ns_a`, read through `ns_b` — must not be visible.
         // Each store borrow is scoped so the &mut conn can be reused.
@@ -5205,7 +5248,7 @@ mod tests {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn);
         let now = Utc::now();
-        let e = Entity::new("X".into(), EntityKind::Concept, now);
+        let e = Entity::new_random_id("X".into(), EntityKind::Concept, now);
         let id = e.id;
         store.insert_entity(&e).unwrap();
 
@@ -5307,7 +5350,7 @@ mod tests {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(384);
         let now = Utc::now();
-        let mut e = Entity::new("Topic".into(), EntityKind::Topic, now);
+        let mut e = Entity::new_random_id("Topic".into(), EntityKind::Topic, now);
         e.embedding = Some(make_embedding(384, 0.05));
 
         store.insert_entity(&e).expect("insert ok");
@@ -5322,7 +5365,7 @@ mod tests {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(384);
         let now = Utc::now();
-        let mut e = Entity::new("X".into(), EntityKind::Concept, now);
+        let mut e = Entity::new_random_id("X".into(), EntityKind::Concept, now);
         e.embedding = Some(make_embedding(100, 0.0));
         match store.insert_entity(&e) {
             Err(GraphError::Invariant(msg)) => {
@@ -5343,7 +5386,7 @@ mod tests {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(384);
         let now = Utc::now();
-        let e = Entity::new("X".into(), EntityKind::Concept, now);
+        let e = Entity::new_random_id("X".into(), EntityKind::Concept, now);
         assert!(e.embedding.is_none());
         store.insert_entity(&e).expect("insert ok");
         let got = store.get_entity(e.id).expect("get ok").expect("found");
@@ -5361,7 +5404,7 @@ mod tests {
         let id;
         {
             let mut store_old = SqliteGraphStore::new(&mut conn).with_embedding_dim(100);
-            let mut e = Entity::new("Stale".into(), EntityKind::Concept, now);
+            let mut e = Entity::new_random_id("Stale".into(), EntityKind::Concept, now);
             e.embedding = Some(make_embedding(100, 0.0));
             id = e.id;
             store_old.insert_entity(&e).expect("insert ok at dim=100");
@@ -5399,7 +5442,7 @@ mod tests {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn);
         let t0 = Utc::now();
-        let e = Entity::new("X".into(), EntityKind::Concept, t0);
+        let e = Entity::new_random_id("X".into(), EntityKind::Concept, t0);
         let id = e.id;
         store.insert_entity(&e).unwrap();
 
@@ -5430,9 +5473,9 @@ mod tests {
         let t0 = Utc::now();
 
         // Two People, one Concept. Different last_seen so ordering is testable.
-        let mut alice = Entity::new("Alice".into(), EntityKind::Person, t0);
-        let mut bob = Entity::new("Bob".into(), EntityKind::Person, t0);
-        let concept = Entity::new("Justice".into(), EntityKind::Concept, t0);
+        let mut alice = Entity::new_random_id("Alice".into(), EntityKind::Person, t0);
+        let mut bob = Entity::new_random_id("Bob".into(), EntityKind::Person, t0);
+        let concept = Entity::new_random_id("Justice".into(), EntityKind::Concept, t0);
         bob.last_seen = t0 + chrono::Duration::seconds(60); // most recent person
         alice.last_seen = t0 + chrono::Duration::seconds(30);
 
@@ -5455,7 +5498,7 @@ mod tests {
         assert_eq!(limited[0].id, bob.id);
 
         // Custom `Other` kind round-trips through serde tag exactly.
-        let robot = Entity::new(
+        let robot = Entity::new_random_id(
             "R2".into(),
             EntityKind::other("robot"),
             t0,
@@ -5472,9 +5515,9 @@ mod tests {
     fn list_namespaces_returns_distinct_sorted() {
         let mut conn = fresh_conn();
         let now = Utc::now();
-        let e1 = Entity::new("A".into(), EntityKind::Person, now);
-        let e2 = Entity::new("B".into(), EntityKind::Person, now);
-        let e3 = Entity::new("C".into(), EntityKind::Person, now);
+        let e1 = Entity::new_random_id("A".into(), EntityKind::Person, now);
+        let e2 = Entity::new_random_id("B".into(), EntityKind::Person, now);
+        let e3 = Entity::new_random_id("C".into(), EntityKind::Person, now);
         {
             let mut s = SqliteGraphStore::new(&mut conn).with_namespace("zeta");
             s.insert_entity(&e1).unwrap();
@@ -5493,7 +5536,7 @@ mod tests {
     fn with_transaction_commits_on_ok_rolls_back_on_err() {
         let mut conn = fresh_conn();
         let now = Utc::now();
-        let e = Entity::new("Committed".into(), EntityKind::Person, now);
+        let e = Entity::new_random_id("Committed".into(), EntityKind::Person, now);
         let id = e.id;
 
         // Commit path: insert via raw SQL inside the txn; visible after commit.
@@ -5569,7 +5612,7 @@ mod tests {
     /// FK-satisfaction shim.
     fn insert_subject_entity(store: &mut SqliteGraphStore<'_>, name: &str) -> Uuid {
         let now = Utc::now();
-        let e = Entity::new(name.into(), EntityKind::Person, now);
+        let e = Entity::new_random_id(name.into(), EntityKind::Person, now);
         let id = e.id;
         store.insert_entity(&e).expect("insert subject");
         id
@@ -6495,7 +6538,7 @@ mod tests {
         last_seen: DateTime<Utc>,
         embedding: Option<Vec<f32>>,
     ) -> Entity {
-        let mut e = Entity::new(name.into(), kind, last_seen);
+        let mut e = Entity::new_random_id(name.into(), kind, last_seen);
         e.last_seen = last_seen;
         e.embedding = embedding;
         store.insert_entity(&e).expect("insert ok");
@@ -7629,7 +7672,7 @@ mod tests {
         // Topic rows reference graph_entities(id) via FK. Insert a Topic
         // entity with the same id to satisfy.
         let now = Utc::now();
-        let mut e = Entity::new("mirror".into(), EntityKind::Topic, now);
+        let mut e = Entity::new_random_id("mirror".into(), EntityKind::Topic, now);
         e.id = id;
         store.insert_entity(&e).expect("insert mirror");
     }
@@ -8802,8 +8845,8 @@ mod tests {
         let mut delta = GraphDelta::new(mem_id);
 
         // Build delta: 2 entities + 1 edge between them.
-        let alice = Entity::new("Alice".into(), EntityKind::Person, now);
-        let acme = Entity::new("Acme".into(), EntityKind::Organization, now);
+        let alice = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
+        let acme = Entity::new_random_id("Acme".into(), EntityKind::Organization, now);
         let edge = Edge::new(
             alice.id,
             Predicate::Canonical(CanonicalPredicate::WorksAt),
@@ -8833,7 +8876,7 @@ mod tests {
         let now = Utc::now();
         let mem_id = Uuid::new_v4();
         let mut delta = GraphDelta::new(mem_id);
-        delta.entities.push(Entity::new("X".into(), EntityKind::Concept, now));
+        delta.entities.push(Entity::new_random_id("X".into(), EntityKind::Concept, now));
 
         let r1 = store.apply_graph_delta(&delta).unwrap();
         assert!(!r1.already_applied);
@@ -8865,7 +8908,7 @@ mod tests {
         // validate_references should reject. Pre-write count: 0 entities,
         // 0 edges.
         let phantom = Uuid::new_v4();
-        let real = Entity::new("Real".into(), EntityKind::Person, now);
+        let real = Entity::new_random_id("Real".into(), EntityKind::Person, now);
         let edge = Edge::new(
             real.id,
             Predicate::Canonical(CanonicalPredicate::WorksAt),

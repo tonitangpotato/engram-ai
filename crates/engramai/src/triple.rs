@@ -3,6 +3,7 @@
 //! Triples represent subject-predicate-object relationships extracted from
 //! memory content, used to enrich Hebbian link quality.
 
+use crate::graph::EntityKind;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -78,6 +79,20 @@ pub struct Triple {
     pub object: String,
     pub confidence: f64,
     pub source: TripleSource,
+    /// Optional entity-kind hint for the subject endpoint, propagated from
+    /// the LLM extraction prompt (ISS-072 GOAL-2 A-clean). `None` means the
+    /// LLM gave no signal for this endpoint; downstream falls back to
+    /// `KindSource::Default`. Suffix `_hint` is intentional — this is a
+    /// per-triple guess, not an authoritative kind.
+    ///
+    /// `#[serde(default, skip_serializing_if = "Option::is_none")]` keeps
+    /// existing wire format and on-disk JSON byte-identical when absent
+    /// — no migration for any pre-A-clean `Triple` blob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_kind_hint: Option<EntityKind>,
+    /// Optional entity-kind hint for the object endpoint. See `subject_kind_hint`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_kind_hint: Option<EntityKind>,
 }
 
 impl Triple {
@@ -90,6 +105,8 @@ impl Triple {
             object,
             confidence: confidence.clamp(0.0, 1.0),
             source: TripleSource::Llm,
+            subject_kind_hint: None,
+            object_kind_hint: None,
         }
     }
 }

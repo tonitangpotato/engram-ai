@@ -232,6 +232,16 @@ pub struct ResolutionPipeline<S: GraphStore + ?Sized + 'static> {
     /// pipeline-run-row writes need `&mut`. See module-level note on
     /// the synchronization model.
     store: Arc<Mutex<S>>,
+    /// ISS-076 Phase B: embedder used by `stage_extract` to compute one
+    /// vector per draft entity (canonical_name as input). Trait object
+    /// so production can wire an Ollama-backed embedder while tests use
+    /// `IdentityEmbedder` from `knowledge_compile::summarizer`.
+    ///
+    /// Errors are non-fatal: the stage logs a warning and leaves
+    /// `DraftEntity::embedding = None`, letting alias-exact lookup carry
+    /// the resolution. Vector candidate retrieval simply misses for that
+    /// entity until a later enrichment pass repairs it.
+    embedder: Arc<dyn crate::knowledge_compile::Embedder + Send + Sync>,
     /// Static configuration captured at construction.
     config: PipelineConfig,
 }
@@ -245,6 +255,7 @@ impl<S: GraphStore + ?Sized + 'static> ResolutionPipeline<S> {
         entity_extractor: Arc<EntityExtractor>,
         triple_extractor: Arc<dyn TripleExtractor>,
         store: Arc<Mutex<S>>,
+        embedder: Arc<dyn crate::knowledge_compile::Embedder + Send + Sync>,
         config: PipelineConfig,
     ) -> Self {
         Self {
@@ -252,6 +263,7 @@ impl<S: GraphStore + ?Sized + 'static> ResolutionPipeline<S> {
             entity_extractor,
             triple_extractor,
             store,
+            embedder,
             config,
         }
     }
@@ -330,7 +342,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         // `extract_entities` only errors on future LLM-backed extractors;
         // the v0.2 pattern extractor is total. Either way, partial results
         // remain on `ctx` and we proceed.
-        let _ = extract_entities(&self.entity_extractor, &mut ctx);
+        let _ = extract_entities(&self.entity_extractor, self.embedder.as_ref(), &mut ctx);
         stats.entity_extract_duration = t.elapsed();
         stats.entities_extracted = ctx.extracted_entities.len() as u64;
 
@@ -520,7 +532,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                 retrieve_candidates(
                     &*store,
                     mention_text,
-                    None, // mention_embedding: future — embedder wiring lands separately
+                    draft.embedding.as_deref(),
                     ctx.namespace.as_str(),
                     now,
                     &self.config.retrieval,
@@ -594,11 +606,24 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                 _ => None,
             };
 
+            // ISS-076 single-mint: assign the canonical entity id here,
+            // exactly once. All downstream stages (resolve_edges,
+            // stage_persist mention rows, build_new_entity) consume
+            // `assigned_id` instead of independently calling
+            // `Uuid::new_v4()`. This is the structural fix for
+            // dangling mention→entity edges.
+            let assigned_id = match &outcome.decision {
+                Decision::CreateNew => uuid::Uuid::new_v4(),
+                Decision::MergeInto { candidate_id }
+                | Decision::DeferToLlm { candidate_id } => *candidate_id,
+            };
+
             decisions.push(EntityResolution {
                 draft_index: i,
                 draft: draft.clone(),
                 decision: outcome.decision,
                 canonical,
+                assigned_id,
             });
         }
 
@@ -618,33 +643,19 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         entity_decisions: &[EntityResolution],
         stats: &mut ResolutionStats,
     ) -> Result<Vec<EdgeResolution>, ProcessError> {
-        // Build a name → entity_id map from this run's entity decisions.
-        // For MergeInto, the id is the canonical row's id. For CreateNew,
-        // we mint a fresh v7 uuid here so that subsequent edge resolutions
-        // can point at it. The persist stage uses this same id when it
-        // builds the new Entity row (`build_new_entity` keys off
-        // `er.draft` and an id passed in via `EntityResolution.draft.id`-
-        // less channels — but `build_delta` synthesizes its own id from
-        // the canonical name today; see TODO below).
-        //
-        // TODO(v0.3 follow-up): unify entity-id minting between
-        // `resolve_edges` and `build_delta`. Today both compute fresh
-        // uuids independently for `CreateNew`; they happen to be safe
-        // because edge inserts in `build_delta` re-resolve subject/object
-        // names against the same decision slice. If we ever pass a
-        // pre-minted id through `EntityResolution`, this loop should use
-        // that id directly.
+        // Build a name → entity_id map from this run's entity decisions,
+        // using the single canonical id assigned in `resolve_entities`
+        // (`er.assigned_id`). This is the structural fix for ISS-076:
+        // previously this loop minted a *fresh* `Uuid::new_v4()` for
+        // every `CreateNew`, while `build_new_entity` in stage_persist
+        // *also* minted its own — so edge endpoints pointed at
+        // non-existent entity rows. With one mint site (resolve_entities)
+        // and every downstream stage reading `er.assigned_id`, the
+        // dangling-edge class of bug is structurally impossible.
         use std::collections::HashMap;
         let mut name_to_id: HashMap<String, Uuid> = HashMap::new();
         for er in entity_decisions {
-            let id = match &er.decision {
-                Decision::MergeInto { candidate_id } => *candidate_id,
-                Decision::CreateNew | Decision::DeferToLlm { .. } => {
-                    // DeferToLlm degrades to CreateNew at persist time.
-                    Uuid::new_v4()
-                }
-            };
-            name_to_id.insert(er.draft.canonical_name.clone(), id);
+            name_to_id.insert(er.draft.canonical_name.clone(), er.assigned_id);
         }
 
         let drafts = ctx.edge_drafts.clone();
@@ -807,7 +818,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
 
         // §3.2 entity extract — total over v0.2 extractor; non-fatal
         // failures land on `ctx.failures`.
-        let _ = extract_entities(&self.entity_extractor, &mut ctx);
+        let _ = extract_entities(&self.entity_extractor, self.embedder.as_ref(), &mut ctx);
 
         // §3.3 edge extract — failures non-fatal, recorded on ctx.
         let _ = extract_edges(self.triple_extractor.as_ref(), &mut ctx);
@@ -875,15 +886,27 @@ pub(crate) fn lift_novel_endpoints(ctx: &mut PipelineContext) {
     let occurred_at = ctx.memory.created_at;
     let affect = ctx.affect_snapshot;
 
-    // Collect endpoints first to avoid borrowing `ctx` immutably (triples)
-    // and mutably (entity_drafts) in the same scope.
-    let endpoints: Vec<String> = ctx
+    // Collect (raw_name, kind_hint) pairs first to avoid borrowing `ctx`
+    // immutably (triples) and mutably (entity_drafts) in the same scope.
+    // ISS-072 GOAL-2: each endpoint carries the per-side kind hint parsed
+    // by `triple_extractor::parse_kind_hint` and stored on `Triple`. When
+    // a name shows up in multiple triples with different hints, the FIRST
+    // hint wins — `seen` deduplicates by lowercased key, so the second
+    // occurrence is skipped before its hint is read. This is intentional:
+    // the merge-time precedence policy (design §8) is the canonical place
+    // to reconcile conflicting hints later, not this pre-resolution stage.
+    let endpoints: Vec<(String, Option<crate::graph::EntityKind>)> = ctx
         .extracted_triples
         .iter()
-        .flat_map(|t| [t.subject.clone(), t.object.clone()])
+        .flat_map(|t| {
+            [
+                (t.subject.clone(), t.subject_kind_hint.clone()),
+                (t.object.clone(), t.object_kind_hint.clone()),
+            ]
+        })
         .collect();
 
-    for raw in endpoints {
+    for (raw, kind_hint) in endpoints {
         let key = raw.trim().to_lowercase();
         if key.is_empty() {
             continue;
@@ -891,7 +914,7 @@ pub(crate) fn lift_novel_endpoints(ctx: &mut PipelineContext) {
         if !seen.insert(key) {
             continue;
         }
-        let draft = draft_entity_from_triple_endpoint(&raw, occurred_at, affect);
+        let draft = draft_entity_from_triple_endpoint(&raw, occurred_at, affect, kind_hint);
         ctx.entity_drafts.push(draft);
     }
 }
@@ -1263,6 +1286,7 @@ mod backfill_tests {
             Arc::new(EntityExtractor::new(&crate::entities::EntityConfig::default())),
             Arc::new(StubTriples(triples)),
             Arc::new(StdMutex::new(StubStore)),
+            crate::resolution::default_embedder(),
             PipelineConfig::default(),
         )
     }
@@ -1441,9 +1465,11 @@ mod lift_tests {
             kind: EntityKind::Person,
             aliases: vec!["caroline martinez".to_string()],
             subtype_hint: None,
+            kind_source: crate::resolution::context::KindSource::DictionaryMatch,
             first_seen: ctx.memory.created_at,
             last_seen: ctx.memory.created_at,
             somatic_fingerprint: None,
+            embedding: None,
         });
 
         // The same name appears as a triple subject; "Acme" is novel.
@@ -1485,5 +1511,59 @@ mod lift_tests {
             .find(|d| d.canonical_name == "Acme")
             .expect("Acme lifted");
         assert_eq!(acme.kind, EntityKind::Other("unknown".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // ISS-072 GOAL-2 (A-clean) — kind hint propagation through lift.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lift_propagates_subject_and_object_kind_hints_to_drafts() {
+        // End-to-end check that kind hints attached to a Triple by
+        // triple_extractor flow through lift_novel_endpoints onto the lifted
+        // DraftEntity with kind_source = TripleHint.
+        use crate::resolution::context::KindSource;
+
+        let mut ctx = fixture_ctx();
+        let mut t = triple("Caroline Martinez", "Acme");
+        t.subject_kind_hint = Some(EntityKind::Person);
+        t.object_kind_hint = Some(EntityKind::Organization);
+        ctx.extracted_triples.push(t);
+
+        lift_novel_endpoints(&mut ctx);
+
+        let caroline = ctx
+            .entity_drafts
+            .iter()
+            .find(|d| d.canonical_name == "Caroline Martinez")
+            .expect("Caroline lifted");
+        assert_eq!(caroline.kind, EntityKind::Person);
+        assert_eq!(caroline.kind_source, KindSource::TripleHint);
+
+        let acme = ctx
+            .entity_drafts
+            .iter()
+            .find(|d| d.canonical_name == "Acme")
+            .expect("Acme lifted");
+        assert_eq!(acme.kind, EntityKind::Organization);
+        assert_eq!(acme.kind_source, KindSource::TripleHint);
+    }
+
+    #[test]
+    fn lift_without_hints_uses_default_source() {
+        // Backward compat: triples without hints still produce drafts with
+        // Other("unknown") + KindSource::Default — design §8 will let any
+        // future signal upgrade them on merge.
+        use crate::resolution::context::KindSource;
+
+        let mut ctx = fixture_ctx();
+        ctx.extracted_triples.push(triple("X", "Y")); // no hints set
+
+        lift_novel_endpoints(&mut ctx);
+
+        for draft in &ctx.entity_drafts {
+            assert_eq!(draft.kind, EntityKind::Other("unknown".into()));
+            assert_eq!(draft.kind_source, KindSource::Default);
+        }
     }
 }

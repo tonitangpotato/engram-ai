@@ -1,111 +1,148 @@
 ---
 id: ISS-071
-title: "Affective plan short-circuits to no_cognitive_state — orchestrator never threads self_state"
+title: "Affective plan self_state source is misaligned — bench harness never populates interoceptive_hub"
 status: open
-priority: P1
+priority: P2
 filed: 2026-04-29
 filed_by: rustclaw
-labels: [retrieval, affective, orchestrator, cognitive-state, locomo, evaluation]
+revised: 2026-04-29
+labels: [retrieval, affective, cognitive-state, locomo, evaluation, semantic-bug]
 relates_to: [ISS-070]
 source: RUN-0006
 ---
 
-# Affective plan downgrades to NoCognitiveState every query — self_state never threaded
+# Affective plan downgrades to NoCognitiveState every LoCoMo query — self_state source misaligned
 
-## Summary
+## Status of original diagnosis: WRONG
 
-RUN-0006 per-outcome telemetry shows that every query routed to the
-Affective plan exits with outcome `no_cognitive_state` — the plan's
-own `DowngradedNoSelfState` short-circuit (`affective.rs:14–18`,
-"When `None` the plan surfaces `AffectiveOutcome::DowngradedNoSelfState`
-— Associative routing is the orchestrator's concern (§3.4)").
+The original ISS-071 (filed 2026-04-29 morning) claimed the
+orchestrator never threaded `self_state` into `AffectivePlanInputs`.
+That diagnosis was **incorrect**. The plumbing is in place:
 
-The plan is *correctly* implementing GUARD-6 / GOAL-3.14 (never
-block, downgrade gracefully when `self_state: Option<SomaticFingerprint>`
-is `None`). But `Some(_)` is never passed in. The orchestrator
-never threads cognitive self-state into `AffectivePlanInputs`, so
-mood-congruent ranking — the entire reason the plan exists —
-never runs in production retrieval. Affective queries fall back
-to Associative, losing the affect signal.
+- `crates/engramai/src/retrieval/api.rs:479` —
+  `self_state_override.or_else(|| self.current_self_state())`
+- `crates/engramai/src/retrieval/api.rs:532` — passed to
+  `execute_plan` as the `self_state` parameter
+- `crates/engramai/src/retrieval/orchestrator.rs:992` — threaded
+  into `AffectivePlanInputs::self_state`
 
-## Evidence
+The pipe is wired end-to-end. The `None` is coming out of
+`Memory::current_self_state()`, not from a missing call.
 
-- **RUN-0006.md** outcome distribution: every Affective dispatch
-  hits `no_cognitive_state`.
-- **plans/affective.rs:14–18** — module docstring confirms `None`
-  is handled by *downgrading*, not by failing.
-- The orchestrator code path that builds `AffectivePlanInputs`
-  needs a `self_state` source. There isn't one wired in.
+## Real root cause
 
-## Why this matters less than ISS-070 (but still matters)
+`Memory::current_self_state()` (memory.rs:1301) reads from
+`self.interoceptive_hub.current_state().to_somatic_fingerprint()`.
+`to_somatic_fingerprint()` (interoceptive/types.rs:515–535) returns
+`None` when `domain_states.is_empty()` or `total_weight <= 0.0`
+(no signals observed yet).
 
-LoCoMo cat=1 multi-hop is at 0% — that's the headline regression
-and the P0 (ISS-070). Affective is P1 because:
+The LoCoMo bench harness (`crates/engram-bench/`) **never calls
+any interoceptive_tick API** to feed signals into the hub. Confirmed
+by:
 
-- It does **not** drop results — it just removes the affect
-  re-ranking signal. The Associative fallback still returns
-  candidates.
-- The hit@5 impact on LoCoMo conv-26 is bounded: most of conv-26
-  is factual / temporal / multi-hop, not mood-congruent recall.
-- It is **structural debt** rather than a correctness bug — the
-  plan works correctly when given input; the input is missing.
+```
+$ grep -rn "interoceptive_tick\|interoceptive_hub" \
+    crates/engram-bench/ crates/engramai/examples/
+(no matches)
+```
 
-It still matters because:
+So during a benchmark run the hub stays at cold-start, the
+fingerprint is `None`, and every Affective dispatch correctly
+downgrades. The plan is doing exactly what GUARD-6 / GOAL-3.14
+specify: graceful downgrade when self_state is unavailable.
 
-- The cognitive self-state module exists (somatic fingerprint
-  storage is implemented). Plumbing is the missing piece.
-- GOAL-3.8 (Kendall-tau divergence ≥ 0.1 between neutral and
-  current self-state) **cannot be measured** if `self_state` is
-  always `None`. The acceptance test is silently un-runnable.
-- Anything downstream that expected "Affective re-ranking is
-  active in production" is wrong. Worth flagging before more
-  features depend on it.
+## Why this is a *semantic* bug, not a *plumbing* bug
 
-## Hypothesis (root cause)
+`Memory::current_self_state()` returns the **agent's own** affective
+state — that of the entity running the retrieval system. The
+Affective plan's purpose, per `affective.rs:12–14`, is mood-congruent
+re-ranking: surface memories whose stored somatic fingerprint
+matches the **mood at query time**.
 
-When the Affective plan was implemented (v03-retrieval), the
-self-state input was modeled as `Option<SomaticFingerprint>` to
-let tests pass `None` cheaply. The production wiring — orchestrator
-fetches current `s_now` from the cognitive-state module, passes it
-through `GraphQuery → AffectivePlanInputs` — was never closed.
-This is a classic "the type allows it, so the bug is invisible"
-case. `None` is a valid value, so the compiler is happy, so it
-never got fixed.
+For a chat agent answering its own queries those two things are the
+same thing. For LoCoMo replay (and any benchmark that replays
+historical user conversations) they are not:
 
-## Fix sketch
+- The "querier" is a synthetic test driver with no genuine affective
+  state. Its hub will always be cold.
+- The semantically-correct self_state is the **emotional context of
+  the LoCoMo question itself** ("how did I feel about X?", "what
+  did we enjoy doing?"), inferable from query text.
+- Using a (synthetic) cold-start `None` is honest. Using a
+  fabricated synthetic fingerprint to "make Affective fire" would
+  be telemetry pollution.
 
-1. Identify the cognitive-state read API (where `s_now` lives).
-2. In the orchestrator's Affective dispatch path, fetch `s_now`
-   and populate `AffectivePlanInputs::self_state = Some(s_now)`.
-3. Add a regression test: in a substrate with non-zero somatic
-   fingerprint storage, an Affective query produces outcome
-   `Stored`/`Ranked` (not `NoCognitiveState`) and `affect_divergence`
-   is populated when `query.explain = true`.
-4. Decide policy for "no current self-state available": the
-   downgrade-to-Associative path is fine, but should be a real
-   business case (cold start, no recent affective signal), not the
-   default state of every production query.
+So the bug is: **`current_self_state()` reads from the wrong source
+for replay/benchmark workloads.** The agent-hub source is right for
+live RustClaw operation; it is wrong for LoCoMo.
 
-## Acceptance
+## Why this is P2 (not P1) for now
 
-- Orchestrator threads `self_state` into Affective plan when
-  available; downgrade path becomes the *exception* not the rule.
-- A LoCoMo benchmark run shows at least one Affective dispatch
-  with outcome `Stored` (not `NoCognitiveState`).
-- GOAL-3.8 telemetry (Kendall-tau divergence) is measurable from
-  RUN-NNNN output.
+- ISS-070 (multi-hop = 0%) is the actual hit@5 regression. This
+  one is a missing signal, not a wrong answer — Associative
+  fallback still returns candidates.
+- Even fixed perfectly, the LoCoMo cat=2/3 lift is bounded: most
+  questions in conv-26 are factual / temporal / multi-hop, not
+  mood-congruent recall.
+- The "wrong" behavior in RUN-0006 (every Affective query →
+  `no_cognitive_state`) is **technically correct** given a
+  cold hub; it's the design that needs a query-time path, not
+  a hotfix to force `Some(_)` into the slot.
+
+## What's actually broken (acceptance criteria)
+
+1. There is no documented or stable mechanism for a benchmark
+   harness to inject query-time self_state without polluting
+   the agent's interoceptive hub.
+2. RUN-NNNN telemetry currently labels these dispatches under
+   `outcome=no_cognitive_state` mixed in with genuine plan
+   failures, making it impossible to distinguish "plan skipped
+   because hub is cold" from "plan ran and produced nothing".
+3. GOAL-3.8 (Kendall-tau divergence ≥ 0.1 between neutral and
+   current self-state) is unmeasurable from any current
+   benchmark configuration.
+
+## Fix sketch (deferred — not committing to design here)
+
+Two paths, both legitimate:
+
+**Path A — query-context override (small, mechanical):**
+Use the existing `GraphQuery::with_self_state_override(...)` API
+(api.rs:467). Have the LoCoMo driver compute a per-query synthetic
+fingerprint deterministically from query text or fixture metadata,
+inject it via override. Document that this is benchmark-synthetic.
+Telemetry stays honest because the override flag is recorded.
+
+**Path B — first-class query mood (real fix):**
+Add a `query.context_self_state` field with a documented inference
+function (text → fingerprint). Wire `current_self_state()` to prefer
+query-context over hub when both are present. This is closer to the
+mood-congruent retrieval literature and would also help live agents
+where "the user just typed something angry" matters more than "the
+agent's accumulated valence trend".
+
+Path A is a one-day chore. Path B is a small design + couple of
+days of work. Neither is urgent.
 
 ## Out of scope
 
-- Self-state synthesis logic (deferred to cognitive-state module).
-- Choice of `K_seed_affective`, weight tuning — orthogonal.
-- Multi-hop traversal (ISS-070).
+- Multi-hop traversal (ISS-070, P0).
+- Restructuring telemetry outcomes — separate, smaller issue if
+  needed.
+- Touching the agent-hub path for live RustClaw.
 
 ## References
 
-- `.gid/eval-runs/RUN-0006.md` — outcome distribution.
+- `.gid/eval-runs/RUN-0006.md` — outcome distribution showing
+  `no_cognitive_state` saturation.
+- `crates/engramai/src/retrieval/api.rs:467–485` — existing
+  `with_self_state_override` and `current_self_state` fallback.
+- `crates/engramai/src/memory.rs:1295–1340` —
+  `current_self_state()` reading from interoceptive hub.
+- `crates/engramai/src/interoceptive/types.rs:515–535` —
+  `to_somatic_fingerprint()` returning None on cold hub.
 - `crates/engramai/src/retrieval/plans/affective.rs:1–80` — plan
-  docstring + downgrade contract.
-- `.gid/features/v03-retrieval/design.md` §4.5 — plan design.
-- `.gid/features/v03-retrieval/design.md` §3.4 — orchestrator
-  routing including the Affective→Associative downgrade path.
+  contract; downgrade behavior is correct.
+- `.gid/features/v03-retrieval/design.md` §3.4, §4.5 — orchestrator
+  routing and Affective plan design.

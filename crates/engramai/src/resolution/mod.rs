@@ -127,3 +127,40 @@ pub use stats::{
 };
 pub use status::{ExtractionStatus, FailureKind, ResolutionTraceSummary};
 pub use trace::{CandidateScore, SignalContribution};
+
+// ---------------------------------------------------------------------------
+// Embedder helper (ISS-076 Phase B)
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+
+/// Default embedding dimension for [`default_embedder`].
+///
+/// Matches the `nomic-embed-text` dimension used by the production Ollama
+/// embedder so an `IdentityEmbedder` placeholder produces vectors of the
+/// same shape — switching the wiring to a real embedder later does not
+/// touch any persisted-row schema (alias rows store the dimension in
+/// metadata, not in the column type).
+pub const DEFAULT_EMBEDDING_DIM: usize = 384;
+
+/// Construct the default `Arc<dyn Embedder + Send + Sync>` used to wire
+/// [`pipeline::ResolutionPipeline`] in callers that have no real embedder
+/// available — migration tools, integration tests, and pre-Ollama
+/// production paths.
+///
+/// Returns an [`crate::knowledge_compile::IdentityEmbedder`] of dimension
+/// [`DEFAULT_EMBEDDING_DIM`]. The Identity embedder hashes the input string
+/// into a fixed-dimension vector; cosine similarity is well-defined and
+/// equal inputs produce equal outputs, so alias-vector lookup is exact for
+/// repeated surface forms (the property dedup actually relies on at the
+/// retrieval stage).
+///
+/// Production wiring that has access to Ollama should construct its own
+/// `Arc<dyn Embedder + Send + Sync>` and pass it to
+/// [`pipeline::ResolutionPipeline::new`] directly — this helper is the
+/// "no embedder configured" fallback, not the recommended path.
+pub fn default_embedder() -> Arc<dyn crate::knowledge_compile::Embedder + Send + Sync> {
+    Arc::new(crate::knowledge_compile::IdentityEmbedder::new(
+        DEFAULT_EMBEDDING_DIM,
+    ))
+}

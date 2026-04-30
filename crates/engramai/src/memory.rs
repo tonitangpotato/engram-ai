@@ -405,6 +405,7 @@ impl Memory {
             entity_extractor,
             triple_extractor,
             store_arc,
+            crate::resolution::default_embedder(),
             PipelineConfig::default(),
         );
         let processor: Arc<dyn JobProcessor> = Arc::new(pipeline);

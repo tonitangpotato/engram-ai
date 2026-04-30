@@ -102,6 +102,46 @@ pub struct EntityResolution {
     /// persist can reuse `summary`, `attributes`, etc. when constructing
     /// the upsert. May be `None` for `CreateNew` (a fresh row is minted).
     pub canonical: Option<Entity>,
+    /// The single canonical entity id this resolution maps the mention to
+    /// **and** which downstream stages (`resolve_edges`, `build_delta`,
+    /// mention rows) must consume. ISS-076 root cause: previously each
+    /// stage minted its own UUID for `CreateNew`, so edge endpoints
+    /// pointed at non-existent rows. With `assigned_id` set once at
+    /// resolution time, all downstream consumers reuse the same id.
+    ///
+    /// - `CreateNew` → freshly minted `Uuid::new_v4()`.
+    /// - `MergeInto { candidate_id }` → equal to `candidate_id`.
+    /// - `DeferToLlm { candidate_id }` → equal to `candidate_id` (placeholder;
+    ///   `DeferToLlm` reaching persist is an error path, see ISS-072).
+    pub assigned_id: Uuid,
+}
+
+impl EntityResolution {
+    /// Test helper: construct an `EntityResolution` with `assigned_id`
+    /// derived from `decision` the same way `resolve_entities` does.
+    /// Saves test code from re-deriving the id and from forgetting to
+    /// set the field (which would compile-fail at every fixture site
+    /// after ISS-076).
+    #[doc(hidden)]
+    pub fn for_test(
+        draft_index: usize,
+        draft: DraftEntity,
+        decision: Decision,
+        canonical: Option<Entity>,
+    ) -> Self {
+        let assigned_id = match &decision {
+            Decision::CreateNew => Uuid::new_v4(),
+            Decision::MergeInto { candidate_id }
+            | Decision::DeferToLlm { candidate_id } => *candidate_id,
+        };
+        Self {
+            draft_index,
+            draft,
+            decision,
+            canonical,
+            assigned_id,
+        }
+    }
 }
 
 /// Resolution outcome for a single triple. Pairs the draft with the
@@ -192,8 +232,13 @@ pub fn build_delta(
     for er in entity_decisions {
         match &er.decision {
             Decision::CreateNew => {
-                let new_entity = build_new_entity(&er.draft, now, ctx);
+                // ISS-076: use the id minted in resolve_entities, NOT a
+                // fresh one. resolve_edges already published this id to
+                // edge subject/object slots; minting again here would
+                // produce dangling endpoints.
+                let new_entity = build_new_entity(er.assigned_id, &er.draft, now, ctx);
                 let entity_id = new_entity.id;
+                debug_assert_eq!(entity_id, er.assigned_id, "ISS-076 invariant: entity row id must equal EntityResolution.assigned_id");
                 mentions.push(mention_row(
                     memory_id,
                     entity_id,
@@ -202,9 +247,19 @@ pub fn build_delta(
                     ctx,
                 ));
                 delta.entities.push(new_entity);
+                // ISS-075 root fix: emit one alias row per surface form
+                // so future mentions of this entity (under any form
+                // already seeded here) hit `search_candidates` and take
+                // the `MergeInto` path instead of duplicating.
+                delta.aliases.extend(alias_upserts_for_draft(
+                    &er.draft,
+                    entity_id,
+                    ctx.episode_id,
+                ));
             }
             Decision::MergeInto { candidate_id } => {
                 let entity_id = *candidate_id;
+                debug_assert_eq!(entity_id, er.assigned_id, "ISS-076 invariant: MergeInto candidate_id must equal EntityResolution.assigned_id");
                 // The §3.4.3 design specifies updating activation /
                 // last_seen / identity_confidence on the canonical row.
                 // We model this as an upsert by including the (mutated)
@@ -238,6 +293,18 @@ pub fn build_delta(
                     &er.draft,
                     er.draft_index,
                     ctx,
+                ));
+                // ISS-075: also emit alias rows on the merge path. The
+                // canonical entity already exists, but this mention may
+                // have arrived under a new surface form (e.g. "Caroline"
+                // first, then "caroline" / "Carol" later). `upsert_alias`
+                // is idempotent on the normalized form, so re-emitting an
+                // existing alias is a no-op; emitting a new one accretes
+                // the alias set without changing the canonical row.
+                delta.aliases.extend(alias_upserts_for_draft(
+                    &er.draft,
+                    entity_id,
+                    ctx.episode_id,
                 ));
             }
             Decision::DeferToLlm { candidate_id } => {
@@ -414,8 +481,48 @@ fn dt_to_unix(dt: DateTime<Utc>) -> f64 {
     dt.timestamp() as f64 + (dt.timestamp_subsec_micros() as f64) / 1_000_000.0
 }
 
-fn build_new_entity(draft: &DraftEntity, now: DateTime<Utc>, ctx: &PipelineContext) -> Entity {
-    let mut e = Entity::new(draft.canonical_name.clone(), draft.kind.clone(), now);
+/// Helper: build the alias-upsert rows for a single resolution outcome.
+///
+/// Emits one [`AliasUpsert`] per surface form recorded on the draft
+/// (`draft.aliases` — already normalized at extract time, see
+/// `draft_entity_from_mention`). The raw display form is the draft's
+/// `canonical_name`; the same raw is used for every alias of this draft
+/// because the extractor only sees one mention text per draft (multi-form
+/// accretion happens by *re-mentioning* under a different surface form on
+/// a later episode, which produces a fresh draft → fresh `AliasUpsert`).
+///
+/// `source_episode` is the L1 episode that introduced the alias — useful
+/// for back-tracing where a surface form was first observed.
+///
+/// Returns an empty Vec when `draft.aliases` is empty (defensive: the
+/// adapter always seeds at least one entry, but we don't want to insert
+/// a degenerate row if a future code path produces an aliasless draft).
+///
+/// ISS-075 root fix: previously `build_delta` did not emit any alias
+/// rows, so `graph_entity_aliases` stayed empty, `search_candidates`
+/// returned no matches, and every mention took the `CreateNew`
+/// shortcut (27× duplicate Carolines in cogmembench).
+fn alias_upserts_for_draft(
+    draft: &DraftEntity,
+    canonical_id: Uuid,
+    episode_id: Uuid,
+) -> Vec<crate::graph::delta::AliasUpsert> {
+    use crate::graph::delta::AliasUpsert;
+    draft
+        .aliases
+        .iter()
+        .filter(|a| !a.is_empty())
+        .map(|normalized| AliasUpsert {
+            normalized: normalized.clone(),
+            alias_raw: draft.canonical_name.clone(),
+            canonical_id,
+            source_episode: Some(episode_id),
+        })
+        .collect()
+}
+
+fn build_new_entity(id: Uuid, draft: &DraftEntity, now: DateTime<Utc>, ctx: &PipelineContext) -> Entity {
+    let mut e = Entity::new(id, draft.canonical_name.clone(), draft.kind.clone(), now);
     e.first_seen = draft.first_seen;
     e.last_seen = draft.last_seen.max(ctx.memory.created_at);
     // Carry the affect snapshot per GUARD-8 (immutable after capture).
@@ -450,6 +557,17 @@ fn build_new_entity(draft: &DraftEntity, now: DateTime<Utc>, ctx: &PipelineConte
                 .expect("KindSource serialize is infallible"),
         );
     }
+    // ISS-075 root fix: copy the draft's name embedding (computed in
+    // stage_extract via the injected `Embedder`) into the persisted entity
+    // row. Without this, every entity was written with `embedding: None`
+    // and `search_candidates` had no embedding-similarity signal to fuse
+    // → zero retrieval candidates → every mention forced into `CreateNew`.
+    //
+    // The dim invariant (system-wide single dim, see entity.rs
+    // `validate_embedding_dim`) is enforced at write time by the storage
+    // layer; if extract produced a bad-dim vector, persist still records
+    // the entity with no embedding rather than corrupting the column.
+    e.embedding = draft.embedding.clone();
     // Identity confidence starts at the §3.4 fusion convention for fresh
     // rows: 1.0 (we're certain this is a *new* identity, not that we've
     // verified it). Calibration happens on subsequent merges.

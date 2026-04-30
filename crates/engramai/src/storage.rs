@@ -3843,6 +3843,8 @@ impl Storage {
                 object,
                 confidence: confidence.clamp(0.0, 1.0),
                 source,
+                subject_kind_hint: None,
+                object_kind_hint: None,
             })
         })?;
         rows.collect()

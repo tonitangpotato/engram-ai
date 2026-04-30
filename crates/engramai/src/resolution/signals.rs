@@ -387,9 +387,11 @@ mod tests {
             kind: EntityKind::Person,
             aliases: Vec::new(),
             subtype_hint: None,
+            kind_source: crate::resolution::context::KindSource::Default,
             first_seen: Utc::now(),
             last_seen: Utc::now(),
             somatic_fingerprint: None,
+            embedding: None,
         }
     }
 

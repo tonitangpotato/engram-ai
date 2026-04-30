@@ -228,8 +228,9 @@ where
         let topic_uuid = Uuid::new_v4();
 
         // Topic entity (mirror row required by `upsert_topic`'s FK).
-        let mut topic_entity = Entity::new(summary.title.clone(), EntityKind::Topic, now);
-        topic_entity.id = topic_uuid;
+        // Pass `topic_uuid` directly so the entity row's id matches the
+        // topic row's id (ISS-076 hygiene: single mint site).
+        let mut topic_entity = Entity::new(topic_uuid, summary.title.clone(), EntityKind::Topic, now);
         topic_entity.summary = summary.summary.clone();
         topic_entity.embedding = Some(embedding.clone());
 

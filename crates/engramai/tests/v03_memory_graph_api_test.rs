@@ -43,7 +43,7 @@ fn get_entity_returns_none_for_unknown_id() {
 fn get_entity_round_trips_a_freshly_inserted_entity() {
     let mut mem = new_mem();
     let now = Utc::now();
-    let e = Entity::new("Alice".into(), EntityKind::Person, now);
+    let e = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
     let id = e.id;
 
     mem.graph_mut().insert_entity(&e).expect("insert ok");
@@ -78,7 +78,7 @@ fn find_entity_resolves_canonical_name_via_alias_table() {
     // imagined auto-registration that doesn't exist.
     let mut mem = new_mem();
     let now = Utc::now();
-    let e = Entity::new("Carol".into(), EntityKind::Person, now);
+    let e = Entity::new_random_id("Carol".into(), EntityKind::Person, now);
     let id = e.id;
 
     {
@@ -109,7 +109,7 @@ fn find_entity_resolves_canonical_name_via_alias_table() {
 fn neighbors_returns_empty_for_isolated_node() {
     let mut mem = new_mem();
     let now = Utc::now();
-    let e = Entity::new("Loner".into(), EntityKind::Person, now);
+    let e = Entity::new_random_id("Loner".into(), EntityKind::Person, now);
     let id = e.id;
     mem.graph_mut().insert_entity(&e).expect("insert ok");
 
@@ -122,8 +122,8 @@ fn neighbors_walks_one_hop_over_a_canonical_edge() {
     let mut mem = new_mem();
     let now = Utc::now();
 
-    let alice = Entity::new("Alice".into(), EntityKind::Person, now);
-    let acme = Entity::new("Acme".into(), EntityKind::Concept, now);
+    let alice = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
+    let acme = Entity::new_random_id("Acme".into(), EntityKind::Concept, now);
     let alice_id = alice.id;
     let acme_id = acme.id;
 
@@ -169,8 +169,8 @@ fn edges_as_of_returns_inserted_edge_when_queried_at_or_after_recorded_at() {
     let mut mem = new_mem();
     let now = Utc::now();
 
-    let alice = Entity::new("Alice".into(), EntityKind::Person, now);
-    let acme = Entity::new("Acme".into(), EntityKind::Concept, now);
+    let alice = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
+    let acme = Entity::new_random_id("Acme".into(), EntityKind::Concept, now);
     let alice_id = alice.id;
     let acme_id = acme.id;
 
@@ -227,13 +227,13 @@ fn graph_mut_can_be_re_acquired_across_sequential_calls() {
     let mut mem = new_mem();
     let now = Utc::now();
 
-    let e1 = Entity::new("First".into(), EntityKind::Person, now);
+    let e1 = Entity::new_random_id("First".into(), EntityKind::Person, now);
     let id1 = e1.id;
     mem.graph_mut().insert_entity(&e1).expect("insert e1");
 
     // Re-borrow — would fail to compile if `graph_mut()` returned a
     // `Self`-borrowing handle that outlived the previous statement.
-    let e2 = Entity::new("Second".into(), EntityKind::Person, now);
+    let e2 = Entity::new_random_id("Second".into(), EntityKind::Person, now);
     let id2 = e2.id;
     mem.graph_mut().insert_entity(&e2).expect("insert e2");
 

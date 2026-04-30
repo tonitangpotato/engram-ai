@@ -85,7 +85,7 @@ fn plant_topic(graph_db: &std::path::Path, ns: &str, title: &str, summary: &str)
 
     // graph_topics.id has an FK on graph_entities(id); production
     // synthesis writes a Topic entity row before upserting the topic.
-    let mut e = Entity::new(title.to_string(), EntityKind::Topic, Utc::now());
+    let mut e = Entity::new_random_id(title.to_string(), EntityKind::Topic, Utc::now());
     e.id = topic_id;
     store.insert_entity(&e).expect("insert mirror Topic entity");
 

@@ -118,17 +118,13 @@ fn draft(name: &str, kind: EntityKind, source: KindSource) -> DraftEntity {
         first_seen: now,
         last_seen: now,
         somatic_fingerprint: None,
+        embedding: None,
     }
 }
 
 /// Wrap a draft in an `EntityResolution { decision: CreateNew }`.
 fn create(idx: usize, draft: DraftEntity) -> EntityResolution {
-    EntityResolution {
-        draft_index: idx,
-        draft,
-        decision: Decision::CreateNew,
-        canonical: None,
-    }
+    EntityResolution::for_test(idx, draft, Decision::CreateNew, None)
 }
 
 #[test]

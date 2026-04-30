@@ -103,10 +103,51 @@ pub struct DraftEntity {
     /// Lossy-mapped subtype hint when the v0.3 `EntityKind` is broader than
     /// the v0.2 `EntityType`. `None` when the mapping was lossless.
     pub subtype_hint: Option<String>,
+    /// Where the `kind` field originated (ISS-072 GOAL-2 A-clean).
+    /// Persisted into `attributes["kind_source"]` by stage_persist; consumed
+    /// by future B-stage merge precedence enforcement (see ISS-072 design §8).
+    pub kind_source: KindSource,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     /// Affect snapshot at write time (GUARD-8: immutable after capture).
     pub somatic_fingerprint: Option<SomaticFingerprint>,
+    /// ISS-076 Phase B: pre-computed embedding of `canonical_name`,
+    /// produced by `stage_extract` via the injected `Embedder`.
+    /// `None` if the embedder failed (transient or permanent error) — we
+    /// log a warning and let the entity persist without an embedding
+    /// rather than fail the whole episode. The vector-search candidate
+    /// retrieval path will simply miss for that entity until a later
+    /// enrichment pass populates it; alias-exact lookup still works.
+    ///
+    /// Vector source is `canonical_name` (not mention context) on purpose:
+    /// surface form is stable across episodes, so two mentions of
+    /// "Caroline" embed to the same vector and the second mention hits
+    /// the first via cosine similarity. Context-based embedding would
+    /// pull the vectors apart and increase false negatives.
+    pub embedding: Option<Vec<f32>>,
+}
+
+/// Where the `kind` field on a `DraftEntity` / `Entity` originated.
+///
+/// Used by future enrichment stages (B) to decide merge precedence when two
+/// writes target the same canonical entity. The locked precedence policy is
+/// `EnrichmentLLM > DictionaryMatch > TripleHint > Default` — see
+/// `.gid/issues/ISS-072/design.md` §"Merge precedence" and §8.
+///
+/// `Serialize` (PascalCase) gives a stable on-disk string contract for the
+/// `attributes["kind_source"]` persistence key — independent of `Debug`
+/// output, which Rust does not guarantee to keep stable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum KindSource {
+    /// No signal available; `kind` defaulted to `Other("unknown")` or similar.
+    Default,
+    /// Hint propagated from a `Triple` endpoint (LLM extraction guess, weak).
+    TripleHint,
+    /// Aho-Corasick dictionary match (curated, stronger than triple hint).
+    DictionaryMatch,
+    /// Dedicated enrichment-LLM call (strongest signal).
+    EnrichmentLLM,
 }
 
 /// Draft edge — `Triple` upgraded to v0.3 shape with subject/object as
