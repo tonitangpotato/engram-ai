@@ -1,6 +1,6 @@
 ---
 issue: ISS-040
-title: SqliteGraphStore<C: Borrow<Connection>> generic refactor — design
+title: "SqliteGraphStore<C: Borrow<Connection>> generic refactor — design"
 status: REVISED
 blocker: public API evolution decision (Memory::graph_mut) + interaction with existing with_graph_read
 author: rustclaw (autopilot 2026-04-29 A7.4)
