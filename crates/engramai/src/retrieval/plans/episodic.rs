@@ -67,12 +67,70 @@
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
+use regex::Regex;
 
 use crate::retrieval::api::{EntityId, GraphQuery, RetrievalOutcome, TimeWindow};
 use crate::retrieval::budget::{BudgetController, Stage};
 use crate::store_api::MemoryId;
 
 use super::bitemporal::AsOfMode;
+
+// ---------------------------------------------------------------------------
+// Text-derived time-window fallback (ISS-RUN-0009 / W2)
+// ---------------------------------------------------------------------------
+//
+// The heuristic classifier (`classifier::heuristic::score_temporal`) routes
+// queries containing temporal language ("yesterday", "last week", ISO dates,
+// "N days ago", "as of …") to `Intent::Episodic`. But the classifier does
+// **not** populate `GraphQuery::time_window` — that field is only set when
+// the *caller* parses the expression themselves. Pre-W2 the plan therefore
+// downgraded on every classifier-routed Episodic query, producing 5/5 misses
+// in RUN-0009.
+//
+// To keep Episodic dispatch useful in the absence of a real temporal NLP
+// step we mirror the heuristic regex here: if `time_window` is `None` but
+// the query text contains a temporal token, we synthesize a broad lookback
+// `TimeWindow::Range { from: cutoff, to: now }` so the underlying
+// `EpisodicMemoryStore` actually gets queried. Sub-day vs. multi-week
+// resolution is left to a later task; for the substrate-populated case the
+// recency-ranked store output is dramatically better than zero hits.
+
+/// Regex matching the same temporal vocabulary as
+/// `classifier::heuristic::score_temporal`. Kept as a private mirror so the
+/// two stay aligned by review (a follow-up may extract a shared helper).
+fn text_temporal_regex() -> &'static Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?ix)
+                \b(
+                    yesterday
+                  | today
+                  | tonight
+                  | tomorrow
+                  | last\s+(week|month|year|night|monday|tuesday|wednesday|thursday|friday|saturday|sunday)
+                  | this\s+(week|month|year|morning|afternoon|evening)
+                  | \d+\s+(second|minute|hour|day|week|month|year)s?\s+ago
+                  | as\s+of\b
+                  | before\b
+                  | after\b
+                  | when\b
+                  | recently\b
+                  | earlier\b
+                  | \d{4}-\d{2}-\d{2}
+                )
+            ",
+        )
+        .expect("text_temporal_regex compiles")
+    })
+}
+
+/// True iff the query text carries a temporal phrase the classifier would
+/// also recognise. Public-in-module for unit tests only.
+fn text_has_temporal_signal(text: &str) -> bool {
+    text_temporal_regex().is_match(text)
+}
 
 // ---------------------------------------------------------------------------
 // Plug-in trait — EpisodicMemoryStore
@@ -423,8 +481,23 @@ where
         let started = Instant::now();
 
         // Step 1 — resolve window (or downgrade).
+        //
+        // ISS-RUN-0009 / W2: when the caller did not supply an explicit
+        // window but the text contains a temporal phrase, fall back to a
+        // broad lookback `[cutoff, now]` instead of downgrading. The
+        // dispatcher routed us here precisely because the temporal signal
+        // fired; refusing to query the store would discard known-good data.
         inputs.budget.begin_stage(Stage::TimeParse);
-        let window_input = inputs.time_window.clone().unwrap_or(TimeWindow::None);
+        let window_input = match inputs.time_window.clone() {
+            Some(TimeWindow::None) | None => {
+                if text_has_temporal_signal(&inputs.query.text) {
+                    TimeWindow::Range { from: None, to: None }
+                } else {
+                    TimeWindow::None
+                }
+            }
+            Some(other) => other,
+        };
         let resolved = self.resolve_window(&window_input, now);
         inputs.budget.end_stage();
 
@@ -509,6 +582,12 @@ mod tests {
         GraphQuery::new("what happened yesterday")
     }
 
+    /// Query with no temporal phrase — used by the explicit-downgrade tests
+    /// that need `execute` to return [`EpisodicOutcome::DowngradedFromEpisodic`].
+    fn query_no_temporal() -> GraphQuery {
+        GraphQuery::new("who is alice")
+    }
+
     fn budget() -> BudgetController {
         BudgetController::with_defaults()
     }
@@ -574,8 +653,11 @@ mod tests {
 
     #[test]
     fn execute_no_window_downgrades() {
+        // No temporal phrase in the query text → still downgrades.
+        // Queries that *do* mention "yesterday" / "last week" / etc. are
+        // covered by `execute_text_temporal_synthesizes_window` below.
         let plan = EpisodicPlan::default();
-        let q = query();
+        let q = query_no_temporal();
         let inputs = EpisodicPlanInputs {
             query: &q,
             time_window: None,
@@ -587,6 +669,56 @@ mod tests {
         assert!(out.memories.is_empty());
         assert!(out.window.is_none());
         assert!(out.projection_mode.is_none());
+    }
+
+    /// W2 regression: when the dispatcher routes to Episodic because the
+    /// query text contains a temporal phrase but the caller did not
+    /// populate `time_window`, the plan must synthesize a broad
+    /// `[cutoff, now]` window and actually query the store rather than
+    /// downgrade. RUN-0009 saw 5/5 misses on conv-26 because pre-W2 every
+    /// such query produced `DowngradedFromEpisodic` despite the substrate
+    /// being populated.
+    #[test]
+    fn execute_text_temporal_synthesizes_window() {
+        struct PopulatedStore;
+        impl EpisodicMemoryStore for PopulatedStore {
+            fn memories_in_window(
+                &self,
+                _w: &ResolvedWindow,
+                _l: usize,
+            ) -> Vec<MemoryId> {
+                vec![MemoryId::from("mem-1"), MemoryId::from("mem-2")]
+            }
+        }
+        let plan = EpisodicPlan::new(PopulatedStore, KnowledgeCutoff::default());
+        // "what happened yesterday" — temporal regex matches "yesterday".
+        let q = query();
+        let inputs = EpisodicPlanInputs {
+            query: &q,
+            time_window: None, // <-- the bug: classifier didn't populate this
+            budget: budget(),
+        };
+        let now = Utc.with_ymd_and_hms(2026, 4, 27, 0, 0, 0).unwrap();
+        let out = plan.execute(inputs, now);
+        assert_eq!(
+            out.outcome,
+            EpisodicOutcome::Ok,
+            "text-derived window must drive a real store call, not a downgrade"
+        );
+        assert_eq!(out.memories.len(), 2);
+        assert!(out.window.is_some());
+        assert!(out.projection_mode.is_some());
+    }
+
+    #[test]
+    fn text_temporal_regex_matches_classifier_vocabulary() {
+        assert!(text_has_temporal_signal("what happened yesterday"));
+        assert!(text_has_temporal_signal("last week we shipped"));
+        assert!(text_has_temporal_signal("3 days ago"));
+        assert!(text_has_temporal_signal("as of 2026-01-01"));
+        assert!(text_has_temporal_signal("note from 2026-04-25"));
+        assert!(!text_has_temporal_signal("who is alice"));
+        assert!(!text_has_temporal_signal(""));
     }
 
     #[test]
