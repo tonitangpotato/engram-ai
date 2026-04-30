@@ -393,6 +393,19 @@ impl HybridPlan {
     /// Execute the Hybrid plan against an external sub-plan executor.
     ///
     /// Sequential in v0.3 — see module docs.
+    ///
+    /// ## Empty-result graceful fallback (ISS-083)
+    ///
+    /// If the originally-selected sub-plans all return zero candidates,
+    /// Hybrid attempts the remaining `SubPlanKind` variants (in
+    /// declaration order: Factual, Episodic, Abstract, Affective) and
+    /// stops as soon as one returns a non-empty list. This honours
+    /// GUARD-2 ("never silently degrade"): when at least one sub-plan
+    /// has data for the query, Hybrid surfaces it rather than emitting
+    /// an empty result set. The fallback executions are appended to
+    /// `executed` for trace fidelity. `dropped` continues to record the
+    /// original strong-signal truncation telemetry only — the cap=2
+    /// rule is unchanged on the *primary* path.
     pub fn execute<E: HybridSubPlanExecutor>(
         &self,
         inputs: HybridPlanInputs<'_>,
@@ -406,6 +419,40 @@ impl HybridPlan {
             let res = executor.run(*kind);
             executed.push(*kind);
             sub_results.push(res);
+        }
+
+        // ISS-083: if every selected sub-plan returned zero candidates,
+        // fall back to the remaining sub-plan kinds in deterministic
+        // order. Stop as soon as any returns a non-empty list — we
+        // accept the union of "the empty originals + the first
+        // fallback that has data", and RRF takes care of ranking.
+        //
+        // Skipped when no sub-plans were selected at all (no strong
+        // signals): Hybrid is only meant to run when the classifier
+        // saw ≥ 1 strong signal, so falling back into a full 4-plan
+        // sweep on a signal-less query would step on the dispatcher's
+        // own Associative-downgrade path (§4.3).
+        let primary_empty =
+            !sub_results.is_empty() && sub_results.iter().all(|r| r.items.is_empty());
+        if primary_empty {
+            const FALLBACK_ORDER: [SubPlanKind; 4] = [
+                SubPlanKind::Factual,
+                SubPlanKind::Episodic,
+                SubPlanKind::Abstract,
+                SubPlanKind::Affective,
+            ];
+            for kind in FALLBACK_ORDER {
+                if executed.contains(&kind) {
+                    continue;
+                }
+                let res = executor.run(kind);
+                let has_items = !res.items.is_empty();
+                executed.push(kind);
+                sub_results.push(res);
+                if has_items {
+                    break;
+                }
+            }
         }
 
         let fused = fuse_rrf(&sub_results, self.rrf_k);
@@ -575,10 +622,13 @@ mod tests {
 
     #[test]
     fn execute_emits_dropped_signal_when_three_strong() {
+        // Selected sub-plans must have data so the ISS-083 empty-result
+        // fallback does *not* run — this test is purely about the
+        // primary-path cap=2 / dropped-signal telemetry.
         let stub = StubExecutor::new()
-            .with(SubPlanKind::Factual, vec![])
+            .with(SubPlanKind::Factual, vec![mem("f1")])
             .with(SubPlanKind::Episodic, vec![])
-            .with(SubPlanKind::Affective, vec![]);
+            .with(SubPlanKind::Affective, vec![mem("a1")]);
         let mut exec = stub;
 
         // entity=0.95, temporal=0.9, affective=0.92 — top 2 = entity, affective.
@@ -667,5 +717,105 @@ mod tests {
         let ids1: Vec<_> = r1.items.iter().map(|x| x.item.clone()).collect();
         let ids2: Vec<_> = r2.items.iter().map(|x| x.item.clone()).collect();
         assert_eq!(ids1, ids2);
+    }
+
+    // ---- ISS-083 fallback regression ----
+
+    /// ISS-083: When all originally-selected sub-plans return empty but
+    /// another sub-plan kind *would* have data, Hybrid must fall back
+    /// to that kind rather than returning an empty result set.
+    #[test]
+    fn execute_falls_back_when_selected_subplans_all_empty() {
+        // Strong signals: temporal + abstract → selected sub-plans are
+        // Episodic + Abstract (cap=2). Both stubbed empty. Factual is
+        // *not* selected (entity score below τ_high) but has data —
+        // Hybrid must pick it up via the fallback path.
+        let stub = StubExecutor::new()
+            .with(SubPlanKind::Episodic, vec![])
+            .with(SubPlanKind::Abstract, vec![])
+            .with(SubPlanKind::Factual, vec![mem("rescue_a"), mem("rescue_b")]);
+        let mut exec = stub;
+
+        let signals = mk_signals(0.1, 0.9, 0.85, 0.1);
+        let res = HybridPlan::new().execute(
+            HybridPlanInputs {
+                signals: &signals,
+                tau_high: 0.7,
+                top_k: 10,
+            },
+            &mut exec,
+        );
+
+        // Original cap=2 selection still recorded (no spurious dropped
+        // entries on the primary path).
+        assert!(res.dropped.is_empty());
+        // Fallback kicked in: Factual ran in addition to the two
+        // selected sub-plans.
+        assert!(
+            res.executed.contains(&SubPlanKind::Factual),
+            "expected Factual in executed after fallback, got {:?}",
+            res.executed
+        );
+        // Most importantly: not empty.
+        assert_eq!(res.items.len(), 2, "fallback must surface non-empty items");
+        let ids: Vec<_> = res.items.iter().map(|r| r.item.clone()).collect();
+        assert!(ids.contains(&mem("rescue_a")));
+        assert!(ids.contains(&mem("rescue_b")));
+    }
+
+    /// Fallback must NOT trigger when the selected sub-plans already
+    /// have data (defensive — the RRF math and `executed` list should
+    /// stay identical to pre-ISS-083 behaviour on the happy path).
+    #[test]
+    fn execute_does_not_fall_back_when_primary_has_results() {
+        let stub = StubExecutor::new()
+            .with(SubPlanKind::Factual, vec![mem("a")])
+            .with(SubPlanKind::Affective, vec![mem("b")])
+            // Episodic / Abstract have data too — but should NOT run.
+            .with(SubPlanKind::Episodic, vec![mem("must_not_appear")])
+            .with(SubPlanKind::Abstract, vec![topic(99)]);
+        let mut exec = stub;
+
+        let signals = mk_signals(0.9, 0.1, 0.1, 0.95);
+        let res = HybridPlan::new().execute(
+            HybridPlanInputs {
+                signals: &signals,
+                tau_high: 0.7,
+                top_k: 10,
+            },
+            &mut exec,
+        );
+
+        assert_eq!(res.executed, vec![SubPlanKind::Affective, SubPlanKind::Factual]);
+        let ids: Vec<_> = res.items.iter().map(|r| r.item.clone()).collect();
+        assert!(!ids.contains(&mem("must_not_appear")));
+        assert!(!ids.iter().any(|i| matches!(i, HybridItem::Topic(_))));
+    }
+
+    /// When the *entire* substrate is empty (every sub-plan kind
+    /// returns empty), Hybrid still emits zero items — but it should
+    /// have *attempted* every fallback first (so callers can tell
+    /// "tried everything" apart from "didn't try"). GUARD-2 / §4.7.
+    #[test]
+    fn execute_attempts_all_fallbacks_when_substrate_fully_empty() {
+        let mut exec = StubExecutor::new(); // all kinds return empty
+        let signals = mk_signals(0.1, 0.9, 0.85, 0.1);
+        let res = HybridPlan::new().execute(
+            HybridPlanInputs {
+                signals: &signals,
+                tau_high: 0.7,
+                top_k: 10,
+            },
+            &mut exec,
+        );
+
+        // Selected: Episodic + Abstract. Fallback: Factual + Affective.
+        // All four were attempted because none returned data.
+        assert_eq!(res.executed.len(), 4);
+        assert!(res.executed.contains(&SubPlanKind::Episodic));
+        assert!(res.executed.contains(&SubPlanKind::Abstract));
+        assert!(res.executed.contains(&SubPlanKind::Factual));
+        assert!(res.executed.contains(&SubPlanKind::Affective));
+        assert!(res.items.is_empty());
     }
 }
