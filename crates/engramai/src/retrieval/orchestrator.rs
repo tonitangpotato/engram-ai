@@ -1061,18 +1061,24 @@ pub(crate) fn execute_plan(
             let hybrid_plan = crate::retrieval::plans::hybrid::HybridPlan::new();
             let result = hybrid_plan.execute(inputs, &mut executor);
             let scored = hybrid_to_scored(&result, &topics_by_uuid, loader);
-            // ISS-063: replace dead code (`if empty { Ok } else { Ok }`).
-            // Sub-plan fallback inside Hybrid is deferred to ISS-061 —
-            // we surface the empty as a typed outcome here so callers
-            // can distinguish "Hybrid had results" from "Hybrid had none".
-            let outcome = if scored.is_empty() {
-                crate::retrieval::api::RetrievalOutcome::EmptyResultSet {
-                    reason: "hybrid_all_subplans_empty".to_string(),
-                }
+            // ISS-083: when every Hybrid sub-plan returned empty, try a
+            // Factual re-dispatch of the same query before surfacing
+            // `EmptyResultSet`. Factual is the always-available best-
+            // effort plan; if it also returns empty we fall through to
+            // a terminal `EmptyResultSet` with an updated reason. This
+            // replaces the ISS-063 placeholder that always emitted
+            // `hybrid_all_subplans_empty`.
+            if scored.is_empty() {
+                run_factual_fallback_for_hybrid(
+                    &query,
+                    now,
+                    graph,
+                    loader,
+                    collaborators,
+                )
             } else {
-                crate::retrieval::api::RetrievalOutcome::Ok
-            };
-            (scored, outcome)
+                (scored, crate::retrieval::api::RetrievalOutcome::Ok)
+            }
         }
     };
 
@@ -1105,6 +1111,77 @@ pub(crate) fn execute_plan(
 // is filed as a separate concern (ISS-061) — the Hybrid-empty symptom
 // may live in `hybrid_to_scored` ID mapping, not fallback routing, and
 // that needs to be diagnosed before we layer fallback on top.
+
+/// ISS-083 — run the Factual plan as a best-effort rescue when every
+/// Hybrid sub-plan returned empty. Mirrors `run_associative_fallback`
+/// in shape: fresh `BudgetController`, same loader, returns
+/// `(scored, outcome)`.
+///
+/// Outcomes:
+/// - Factual returns non-empty → `(scored, DowngradedFromHybrid {
+///   reason: "subplans_empty_factual_recovered" })`.
+/// - Factual is also empty (or errors) → `(vec![], EmptyResultSet {
+///   reason: "hybrid_subplans_empty_factual_also_empty" })` (terminal,
+///   no further fallback per ISS-083 spec).
+fn run_factual_fallback_for_hybrid(
+    query: &crate::retrieval::api::GraphQuery,
+    now: chrono::DateTime<chrono::Utc>,
+    graph: &dyn crate::graph::store::GraphRead,
+    loader: &dyn RecordLoader,
+    collaborators: &PlanCollaborators<'_>,
+) -> (
+    Vec<crate::retrieval::api::ScoredResult>,
+    crate::retrieval::api::RetrievalOutcome,
+) {
+    log::info!(
+        target: "engramai::retrieval",
+        "fallback ENTER trigger=hybrid_to_factual reason=subplans_empty",
+    );
+
+    // Fresh budget — Hybrid sub-plans consumed the original allocation.
+    // Same rationale as `run_associative_fallback`: a slightly larger
+    // envelope is preferable to surfacing 0 candidates.
+    let mut budget = crate::retrieval::budget::BudgetController::with_defaults();
+
+    // Mirror the `PlanKind::Factual` arm's input construction so the
+    // rescue dispatch sees identical configuration.
+    let inputs = crate::retrieval::plans::factual::FactualPlanInputs {
+        query: &query.text,
+        query_time: now,
+        as_of: query.as_of,
+        include_superseded: query.include_superseded,
+        min_confidence: query.min_confidence.map(|f| f as f32),
+        max_anchors: 5,
+        predicate_filter: None,
+        memory_limit_per_entity: 50,
+        entity_filter: query.entity_filter.as_deref(),
+    };
+    let plan = crate::retrieval::plans::factual::FactualPlan::new();
+    let resolver = collaborators.entity_resolver;
+    let scored = match plan.execute(&inputs, resolver, graph, &mut budget) {
+        Ok(result) => factual_to_scored(&result, loader),
+        Err(_) => Vec::new(),
+    };
+
+    let final_outcome = if scored.is_empty() {
+        crate::retrieval::api::RetrievalOutcome::EmptyResultSet {
+            reason: "hybrid_subplans_empty_factual_also_empty".to_string(),
+        }
+    } else {
+        crate::retrieval::api::RetrievalOutcome::DowngradedFromHybrid {
+            reason: "subplans_empty_factual_recovered".to_string(),
+        }
+    };
+
+    log::info!(
+        target: "engramai::retrieval",
+        "fallback EXIT  candidates={} outcome={}",
+        scored.len(),
+        final_outcome.slug(),
+    );
+
+    (scored, final_outcome)
+}
 
 /// Identifies which primary plan triggered a fallback to Associative.
 /// Carries the reason string so the synthesised `RetrievalOutcome` can

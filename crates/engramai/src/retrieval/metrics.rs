@@ -469,6 +469,7 @@ pub enum OutcomeLabel {
     DowngradedFromAbstract,
     DowngradedFromEpisodic,
     DowngradedFromFactual,
+    DowngradedFromHybrid,
     NoCognitiveState,
     EmptyResultSet,
 }
@@ -485,6 +486,7 @@ impl OutcomeLabel {
             RetrievalOutcome::DowngradedFromAbstract { .. } => Self::DowngradedFromAbstract,
             RetrievalOutcome::DowngradedFromEpisodic { .. } => Self::DowngradedFromEpisodic,
             RetrievalOutcome::DowngradedFromFactual { .. } => Self::DowngradedFromFactual,
+            RetrievalOutcome::DowngradedFromHybrid { .. } => Self::DowngradedFromHybrid,
             RetrievalOutcome::NoCognitiveState => Self::NoCognitiveState,
             RetrievalOutcome::EmptyResultSet { .. } => Self::EmptyResultSet,
         }
@@ -503,12 +505,13 @@ impl MetricLabel for OutcomeLabel {
             OutcomeLabel::DowngradedFromAbstract => "downgraded_from_abstract",
             OutcomeLabel::DowngradedFromEpisodic => "downgraded_from_episodic",
             OutcomeLabel::DowngradedFromFactual => "downgraded_from_factual",
+            OutcomeLabel::DowngradedFromHybrid => "downgraded_from_hybrid",
             OutcomeLabel::NoCognitiveState => "no_cognitive_state",
             OutcomeLabel::EmptyResultSet => "empty_result_set",
         }
     }
     fn all() -> &'static [Self] {
-        const ALL: [OutcomeLabel; 11] = [
+        const ALL: [OutcomeLabel; 12] = [
             OutcomeLabel::Ok,
             OutcomeLabel::NoEntityFound,
             OutcomeLabel::EntityFoundNoEdges,
@@ -518,6 +521,7 @@ impl MetricLabel for OutcomeLabel {
             OutcomeLabel::DowngradedFromAbstract,
             OutcomeLabel::DowngradedFromEpisodic,
             OutcomeLabel::DowngradedFromFactual,
+            OutcomeLabel::DowngradedFromHybrid,
             OutcomeLabel::NoCognitiveState,
             OutcomeLabel::EmptyResultSet,
         ];

@@ -81,6 +81,7 @@ use crate::retrieval::classifier::Intent;
 /// | `DowngradedFromAbstract` | Abstract | plan downgraded to Associative (e.g. `reason = "L5_unavailable"`) |
 /// | `DowngradedFromEpisodic` | Episodic | plan downgraded to Associative (e.g. `reason = "no_time_expression"`) |
 /// | `DowngradedFromFactual` | Factual | plan downgraded to Associative because no entity resolved or no edges remained (added 2026-04-28, ISS-063) |
+/// | `DowngradedFromHybrid` | Hybrid | every Hybrid sub-plan returned empty; orchestrator re-dispatched the query as Factual and surfaced those candidates (added 2026-04-30, ISS-083) |
 /// | `NoCognitiveState` | Affective | self-state absent — plan downgraded to Associative |
 /// | `EmptyResultSet` | any | terminal empty — even the Associative fallback returned nothing (added 2026-04-28, ISS-063) |
 ///
@@ -203,6 +204,31 @@ pub enum RetrievalOutcome {
         reason: String,
     },
 
+    /// **Hybrid.** Plan downgraded to Factual because every Hybrid
+    /// sub-plan (and its internal fallback chain inside
+    /// [`crate::retrieval::plans::hybrid::HybridPlan::execute`])
+    /// returned zero candidates, but a direct Factual re-dispatch of
+    /// the same query *did* produce results. The orchestrator
+    /// surfaces those Factual results in `results` and tags the
+    /// outcome with this variant so callers can see that the
+    /// classifier-selected Hybrid plan was rescued.
+    ///
+    /// Distinct from [`RetrievalOutcome::EmptyResultSet`] with
+    /// reason `"hybrid_subplans_empty_factual_also_empty"`: that
+    /// variant means the Factual re-dispatch *also* came back empty
+    /// (terminal). This variant means the rescue worked.
+    ///
+    /// Added 2026-04-30 (ISS-083) — see RUN-0009 conv-26 retrieval
+    /// where 10/199 Hybrid queries returned `empty_result_set`
+    /// despite the substrate having Factual-resolvable evidence.
+    /// Reason captures the trigger:
+    ///   - `"all_subplans_empty_factual_recovered"` — Hybrid empty,
+    ///     Factual fallback returned candidates.
+    DowngradedFromHybrid {
+        /// Stable identifier for the downgrade reason (snake_case).
+        reason: String,
+    },
+
     /// **All plans.** Even after running the Associative fallback,
     /// no candidates were produced. This is the terminal empty-result
     /// state — the orchestrator has no further fallback to try.
@@ -238,6 +264,7 @@ impl RetrievalOutcome {
             RetrievalOutcome::DowngradedFromAbstract { .. } => "downgraded_from_abstract",
             RetrievalOutcome::DowngradedFromEpisodic { .. } => "downgraded_from_episodic",
             RetrievalOutcome::DowngradedFromFactual { .. } => "downgraded_from_factual",
+            RetrievalOutcome::DowngradedFromHybrid { .. } => "downgraded_from_hybrid",
             RetrievalOutcome::NoCognitiveState => "no_cognitive_state",
             RetrievalOutcome::EmptyResultSet { .. } => "empty_result_set",
         }
@@ -261,6 +288,7 @@ impl RetrievalOutcome {
             RetrievalOutcome::DowngradedFromAbstract { .. }
                 | RetrievalOutcome::DowngradedFromEpisodic { .. }
                 | RetrievalOutcome::DowngradedFromFactual { .. }
+                | RetrievalOutcome::DowngradedFromHybrid { .. }
                 | RetrievalOutcome::NoCognitiveState
         )
     }
@@ -339,6 +367,9 @@ mod tests {
         let ep_d = RetrievalOutcome::DowngradedFromEpisodic {
             reason: "no_time_expression".into(),
         };
+        let hyb_d = RetrievalOutcome::DowngradedFromHybrid {
+            reason: "all_subplans_empty_factual_recovered".into(),
+        };
         let no_cog = RetrievalOutcome::NoCognitiveState;
 
         let slugs = [
@@ -350,6 +381,7 @@ mod tests {
             l5.slug(),
             abs_d.slug(),
             ep_d.slug(),
+            hyb_d.slug(),
             no_cog.slug(),
         ];
         let mut sorted = slugs.to_vec();

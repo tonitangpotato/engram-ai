@@ -1113,15 +1113,12 @@ mod tests {
         assert!(resp.results.is_empty(), "empty graph → no candidates");
     }
 
-    /// **ISS-063:** Hybrid with no signals → no sub-plans selected →
-    /// empty `scored` → `EmptyResultSet { reason:
-    /// "hybrid_all_subplans_empty" }`. Replaces the dead-code path
-    /// `if empty { Ok } else { Ok }` (both arms identical) that
-    /// silently dropped the empty signal.
-    ///
-    /// Hybrid sub-plan fallback (running Associative inside each empty
-    /// sub-plan) is intentionally NOT implemented here — see
-    /// ISS-061 for the diagnostic on whether that's needed.
+    /// **ISS-063 → ISS-083:** Hybrid with no signals → no sub-plans
+    /// selected → empty `scored` → orchestrator runs Factual fallback
+    /// (ISS-083). Substrate is empty, so Factual *also* returns empty,
+    /// and the terminal outcome is
+    /// `EmptyResultSet { reason: "hybrid_subplans_empty_factual_also_empty" }`.
+    /// Replaces the dead-code path `if empty { Ok } else { Ok }`.
     #[test]
     fn iss063_hybrid_all_empty_returns_empty_result_set() {
         use crate::retrieval::classifier::Intent;
@@ -1135,8 +1132,9 @@ mod tests {
 
         // Caller-override Hybrid skips classifier (signal_scores=None
         // in execute_plan) → all-zero signals → 0 sub-plans selected
-        // → empty scored. This is exactly the dead-code path the fix
-        // replaces.
+        // → empty scored. ISS-083: orchestrator now runs Factual
+        // fallback; with empty substrate Factual is also empty, so we
+        // terminate with `hybrid_subplans_empty_factual_also_empty`.
         let q = GraphQuery::new("anything").with_intent(Intent::Hybrid);
         let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
 
@@ -1145,10 +1143,10 @@ mod tests {
             matches!(
                 resp.outcome,
                 RetrievalOutcome::EmptyResultSet { ref reason }
-                    if reason == "hybrid_all_subplans_empty"
+                    if reason == "hybrid_subplans_empty_factual_also_empty"
             ),
-            "Hybrid all-empty → EmptyResultSet \
-             (hybrid_all_subplans_empty); got {:?}",
+            "Hybrid all-empty + Factual fallback empty → EmptyResultSet \
+             (hybrid_subplans_empty_factual_also_empty); got {:?}",
             resp.outcome
         );
         assert!(resp.results.is_empty(), "no sub-plans → no candidates");
