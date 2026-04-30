@@ -35,6 +35,8 @@ log = "0.4"
 # Random for interleaved replay
 rand = "0.8"
 regex = "1"
+two_timer = "2"
+lru = "0.12"
 
 # HTTP client for embeddings
 reqwest = { version = "0.12", features = ["blocking", "json"] }

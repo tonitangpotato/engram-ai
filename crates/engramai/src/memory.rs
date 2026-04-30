@@ -2894,7 +2894,22 @@ impl Memory {
                     let mut any_valid = false;
                     let mut first_err: Option<String> = None;
 
-                    for fact in facts {
+                    // ISS-088: temporal grounding pass. Rewrites
+                    // resolved relative phrases (e.g. "yesterday") in
+                    // each fact's text fields to carry absolute date
+                    // anchors so retrieval content can answer
+                    // "when did X happen?" without metadata access.
+                    // Reference time = caller's occurred_at if set
+                    // (replay/backfill), else wall-clock now.
+                    let mut facts = facts;
+                    let ref_time = meta.occurred_at.unwrap_or_else(chrono::Utc::now);
+                    let grounding_results: Vec<crate::temporal_grounding::GroundingResult> =
+                        facts
+                            .iter_mut()
+                            .map(|f| crate::temporal_grounding::ground_fact(f, ref_time))
+                            .collect();
+
+                    for (fact_idx, fact) in facts.into_iter().enumerate() {
                         // Cap auto-extracted importance to prevent noise from
                         // dominating recall — same rule as the legacy path.
                         let capped = fact
@@ -2904,11 +2919,32 @@ impl Memory {
                         let mut fact_adj = fact;
                         fact_adj.importance = capped;
 
+                        // ISS-088: stash the original (pre-grounding)
+                        // core_fact in user_metadata.original_content
+                        // so provenance survives the rewrite.
+                        let user_md = {
+                            let mut base = meta.user_metadata.clone();
+                            if let Some(orig) =
+                                grounding_results[fact_idx].original_core_fact.as_ref()
+                            {
+                                if base.is_null() {
+                                    base = serde_json::json!({});
+                                }
+                                if let Some(obj) = base.as_object_mut() {
+                                    obj.insert(
+                                        "original_content".to_string(),
+                                        serde_json::Value::String(orig.clone()),
+                                    );
+                                }
+                            }
+                            base
+                        };
+
                         match crate::enriched::EnrichedMemory::from_extracted(
                             fact_adj,
                             meta.source.clone(),
                             meta.namespace.clone(),
-                            meta.user_metadata.clone(),
+                            user_md,
                         ) {
                             Ok(em) => {
                                 any_valid = true;

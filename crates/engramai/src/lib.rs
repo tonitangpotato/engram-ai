@@ -119,6 +119,8 @@ pub mod session_wm;
 pub mod storage;
 pub mod store_api;
 pub mod synthesis;
+pub mod temporal_dim;
+pub mod temporal_grounding;
 pub mod triple;
 pub mod triple_extractor;
 pub mod type_weights;
