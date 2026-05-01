@@ -310,26 +310,32 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
     pub fn run_job(&self, job: &PipelineJob) -> Result<JobOutcome, ProcessError> {
         let mut stats = ResolutionStats::default();
 
-        // ── 1. Begin pipeline run ─────────────────────────────────────────
-        let run_id = self.begin_run(job)?;
-
-        // ── 2. Load memory row ────────────────────────────────────────────
+        // ── 1. Load memory row ────────────────────────────────────────────
         // ISS-055: capture the row's `namespace` alongside the record so
         // every graph read/write below uses the user-provided namespace
         // (e.g. `--ns conv26`) instead of the worker store's baked-in
         // `"default"`. The reader is the canonical source: namespace lives
         // on the `memories` row and is set by `store_raw` at admission.
+        //
+        // ISS-091: fetch BEFORE `begin_run` so we know the per-job
+        // namespace at the moment the run row is INSERTed. Otherwise the
+        // INSERT scopes to the store's default namespace and the later
+        // `set_namespace(ctx.namespace)` in step 8 §3.5 (and the matching
+        // stamp inside `finish_run_with_summary`) writes/queries under a
+        // *different* namespace, making the begin/finish `WHERE
+        // namespace = ?` filter return 0 rows.
         let (memory, namespace) = self
             .memory_reader
             .fetch(job.memory_id.as_str())
-            .map_err(|e| {
-                let _ = self.finish_run(run_id, RunStatus::Failed, Some(&e.to_string()));
-                ProcessError::Other(format!("memory fetch failed: {e}"))
-            })?
+            .map_err(|e| ProcessError::Other(format!("memory fetch failed: {e}")))?
             .ok_or_else(|| {
-                let _ = self.finish_run(run_id, RunStatus::Failed, Some("memory not found"));
                 ProcessError::NotFound(format!("memory {} no longer exists", job.memory_id))
             })?;
+
+        // ── 2. Begin pipeline run ─────────────────────────────────────────
+        // ISS-091: pass `namespace` so `begin_run` stamps the store under
+        // the same lock window as the INSERT (lock-and-stamp contract).
+        let run_id = self.begin_run(job, namespace.as_str())?;
 
         // ── 3. Build context (affect snapshot wiring lands when v03 affect
         //      capture is plumbed end-to-end; for now Initial jobs pass
@@ -438,7 +444,21 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
     /// Start a pipeline-run audit row scoped to this memory. The kind is
     /// derived from `job.mode`. On failure we surface as `ProcessError`
     /// without trying to record anything (we never opened the run).
-    fn begin_run(&self, job: &PipelineJob) -> Result<Uuid, ProcessError> {
+    ///
+    /// ISS-091: `namespace` must be stamped onto the store BEFORE
+    /// `begin_pipeline_run_for_memory` runs, under the same lock window.
+    /// Without this stamp the row is INSERTed with the store's default
+    /// (`"default"`) namespace, while the later `set_namespace(ctx.namespace)`
+    /// in step 8 §3.5 persist (and the matching stamp inside
+    /// `finish_run_with_summary`) writes/queries under the per-job
+    /// namespace — the begin/finish `WHERE namespace = ?` filter then
+    /// returns 0 rows and finish reports `"run not found"`. Stamping here
+    /// makes begin/persist/finish all use the same namespace value.
+    fn begin_run(
+        &self,
+        job: &PipelineJob,
+        namespace: &str,
+    ) -> Result<Uuid, ProcessError> {
         let kind = match job.mode {
             JobMode::Initial => PipelineKind::Resolution,
             JobMode::ReExtract => PipelineKind::Reextract,
@@ -451,6 +471,11 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         });
 
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        // ISS-091: stamp namespace inside the same lock window as the
+        // INSERT — the lock-and-stamp contract from ISS-055 requires
+        // these two operations to be observable as a single atomic step
+        // by other workers.
+        store.set_namespace(namespace.to_string());
         store
             .begin_pipeline_run_for_memory(
                 kind,

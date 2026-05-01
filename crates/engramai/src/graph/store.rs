@@ -4344,6 +4344,28 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
             )
             .optional()?;
         let Some(cur_status) = cur else {
+            // ISS-091 diagnostic: surface namespace drift when the row
+            // exists under a *different* namespace than the one we
+            // queried. `GraphError::Invariant` carries `&'static str` so
+            // we cannot embed the drifted namespace in the error itself;
+            // log it to stderr first so operators can correlate the
+            // generic "run not found" with the actual cause when it
+            // happens. Best-effort: any SQL failure here is swallowed —
+            // the original "run not found" error path must still fire.
+            if let Ok(Some(written_ns)) = tx
+                .query_row(
+                    "SELECT namespace FROM graph_pipeline_runs WHERE run_id = ?1",
+                    rusqlite::params![run_id.as_bytes().to_vec()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+            {
+                eprintln!(
+                    "ISS-091 namespace drift: finish_pipeline_run(run_id={}) \
+                     row written under namespace {:?}, queried under {:?}",
+                    run_id, written_ns, self.namespace,
+                );
+            }
             return Err(GraphError::Invariant(
                 "finish_pipeline_run: run not found",
             ));
@@ -8005,6 +8027,47 @@ mod tests {
                 assert!(msg.contains("not found"));
             }
             other => panic!("expected not-found invariant, got {:?}", other),
+        }
+    }
+
+    /// ISS-091: when `begin_pipeline_run_for_memory` writes the row under
+    /// one namespace and a subsequent `set_namespace` rebinds the store
+    /// before `finish_pipeline_run`, the finish must fail (the
+    /// `WHERE namespace = ?` filter on the read excludes the row written
+    /// under the prior namespace). This pins the lower-level invariant
+    /// the pipeline-side fix in `pipeline.rs::begin_run` relies on:
+    /// callers MUST stamp the namespace before begin so begin/finish
+    /// observe the same value.
+    #[test]
+    fn finish_pipeline_run_errors_when_namespace_drifted_since_begin() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        // Default namespace is "default" — insert a memory under that
+        // namespace so the FK on graph_pipeline_runs.memory_id resolves.
+        insert_test_memory(&mut store, "mem-iss091");
+        let episode_id = Uuid::new_v4();
+        let run_id = store
+            .begin_pipeline_run_for_memory(
+                PipelineKind::Resolution,
+                "mem-iss091",
+                episode_id,
+                Json::Null,
+            )
+            .unwrap();
+        // Drift: rebind to a different namespace before finish.
+        store.set_namespace("other".to_string());
+        let res = store.finish_pipeline_run(run_id, RunStatus::Succeeded, None, None);
+        match res {
+            Err(GraphError::Invariant(msg)) => {
+                assert!(
+                    msg.contains("not found"),
+                    "expected 'run not found' invariant, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected Invariant error from namespace drift, got {:?}",
+                other
+            ),
         }
     }
 
