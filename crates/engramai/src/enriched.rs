@@ -225,6 +225,23 @@ impl EnrichedMemory {
         self
     }
 
+    /// ISS-090: builder-style override for the resulting record's
+    /// emotional valence. Clamps to `[-1.0, 1.0]`. Used by the
+    /// minimal/no-extractor path when the caller supplied
+    /// `StorageMeta.emotion`.
+    pub fn with_emotion(mut self, valence: f64) -> Self {
+        self.dimensions.valence = crate::dimensions::Valence::new(valence);
+        self
+    }
+
+    /// ISS-090: builder-style override for the resulting record's
+    /// domain. Parsed via `Domain::from_loose_str` so unknown
+    /// strings round-trip as `Domain::Other(...)`.
+    pub fn with_domain(mut self, domain: &str) -> Self {
+        self.dimensions.domain = crate::dimensions::Domain::from_loose_str(domain);
+        self
+    }
+
     // -----------------------------------------------------------------
     // Accessors / mutators
     // -----------------------------------------------------------------

@@ -87,6 +87,8 @@ fn store_raw_without_extractor_uses_minimal_dimensions() {
         user_metadata: serde_json::Value::Null,
         memory_type_hint: None,
         occurred_at: None,
+        emotion: None,
+        domain: None,
     };
 
     let out = mem
@@ -127,6 +129,8 @@ fn store_raw_user_metadata_is_preserved() {
         user_metadata: serde_json::json!({"callsite": "test-xyz"}),
         memory_type_hint: None,
         occurred_at: None,
+        emotion: None,
+        domain: None,
     };
     let out = mem
         .store_raw("user meta round-trip", meta)
@@ -217,6 +221,8 @@ fn store_raw_extractor_error_persists_quarantine_row() {
         user_metadata: serde_json::json!({ "retry_tag": "first-attempt" }),
         memory_type_hint: None,
         occurred_at: None,
+        emotion: None,
+        domain: None,
     };
 
     let out = mem
@@ -284,6 +290,8 @@ fn retry_quarantined_recovers_transient_failure() {
         user_metadata: serde_json::Value::Null,
         memory_type_hint: None,
         occurred_at: None,
+        emotion: None,
+        domain: None,
     };
 
     let first = mem

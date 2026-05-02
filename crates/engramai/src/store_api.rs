@@ -108,6 +108,32 @@ pub struct StorageMeta {
     /// pre-ISS-087 behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<DateTime<Utc>>,
+
+    /// Caller-supplied affective valence prior, in `[-1.0, 1.0]`.
+    ///
+    /// ISS-090: replaces the legacy `add_with_emotion` /
+    /// `add_with_emotion_at` entry points. The semantics is a
+    /// **fallback prior**, not an override:
+    ///
+    /// - Path A (extractor present) — for each extracted fact, the
+    ///   final valence is `fact.valence.or(meta.emotion)`. The
+    ///   extractor's per-fact judgment wins; this is only used when
+    ///   the extractor produced no valence for that fact.
+    /// - Path B (no extractor) — applied directly to the single
+    ///   admitted record's emotional dimensions.
+    ///
+    /// `None` (default) preserves the pre-ISS-090 behavior of letting
+    /// the extractor / dimensions defaults stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emotion: Option<f64>,
+
+    /// Caller-supplied domain prior (e.g. `"trading"`, `"coding"`).
+    ///
+    /// ISS-090: same fallback discipline as `emotion`. Path A applies
+    /// it only to facts that have no extractor-assigned domain; Path
+    /// B applies it directly to the single admitted record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 // ---------------------------------------------------------------------
@@ -291,6 +317,8 @@ mod tests {
         assert!(m.namespace.is_none());
         assert!(m.memory_type_hint.is_none());
         assert!(m.occurred_at.is_none());
+        assert!(m.emotion.is_none());
+        assert!(m.domain.is_none());
         assert_eq!(m.user_metadata, serde_json::Value::Null);
     }
 

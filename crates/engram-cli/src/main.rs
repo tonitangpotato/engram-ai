@@ -1317,43 +1317,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => None,
             };
 
-            // If emotion is provided, use add_with_emotion_at
-            let id = if let (Some(em), Some(dom)) = (emotion, domain.as_ref()) {
-                mem.add_with_emotion_at(
-                    &content,
-                    r#type.into(),
-                    importance,
-                    source.as_deref(),
-                    user_meta.clone(),
-                    Some(&ns),
-                    em,
-                    dom,
-                    occurred_at_dt,
-                )?
-            } else if occurred_at_dt.is_some() {
-                // No emotion but caller wants occurred_at override — route
-                // through add_with_emotion_at with neutral emotion so the
-                // override threads through.
-                mem.add_with_emotion_at(
-                    &content,
-                    r#type.into(),
-                    importance,
-                    source.as_deref(),
-                    user_meta,
-                    Some(&ns),
-                    0.0,
-                    "default",
-                    occurred_at_dt,
-                )?
-            } else {
-                mem.add_to_namespace(
-                    &content,
-                    r#type.into(),
-                    importance,
-                    source.as_deref(),
-                    user_meta,
-                    Some(&ns),
-                )?
+            // === Build StorageMeta and dispatch ===
+            // ISS-090: single call site. ALL writes route through
+            // store_raw (full v0.3 pipeline: extractor + graph emit +
+            // resolution enqueue). Emotion/domain/occurred_at all
+            // travel as StorageMeta fields.
+            let id = {
+                use engramai::store_api::{StorageMeta, RawStoreOutcome, StoreOutcome};
+                let storage_meta = StorageMeta {
+                    importance_hint: importance,
+                    source: source.clone(),
+                    namespace: Some(ns.clone()),
+                    user_metadata: user_meta.clone().unwrap_or(serde_json::Value::Null),
+                    memory_type_hint: Some(r#type.into()),
+                    occurred_at: occurred_at_dt,
+                    emotion,
+                    domain: domain.clone(),
+                };
+                match mem.store_raw(&content, storage_meta)
+                    .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?
+                {
+                    RawStoreOutcome::Stored(outcomes) => {
+                        // First outcome's id is the canonical record id;
+                        // subsequent outcomes are additional facts from
+                        // the same content (Path A may produce multiple).
+                        outcomes.first()
+                            .map(|o| match o {
+                                StoreOutcome::Inserted { id } => id.clone(),
+                                StoreOutcome::Merged { id, .. } => id.clone(),
+                            })
+                            .unwrap_or_default()
+                    }
+                    RawStoreOutcome::Skipped { reason, content_hash } => {
+                        log::warn!("store skipped: {:?} (hash={:?})", reason, content_hash);
+                        String::new()
+                    }
+                    RawStoreOutcome::Quarantined { id, reason } => {
+                        log::warn!("store quarantined: {:?} (qid={:?})", reason, id);
+                        String::new()
+                    }
+                }
             };
             
             // Handle empty ID (extractor found nothing worth storing)

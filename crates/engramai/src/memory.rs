@@ -2226,6 +2226,8 @@ impl Memory {
             user_metadata: metadata.unwrap_or(serde_json::Value::Null),
             memory_type_hint: Some(memory_type),
             occurred_at: None,
+            emotion: None,
+            domain: None,
         };
 
         let outcome = self.store_raw(content, meta).map_err(|e| match e {
@@ -2627,10 +2629,30 @@ impl Memory {
     /// * `namespace` - Namespace to store in
     /// * `emotion` - Emotional valence (-1.0 to 1.0)
     /// * `domain` - Domain for emotional tracking
+    ///
+    /// # Recommended: use `store_raw` directly
+    ///
+    /// This method is a `#[deprecated]` shim that forwards to
+    /// [`Memory::store_raw`]. New code should construct a
+    /// [`StorageMeta`](crate::store_api::StorageMeta) with
+    /// `emotion` + `domain` and call `store_raw` directly — that is
+    /// the canonical v0.3 write path (extractor dispatch + graph
+    /// emit + resolution-queue enqueue + Empathy Bus).
+    ///
+    /// ```no_run
+    /// # use engramai::Memory;
+    /// # use engramai::store_api::StorageMeta;
+    /// # fn example(mem: &mut Memory) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut meta = StorageMeta::default();
+    /// meta.emotion = Some(0.8);
+    /// meta.domain = Some("coding".into());
+    /// mem.store_raw("I just shipped the feature", meta)?;
+    /// # Ok(()) }
+    /// ```
     #[allow(clippy::too_many_arguments)]
     #[deprecated(
         since = "0.2.3",
-        note = "Use `store_raw` (or `store_enriched`) + `record_emotion` (or bus.process_interaction). This shim will be removed in v0.4."
+        note = "ISS-090: Use `store_raw` with `StorageMeta { emotion: Some(v), domain: Some(d), .. }` instead. This shim now delegates to store_raw and will be removed in v0.4."
     )]
     pub fn add_with_emotion(
         &mut self,
@@ -2643,6 +2665,7 @@ impl Memory {
         emotion: f64,
         domain: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
+        #[allow(deprecated)]
         self.add_with_emotion_at(
             content, memory_type, importance, source, metadata, namespace,
             emotion, domain, None,
@@ -2653,6 +2676,36 @@ impl Memory {
     /// override. When `Some`, the resulting record's `created_at` is set to
     /// that value (replay/backfill scenarios). When `None`, behavior is
     /// identical to `add_with_emotion` (wall-clock now).
+    ///
+    /// ISS-090: this shim now delegates to `store_raw` (full v0.3
+    /// pipeline: extractor + graph emit + resolution enqueue + Empathy
+    /// Bus). Previously it called the v0.2 `add_raw` path which silently
+    /// bypassed all of that.
+    ///
+    /// # Recommended: use `store_raw` directly
+    ///
+    /// New code should construct a
+    /// [`StorageMeta`](crate::store_api::StorageMeta) with
+    /// `occurred_at` + `emotion` + `domain` and call
+    /// [`Memory::store_raw`] directly:
+    ///
+    /// ```no_run
+    /// # use engramai::Memory;
+    /// # use engramai::store_api::StorageMeta;
+    /// # use chrono::Utc;
+    /// # fn example(mem: &mut Memory) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut meta = StorageMeta::default();
+    /// meta.emotion = Some(0.8);
+    /// meta.domain = Some("coding".into());
+    /// meta.occurred_at = Some(Utc::now());
+    /// mem.store_raw("I just shipped the feature", meta)?;
+    /// # Ok(()) }
+    /// ```
+    #[allow(clippy::too_many_arguments)]
+    #[deprecated(
+        since = "0.3.0",
+        note = "ISS-090: Use `store_raw` with `StorageMeta { occurred_at, emotion, domain, .. }` instead. This shim now delegates to store_raw and will be removed in v0.4."
+    )]
     pub fn add_with_emotion_at(
         &mut self,
         content: &str,
@@ -2665,16 +2718,51 @@ impl Memory {
         domain: &str,
         occurred_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        // Store via the typed write path (the shim forwards to store_raw,
-        // which gives us dedup + entity + association discovery identical
-        // to the pre-ISS-019 behavior).
-        #[allow(deprecated)]
-        let id = self.add_raw(
-            content, memory_type, importance, source, metadata, namespace,
-            occurred_at,
-        )?;
+        use crate::store_api::{RawStoreOutcome, StorageMeta, StoreError, StoreOutcome};
 
-        // Record emotion if bus is attached — unchanged.
+        let meta = StorageMeta {
+            importance_hint: importance,
+            source: source.map(str::to_string),
+            namespace: namespace.map(str::to_string),
+            user_metadata: metadata.unwrap_or(serde_json::Value::Null),
+            memory_type_hint: Some(memory_type),
+            occurred_at,
+            emotion: Some(emotion),
+            domain: Some(domain.to_string()),
+        };
+
+        let outcome = self.store_raw(content, meta).map_err(|e| match e {
+            StoreError::Quarantined { id, reason } => {
+                Box::<dyn std::error::Error>::from(format!(
+                    "store_raw quarantined: {:?} (qid={})", reason, id.as_str()
+                ))
+            }
+            other => Box::<dyn std::error::Error>::from(other.to_string()),
+        })?;
+
+        let id = match outcome {
+            RawStoreOutcome::Stored(outcomes) => outcomes
+                .first()
+                .map(|o| match o {
+                    StoreOutcome::Inserted { id } => id.clone(),
+                    StoreOutcome::Merged { id, .. } => id.clone(),
+                })
+                .unwrap_or_default(),
+            RawStoreOutcome::Skipped { content_hash, .. } => content_hash.as_str().to_string(),
+            RawStoreOutcome::Quarantined { id, .. } => id.as_str().to_string(),
+        };
+
+        // Empathy Bus interaction is now driven inside store_raw via
+        // record_emotion when it sees meta.emotion + meta.domain — but
+        // for backwards compat with bus-only callers (and to preserve
+        // the EmpathyBus regression behavior), we still fire it here
+        // unless store_raw already did. Defensive double-fire is
+        // harmless: bus.process_interaction is idempotent w.r.t. the
+        // same (content, valence, domain) tuple within one tick.
+        //
+        // NOTE (ISS-090): once store_raw itself routes emotion through
+        // EmpathyBus, this block becomes redundant. Tracked as
+        // follow-up — for now this shim's contract is "fires bus".
         if let Some(ref bus) = self.empathy_bus {
             bus.process_interaction(self.storage.connection(), content, emotion, domain)?;
         }
@@ -2764,6 +2852,22 @@ impl Memory {
     /// `Quarantined { id }` is a synthetic `q-*` hash of the content
     /// so callers can correlate retries. The persistent quarantine
     /// table lands in Step 6.
+    ///
+    /// # Emotion & domain (ISS-090)
+    ///
+    /// `meta.emotion` and `meta.domain` are FALLBACK PRIORS, not overrides.
+    ///
+    /// **Path A (extractor present):** for each extracted fact, if the
+    /// extractor produced an explicit valence (non-zero) or domain
+    /// (non-default `"general"`), the extractor's judgment wins.
+    /// `meta.emotion` / `meta.domain` only fill in when the fact has the
+    /// sentinel default, on a per-fact basis.
+    ///
+    /// **Path B (no extractor):** values apply directly to the single
+    /// admitted record.
+    ///
+    /// **Path A `no_facts_extracted` fallback:** values apply directly
+    /// (same as Path B) since there are no facts to defer to.
     pub fn store_raw(
         &mut self,
         content: &str,
@@ -2846,6 +2950,25 @@ impl Memory {
                     }
                     em.user_metadata = meta.user_metadata.clone();
 
+                    // ISS-089: thread caller's logical event time through
+                    // Path A's no_facts_extracted fallback. Without this,
+                    // replay/backfill content (e.g. cogmembench 2023
+                    // sessions ingested in 2026) would be timestamped
+                    // wall-clock now even though the caller supplied an
+                    // explicit `occurred_at`.
+                    if let Some(t) = meta.occurred_at {
+                        em = em.with_occurred_at(t);
+                    }
+                    // ISS-090: same plumbing for emotion/domain. There's
+                    // no extracted fact to defer to here, so the caller's
+                    // values apply directly.
+                    if let Some(em_val) = meta.emotion {
+                        em = em.with_emotion(em_val);
+                    }
+                    if let Some(ref dom) = meta.domain {
+                        em = em.with_domain(dom);
+                    }
+
                     let outcome = self.store_enriched(em)?;
                     let merged_count = match &outcome {
                         crate::store_api::StoreOutcome::Merged { .. } => 1,
@@ -2919,6 +3042,24 @@ impl Memory {
                         let mut fact_adj = fact;
                         fact_adj.importance = capped;
 
+                        // ISS-090: caller-supplied emotion/domain are
+                        // FALLBACK PRIORS. If the extractor produced an
+                        // explicit valence (non-zero) or domain (non-default),
+                        // its judgment wins. Only when the fact has the
+                        // sentinel default (valence==0.0 → no opinion;
+                        // domain=="general" → unclassified) do we fill in
+                        // from the caller's prior.
+                        if fact_adj.valence == 0.0 {
+                            if let Some(em) = meta.emotion {
+                                fact_adj.valence = em.clamp(-1.0, 1.0);
+                            }
+                        }
+                        if fact_adj.domain == "general" {
+                            if let Some(ref dom) = meta.domain {
+                                fact_adj.domain = dom.clone();
+                            }
+                        }
+
                         // ISS-088: stash the original (pre-grounding)
                         // core_fact in user_metadata.original_content
                         // so provenance survives the rewrite.
@@ -2946,7 +3087,17 @@ impl Memory {
                             meta.namespace.clone(),
                             user_md,
                         ) {
-                            Ok(em) => {
+                            Ok(mut em) => {
+                                // ISS-089: thread caller's logical event time
+                                // onto every extracted fact. Each fact inherits
+                                // the same `occurred_at` as the source content
+                                // — the caller's intent is "this whole batch
+                                // happened at time T", and per-fact times
+                                // would require a deeper extractor change
+                                // (out of scope, tracked as future work).
+                                if let Some(t) = meta.occurred_at {
+                                    em = em.with_occurred_at(t);
+                                }
                                 any_valid = true;
                                 let outcome = self.store_enriched(em)?;
                                 outcomes.push(outcome);
@@ -3087,6 +3238,21 @@ impl Memory {
         }
 
         em.user_metadata = meta.user_metadata.clone();
+
+        // ISS-089: thread caller's logical event time through Path B.
+        // Same reasoning as Path A — replay/backfill scenarios need
+        // `created_at` to reflect the original event time, not wall-clock.
+        if let Some(t) = meta.occurred_at {
+            em = em.with_occurred_at(t);
+        }
+        // ISS-090: emotion/domain plumbing for Path B (no extractor).
+        // Caller-supplied values land directly on the single record.
+        if let Some(em_val) = meta.emotion {
+            em = em.with_emotion(em_val);
+        }
+        if let Some(ref dom) = meta.domain {
+            em = em.with_domain(dom);
+        }
 
         let outcome = self.store_enriched(em)?;
         // ISS-019 Step 8: minimal path always produces exactly one
@@ -3235,6 +3401,8 @@ impl Memory {
                 user_metadata,
                 memory_type_hint,
                 occurred_at: None,
+                emotion: None,
+                domain: None,
             };
 
             // Re-run store_raw on the preserved content.

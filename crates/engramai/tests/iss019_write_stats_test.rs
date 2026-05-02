@@ -35,6 +35,8 @@ fn default_meta() -> StorageMeta {
         namespace: None,
         user_metadata: serde_json::Value::Null,
         occurred_at: None,
+        emotion: None,
+        domain: None,
     }
 }
 
