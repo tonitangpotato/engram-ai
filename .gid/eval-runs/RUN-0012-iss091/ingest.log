@@ -1,0 +1,2099 @@
+--- D1:1 (session_1) ---
+stdout: 845031a2
+
+stderr: 
+
+--- D1:2 (session_1) ---
+stdout: 89c868c1
+
+stderr: 
+
+--- D1:3 (session_1) ---
+stdout: 794cd10c
+
+stderr: 
+
+--- D1:4 (session_1) ---
+stdout: af7b9969
+
+stderr: 
+
+--- D1:5 (session_1) ---
+stdout: 5d709560
+
+stderr: 
+
+--- D1:6 (session_1) ---
+stdout: f44463c4
+
+stderr: 
+
+--- D1:7 (session_1) ---
+stdout: 90c4a1ab
+
+stderr: 
+
+--- D1:8 (session_1) ---
+stdout: 9f488c8d
+
+stderr: 
+
+--- D1:9 (session_1) ---
+stdout: 39a3c5be
+
+stderr: 
+
+--- D1:10 (session_1) ---
+stdout: 3a3cf992
+
+stderr: 
+
+--- D1:11 (session_1) ---
+stdout: a8f8d4ca
+
+stderr: 
+
+--- D1:12 (session_1) ---
+stdout: 2d46a7b3
+
+stderr: 
+
+--- D1:13 (session_1) ---
+stdout: d65e8c92
+
+stderr: 
+
+--- D1:14 (session_1) ---
+stdout: 0366f713
+
+stderr: 
+
+--- D1:15 (session_1) ---
+stdout: 1fe01285
+
+stderr: 
+
+--- D1:16 (session_1) ---
+stdout: 3eb04ab9
+
+stderr: 
+
+--- D1:17 (session_1) ---
+stdout: b235d61d
+
+stderr: [2026-05-01T03:14:26Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=b235d61d error=stage failure: persist: invariant violation: entity embedding dim mismatch
+
+
+--- D1:18 (session_1) ---
+stdout: 2883ecce
+
+stderr: [2026-05-01T03:14:29Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=2883ecce error=stage failure: persist: invariant violation: entity embedding dim mismatch
+
+
+--- D2:1 (session_2) ---
+stdout: 42f59be9
+
+stderr: 
+
+--- D2:2 (session_2) ---
+stdout: 3e0026e3
+
+stderr: 
+
+--- D2:3 (session_2) ---
+stdout: c246dfb8
+
+stderr: 
+
+--- D2:4 (session_2) ---
+stdout: 480e8a4c
+
+stderr: 
+
+--- D2:5 (session_2) ---
+stdout: 06c50948
+
+stderr: 
+
+--- D2:6 (session_2) ---
+stdout: aa77f5cf
+
+stderr: 
+
+--- D2:7 (session_2) ---
+stdout: d6cee50b
+
+stderr: 
+
+--- D2:8 (session_2) ---
+stdout: 3013d1e0
+
+stderr: 
+
+--- D2:9 (session_2) ---
+stdout: 7b40a2ca
+
+stderr: 
+
+--- D2:10 (session_2) ---
+stdout: 83b24227
+
+stderr: 
+
+--- D2:11 (session_2) ---
+stdout: dfb26479
+
+stderr: 
+
+--- D2:12 (session_2) ---
+stdout: ac076dde
+
+stderr: 
+
+--- D2:13 (session_2) ---
+stdout: 41f379b5
+
+stderr: 
+
+--- D2:14 (session_2) ---
+stdout: 5aee1098
+
+stderr: 
+
+--- D2:15 (session_2) ---
+stdout: 55d5f91f
+
+stderr: 
+
+--- D2:16 (session_2) ---
+stdout: be14789e
+
+stderr: 
+
+--- D2:17 (session_2) ---
+stdout: a1eaae3e
+
+stderr: 
+
+--- D3:1 (session_3) ---
+stdout: 84e36a84
+
+stderr: 
+
+--- D3:2 (session_3) ---
+stdout: f02ebbdf
+
+stderr: 
+
+--- D3:3 (session_3) ---
+stdout: a09445e5
+
+stderr: 
+
+--- D3:4 (session_3) ---
+stdout: 4243b182
+
+stderr: 
+
+--- D3:5 (session_3) ---
+stdout: ae2f21f6
+
+stderr: 
+
+--- D3:6 (session_3) ---
+stdout: 6339998d
+
+stderr: 
+
+--- D3:7 (session_3) ---
+stdout: 8921095b
+
+stderr: 
+
+--- D3:8 (session_3) ---
+stdout: 87f7bfb0
+
+stderr: 
+
+--- D3:9 (session_3) ---
+stdout: (no facts extracted)
+
+stderr: 
+
+--- D3:10 (session_3) ---
+stdout: 16f47cc2
+
+stderr: 
+
+--- D3:11 (session_3) ---
+stdout: c448c4ef
+
+stderr: 
+
+--- D3:12 (session_3) ---
+stdout: 5e15c69a
+
+stderr: 
+
+--- D3:13 (session_3) ---
+stdout: ff672087
+
+stderr: 
+
+--- D3:14 (session_3) ---
+stdout: d99d7102
+
+stderr: 
+
+--- D3:15 (session_3) ---
+stdout: e77f4494
+
+stderr: 
+
+--- D3:16 (session_3) ---
+stdout: 7a0ddca6
+
+stderr: 
+
+--- D3:17 (session_3) ---
+stdout: d20ee575
+
+stderr: 
+
+--- D3:18 (session_3) ---
+stdout: 33347bbf
+
+stderr: 
+
+--- D3:19 (session_3) ---
+stdout: 099733f0
+
+stderr: 
+
+--- D3:20 (session_3) ---
+stdout: 3b3f94fc
+
+stderr: 
+
+--- D3:21 (session_3) ---
+stdout: 16c4e0b9
+
+stderr: 
+
+--- D3:22 (session_3) ---
+stdout: fb788b63
+
+stderr: 
+
+--- D3:23 (session_3) ---
+stdout: e8d1ea91
+
+stderr: 
+
+--- D4:1 (session_4) ---
+stdout: a36104ed
+
+stderr: 
+
+--- D4:2 (session_4) ---
+stdout: 72c34bcf
+
+stderr: 
+
+--- D4:3 (session_4) ---
+stdout: 9414678f
+
+stderr: 
+
+--- D4:4 (session_4) ---
+stdout: dd2cd5cf
+
+stderr: 
+
+--- D4:5 (session_4) ---
+stdout: 482da8ce
+
+stderr: 
+
+--- D4:6 (session_4) ---
+stdout: be0a2e73
+
+stderr: 
+
+--- D4:7 (session_4) ---
+stdout: 2b7c37d3
+
+stderr: 
+
+--- D4:8 (session_4) ---
+stdout: 1134bbe6
+
+stderr: 
+
+--- D4:9 (session_4) ---
+stdout: bbe2918c
+
+stderr: 
+
+--- D4:10 (session_4) ---
+stdout: 40e75b49
+
+stderr: 
+
+--- D4:11 (session_4) ---
+stdout: 90a8fce1
+
+stderr: 
+
+--- D4:12 (session_4) ---
+stdout: 920f6784
+
+stderr: 
+
+--- D4:13 (session_4) ---
+stdout: 2124340a
+
+stderr: 
+
+--- D4:14 (session_4) ---
+stdout: 59cfdc29
+
+stderr: 
+
+--- D4:15 (session_4) ---
+stdout: da1b4794
+
+stderr: 
+
+--- D4:16 (session_4) ---
+stdout: ab5da7c0
+
+stderr: 
+
+--- D4:17 (session_4) ---
+stdout: 3feb1524
+
+stderr: 
+
+--- D4:18 (session_4) ---
+stdout: ca4e6546
+
+stderr: 
+
+--- D5:1 (session_5) ---
+stdout: 17204ad2
+
+stderr: 
+
+--- D5:2 (session_5) ---
+stdout: a0b41efc
+
+stderr: 
+
+--- D5:3 (session_5) ---
+stdout: 246ef3ad
+
+stderr: 
+
+--- D5:4 (session_5) ---
+stdout: 26e00d67
+
+stderr: 
+
+--- D5:5 (session_5) ---
+stdout: 7867de41
+
+stderr: 
+
+--- D5:6 (session_5) ---
+stdout: 53a8d019
+
+stderr: 
+
+--- D5:7 (session_5) ---
+stdout: 144c9fd5
+
+stderr: 
+
+--- D5:8 (session_5) ---
+stdout: 48e7b59c
+
+stderr: 
+
+--- D5:9 (session_5) ---
+stdout: 1030b0ad
+
+stderr: 
+
+--- D5:10 (session_5) ---
+stdout: 306a857e
+
+stderr: 
+
+--- D5:11 (session_5) ---
+stdout: 6818fc26
+
+stderr: 
+
+--- D5:12 (session_5) ---
+stdout: 4f9d6c1a
+
+stderr: 
+
+--- D5:13 (session_5) ---
+stdout: e2118edb
+
+stderr: 
+
+--- D5:14 (session_5) ---
+stdout: 8033a911
+
+stderr: 
+
+--- D5:15 (session_5) ---
+stdout: aca68c0e
+
+stderr: 
+
+--- D5:16 (session_5) ---
+stdout: 4c77a8f8
+
+stderr: 
+
+--- D6:1 (session_6) ---
+stdout: c2b2d6d5
+
+stderr: 
+
+--- D6:2 (session_6) ---
+stdout: b6c986b1
+
+stderr: 
+
+--- D6:3 (session_6) ---
+stdout: 90a8fce1
+
+stderr: 
+
+--- D6:4 (session_6) ---
+stdout: ae4f71a0
+
+stderr: 
+
+--- D6:5 (session_6) ---
+stdout: de7c7e40
+
+stderr: 
+
+--- D6:6 (session_6) ---
+stdout: 7c1e12d9
+
+stderr: 
+
+--- D6:7 (session_6) ---
+stdout: c24c23dc
+
+stderr: 
+
+--- D6:8 (session_6) ---
+stdout: b0d1a638
+
+stderr: 
+
+--- D6:9 (session_6) ---
+stdout: 00ea9475
+
+stderr: 
+
+--- D6:10 (session_6) ---
+stdout: f354592f
+
+stderr: 
+
+--- D6:11 (session_6) ---
+stdout: e533ec6f
+
+stderr: 
+
+--- D6:12 (session_6) ---
+stdout: 4edc6289
+
+stderr: 
+
+--- D6:13 (session_6) ---
+stdout: 2593c478
+
+stderr: 
+
+--- D6:14 (session_6) ---
+stdout: 43b7dd2e
+
+stderr: 
+
+--- D6:15 (session_6) ---
+stdout: 0d563d48
+
+stderr: 
+
+--- D6:16 (session_6) ---
+stdout: c96356fb
+
+stderr: 
+
+--- D7:1 (session_7) ---
+stdout: db7a9cc3
+
+stderr: 
+
+--- D7:2 (session_7) ---
+stdout: 5fac22a0
+
+stderr: 
+
+--- D7:3 (session_7) ---
+stdout: 3ba1d5c4
+
+stderr: 
+
+--- D7:4 (session_7) ---
+stdout: d7949480
+
+stderr: 
+
+--- D7:5 (session_7) ---
+stdout: 6a4403d6
+
+stderr: 
+
+--- D7:6 (session_7) ---
+stdout: 75f67a9e
+
+stderr: 
+
+--- D7:7 (session_7) ---
+stdout: 19626fad
+
+stderr: 
+
+--- D7:8 (session_7) ---
+stdout: cb62edcb
+
+stderr: 
+
+--- D7:9 (session_7) ---
+stdout: 03001b2b
+
+stderr: 
+
+--- D7:10 (session_7) ---
+stdout: 26c01bf1
+
+stderr: 
+
+--- D7:11 (session_7) ---
+stdout: 53e4ccc4
+
+stderr: 
+
+--- D7:12 (session_7) ---
+stdout: 78067f80
+
+stderr: 
+
+--- D7:13 (session_7) ---
+stdout: b37c3733
+
+stderr: 
+
+--- D7:14 (session_7) ---
+stdout: dfd4d147
+
+stderr: 
+
+--- D7:15 (session_7) ---
+stdout: 97f098ad
+
+stderr: 
+
+--- D7:16 (session_7) ---
+stdout: 0d3c460e
+
+stderr: 
+
+--- D7:17 (session_7) ---
+stdout: 2db5de80
+
+stderr: 
+
+--- D7:18 (session_7) ---
+stdout: 39f440d3
+
+stderr: 
+
+--- D7:19 (session_7) ---
+stdout: 0e24739b
+
+stderr: 
+
+--- D7:20 (session_7) ---
+stdout: 5c8f6ee3
+
+stderr: 
+
+--- D7:21 (session_7) ---
+stdout: ee086146
+
+stderr: 
+
+--- D7:22 (session_7) ---
+stdout: 1df3c22e
+
+stderr: 
+
+--- D7:23 (session_7) ---
+stdout: 6f6e949e
+
+stderr: 
+
+--- D7:24 (session_7) ---
+stdout: 26821de7
+
+stderr: 
+
+--- D7:25 (session_7) ---
+stdout: 0a48d327
+
+stderr: 
+
+--- D7:26 (session_7) ---
+stdout: f48f77d7
+
+stderr: 
+
+--- D7:27 (session_7) ---
+stdout: db4e5104
+
+stderr: 
+
+--- D8:1 (session_8) ---
+stdout: 78b5cf3a
+
+stderr: 
+
+--- D8:2 (session_8) ---
+stdout: e9892bf8
+
+stderr: 
+
+--- D8:3 (session_8) ---
+stdout: c394224b
+
+stderr: 
+
+--- D8:4 (session_8) ---
+stdout: 691de02a
+
+stderr: 
+
+--- D8:5 (session_8) ---
+stdout: 486640d5
+
+stderr: 
+
+--- D8:6 (session_8) ---
+stdout: 7f1f3dff
+
+stderr: 
+
+--- D8:7 (session_8) ---
+stdout: 33753189
+
+stderr: 
+
+--- D8:8 (session_8) ---
+stdout: c71b7d8a
+
+stderr: 
+
+--- D8:9 (session_8) ---
+stdout: da4f3331
+
+stderr: 
+
+--- D8:10 (session_8) ---
+stdout: 13fd1498
+
+stderr: [2026-05-01T03:22:36Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=13fd1498 error=stage failure: persist: invariant violation: entity embedding dim mismatch
+
+
+--- D8:11 (session_8) ---
+stdout: 913b3ef1
+
+stderr: 
+
+--- D8:12 (session_8) ---
+stdout: d9aa699a
+
+stderr: 
+
+--- D8:13 (session_8) ---
+stdout: 65434625
+
+stderr: 
+
+--- D8:14 (session_8) ---
+stdout: f5e84e31
+
+stderr: 
+
+--- D8:15 (session_8) ---
+stdout: fb166ba2
+
+stderr: 
+
+--- D8:16 (session_8) ---
+stdout: 9fb301b4
+
+stderr: 
+
+--- D8:17 (session_8) ---
+stdout: 9a9fe96b
+
+stderr: 
+
+--- D8:18 (session_8) ---
+stdout: 88ff2c57
+
+stderr: 
+
+--- D8:19 (session_8) ---
+stdout: 8264fb4c
+
+stderr: 
+
+--- D8:20 (session_8) ---
+stdout: e53a1018
+
+stderr: 
+
+--- D8:21 (session_8) ---
+stdout: fb7b24f7
+
+stderr: 
+
+--- D8:22 (session_8) ---
+stdout: b92478a6
+
+stderr: 
+
+--- D8:23 (session_8) ---
+stdout: 0cdb0504
+
+stderr: 
+
+--- D8:24 (session_8) ---
+stdout: ef099949
+
+stderr: 
+
+--- D8:25 (session_8) ---
+stdout: 849216c1
+
+stderr: 
+
+--- D8:26 (session_8) ---
+stdout: f1eb6fcf
+
+stderr: 
+
+--- D8:27 (session_8) ---
+stdout: 178a5fe6
+
+stderr: 
+
+--- D8:28 (session_8) ---
+stdout: ca9fa92f
+
+stderr: 
+
+--- D8:29 (session_8) ---
+stdout: 7fa175a6
+
+stderr: 
+
+--- D8:30 (session_8) ---
+stdout: e1355f9a
+
+stderr: 
+
+--- D8:31 (session_8) ---
+stdout: ac2b7a9c
+
+stderr: 
+
+--- D8:32 (session_8) ---
+stdout: fef8015f
+
+stderr: 
+
+--- D8:33 (session_8) ---
+stdout: ff3511f3
+
+stderr: 
+
+--- D8:34 (session_8) ---
+stdout: f27a2e60
+
+stderr: 
+
+--- D8:35 (session_8) ---
+stdout: 05dbf5c8
+
+stderr: 
+
+--- D8:36 (session_8) ---
+stdout: a7f34580
+
+stderr: 
+
+--- D8:37 (session_8) ---
+stdout: b1ec93c6
+
+stderr: 
+
+--- D8:38 (session_8) ---
+stdout: 7b0860c1
+
+stderr: 
+
+--- D8:39 (session_8) ---
+stdout: 3c383bb5
+
+stderr: 
+
+--- D9:1 (session_9) ---
+stdout: 6a697d9d
+
+stderr: 
+
+--- D9:2 (session_9) ---
+stdout: 925f2aa8
+
+stderr: 
+
+--- D9:3 (session_9) ---
+stdout: 51c1ca07
+
+stderr: 
+
+--- D9:4 (session_9) ---
+stdout: 440486a1
+
+stderr: 
+
+--- D9:5 (session_9) ---
+stdout: 3fdf439a
+
+stderr: 
+
+--- D9:6 (session_9) ---
+stdout: 9937b628
+
+stderr: 
+
+--- D9:7 (session_9) ---
+stdout: 333453c4
+
+stderr: 
+
+--- D9:8 (session_9) ---
+stdout: 66e02db8
+
+stderr: 
+
+--- D9:9 (session_9) ---
+stdout: c1ffa0ff
+
+stderr: 
+
+--- D9:10 (session_9) ---
+stdout: 84330907
+
+stderr: 
+
+--- D9:11 (session_9) ---
+stdout: 165ec364
+
+stderr: 
+
+--- D9:12 (session_9) ---
+stdout: 0f5ba895
+
+stderr: 
+
+--- D9:13 (session_9) ---
+stdout: 1ece6857
+
+stderr: 
+
+--- D9:14 (session_9) ---
+stdout: 34008144
+
+stderr: 
+
+--- D9:15 (session_9) ---
+stdout: 4217ac52
+
+stderr: 
+
+--- D9:16 (session_9) ---
+stdout: cfb25375
+
+stderr: 
+
+--- D9:17 (session_9) ---
+stdout: 153564a4
+
+stderr: 
+
+--- D10:1 (session_10) ---
+stdout: e588ec92
+
+stderr: 
+
+--- D10:2 (session_10) ---
+stdout: 7d64f5be
+
+stderr: 
+
+--- D10:3 (session_10) ---
+stdout: c1958150
+
+stderr: 
+
+--- D10:4 (session_10) ---
+stdout: 2865c6b2
+
+stderr: 
+
+--- D10:5 (session_10) ---
+stdout: 43d3c084
+
+stderr: 
+
+--- D10:6 (session_10) ---
+stdout: 8a6f5ab7
+
+stderr: 
+
+--- D10:7 (session_10) ---
+stdout: fb2b1a1b
+
+stderr: 
+
+--- D10:8 (session_10) ---
+stdout: 4784fa03
+
+stderr: 
+
+--- D10:9 (session_10) ---
+stdout: 89c344ca
+
+stderr: 
+
+--- D10:10 (session_10) ---
+stdout: 4653de1d
+
+stderr: 
+
+--- D10:11 (session_10) ---
+stdout: fa2d33d2
+
+stderr: 
+
+--- D10:12 (session_10) ---
+stdout: a7fa8e57
+
+stderr: 
+
+--- D10:13 (session_10) ---
+stdout: 8ae1cd98
+
+stderr: 
+
+--- D10:14 (session_10) ---
+stdout: d519f0cf
+
+stderr: 
+
+--- D10:15 (session_10) ---
+stdout: 470f97c7
+
+stderr: 
+
+--- D10:16 (session_10) ---
+stdout: 0d32727c
+
+stderr: 
+
+--- D10:17 (session_10) ---
+stdout: 4f852a41
+
+stderr: 
+
+--- D10:18 (session_10) ---
+stdout: e2eabed0
+
+stderr: 
+
+--- D10:19 (session_10) ---
+stdout: 87d6d23a
+
+stderr: 
+
+--- D10:20 (session_10) ---
+stdout: ac88509a
+
+stderr: 
+
+--- D10:21 (session_10) ---
+stdout: 716253c8
+
+stderr: 
+
+--- D10:22 (session_10) ---
+stdout: 93976b15
+
+stderr: 
+
+--- D10:23 (session_10) ---
+stdout: d4a75612
+
+stderr: 
+
+--- D10:24 (session_10) ---
+stdout: 17f91902
+
+stderr: 
+
+--- D11:1 (session_11) ---
+stdout: 5a2e68cb
+
+stderr: 
+
+--- D11:2 (session_11) ---
+stdout: fb3f6430
+
+stderr: 
+
+--- D11:3 (session_11) ---
+stdout: 8fbc45b8
+
+stderr: 
+
+--- D11:4 (session_11) ---
+stdout: 133c4b63
+
+stderr: 
+
+--- D11:5 (session_11) ---
+stdout: 86fb2e35
+
+stderr: 
+
+--- D11:6 (session_11) ---
+stdout: 40638be3
+
+stderr: 
+
+--- D11:7 (session_11) ---
+stdout: ee4a77dd
+
+stderr: 
+
+--- D11:8 (session_11) ---
+stdout: c44b83ba
+
+stderr: 
+
+--- D11:9 (session_11) ---
+stdout: 7d730aa9
+
+stderr: 
+
+--- D11:10 (session_11) ---
+stdout: f6a8a3c3
+
+stderr: 
+
+--- D11:11 (session_11) ---
+stdout: e453fb19
+
+stderr: 
+
+--- D11:12 (session_11) ---
+stdout: c5006f58
+
+stderr: 
+
+--- D11:13 (session_11) ---
+stdout: d6a5c48c
+
+stderr: 
+
+--- D11:14 (session_11) ---
+stdout: 0132f02e
+
+stderr: 
+
+--- D11:15 (session_11) ---
+stdout: 29146e7f
+
+stderr: 
+
+--- D11:16 (session_11) ---
+stdout: 6e0bed4e
+
+stderr: 
+
+--- D11:17 (session_11) ---
+stdout: 285979c5
+
+stderr: 
+
+--- D12:1 (session_12) ---
+stdout: b38fc732
+
+stderr: 
+
+--- D12:2 (session_12) ---
+stdout: 73cbedaa
+
+stderr: 
+
+--- D12:3 (session_12) ---
+stdout: 77812edb
+
+stderr: 
+
+--- D12:4 (session_12) ---
+stdout: 123c8ee3
+
+stderr: 
+
+--- D12:5 (session_12) ---
+stdout: ee4945de
+
+stderr: 
+
+--- D12:6 (session_12) ---
+stdout: 3d391953
+
+stderr: 
+
+--- D12:7 (session_12) ---
+stdout: 2ae77189
+
+stderr: 
+
+--- D12:8 (session_12) ---
+stdout: 3402f8aa
+
+stderr: 
+
+--- D12:9 (session_12) ---
+stdout: 0ef607ef
+
+stderr: 
+
+--- D12:10 (session_12) ---
+stdout: d21c6358
+
+stderr: 
+
+--- D12:11 (session_12) ---
+stdout: 7c50294d
+
+stderr: 
+
+--- D12:12 (session_12) ---
+stdout: 4a391c51
+
+stderr: 
+
+--- D12:13 (session_12) ---
+stdout: aa2bc8ea
+
+stderr: 
+
+--- D12:14 (session_12) ---
+stdout: acbf160c
+
+stderr: 
+
+--- D12:15 (session_12) ---
+stdout: 620a58a8
+
+stderr: 
+
+--- D12:16 (session_12) ---
+stdout: f825818a
+
+stderr: 
+
+--- D12:17 (session_12) ---
+stdout: 08b42755
+
+stderr: 
+
+--- D12:18 (session_12) ---
+stdout: f6b196ff
+
+stderr: 
+
+--- D12:19 (session_12) ---
+stdout: f0696935
+
+stderr: 
+
+--- D12:20 (session_12) ---
+stdout: 41352365
+
+stderr: 
+
+--- D12:21 (session_12) ---
+stdout: fdf2ca4e
+
+stderr: 
+
+--- D13:1 (session_13) ---
+stdout: efc4ac83
+
+stderr: 
+
+--- D13:2 (session_13) ---
+stdout: 1d9223fc
+
+stderr: 
+
+--- D13:3 (session_13) ---
+stdout: d8808b3a
+
+stderr: 
+
+--- D13:4 (session_13) ---
+stdout: 016e9588
+
+stderr: 
+
+--- D13:5 (session_13) ---
+stdout: d05a082b
+
+stderr: 
+
+--- D13:6 (session_13) ---
+stdout: a41258a4
+
+stderr: 
+
+--- D13:7 (session_13) ---
+stdout: 60779042
+
+stderr: [2026-05-01T03:29:12Z ERROR engramai::resolution::worker] pipeline job failed: worker=0 memory_id=60779042 error=stage failure: persist: invariant violation: entity embedding dim mismatch
+
+
+--- D13:8 (session_13) ---
+stdout: 023eba19
+
+stderr: 
+
+--- D13:9 (session_13) ---
+stdout: 8e799d5f
+
+stderr: 
+
+--- D13:10 (session_13) ---
+stdout: 60b1f9a5
+
+stderr: 
+
+--- D13:11 (session_13) ---
+stdout: f361b8fc
+
+stderr: 
+
+--- D13:12 (session_13) ---
+stdout: c1b6bf87
+
+stderr: 
+
+--- D13:13 (session_13) ---
+stdout: 5b938083
+
+stderr: 
+
+--- D13:14 (session_13) ---
+stdout: ba264791
+
+stderr: 
+
+--- D13:15 (session_13) ---
+stdout: 486b0c2c
+
+stderr: 
+
+--- D13:16 (session_13) ---
+stdout: 46cc31c3
+
+stderr: 
+
+--- D13:17 (session_13) ---
+stdout: d84dc413
+
+stderr: 
+
+--- D13:18 (session_13) ---
+stdout: a72674a7
+
+stderr: 
+
+--- D14:1 (session_14) ---
+stdout: 6f0d28fc
+
+stderr: 
+
+--- D14:2 (session_14) ---
+stdout: d9fb2e24
+
+stderr: 
+
+--- D14:3 (session_14) ---
+stdout: ce66b2b0
+
+stderr: 
+
+--- D14:4 (session_14) ---
+stdout: 9c6e5b62
+
+stderr: 
+
+--- D14:5 (session_14) ---
+stdout: e23db69a
+
+stderr: 
+
+--- D14:6 (session_14) ---
+stdout: 7283c072
+
+stderr: 
+
+--- D14:7 (session_14) ---
+stdout: 3b2ba278
+
+stderr: 
+
+--- D14:8 (session_14) ---
+stdout: c9100ea5
+
+stderr: 
+
+--- D14:9 (session_14) ---
+stdout: (no facts extracted)
+
+stderr: 
+
+--- D14:10 (session_14) ---
+stdout: a6981925
+
+stderr: 
+
+--- D14:11 (session_14) ---
+stdout: 0268a491
+
+stderr: 
+
+--- D14:12 (session_14) ---
+stdout: 0e6be452
+
+stderr: 
+
+--- D14:13 (session_14) ---
+stdout: e2808030
+
+stderr: 
+
+--- D14:14 (session_14) ---
+stdout: 33ff9986
+
+stderr: 
+
+--- D14:15 (session_14) ---
+stdout: 67c04696
+
+stderr: 
+
+--- D14:16 (session_14) ---
+stdout: 14108381
+
+stderr: 
+
+--- D14:17 (session_14) ---
+stdout: bc83d1f9
+
+stderr: 
+
+--- D14:18 (session_14) ---
+stdout: ff1e4bb4
+
+stderr: 
+
+--- D14:19 (session_14) ---
+stdout: 6d452fd0
+
+stderr: 
+
+--- D14:20 (session_14) ---
+stdout: 4be3f5fc
+
+stderr: 
+
+--- D14:21 (session_14) ---
+stdout: e50113a0
+
+stderr: 
+
+--- D14:22 (session_14) ---
+stdout: 8d285b86
+
+stderr: 
+
+--- D14:23 (session_14) ---
+stdout: 6499d1a4
+
+stderr: 
+
+--- D14:24 (session_14) ---
+stdout: 6213fa41
+
+stderr: 
+
+--- D14:25 (session_14) ---
+stdout: 78539318
+
+stderr: 
+
+--- D14:26 (session_14) ---
+stdout: e9030a1a
+
+stderr: 
+
+--- D14:27 (session_14) ---
+stdout: 32fbcf18
+
+stderr: 
+
+--- D14:28 (session_14) ---
+stdout: 64d1322b
+
+stderr: 
+
+--- D14:29 (session_14) ---
+stdout: 18bead35
+
+stderr: 
+
+--- D14:30 (session_14) ---
+stdout: 0f74ec59
+
+stderr: 
+
+--- D14:31 (session_14) ---
+stdout: f53fd74a
+
+stderr: 
+
+--- D14:32 (session_14) ---
+stdout: 7ad1acf2
+
+stderr: 
+
+--- D14:33 (session_14) ---
+stdout: 5cba8cdc
+
+stderr: 
+
+--- D14:34 (session_14) ---
+stdout: 5576c9ad
+
+stderr: 
+
+--- D14:35 (session_14) ---
+stdout: ac9afe87
+
+stderr: 
+
+--- D15:1 (session_15) ---
+stdout: 7861d7fe
+
+stderr: 
+
+--- D15:2 (session_15) ---
+stdout: 5d8fd6fe
+
+stderr: 
+
+--- D15:3 (session_15) ---
+stdout: c72d2bc6
+
+stderr: 
+
+--- D15:4 (session_15) ---
+stdout: 3aea3b10
+
+stderr: 
+
+--- D15:5 (session_15) ---
+stdout: 122199bb
+
+stderr: 
+
+--- D15:6 (session_15) ---
+stdout: d2521611
+
+stderr: 
+
+--- D15:7 (session_15) ---
+stdout: 1012d82f
+
+stderr: 
+
+--- D15:8 (session_15) ---
+stdout: 54ff29dd
+
+stderr: 
+
+--- D15:9 (session_15) ---
+stdout: 942ea695
+
+stderr: 
+
+--- D15:10 (session_15) ---
+stdout: 5d7ce1f6
+
+stderr: 
+
+--- D15:11 (session_15) ---
+stdout: c56da2ba
+
+stderr: 
+
+--- D15:12 (session_15) ---
+stdout: 9b8be261
+
+stderr: 
+
+--- D15:13 (session_15) ---
+stdout: 1a5078e2
+
+stderr: 
+
+--- D15:14 (session_15) ---
+stdout: c1711173
+
+stderr: 
+
+--- D15:15 (session_15) ---
+stdout: 271991fe
+
+stderr: 
+
+--- D15:16 (session_15) ---
+stdout: 2216218e
+
+stderr: 
+
+--- D15:17 (session_15) ---
+stdout: f95f71e6
+
+stderr: 
+
+--- D15:18 (session_15) ---
+stdout: 8ff612fc
+
+stderr: 
+
+--- D15:19 (session_15) ---
+stdout: a58adcde
+
+stderr: 
+
+--- D15:20 (session_15) ---
+stdout: 768a650e
+
+stderr: 
+
+--- D15:21 (session_15) ---
+stdout: 97c90d45
+
+stderr: 
+
+--- D15:22 (session_15) ---
+stdout: eeab7b58
+
+stderr: 
+
+--- D15:23 (session_15) ---
+stdout: df6b16d6
+
+stderr: 
+
+--- D15:24 (session_15) ---
+stdout: 6caaf478
+
+stderr: 
+
+--- D15:25 (session_15) ---
+stdout: 590e4b82
+
+stderr: 
+
+--- D15:26 (session_15) ---
+stdout: 1a4dd503
+
+stderr: 
+
+--- D15:27 (session_15) ---
+stdout: 495818a7
+
+stderr: 
+
+--- D15:28 (session_15) ---
+stdout: cc225ff6
+
+stderr: 
+
+--- D16:1 (session_16) ---
+stdout: c90a5fbe
+
+stderr: 
+
+--- D16:2 (session_16) ---
+stdout: d9e5355d
+
+stderr: 
+
+--- D16:3 (session_16) ---
+stdout: bd5744aa
+
+stderr: 
+
+--- D16:4 (session_16) ---
+stdout: fbe9d5c4
+
+stderr: 
+
+--- D16:5 (session_16) ---
+stdout: edf3bc2c
+
+stderr: 
+
+--- D16:6 (session_16) ---
+stdout: f30f7364
+
+stderr: 
+
+--- D16:7 (session_16) ---
+stdout: 4864ca12
+
+stderr: 
+
+--- D16:8 (session_16) ---
+stdout: 4a63234f
+
+stderr: 
+
+--- D16:9 (session_16) ---
+stdout: c450c424
+
+stderr: 
+
+--- D16:10 (session_16) ---
+stdout: 2ab18076
+
+stderr: 
+
+--- D16:11 (session_16) ---
+stdout: 6df4b50e
+
+stderr: 
+
+--- D16:12 (session_16) ---
+stdout: d56922a6
+
+stderr: 
+
+--- D16:13 (session_16) ---
+stdout: ce43b50b
+
+stderr: 
+
+--- D16:14 (session_16) ---
+stdout: aa2eadfb
+
+stderr: 
+
+--- D16:15 (session_16) ---
+stdout: d1bf8ac5
+
+stderr: 
+
+--- D16:16 (session_16) ---
+stdout: f33832ca
+
+stderr: 
+
+--- D16:17 (session_16) ---
+stdout: ccff4c8c
+
+stderr: 
+
+--- D16:18 (session_16) ---
+stdout: 48fa710f
+
+stderr: 
+
+--- D16:19 (session_16) ---
+stdout: 4d61335c
+
+stderr: 
+
+--- D16:20 (session_16) ---
+stdout: 21a84fd0
+
+stderr: 
+
+--- D17:1 (session_17) ---
+stdout: 9f3b8f1f
+
+stderr: 
+
+--- D17:2 (session_17) ---
+stdout: 8be7b95b
+
+stderr: 
+
+--- D17:3 (session_17) ---
+stdout: aaa41046
+
+stderr: 
+
+--- D17:4 (session_17) ---
+stdout: d4366ff8
+
+stderr: 
+
+--- D17:5 (session_17) ---
+stdout: c9fe2911
+
+stderr: 
+
+--- D17:6 (session_17) ---
+stdout: add38856
+
+stderr: 
+
+--- D17:7 (session_17) ---
+stdout: db9d752a
+
+stderr: 
+
+--- D17:8 (session_17) ---
+stdout: 52fe99f1
+
+stderr: 
+
+--- D17:9 (session_17) ---
+stdout: 3b88deb2
+
+stderr: 
+
+--- D17:10 (session_17) ---
+stdout: 9e62ed62
+
+stderr: 
+
+--- D17:11 (session_17) ---
+stdout: f0e13db0
+
+stderr: 
+
+--- D17:12 (session_17) ---
+stdout: 1c2d5238
+
+stderr: 
+
+--- D17:13 (session_17) ---
+stdout: 58f70b27
+
+stderr: 
+
+--- D17:14 (session_17) ---
+stdout: 555e86cf
+
+stderr: 
+
+--- D17:15 (session_17) ---
+stdout: c0ec4a47
+
+stderr: 
+
+--- D17:16 (session_17) ---
+stdout: 8843b6dc
+
+stderr: 
+
+--- D17:17 (session_17) ---
+stdout: f921ac8d
+
+stderr: 
+
+--- D17:18 (session_17) ---
+stdout: cfe4a4f5
+
+stderr: 
+
+--- D17:19 (session_17) ---
+stdout: 1de88011
+
+stderr: 
+
+--- D17:20 (session_17) ---
+stdout: 25c02183
+
+stderr: 
+
+--- D17:21 (session_17) ---
+stdout: 68ffc6e4
+
+stderr: 
+
+--- D17:22 (session_17) ---
+stdout: 9b4de2ec
+
+stderr: 
+
+--- D17:23 (session_17) ---
+stdout: d614819d
+
+stderr: 
+
+--- D17:24 (session_17) ---
+stdout: 1087a701
+
+stderr: 
+
+--- D17:25 (session_17) ---
+stdout: 34b5e076
+
+stderr: 
+
+--- D17:26 (session_17) ---
+stdout: 7ca38f95
+
+stderr: 
+
+--- D18:1 (session_18) ---
+stdout: 79ed37ca
+
+stderr: 
+
+--- D18:2 (session_18) ---
+stdout: 7520f5cb
+
+stderr: 
+
+--- D18:3 (session_18) ---
+stdout: ba282b59
+
+stderr: 
+
+--- D18:4 (session_18) ---
+stdout: 23191971
+
+stderr: 
+
+--- D18:5 (session_18) ---
+stdout: 0dbf8f6c
+
+stderr: 
+
+--- D18:6 (session_18) ---
+stdout: 8ec71757
+
+stderr: 
+
+--- D18:7 (session_18) ---
+stdout: 672b7f0d
+
+stderr: 
+
+--- D18:8 (session_18) ---
+stdout: 4143373c
+
+stderr: 
+
+--- D18:9 (session_18) ---
+stdout: 699217b6
+
+stderr: 
+
+--- D18:10 (session_18) ---
+stdout: 299c589f
+
+stderr: 
+
+--- D18:11 (session_18) ---
+stdout: 58a9113f
+
+stderr: 
+
+--- D18:12 (session_18) ---
+stdout: fb022013
+
+stderr: 
+
+--- D18:13 (session_18) ---
+stdout: 35b474ae
+
+stderr: 
+
+--- D18:14 (session_18) ---
+stdout: 46e1b287
+
+stderr: 
+
+--- D18:15 (session_18) ---
+stdout: a998021f
+
+stderr: 
+
+--- D18:16 (session_18) ---
+stdout: 8a31f607
+
+stderr: 
+
+--- D18:17 (session_18) ---
+stdout: d5186320
+
+stderr: 
+
+--- D18:18 (session_18) ---
+stdout: 829bd838
+
+stderr: 
+
+--- D18:19 (session_18) ---
+stdout: 4f9b4612
+
+stderr: 
+
+--- D18:20 (session_18) ---
+stdout: 5dbd4e88
+
+stderr: 
+
+--- D18:21 (session_18) ---
+stdout: e21b252e
+
+stderr: 
+
+--- D18:22 (session_18) ---
+stdout: 8f5fb601
+
+stderr: 
+
+--- D18:23 (session_18) ---
+stdout: 470b2eb6
+
+stderr: 
+
+--- D18:24 (session_18) ---
+stdout: 00c1aeae
+
+stderr: 
+
+--- D19:1 (session_19) ---
+stdout: 76921273
+
+stderr: 
+
+--- D19:2 (session_19) ---
+stdout: 36461d5a
+
+stderr: 
+
+--- D19:3 (session_19) ---
+stdout: da126a82
+
+stderr: 
+
+--- D19:4 (session_19) ---
+stdout: d3b79969
+
+stderr: 
+
+--- D19:5 (session_19) ---
+stdout: 4a356541
+
+stderr: 
+
+--- D19:6 (session_19) ---
+stdout: c516c902
+
+stderr: 
+
+--- D19:7 (session_19) ---
+stdout: 1e009f8f
+
+stderr: 
+
+--- D19:8 (session_19) ---
+stdout: f1498f6e
+
+stderr: 
+
+--- D19:9 (session_19) ---
+stdout: d242ef7c
+
+stderr: 
+
+--- D19:10 (session_19) ---
+stdout: a9f0ec16
+
+stderr: 
+
+--- D19:11 (session_19) ---
+stdout: 5bffca00
+
+stderr: 
+
+--- D19:12 (session_19) ---
+stdout: 2d29666e
+
+stderr: 
+
+--- D19:13 (session_19) ---
+stdout: c634dbf8
+
+stderr: 
+
+--- D19:14 (session_19) ---
+stdout: 6ef66b14
+
+stderr: 
+
+--- D19:15 (session_19) ---
+stdout: e359ebba
+
+stderr: 
+

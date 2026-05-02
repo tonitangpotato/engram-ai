@@ -1,0 +1,1972 @@
+[
+  {
+    "idx": 1,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D1:3\"]",
+    "top": "[\"D1:3\", \"D10:3\"]",
+    "query": "When did Caroline go to the LGBTQ support group?"
+  },
+  {
+    "idx": 2,
+    "cat": 2,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D1:12\"]",
+    "top": "[\"D1:14\", \"D13:10\"]",
+    "query": "When did Melanie paint a sunrise?"
+  },
+  {
+    "idx": 3,
+    "cat": 3,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D1:9\", \"D1:11\"]",
+    "top": "[\"D7:7\", \"D13:7\"]",
+    "query": "What fields would Caroline be likely to pursue in her educaton?"
+  },
+  {
+    "idx": 4,
+    "cat": 1,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D2:8\"]",
+    "top": "[\"D1:17\", \"D17:8\"]",
+    "query": "What did Caroline research?"
+  },
+  {
+    "idx": 5,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D1:5\"]",
+    "top": "[\"D16:13\", \"D11:12\"]",
+    "query": "What is Caroline's identity?"
+  },
+  {
+    "idx": 6,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D2:1\"]",
+    "top": "[\"D2:2\", \"D2:1\"]",
+    "query": "When did Melanie run a charity race?"
+  },
+  {
+    "idx": 7,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D2:7\"]",
+    "top": "[\"D2:7\", \"D8:32\"]",
+    "query": "When is Melanie planning on going camping?"
+  },
+  {
+    "idx": 8,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D3:13\", \"D2:14\"]",
+    "top": "[\"D15:15\", \"D11:3\"]",
+    "query": "What is Caroline's relationship status?"
+  },
+  {
+    "idx": 9,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D3:1\"]",
+    "top": "[\"D3:1\", \"D15:9\"]",
+    "query": "When did Caroline give a speech at a school?"
+  },
+  {
+    "idx": 10,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D3:11\"]",
+    "top": "[\"D3:11\", \"D16:5\"]",
+    "query": "When did Caroline meet up with her friends, family, and mentors?"
+  },
+  {
+    "idx": 11,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D3:13\"]",
+    "top": "[\"D3:13\", \"D3:11\"]",
+    "query": "How long has Caroline had her current group of friends for?"
+  },
+  {
+    "idx": 12,
+    "cat": 1,
+    "hit": false,
+    "plan": "Episodic",
+    "outcome": "ok",
+    "gold": "[\"D3:13\", \"D4:3\"]",
+    "top": "[\"D19:2\", \"D19:1\"]",
+    "query": "Where did Caroline move from 4 years ago?"
+  },
+  {
+    "idx": 13,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:5\"]",
+    "top": "[\"D4:5\", \"D11:1\"]",
+    "query": "How long ago was Caroline's 18th birthday?"
+  },
+  {
+    "idx": 14,
+    "cat": 1,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D1:11\", \"D4:13\"]",
+    "top": "[\"D4:11\", \"D1:9\"]",
+    "query": "What career path has Caroline decided to persue?"
+  },
+  {
+    "idx": 15,
+    "cat": 3,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D3:5\", \"D4:15\"]",
+    "top": "[\"D7:7\", \"D5:3\"]",
+    "query": "Would Caroline still want to pursue counseling as a career if she hadn't receive"
+  },
+  {
+    "idx": 16,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D9:1\", \"D1:18\"]",
+    "top": "[\"D15:10\", \"D17:10\"]",
+    "query": "What activities does Melanie partake in?"
+  },
+  {
+    "idx": 17,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D5:4\"]",
+    "top": "[\"D5:4\", \"D14:4\"]",
+    "query": "When did Melanie sign up for a pottery class?"
+  },
+  {
+    "idx": 18,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D5:13\"]",
+    "top": "[\"D5:13\", \"D3:1\"]",
+    "query": "When is Caroline going to the transgender conference?"
+  },
+  {
+    "idx": 19,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D6:16\", \"D4:6\"]",
+    "top": "[\"D13:4\", \"D14:22\"]",
+    "query": "Where has Melanie camped?"
+  },
+  {
+    "idx": 20,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D6:6\", \"D4:8\"]",
+    "top": "[\"D8:3\", \"D10:9\"]",
+    "query": "What do Melanie's kids like?"
+  },
+  {
+    "idx": 21,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D6:4\"]",
+    "top": "[\"D6:4\", \"D1:17\"]",
+    "query": "When did Melanie go to the museum?"
+  },
+  {
+    "idx": 22,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D6:11\"]",
+    "top": "[\"D6:11\", \"D10:15\"]",
+    "query": "When did Caroline have a picnic?"
+  },
+  {
+    "idx": 23,
+    "cat": 3,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D6:9\"]",
+    "top": "[\"D6:8\", \"D6:9\"]",
+    "query": "Would Caroline likely have Dr. Seuss books on her bookshelf?"
+  },
+  {
+    "idx": 24,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:8\", \"D6:10\"]",
+    "top": "[\"D6:8\", \"D6:9\"]",
+    "query": "What books has Melanie read?"
+  },
+  {
+    "idx": 25,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:22\", \"D5:4\"]",
+    "top": "[\"D7:20\", \"D17:22\"]",
+    "query": "What does Melanie do to destress?"
+  },
+  {
+    "idx": 26,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:1\"]",
+    "top": "[\"D7:1\", \"D5:13\"]",
+    "query": "When did Caroline go to the LGBTQ conference?"
+  },
+  {
+    "idx": 27,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:8\"]",
+    "top": "[\"D7:11\", \"D17:10\"]",
+    "query": "When did Melanie read the book "
+  },
+  {
+    "idx": 28,
+    "cat": 3,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:9\", \"D7:5\"]",
+    "top": "[\"D1:9\", \"D4:11\"]",
+    "query": "Would Caroline pursue writing as a career option?"
+  },
+  {
+    "idx": 29,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D8:9\"]",
+    "top": "[\"D8:9\", \"D17:7\"]",
+    "query": "When did Caroline go to the adoption meeting?"
+  },
+  {
+    "idx": 30,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D8:2\"]",
+    "top": "[\"D8:2\", \"D14:4\"]",
+    "query": "When did Melanie go to the pottery workshop?"
+  },
+  {
+    "idx": 31,
+    "cat": 2,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:8\"]",
+    "top": "[\"D8:32\", \"D16:2\"]",
+    "query": "When did Melanie go camping in June?"
+  },
+  {
+    "idx": 32,
+    "cat": 1,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D3:1\", \"D1:3\"]",
+    "top": "[\"D3:2\", \"D10:5\"]",
+    "query": "What LGBTQ+ events has Caroline participated in?"
+  },
+  {
+    "idx": 33,
+    "cat": 2,
+    "hit": true,
+    "plan": "Affective",
+    "outcome": "no_cognitive_state",
+    "gold": "[\"D5:1\"]",
+    "top": "[\"D8:17\", \"D10:7\"]",
+    "query": "When did Caroline go to a pride parade during the summer?"
+  },
+  {
+    "idx": 34,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D9:2\", \"D3:3\"]",
+    "top": "[\"D7:3\", \"D8:4\"]",
+    "query": "What events has Caroline participated in to help children?"
+  },
+  {
+    "idx": 35,
+    "cat": 2,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D9:1\"]",
+    "top": "[\"D8:32\", \"D16:2\"]",
+    "query": "When did Melanie go camping in July?"
+  },
+  {
+    "idx": 36,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D9:2\"]",
+    "top": "[\"D9:2\", \"D14:12\"]",
+    "query": "When did Caroline join a mentorship program?"
+  },
+  {
+    "idx": 37,
+    "cat": 1,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D8:6; D9:17\"]",
+    "top": "[\"D14:30\", \"D13:8\"]",
+    "query": "What did Melanie paint recently?"
+  },
+  {
+    "idx": 38,
+    "cat": 1,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D9:1\", \"D6:4\"]",
+    "top": "[\"D3:10\", \"D8:32\"]",
+    "query": "What activities has Melanie done with her family?"
+  },
+  {
+    "idx": 39,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D5:1\", \"D9:12\"]",
+    "top": "[\"D3:2\", \"D3:1\"]",
+    "query": "In what ways is Caroline participating in the LGBTQ community?"
+  },
+  {
+    "idx": 40,
+    "cat": 1,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D10:8\", \"D6:16\"]",
+    "top": "[\"D14:7\", \"D10:10\"]",
+    "query": "How many times has Melanie gone to the beach in 2023?"
+  },
+  {
+    "idx": 41,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D10:3\"]",
+    "top": "[\"D10:3\", \"D1:3\"]",
+    "query": "When did Caroline join a new activist group?"
+  },
+  {
+    "idx": 42,
+    "cat": 3,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D10:14\", \"D10:12\"]",
+    "top": "[\"D15:2\", \"D16:19\"]",
+    "query": "Would Melanie be more interested in going to a national park or a theme park?"
+  },
+  {
+    "idx": 43,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D11:12\", \"D9:14\"]",
+    "top": "[\"D11:9\", \"D17:22\"]",
+    "query": "What kind of art does Caroline make?"
+  },
+  {
+    "idx": 44,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D11:1\"]",
+    "top": "[\"D11:1\", \"D10:20\"]",
+    "query": "When is Melanie's daughter's birthday?"
+  },
+  {
+    "idx": 45,
+    "cat": 2,
+    "hit": true,
+    "plan": "Affective",
+    "outcome": "no_cognitive_state",
+    "gold": "[\"D11:4\"]",
+    "top": "[\"D8:17\", \"D5:1\"]",
+    "query": "When did Caroline attend a pride parade in August?"
+  },
+  {
+    "idx": 46,
+    "cat": 1,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D3:11\", \"D12:1\"]",
+    "top": "[\"D12:1\", \"D3:13\"]",
+    "query": "Who supports Caroline when she has a negative experience?"
+  },
+  {
+    "idx": 47,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D5:6\", \"D8:4\"]",
+    "top": "[\"D8:2\", \"D14:4\"]",
+    "query": "What types of pottery have Melanie and her kids made?"
+  },
+  {
+    "idx": 48,
+    "cat": 2,
+    "hit": true,
+    "plan": "Affective",
+    "outcome": "no_cognitive_state",
+    "gold": "[\"D12:15\"]",
+    "top": "[\"D12:15\", \"D10:7\"]",
+    "query": "When did Caroline and Melanie go to a pride fesetival together?"
+  },
+  {
+    "idx": 49,
+    "cat": 3,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D12:1\"]",
+    "top": "[\"D14:24\", \"D15:15\"]",
+    "query": "What would Caroline's political leaning likely be?"
+  },
+  {
+    "idx": 50,
+    "cat": 1,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D13:8\", \"D1:12\"]",
+    "top": "[\"D8:8\", \"D17:14\"]",
+    "query": "What has Melanie painted?"
+  },
+  {
+    "idx": 51,
+    "cat": 1,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D13:4\", \"D7:18\"]",
+    "top": "[\"D7:18\", \"D7:17\"]",
+    "query": "What are Melanie's pets' names?"
+  },
+  {
+    "idx": 52,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:1\"]",
+    "top": "[\"D2:8\", \"D13:1\"]",
+    "query": "When did Caroline apply to adoption agencies?"
+  },
+  {
+    "idx": 53,
+    "cat": 2,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:11\"]",
+    "top": "[\"D10:15\", \"D16:9\"]",
+    "query": "When did Caroline draw a self-portrait?"
+  },
+  {
+    "idx": 54,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D8:6\", \"D14:5\"]",
+    "top": "[\"D8:8\", \"D1:14\"]",
+    "query": "What subject have Caroline and Melanie both painted?"
+  },
+  {
+    "idx": 55,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D14:15\", \"D4:1\"]",
+    "top": "[\"D18:4\", \"D3:11\"]",
+    "query": "What symbols are important to Caroline?"
+  },
+  {
+    "idx": 56,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D14:1\"]",
+    "top": "[\"D14:1\", \"D12:1\"]",
+    "query": "When did Caroline encounter people on a hike and have a negative experience?"
+  },
+  {
+    "idx": 57,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D14:4\"]",
+    "top": "[\"D14:4\", \"D5:8\"]",
+    "query": "When did Melanie make a plate in pottery class?"
+  },
+  {
+    "idx": 58,
+    "cat": 3,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D12:1\", \"D14:19\"]",
+    "top": "[\"D12:1\", \"D14:24\"]",
+    "query": "Would Caroline be considered religious?"
+  },
+  {
+    "idx": 59,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:26\", \"D2:5\"]",
+    "top": "[\"D15:25\", \"D15:18\"]",
+    "query": "What instruments does Melanie play?"
+  },
+  {
+    "idx": 60,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:16\", \"D11:3\"]",
+    "top": "[\"D14:35\", \"D15:15\"]",
+    "query": "What musical artists/bands has Melanie seen?"
+  },
+  {
+    "idx": 61,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:2\"]",
+    "top": "[\"D16:19\", \"D15:2\"]",
+    "query": "When did Melanie go to the park?"
+  },
+  {
+    "idx": 62,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:11\"]",
+    "top": "[\"D15:11\", \"D15:9\"]",
+    "query": "When is Caroline's youth center putting on a talent show?"
+  },
+  {
+    "idx": 63,
+    "cat": 3,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:28\"]",
+    "top": "[\"D15:16\", \"D15:24\"]",
+    "query": "Would Melanie likely enjoy the song "
+  },
+  {
+    "idx": 64,
+    "cat": 1,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D11:14\", \"D16:15\"]",
+    "top": "[\"D6:15\", \"D6:11\"]",
+    "query": "What are some changes Caroline has faced during her transition journey?"
+  },
+  {
+    "idx": 65,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D16:4\", \"D10:12\"]",
+    "top": "[\"D8:32\", \"D9:1\"]",
+    "query": "What does Melanie do with her family on hikes?"
+  },
+  {
+    "idx": 66,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D16:1\"]",
+    "top": "[\"D16:1\", \"D13:7\"]",
+    "query": "When did Caroline go biking with friends?"
+  },
+  {
+    "idx": 67,
+    "cat": 2,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D16:8\"]",
+    "top": "[\"D16:7\", \"D16:6\"]",
+    "query": "How long has Melanie been practicing art?"
+  },
+  {
+    "idx": 68,
+    "cat": 3,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:4\", \"D16:18\"]",
+    "top": "[\"D13:4\", \"D10:1\"]",
+    "query": "What personality traits might Melanie say Caroline has?"
+  },
+  {
+    "idx": 69,
+    "cat": 1,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:19\", \"D15:13\"]",
+    "top": "[\"D5:13\", \"D17:19\"]",
+    "query": "What transgender-specific events has Caroline attended?"
+  },
+  {
+    "idx": 70,
+    "cat": 1,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:11\", \"D17:10\"]",
+    "top": "[\"D6:9\", \"D15:1\"]",
+    "query": "What book did Melanie read from Caroline's suggestion?"
+  },
+  {
+    "idx": 71,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:3\"]",
+    "top": "[\"D17:4\", \"D19:2\"]",
+    "query": "When did Melanie's friend adopt a child?"
+  },
+  {
+    "idx": 72,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:8\"]",
+    "top": "[\"D17:8\", \"D10:15\"]",
+    "query": "When did Melanie get hurt?"
+  },
+  {
+    "idx": 73,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:1\"]",
+    "top": "[\"D18:1\", \"D8:32\"]",
+    "query": "When did Melanie's family go on a roadtrip?"
+  },
+  {
+    "idx": 74,
+    "cat": 1,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:1\", \"D18:7\"]",
+    "top": "[\"D2:14\", \"D13:2\"]",
+    "query": "How many children does Melanie have?"
+  },
+  {
+    "idx": 75,
+    "cat": 1,
+    "hit": false,
+    "plan": "Episodic",
+    "outcome": "ok",
+    "gold": "[\"D18:17\"]",
+    "top": "[\"D19:2\", \"D19:1\"]",
+    "query": "When did Melanie go on a hike after the roadtrip?"
+  },
+  {
+    "idx": 76,
+    "cat": 3,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:1\", \"D18:3\"]",
+    "top": "[\"D18:1\", \"D1:18\"]",
+    "query": "Would Melanie go on another roadtrip soon?"
+  },
+  {
+    "idx": 77,
+    "cat": 1,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:18\", \"D19:2\"]",
+    "top": "[\"D19:2\", \"D4:4\"]",
+    "query": "What items has Melanie bought?"
+  },
+  {
+    "idx": 78,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D19:1\"]",
+    "top": "[\"D19:1\", \"D17:7\"]",
+    "query": "When did Caroline pass the adoption interview?"
+  },
+  {
+    "idx": 79,
+    "cat": 2,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D19:2\"]",
+    "top": "[\"D19:2\", \"D18:6\"]",
+    "query": "When did Melanie buy the figurines?"
+  },
+  {
+    "idx": 80,
+    "cat": 3,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D19:1\", \"D19:3\"]",
+    "top": "[\"D8:29\", \"D19:3\"]",
+    "query": "Would Caroline want to move back to her home country soon?"
+  },
+  {
+    "idx": 81,
+    "cat": 4,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D2:2\"]",
+    "top": "[\"D2:2\", \"D2:1\"]",
+    "query": "What did the charity race raise awareness for?"
+  },
+  {
+    "idx": 82,
+    "cat": 4,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D2:3\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "What did Melanie realize after the charity race?"
+  },
+  {
+    "idx": 83,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D2:5\"]",
+    "top": "[\"D2:4\", \"D2:3\"]",
+    "query": "How does Melanie prioritize self-care?"
+  },
+  {
+    "idx": 84,
+    "cat": 4,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D2:8\"]",
+    "top": "[\"D12:16\", \"D17:20\"]",
+    "query": "What are Caroline's plans for the summer?"
+  },
+  {
+    "idx": 85,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D2:12\"]",
+    "top": "[\"D2:8\", \"D2:10\"]",
+    "query": "What type of individuals does the adoption agency Caroline is considering suppor"
+  },
+  {
+    "idx": 86,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D2:12\"]",
+    "top": "[\"D19:1\", \"D2:8\"]",
+    "query": "Why did Caroline choose the adoption agency?"
+  },
+  {
+    "idx": 87,
+    "cat": 4,
+    "hit": false,
+    "plan": "Affective",
+    "outcome": "no_cognitive_state",
+    "gold": "[\"D2:14\"]",
+    "top": "[\"D2:13\", \"D17:4\"]",
+    "query": "What is Caroline excited about in the adoption process?"
+  },
+  {
+    "idx": 88,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D2:15\"]",
+    "top": "[\"D8:9\", \"D13:4\"]",
+    "query": "What does Melanie think about Caroline's decision to adopt?"
+  },
+  {
+    "idx": 89,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D3:16\"]",
+    "top": "[\"D3:15\", \"D3:17\"]",
+    "query": "How long have Mel and her husband been married?"
+  },
+  {
+    "idx": 90,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:3\"]",
+    "top": "[\"D4:2\", \"D4:4\"]",
+    "query": "What does Caroline's necklace symbolize?"
+  },
+  {
+    "idx": 91,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:3\"]",
+    "top": "[\"D9:9\", \"D15:1\"]",
+    "query": "What country is Caroline's grandma from?"
+  },
+  {
+    "idx": 92,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:3\"]",
+    "top": "[\"D4:3\", \"D4:5\"]",
+    "query": "What was grandma's gift to Caroline?"
+  },
+  {
+    "idx": 93,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:5\"]",
+    "top": "[\"D4:5\", \"D12:5\"]",
+    "query": "What is Melanie's hand-painted bowl a reminder of?"
+  },
+  {
+    "idx": 94,
+    "cat": 4,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D4:8\"]",
+    "top": "[\"D8:32\", \"D4:6\"]",
+    "query": "What did Melanie and her family do while camping?"
+  },
+  {
+    "idx": 95,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:13\"]",
+    "top": "[\"D1:11\", \"D4:12\"]",
+    "query": "What kind of counseling and mental health services is Caroline interested in pur"
+  },
+  {
+    "idx": 96,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:13\"]",
+    "top": "[\"D4:13\", \"D10:15\"]",
+    "query": "What workshop did Caroline attend recently?"
+  },
+  {
+    "idx": 97,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:13\"]",
+    "top": "[\"D4:13\", \"D1:11\"]",
+    "query": "What was discussed in the LGBTQ+ counseling workshop?"
+  },
+  {
+    "idx": 98,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:15\"]",
+    "top": "[\"D5:3\", \"D7:7\"]",
+    "query": "What motivated Caroline to pursue counseling?"
+  },
+  {
+    "idx": 99,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:15\"]",
+    "top": "[\"D4:15\", \"D4:12\"]",
+    "query": "What kind of place does Caroline want to create for people?"
+  },
+  {
+    "idx": 100,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D5:8\"]",
+    "top": "[\"D5:7\", \"D12:5\"]",
+    "query": "Did Melanie make the black and white bowl in the photo?"
+  },
+  {
+    "idx": 101,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D6:9\"]",
+    "top": "[\"D6:8\", \"D6:9\"]",
+    "query": "What kind of books does Caroline have in her library?"
+  },
+  {
+    "idx": 102,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D6:10\"]",
+    "top": "[\"D6:9\", \"D9:9\"]",
+    "query": "What was Melanie's favorite book from her childhood?"
+  },
+  {
+    "idx": 103,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:11\"]",
+    "top": "[\"D17:10\", \"D6:9\"]",
+    "query": "What book did Caroline recommend to Melanie?"
+  },
+  {
+    "idx": 104,
+    "cat": 4,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D7:13\"]",
+    "top": "[\"D7:12\", \"D6:9\"]",
+    "query": "What did Caroline take away from the book "
+  },
+  {
+    "idx": 105,
+    "cat": 4,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D7:19\"]",
+    "top": "[\"D7:18\", \"D6:2\"]",
+    "query": "What are the new shoes that Melanie got used for?"
+  },
+  {
+    "idx": 106,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:21\"]",
+    "top": "[\"D7:21\", \"D7:22\"]",
+    "query": "What is Melanie's reason for getting into running?"
+  },
+  {
+    "idx": 107,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:24\"]",
+    "top": "[\"D7:21\", \"D7:22\"]",
+    "query": "What does Melanie say running has been great for?"
+  },
+  {
+    "idx": 108,
+    "cat": 4,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D8:2\"]",
+    "top": "[\"D8:2\", \"D8:4\"]",
+    "query": "What did Mel and her kids make during the pottery workshop?"
+  },
+  {
+    "idx": 109,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D8:4\"]",
+    "top": "[\"D8:4\", \"D18:6\"]",
+    "query": "What kind of pot did Mel and her kids make with clay?"
+  },
+  {
+    "idx": 110,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D8:5\"]",
+    "top": "[\"D12:3\", \"D8:5\"]",
+    "query": "What creative project do Mel and her kids do together besides pottery?"
+  },
+  {
+    "idx": 111,
+    "cat": 4,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D8:6\"]",
+    "top": "[\"D14:33\", \"D4:6\"]",
+    "query": "What did Mel and her kids paint in their latest project in July 2023?"
+  },
+  {
+    "idx": 112,
+    "cat": 4,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D8:9\"]",
+    "top": "[\"D8:9\", \"D17:7\"]",
+    "query": "What did Caroline see at the council meeting for adoption?"
+  },
+  {
+    "idx": 113,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D8:11\"]",
+    "top": "[\"D8:11\", \"D8:12\"]",
+    "query": "What do sunflowers represent according to Caroline?"
+  },
+  {
+    "idx": 114,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D8:12\"]",
+    "top": "[\"D8:12\", \"D14:26\"]",
+    "query": "Why are flowers important to Melanie?"
+  },
+  {
+    "idx": 115,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D9:16\"]",
+    "top": "[\"D9:14\", \"D9:12\"]",
+    "query": "What inspired Caroline's painting for the art show?"
+  },
+  {
+    "idx": 116,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D10:10\"]",
+    "top": "[\"D10:10\", \"D10:8\"]",
+    "query": "How often does Melanie go to the beach with her kids?"
+  },
+  {
+    "idx": 117,
+    "cat": 4,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D10:14\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "What did Melanie and her family see during their camping trip last year?"
+  },
+  {
+    "idx": 118,
+    "cat": 4,
+    "hit": false,
+    "plan": "Affective",
+    "outcome": "no_cognitive_state",
+    "gold": "[\"D10:18\"]",
+    "top": "[\"D10:16\", \"D10:14\"]",
+    "query": "How did Melanie feel while watching the meteor shower?"
+  },
+  {
+    "idx": 119,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D11:1\"]",
+    "top": "[\"D11:1\", \"D8:14\"]",
+    "query": "Whose birthday did Melanie celebrate recently?"
+  },
+  {
+    "idx": 120,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D11:3\"]",
+    "top": "[\"D11:1\", \"D10:20\"]",
+    "query": "Who performed at the concert at Melanie's daughter's birthday?"
+  },
+  {
+    "idx": 121,
+    "cat": 4,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D12:6\"]",
+    "top": "[\"D12:3\", \"D12:2\"]",
+    "query": "Why did Melanie choose to use colors and patterns in her pottery project?"
+  },
+  {
+    "idx": 122,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:3\"]",
+    "top": "[\"D7:15\", \"D13:2\"]",
+    "query": "What pet does Caroline have?"
+  },
+  {
+    "idx": 123,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:4\"]",
+    "top": "[\"D7:16\", \"D7:15\"]",
+    "query": "What pets does Melanie have?"
+  },
+  {
+    "idx": 124,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:6\"]",
+    "top": "[\"D13:6\", \"D10:15\"]",
+    "query": "Where did Oliver hide his bone once?"
+  },
+  {
+    "idx": 125,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:7\"]",
+    "top": "[\"D13:7\", \"D10:9\"]",
+    "query": "What activity did Caroline used to do with her dad?"
+  },
+  {
+    "idx": 126,
+    "cat": 4,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D14:17\"]",
+    "top": "[\"D14:19\", \"D14:28\"]",
+    "query": "What did Caroline make for a local church?"
+  },
+  {
+    "idx": 127,
+    "cat": 4,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D14:23\"]",
+    "top": "[\"D14:23\", \"D14:22\"]",
+    "query": "What did Caroline find in her neighborhood during her walk?"
+  },
+  {
+    "idx": 128,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:23\"]",
+    "top": "[\"D15:24\", \"D15:16\"]",
+    "query": "Which song motivates Caroline to be courageous?"
+  },
+  {
+    "idx": 129,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:28\"]",
+    "top": "[\"D15:28\", \"D8:39\"]",
+    "query": "Which  classical musicians does Melanie enjoy listening to?"
+  },
+  {
+    "idx": 130,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:28\"]",
+    "top": "[\"D15:28\", \"D15:18\"]",
+    "query": "Who is Melanie a fan of in terms of modern music?"
+  },
+  {
+    "idx": 131,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D16:7\"]",
+    "top": "[\"D16:7\", \"D16:6\"]",
+    "query": "How long has Melanie been creating art?"
+  },
+  {
+    "idx": 132,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D16:16\"]",
+    "top": "[\"D16:18\", \"D16:17\"]",
+    "query": "What precautionary sign did Melanie see at the caf\u00e9?"
+  },
+  {
+    "idx": 133,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:7\"]",
+    "top": "[\"D17:1\", \"D2:10\"]",
+    "query": "What advice does Caroline give for getting started with adoption?"
+  },
+  {
+    "idx": 134,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:8\"]",
+    "top": "[\"D10:15\", \"D8:18\"]",
+    "query": "What setback did Melanie face in October 2023?"
+  },
+  {
+    "idx": 135,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:10\"]",
+    "top": "[\"D17:10\", \"D17:8\"]",
+    "query": "What does Melanie do to keep herself busy during her pottery break?"
+  },
+  {
+    "idx": 136,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:12\"]",
+    "top": "[\"D9:14\", \"D14:33\"]",
+    "query": "What painting did Melanie show to Caroline on October 13, 2023?"
+  },
+  {
+    "idx": 137,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:14\"]",
+    "top": "[\"D8:6\", \"D8:7\"]",
+    "query": "What kind of painting did Caroline share with Melanie on October 13, 2023?"
+  },
+  {
+    "idx": 138,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:18\"]",
+    "top": "[\"D17:17\", \"D17:19\"]",
+    "query": "What was the poetry reading that Caroline attended about?"
+  },
+  {
+    "idx": 139,
+    "cat": 4,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D17:19\"]",
+    "top": "[\"D17:17\", \"D17:20\"]",
+    "query": "What did the posters at the poetry reading say?"
+  },
+  {
+    "idx": 140,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:23\"]",
+    "top": "[\"D17:22\", \"D17:23\"]",
+    "query": "What does Caroline's drawing symbolize for her?"
+  },
+  {
+    "idx": 141,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:25\"]",
+    "top": "[\"D3:8\", \"D17:26\"]",
+    "query": "How do Melanie and Caroline describe their journey through life together?"
+  },
+  {
+    "idx": 142,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:1\"]",
+    "top": "[\"D18:1\", \"D18:3\"]",
+    "query": "What happened to Melanie's son on their road trip?"
+  },
+  {
+    "idx": 143,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:7\", \"D18:6\"]",
+    "top": "[\"D18:1\", \"D18:2\"]",
+    "query": "How did Melanie's son handle the accident?"
+  },
+  {
+    "idx": 144,
+    "cat": 4,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D18:5\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "How did Melanie feel about her family after the accident?"
+  },
+  {
+    "idx": 145,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:7\"]",
+    "top": "[\"D18:6\", \"D18:1\"]",
+    "query": "How did Melanie's children handle the accident?"
+  },
+  {
+    "idx": 146,
+    "cat": 4,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D18:5\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "How did Melanie feel after the accident?"
+  },
+  {
+    "idx": 147,
+    "cat": 4,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:5\"]",
+    "top": "[\"D18:5\", \"D10:9\"]",
+    "query": "What was Melanie's reaction to her children enjoying the Grand Canyon?"
+  },
+  {
+    "idx": 148,
+    "cat": 4,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:9\"]",
+    "top": "[\"D3:10\", \"D8:32\"]",
+    "query": "What do Melanie's family give her?"
+  },
+  {
+    "idx": 149,
+    "cat": 4,
+    "hit": false,
+    "plan": "Affective",
+    "outcome": "no_cognitive_state",
+    "gold": "[\"D18:13\"]",
+    "top": "[\"D3:10\", \"D18:15\"]",
+    "query": "How did Melanie feel about her family supporting her?"
+  },
+  {
+    "idx": 150,
+    "cat": 4,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D18:17\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "What did Melanie do after the road trip to relax?"
+  },
+  {
+    "idx": 151,
+    "cat": 5,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D2:3\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "What did Caroline realize after her charity race?"
+  },
+  {
+    "idx": 152,
+    "cat": 5,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D2:8\"]",
+    "top": "[\"D17:7\", \"D12:16\"]",
+    "query": "What are Melanie's plans for the summer with respect to adoption?"
+  },
+  {
+    "idx": 153,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D2:12\"]",
+    "top": "[\"D2:8\", \"D2:10\"]",
+    "query": "What type of individuals does the adoption agency Melanie is considering support"
+  },
+  {
+    "idx": 154,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D2:12\"]",
+    "top": "[\"D19:1\", \"D2:8\"]",
+    "query": "Why did Melanie choose the adoption agency?"
+  },
+  {
+    "idx": 155,
+    "cat": 5,
+    "hit": false,
+    "plan": "Affective",
+    "outcome": "no_cognitive_state",
+    "gold": "[\"D2:14\"]",
+    "top": "[\"D2:13\", \"D17:4\"]",
+    "query": "What is Melanie excited about in her adoption process?"
+  },
+  {
+    "idx": 156,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:3\"]",
+    "top": "[\"D4:2\", \"D4:4\"]",
+    "query": "What does Melanie's necklace symbolize?"
+  },
+  {
+    "idx": 157,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:3\"]",
+    "top": "[\"D9:9\", \"D15:1\"]",
+    "query": "What country is Melanie's grandma from?"
+  },
+  {
+    "idx": 158,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:3\"]",
+    "top": "[\"D4:3\", \"D4:5\"]",
+    "query": "What was grandma's gift to Melanie?"
+  },
+  {
+    "idx": 159,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:3\"]",
+    "top": "[\"D4:3\", \"D17:18\"]",
+    "query": "What was grandpa's gift to Caroline?"
+  },
+  {
+    "idx": 160,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:5\"]",
+    "top": "[\"D4:5\", \"D12:5\"]",
+    "query": "What is Caroline's hand-painted bowl a reminder of?"
+  },
+  {
+    "idx": 161,
+    "cat": 5,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D4:8\"]",
+    "top": "[\"D8:32\", \"D4:6\"]",
+    "query": "What did Caroline and her family do while camping?"
+  },
+  {
+    "idx": 162,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:13\"]",
+    "top": "[\"D1:11\", \"D4:12\"]",
+    "query": "What kind of counseling and mental health services is Melanie interested in purs"
+  },
+  {
+    "idx": 163,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:13\"]",
+    "top": "[\"D4:13\", \"D4:12\"]",
+    "query": "What kind of counseling workshop did Melanie attend recently?"
+  },
+  {
+    "idx": 164,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:15\"]",
+    "top": "[\"D5:3\", \"D7:7\"]",
+    "query": "What motivated Melanie to pursue counseling?"
+  },
+  {
+    "idx": 165,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D4:15\"]",
+    "top": "[\"D4:15\", \"D4:12\"]",
+    "query": "What kind of place does Melanie want to create for people?"
+  },
+  {
+    "idx": 166,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D5:8\"]",
+    "top": "[\"D5:7\", \"D12:5\"]",
+    "query": "Did Caroline make the black and white bowl in the photo?"
+  },
+  {
+    "idx": 167,
+    "cat": 5,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D7:19\"]",
+    "top": "[\"D7:18\", \"D6:2\"]",
+    "query": "What are the new shoes that Caroline got used for?"
+  },
+  {
+    "idx": 168,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:21\"]",
+    "top": "[\"D7:21\", \"D7:22\"]",
+    "query": "What is Caroline's reason for getting into running?"
+  },
+  {
+    "idx": 169,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D7:24\"]",
+    "top": "[\"D7:21\", \"D7:22\"]",
+    "query": "What does Caroline say running has been great for?"
+  },
+  {
+    "idx": 170,
+    "cat": 5,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D8:9\"]",
+    "top": "[\"D8:9\", \"D17:7\"]",
+    "query": "What did Melanie see at the council meeting for adoption?"
+  },
+  {
+    "idx": 171,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D9:16\"]",
+    "top": "[\"D9:14\", \"D9:12\"]",
+    "query": "What inspired Melanie's painting for the art show?"
+  },
+  {
+    "idx": 172,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D9:16\"]",
+    "top": "[\"D9:14\", \"D9:12\"]",
+    "query": "What inspired Caroline's sculpture for the art show?"
+  },
+  {
+    "idx": 173,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D10:10\"]",
+    "top": "[\"D10:10\", \"D10:8\"]",
+    "query": "How often does Caroline go to the beach with her kids?"
+  },
+  {
+    "idx": 174,
+    "cat": 5,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D10:14\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "What did Caroline and her family see during their camping trip last year?"
+  },
+  {
+    "idx": 175,
+    "cat": 5,
+    "hit": false,
+    "plan": "Affective",
+    "outcome": "no_cognitive_state",
+    "gold": "[\"D10:18\"]",
+    "top": "[\"D10:16\", \"D10:14\"]",
+    "query": "How did Caroline feel while watching the meteor shower?"
+  },
+  {
+    "idx": 176,
+    "cat": 5,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D12:6\"]",
+    "top": "[\"D12:3\", \"D12:2\"]",
+    "query": "Why did Caroline choose to use colors and patterns in her pottery project?"
+  },
+  {
+    "idx": 177,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:3\"]",
+    "top": "[\"D7:15\", \"D13:3\"]",
+    "query": "Is Oscar Melanie's pet?"
+  },
+  {
+    "idx": 178,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:6\"]",
+    "top": "[\"D13:6\", \"D10:15\"]",
+    "query": "Where did Oscar hide his bone once?"
+  },
+  {
+    "idx": 179,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D13:7\"]",
+    "top": "[\"D13:7\", \"D10:9\"]",
+    "query": "What activity did Melanie used to do with her dad?"
+  },
+  {
+    "idx": 180,
+    "cat": 5,
+    "hit": false,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D14:17\"]",
+    "top": "[\"D14:19\", \"D14:28\"]",
+    "query": "What did Melanie make for a local church?"
+  },
+  {
+    "idx": 181,
+    "cat": 5,
+    "hit": true,
+    "plan": "Abstract",
+    "outcome": "downgraded_from_abstract",
+    "gold": "[\"D14:23\"]",
+    "top": "[\"D14:23\", \"D14:22\"]",
+    "query": "What did Melanie find in her neighborhood during her walk?"
+  },
+  {
+    "idx": 182,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:23\"]",
+    "top": "[\"D15:24\", \"D15:16\"]",
+    "query": "Which song motivates Melanie to be courageous?"
+  },
+  {
+    "idx": 183,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:26\"]",
+    "top": "[\"D15:18\", \"D15:25\"]",
+    "query": "What type of instrument does Caroline play?"
+  },
+  {
+    "idx": 184,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:28\"]",
+    "top": "[\"D15:28\", \"D8:39\"]",
+    "query": "Which classical musicians does Caroline enjoy listening to?"
+  },
+  {
+    "idx": 185,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D15:28\"]",
+    "top": "[\"D15:28\", \"D15:18\"]",
+    "query": "Who is Caroline a fan of in terms of modern music?"
+  },
+  {
+    "idx": 186,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D16:16\"]",
+    "top": "[\"D16:18\", \"D16:17\"]",
+    "query": "What precautionary sign did Caroline see at the caf\u00e9?"
+  },
+  {
+    "idx": 187,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:8\"]",
+    "top": "[\"D10:15\", \"D7:18\"]",
+    "query": "What setback did Caroline face recently?"
+  },
+  {
+    "idx": 188,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:10\"]",
+    "top": "[\"D17:10\", \"D17:8\"]",
+    "query": "What does Caroline do to keep herself busy during her pottery break?"
+  },
+  {
+    "idx": 189,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D17:18\"]",
+    "top": "[\"D17:17\", \"D17:19\"]",
+    "query": "What was the poetry reading that Melanie attended about?"
+  },
+  {
+    "idx": 190,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:1\"]",
+    "top": "[\"D18:1\", \"D18:3\"]",
+    "query": "What happened to Caroline's son on their road trip?"
+  },
+  {
+    "idx": 191,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:7\", \"D18:6\"]",
+    "top": "[\"D18:1\", \"D18:2\"]",
+    "query": "How did Caroline's son handle the accident?"
+  },
+  {
+    "idx": 192,
+    "cat": 5,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D18:5\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "How did Caroline feel about her family after the accident?"
+  },
+  {
+    "idx": 193,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:7\"]",
+    "top": "[\"D18:6\", \"D18:1\"]",
+    "query": "How did Caroline's children handle the accident?"
+  },
+  {
+    "idx": 194,
+    "cat": 5,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D18:5\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "How did Caroline feel after the accident?"
+  },
+  {
+    "idx": 195,
+    "cat": 5,
+    "hit": true,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:5\"]",
+    "top": "[\"D18:5\", \"D10:9\"]",
+    "query": "What was Caroline's reaction to her children enjoying the Grand Canyon?"
+  },
+  {
+    "idx": 196,
+    "cat": 5,
+    "hit": false,
+    "plan": "Hybrid",
+    "outcome": "ok",
+    "gold": "[\"D18:17\"]",
+    "top": "[\"D19:1\", \"D19:2\"]",
+    "query": "What did Caroline do after the road trip to relax?"
+  },
+  {
+    "idx": 197,
+    "cat": 5,
+    "hit": false,
+    "plan": "Factual",
+    "outcome": "ok",
+    "gold": "[\"D18:21\"]",
+    "top": "[\"D18:20\", \"D8:32\"]",
+    "query": "What does Caroline love most about camping with her family?"
+  }
+]

@@ -1,0 +1,35 @@
+📚 Loading LoCoMo dataset...
+   1 conversations, 199 total QA pairs
+
+============================================================
+[1/1] Conversation: conv-26 (Caroline & Melanie)
+   19 sessions, 199 QA pairs
+   📥 Ingesting into engram...
+   Session 1/19 (18 turns stored)   Session 2/19 (35 turns stored)   Session 3/19 (58 turns stored)   Session 4/19 (76 turns stored)   Session 5/19 (92 turns stored)   Session 6/19 (108 turns stored)   Session 7/19 (135 turns stored)   Session 8/19 (174 turns stored)   Session 9/19 (191 turns stored)   Session 10/19 (215 turns stored)   Session 11/19 (232 turns stored)   Session 12/19 (253 turns stored)   Session 13/19 (271 turns stored)   Session 14/19 (306 turns stored)   Session 15/19 (334 turns stored)   Session 16/19 (354 turns stored)   Session 17/19 (380 turns stored)   Session 18/19 (404 turns stored)   Session 19/19 (419 turns stored)Traceback (most recent call last):
+  File "/Users/potato/clawd/projects/cogmembench/run_locomo.py", line 48, in <module>
+    main()
+    ~~~~^^
+  File "/Users/potato/clawd/projects/cogmembench/run_locomo.py", line 39, in main
+    run_benchmark(
+    ~~~~~~~~~~~~~^
+        system=args.system,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        max_questions=args.max_questions,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/potato/clawd/projects/cogmembench/benchmarks/locomo/runner.py", line 136, in run_benchmark
+    n, n_insights = adapter.ingest_conversation(conv, progress_cb=_prog)
+                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/potato/clawd/projects/cogmembench/benchmarks/locomo/engram_adapter.py", line 349, in ingest_conversation
+    self.reindex_embeddings()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/potato/clawd/projects/cogmembench/benchmarks/locomo/engram_adapter.py", line 274, in reindex_embeddings
+    self._run(args, timeout=600)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/potato/clawd/projects/cogmembench/benchmarks/locomo/engram_adapter.py", line 97, in _run
+    raise RuntimeError(
+    ...<3 lines>...
+    )
+RuntimeError: engram failed (rc=2): FULL_CMD=['/Users/potato/clawd/projects/engram/target/release/engram', '--database', '/Users/potato/clawd/projects/cogmembench/.engram_dbs/conv-26.db', '--workspace', '/Users/potato/rustclaw', 'reindex', '--ns', 'conv-26'] stderr="error: unexpected argument '--ns' found\n\nUsage: engram reindex [OPTIONS]\n\nFor more information, try '--help'.\n" stdout=''
