@@ -37,13 +37,13 @@ The pipe is wired end-to-end. The `None` is coming out of
 `None` when `domain_states.is_empty()` or `total_weight <= 0.0`
 (no signals observed yet).
 
-The LoCoMo bench harness (`crates/engram-bench/`) **never calls
+The LoCoMo bench harness (`../engram-bench/`, was `crates/engram-bench/` before 2026-05-02 split) **never calls
 any interoceptive_tick API** to feed signals into the hub. Confirmed
 by:
 
 ```
 $ grep -rn "interoceptive_tick\|interoceptive_hub" \
-    crates/engram-bench/ crates/engramai/examples/
+    ../engram-bench/ crates/engramai/examples/
 (no matches)
 ```
 

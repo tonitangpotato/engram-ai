@@ -76,7 +76,7 @@ The full traceability table is in §13.
 
 ## 3. Benchmark Suites & Drivers
 
-A **driver** is a Rust binary (under `crates/engram-bench/`) that: loads fixtures, builds an engramai `Memory` instance, drives it through the suite, collects scores, and emits a reproducibility record. Drivers share a common harness (§7.2); they differ in dataset loader, scoring rule, and output schema.
+A **driver** is a Rust binary (under the standalone `engram-bench` repo at `../engram-bench/`, was `crates/engram-bench/` before 2026-05-02 split — see v0.3 ship plan) that: loads fixtures, builds an engramai `Memory` instance, drives it through the suite, collects scores, and emits a reproducibility record. Drivers share a common harness (§7.2); they differ in dataset loader, scoring rule, and output schema.
 
 ### 3.1 LOCOMO driver
 
@@ -493,7 +493,7 @@ Expected outcome: bit-identical results under determinism guarantees (§3.1 dete
 
 ### 7.1 `engram-bench` CLI surface
 
-All benchmark drivers live in one binary, `engram-bench`, under `crates/engram-bench/`. One binary with subcommands keeps the shared harness code (fixture loading, record emission, gate evaluation) in one crate — no duplicated infrastructure.
+All benchmark drivers live in one binary, `engram-bench`, in the standalone `engram-bench` repo at `../engram-bench/` (split out of this monorepo on 2026-05-02; see `docs/v0.3-ship-plan-2026-05-02.md`). One binary with subcommands keeps the shared harness code (fixture loading, record emission, gate evaluation) in one crate — no duplicated infrastructure.
 
 ```
 engram-bench <driver> [flags]
@@ -534,7 +534,7 @@ Flags (driver-specific):
 For CI steps that need to inspect results programmatically (not just parse stdout), the harness exposes:
 
 ```rust
-// In crates/engram-bench/src/lib.rs
+// In engram-bench/src/lib.rs (../engram-bench/, standalone repo)
 
 pub struct GateResult {
     pub goal: String,            // e.g. "GOAL-5.1"
@@ -645,7 +645,7 @@ Fixtures (LOCOMO, LongMemEval, cost corpus seed, migration queries) are:
 
 - **Source:** official LOCOMO repository (URL pinned in `benchmarks/fixtures/locomo/source.toml`).
 - **Pin format:** git commit SHA of the LOCOMO repo at the time of adoption. All runs reference this SHA.
-- **Scorer:** LOCOMO ships an official scoring script. We vendor it as a Rust crate wrapper in `crates/engram-bench/src/scorers/locomo.rs` — a thin port that matches the published scorer's behavior bit-for-bit on a fixture of 50 known queries (unit-tested). If LOCOMO publishes a scorer change, we update the vendored scorer AND rerun the v0.3 benchmark AND update the reproducibility records.
+- **Scorer:** LOCOMO ships an official scoring script. We vendor it as a Rust crate wrapper in `../engram-bench/src/scorers/locomo.rs` — a thin port that matches the published scorer's behavior bit-for-bit on a fixture of 50 known queries (unit-tested). If LOCOMO publishes a scorer change, we update the vendored scorer AND rerun the v0.3 benchmark AND update the reproducibility records.
 - **Version upgrade policy:** a LOCOMO dataset-SHA change during a v0.3 release cycle is a PR that must rerun all affected benchmarks. The SHA change is visible in git history, preventing silent dataset shifts that would invalidate gate comparisons.
 
 ### 9.2 LongMemEval acquisition & version pinning
@@ -777,7 +777,7 @@ On release-qualification runs:
 
 The benchmark harness is itself code. It must be tested — otherwise gate failures might be harness bugs, not system regressions, and we'd lose faith in the gates.
 
-**Unit tests (in `crates/engram-bench/`):**
+**Unit tests (in `../engram-bench/`):**
 
 - **Scorer parity tests.** For LOCOMO and LongMemEval scorers: a fixture of ~50 known `(predicted, gold, expected_score)` triples. The vendored scorer must match the expected score bit-for-bit. Any scorer behavior change (upstream or ours) breaks this test.
 - **Gate evaluation logic.** Given synthetic `RunReport` inputs, assert the correct `ReleaseDecision` is produced. Cover: all-pass, one P0 fail, one P1 fail, override, error.

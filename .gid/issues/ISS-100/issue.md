@@ -28,16 +28,16 @@ paths.
 ## What
 
 Port the LLM-as-judge pipeline from `cogmembench/benchmarks/common/{evaluator,llm}.py`
-(~174 lines Python) into `crates/engram-bench` as ~200 lines Rust.
+(~174 lines Python) into the standalone `engram-bench` repo (split out 2026-05-02; was `crates/engram-bench/`) as ~200 lines Rust.
 
 After this lands, `engram-bench` measures its own LOCOMO J-score with no
 runtime dependency on cogmembench.
 
 ## Acceptance criteria
 
-- [ ] `crates/engram-bench/src/llm_client.rs` exists, smoke test passes
+- [ ] `../engram-bench/src/llm_client.rs` exists, smoke test passes
       ("Reply Yes" → response starts with "Yes")
-- [ ] `crates/engram-bench/src/scorers/locomo_judge.rs` exists with
+- [ ] `../engram-bench/src/scorers/locomo_judge.rs` exists with
       `judge_answer` + `generate_answer`, prompts byte-for-byte from cogmembench
 - [ ] `drivers/locomo.rs` modified: retrieve → generate_answer → judge_answer
       → record, with JSONL checkpointing
