@@ -173,3 +173,53 @@ In `query_classifier`, only classify `Hybrid` when at least one of {abstract_ava
 - RUN-0009 report: `.gid/eval-runs/RUN-0009-substrate/RUN-0009-full-conv-report.md` §3
 - Raw log: `.gid/eval-runs/RUN-0009-substrate/RUN-0009-full-conv26.log`
 - Related: ISS-070 (multi-hop dispatcher has no traversal — different bug, similar surface)
+
+---
+
+## 2026-05-01 — RUN-0012 evidence: L5 absence is binding constraint for cat=3 / inference
+
+RUN-0012 hit@5 retrieval (`.gid/eval-runs/RUN-0012-iss091/RESULTS.md`)
+produced direct per-failure data on **`downgraded_from_abstract` outcomes**
+across 197 LoCoMo conv-26 questions:
+
+- **16 misses** had `outcome=downgraded_from_abstract` — query routed to
+  Abstract plan (which needs L5), L5 unavailable, downgrade to Factual,
+  Factual is the wrong plan for these queries.
+- **5 misses** had `outcome=no_cognitive_state` — query routed to
+  Affective plan, substrate has no `cognitive_state` metadata at all.
+
+### Distribution of `downgraded_from_abstract` (16 cases)
+
+| cat | count | example |
+|---|---|---|
+| 4 Multi-hop | 7 | "What are Caroline's plans for the summer?" |
+| 5 Adversarial | 5 | "What are Melanie's plans for the summer with respect to adoption?" |
+| 1 Single-hop | 3 | "What did Caroline research?" |
+| 3 Open-ended | 1 | "Would Melanie be more interested in a national park or a theme park?" |
+
+### Why this matters for ISS-083
+
+ISS-083's main work landed (Hybrid empty-downgrade variant). The
+remaining tail — *Abstract* downgrade specifically — has no real fallback
+because Factual is the wrong plan for the query class. The fix isn't
+better fallback math; the fix is **wiring the L5 substrate** so Abstract
+can actually execute.
+
+### Distribution of `no_cognitive_state` (5 cases)
+
+All cat=4/5 affective queries:
+- "What is Caroline excited about in the adoption process?"
+- "How did Melanie feel about her family supporting her?"
+- "What is Melanie excited about in her adoption process?"
+- (2 more in records)
+
+These will fail until the ingest path stamps `cognitive_state` per turn.
+That's a substrate ingestion gap, not a retrieval bug — separate work
+item, but logged here because the symptom surfaces through this issue's
+plan-routing.
+
+### Cross-link
+
+- Records: `.gid/eval-runs/RUN-0012-iss091/RUN-0012-records.json`.
+- Per-miss text: `.gid/eval-runs/RUN-0012-iss091/miss_breakdown.txt`.
+- Conclusion in RESULTS.md §3 cat=3 / §2 Mode D.

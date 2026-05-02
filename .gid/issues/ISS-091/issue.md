@@ -4,8 +4,16 @@ title: begin/finish_pipeline_run namespace asymmetry — finish_pipeline_run rep
 status: done
 priority: P0
 severity: high
-tags: [pipeline, namespace, sqlite-graph-store, ingestion]
-relates_to: [ISS-055, ISS-087, ISS-089]
+tags:
+- pipeline
+- namespace
+- sqlite-graph-store
+- ingestion
+relates_to:
+- ISS-055
+- ISS-087
+- ISS-089
+- .gid/issues/ISS-092/issue.md
 ---
 
 # ISS-091: begin/finish pipeline-run namespace asymmetry
@@ -90,7 +98,7 @@ Setting `.with_namespace(ctx.namespace)` at construction time *can't work* — `
 - [x] **AC-3**: Regression test in `crates/engramai/src/graph/store.rs` (or a sibling tests module) reproducing the begin/finish namespace mismatch — must FAIL on `main` baseline before fix and PASS after fix.
 - [ ] **AC-4**: Re-run conv26 ingest as RUN-0012, must complete without `finish_pipeline_run: run not found`. (Manual / CLI-driven, not in test suite.)
 - [x] **AC-5**: All existing tests in `engramai` crate pass (`cargo test -p engramai --release`).
-- [ ] **AC-6**: Follow-up issue opened for typestate/parameter refactor (Direction C).
+- [x] **AC-6**: Follow-up issue opened for typestate/parameter refactor (Direction C). → **ISS-092** (`.gid/issues/ISS-092/issue.md`).
 
 ## Out of scope
 

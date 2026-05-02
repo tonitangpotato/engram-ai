@@ -1,13 +1,22 @@
 ---
 id: ISS-085
 title: Wire engram retriever as cogmembench adapter for conv-26 (LLM-as-judge J score)
-status: open
+status: done
 priority: P0
 severity: high
-tags: [retrieval, evaluation, cogmembench, locomo, j-score]
+tags:
+- retrieval
+- evaluation
+- cogmembench
+- locomo
+- j-score
 created: 2026-04-30
-relates_to: [ISS-084, ISS-083]
-blocks: [ISS-084]
+relates_to:
+- ISS-084
+- ISS-083
+blocks:
+- ISS-084
+updated: 2026-05-01
 ---
 
 # Wire engram as cogmembench adapter → J score on conv-26
@@ -103,3 +112,77 @@ We need to plug `engramai::retrieval::RetrievalEngine` in as another backend. Th
 - ISS-083 (Hybrid downgrade — orthogonal but improves both recall@5 and J before RUN-0010 if landed first)
 - RUN-0009 report: `.gid/eval-runs/RUN-0009-substrate/RUN-0009-full-conv-report.md`
 - LoCoMo paper: judge prompt and J definition
+
+---
+
+## 2026-05-01 — Retrofit: ISS-085 was actually already done; status corrected
+
+This issue was sitting `status: open` with all acceptance criteria
+unchecked, but inspection of `cogmembench/benchmarks/locomo/engram_adapter.py`
+shows the adapter **was wired** and the pipeline **was run** — multiple times.
+
+### Evidence the work landed
+
+1. **`cogmembench/benchmarks/locomo/engram_adapter.py`** — full `EngramAdapter` exists,
+   ingest + query + namespace handling all there. `--occurred-at` flag
+   wired (lines 165, 337) — picks up the ISS-087 ingest API.
+2. **`cogmembench/benchmarks/locomo/runner.py`** — drives ingest → retrieve
+   → generate answer → judge → write summary JSON.
+3. **`cogmembench/benchmarks/locomo/evaluator.py`** + `llm.py` — judge
+   prompt + LLM call wired (claude-3-haiku-20240307 as judge model).
+4. **Multiple full run results** in `cogmembench/results/`:
+   - `locomo-engram-20260422_161123-summary.json` — **full 199 questions, J = 23.1%** (46/199 correct).
+   - `locomo-engram-20260420_103138-summary.json` — earlier full run.
+   - `locomo-engram-20260430_175018-summary.json` — 5-question smoke test.
+
+### The 23.1% baseline (2026-04-22, pre-ISS-087/088/089/091 fixes)
+
+| Category | Acc | Evidence |
+|---|---|---|
+| cat=1 Single-hop | 12.5% (4/32) | 0.0% |
+| cat=2 Multi-hop temporal | 18.9% (7/37) | 0.0% |
+| cat=3 Open-ended | 23.1% (3/13) | 15.4% |
+| cat=4 Temporal reasoning | 42.9% (30/70) | 0.0% |
+| cat=5 Adversarial | 4.3% (2/47) | 0.0% |
+| **Overall** | **23.1% (46/199)** | 1.0% |
+
+(Note: the cogmembench summary file's `by_category.name` field swaps cat=2
+and cat=4 names; the actual LoCoMo schema is cat=2 = Temporal, cat=4 = Multi-hop.
+The numbers are correct, the labels in the JSON are mislabelled — separate
+follow-up.)
+
+### Acceptance criteria — actual final state
+
+- [x] cogmembench adapter trait read and engram backend wired (`engram_adapter.py`)
+- [x] Ingest path: occurred_at flowed end-to-end (uses `--occurred-at`)
+- [x] Query path: top-k retrieval candidates → answer LLM → judge LLM
+- [x] Full 199-question run completed (2026-04-22, J = 23.1%)
+- [x] Per-category breakdown captured in summary JSON
+
+### What's actually NOT done (was the underlying open work)
+
+- [ ] **Re-run the full pipeline on the post-ISS-087/088/089/091 substrate**
+  to measure whether substrate time-grounding fixes move J-score.
+  → **Filed as RUN-0013-jscore**, in flight as of 2026-05-01 00:14 UTC-4
+  (background pid 15273), expected ~15-20 min for 199 questions.
+- [ ] Cross-link RUN-0013-jscore comparison vs RUN 2026-04-22 baseline (23.1%) once it completes.
+- [ ] **Critical retrospective:** RUN-0012 hit@5 retrieval analysis
+  (`.gid/eval-runs/RUN-0012-iss091/RESULTS.md`) demonstrated that hit@5 is
+  metric-blind to substrate time-grounding correctness. This means the
+  J-score from RUN-0013 — *not* hit@5 — is the only valid signal for
+  whether ISS-087/088/089/091 substrate work was worth doing. ISS-085's
+  P0 framing was correct: J was always the binding evaluation, hit@5 was
+  a complementary diagnostic.
+
+### Issue status
+
+Marking **done** for the original scope (adapter + full run + baseline).
+RUN-0013 verification + cross-link tracked in the new criteria above —
+will close those out as `done` once RUN-0013-jscore lands.
+
+### Cross-link
+
+- Adapter source: `cogmembench/benchmarks/locomo/engram_adapter.py`
+- Baseline summary: `cogmembench/results/locomo-engram-20260422_161123-summary.json`
+- RUN-0013-jscore (in flight): `.gid/eval-runs/RUN-0013-jscore/RUN-0013-jscore.log`
+- RUN-0012 hit@5 analysis (motivates RUN-0013): `.gid/eval-runs/RUN-0012-iss091/RESULTS.md`
