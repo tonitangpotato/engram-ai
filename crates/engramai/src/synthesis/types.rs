@@ -554,8 +554,15 @@ impl std::fmt::Display for SynthesisError {
             Self::LlmTimeout { cluster_id } => {
                 write!(f, "LLM timeout for cluster {}", cluster_id)
             }
-            Self::LlmInvalidResponse { cluster_id, .. } => {
-                write!(f, "LLM invalid response for cluster {}", cluster_id)
+            Self::LlmInvalidResponse {
+                cluster_id,
+                raw_response,
+            } => {
+                write!(
+                    f,
+                    "LLM invalid response for cluster {}: {}",
+                    cluster_id, raw_response
+                )
             }
             Self::HallucinatedReferences {
                 cluster_id,

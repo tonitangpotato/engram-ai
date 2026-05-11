@@ -542,9 +542,20 @@ impl SynthesisEngine for DefaultSynthesisEngine {
                                 llm_calls_remaining = llm_calls_remaining.saturating_sub(1);
                                 resp
                             }
-                            Err(_e) => {
-                                report.errors.push(SynthesisError::LlmTimeout {
+                            Err(e) => {
+                                // Preserve the actual error so telemetry can distinguish
+                                // network/auth/quota failures from genuine timeouts.
+                                // (Previously all errors were collapsed into LlmTimeout,
+                                // which caused 22+ days of silent telemetry loss.)
+                                let err_str = e.to_string();
+                                log::warn!(
+                                    "synthesis LLM call failed for cluster {}: {}",
+                                    cluster_data.id,
+                                    err_str
+                                );
+                                report.errors.push(SynthesisError::LlmInvalidResponse {
                                     cluster_id: cluster_data.id.clone(),
+                                    raw_response: format!("LLM call error: {err_str}"),
                                 });
                                 report.clusters_skipped += 1;
                                 continue;
@@ -827,6 +838,7 @@ mod tests {
             memory_type,
             layer: MemoryLayer::Working,
             created_at: Utc::now(),
+            occurred_at: None,
             access_times: vec![Utc::now()],
             working_strength: 1.0,
             core_strength: 0.5,
