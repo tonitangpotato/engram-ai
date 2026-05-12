@@ -178,6 +178,12 @@ CREATE TABLE nodes (
     -- history (audit trail of in-place mutations, e.g. entity merges)
     history             TEXT NOT NULL DEFAULT '[]',        -- JSON: Vec<HistoryEntry>
 
+    -- FTS surrogate: stable integer for nodes_fts rowid (§3.3).
+    -- Assigned at INSERT via writer queue (§6) from a monotonic counter;
+    -- never updated, never reused. Cannot use SQLite implicit rowid because
+    -- VACUUM reassigns it when PK is TEXT.
+    fts_rowid           INTEGER NOT NULL UNIQUE,
+
     CHECK (activation       BETWEEN 0.0 AND 1.0),
     CHECK (arousal          BETWEEN 0.0 AND 1.0),
     CHECK (importance       BETWEEN 0.0 AND 1.0),
@@ -193,6 +199,15 @@ CREATE INDEX idx_nodes_occurred     ON nodes(occurred_at) WHERE occurred_at IS N
 CREATE INDEX idx_nodes_deleted      ON nodes(deleted_at) WHERE deleted_at IS NULL;  -- partial: live rows
 CREATE INDEX idx_nodes_kind_active  ON nodes(node_kind, activation) WHERE deleted_at IS NULL;
 CREATE INDEX idx_nodes_memory_type  ON nodes(memory_type) WHERE node_kind='memory';
+CREATE INDEX idx_nodes_superseded   ON nodes(superseded_by) WHERE superseded_by IS NOT NULL;
+-- fts_rowid is already UNIQUE (implicit index).
+
+-- Monotonic counter for fts_rowid assignment (§3.3, §6 writer).
+CREATE TABLE fts_rowid_counter (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 0),
+    next_value INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO fts_rowid_counter (singleton, next_value) VALUES (0, 1);
 ```
 
 **ID type rationale**: `id` is `TEXT` (string UUID) to match all existing
@@ -296,43 +311,48 @@ when the promotion gate ships.
 
 ### 3.3 `nodes_fts` — full-text search across all kinds
 
-FTS5 in **external-content mode** with manually maintained triggers.
-We do NOT use `content_table=`/`content_rowid=` content-sync mode
-because `nodes.id` is `TEXT` (string UUID) — SQLite content-sync mode
-requires an INTEGER `rowid` mapping which is unstable across VACUUM
-when the PK is non-INTEGER. Instead, we treat FTS as a side index keyed
-by UUID and maintain it explicitly.
+FTS5 in **contentless mode** keyed by a stable surrogate integer.
+
+**The constraint**: FTS5 virtual tables only support `WHERE rowid = ?` or `WHERE <fts_col> MATCH ?` in DELETE/UPDATE statements. `WHERE id = ?` against an `UNINDEXED` column **does not work** (FTS5 rejects arbitrary predicates regardless of column indexing). Implicit SQLite `rowid` on `nodes` is unstable across `VACUUM` when the declared PK is `TEXT`, so it cannot be the FTS key directly.
+
+**The design**: add a `fts_rowid` column to `nodes` — a stable, monotonic integer surrogate — and use it as the FTS5 rowid:
 
 ```sql
+-- Augmentation to §3.1 nodes table (also reflected there):
+--   fts_rowid INTEGER NOT NULL UNIQUE
+-- assigned at INSERT time from a dedicated counter (sqlite_sequence row or
+-- a singleton `fts_rowid_counter` table); never reused, never updated.
+
 CREATE VIRTUAL TABLE nodes_fts USING fts5(
-    id UNINDEXED,                                 -- string UUID; row identity
     content,
     summary,
-    tokenize='unicode61 remove_diacritics 2'
+    tokenize='unicode61 remove_diacritics 2',
+    content=''                                    -- contentless: FTS stores tokens only
 );
 
--- Trigger sketch: maintain FTS in lockstep with nodes.
--- Lookups join on nodes_fts.id = nodes.id (no rowid dependency).
+-- Maintain FTS in lockstep with nodes via fts_rowid.
 CREATE TRIGGER nodes_fts_ai AFTER INSERT ON nodes BEGIN
-    INSERT INTO nodes_fts(id, content, summary)
-    VALUES (new.id, new.content, new.summary);
+    INSERT INTO nodes_fts(rowid, content, summary)
+    VALUES (new.fts_rowid, new.content, new.summary);
 END;
 
 CREATE TRIGGER nodes_fts_ad AFTER DELETE ON nodes BEGIN
-    DELETE FROM nodes_fts WHERE id = old.id;
+    -- contentless FTS5 requires the 'delete' command form:
+    INSERT INTO nodes_fts(nodes_fts, rowid, content, summary)
+    VALUES ('delete', old.fts_rowid, old.content, old.summary);
 END;
 
 CREATE TRIGGER nodes_fts_au AFTER UPDATE OF content, summary ON nodes BEGIN
-    DELETE FROM nodes_fts WHERE id = old.id;
-    INSERT INTO nodes_fts(id, content, summary)
-    VALUES (new.id, new.content, new.summary);
+    INSERT INTO nodes_fts(nodes_fts, rowid, content, summary)
+    VALUES ('delete', old.fts_rowid, old.content, old.summary);
+    INSERT INTO nodes_fts(rowid, content, summary)
+    VALUES (new.fts_rowid, new.content, new.summary);
 END;
 ```
 
-FTS indexes **all node kinds**, not only memory. Entity canonical names,
-topic summaries, insight text become searchable through one path. Net
-gain over current `memories_fts`-only design. Risk R3 (FTS rowid
-volatility) is eliminated by this design — there is no rowid coupling.
+**Querying**: callers do `SELECT n.* FROM nodes_fts f JOIN nodes n ON n.fts_rowid = f.rowid WHERE nodes_fts MATCH ?`. The `fts_rowid` ↔ `id` mapping is a regular indexed B-tree lookup — no rowid-stability risk.
+
+FTS indexes **all node kinds**, not only memory. Entity canonical names, topic summaries, insight text become searchable through one path. Net gain over current `memories_fts`-only design. Risk R3 (FTS rowid volatility) is eliminated because `fts_rowid` is owned by us, never reassigned by `VACUUM`.
 
 ### 3.4 `node_embeddings` — multi-model extension
 
@@ -569,11 +589,11 @@ values. Phase F (T41) drops the `episode_id` columns.
 
 A signal is a transient event. A *somatic marker* is the persistent association between a situation pattern and the affective state it evoked. Only the latter belongs in the substrate — signals stay ephemeral.
 
-- **Domain state as node**: each interoceptive *domain* (`coding`, `trading`, `general`, etc.) is a `nodes` row of `node_type='interoceptive', node_kind='domain'`. Attributes carry running statistics (rolling valence, anomaly z-score, confidence calibration, alignment score) updated on every signal — small fixed-shape JSON, not a growing log.
+- **Domain state as node**: each interoceptive *domain* (`coding`, `trading`, `general`, etc.) is a `nodes` row of `node_kind='interoceptive_domain'`. Attributes carry running statistics (rolling valence, anomaly z-score, confidence calibration, alignment score) updated on every signal — small fixed-shape JSON, not a growing log.
 
 - **Somatic-marker as node**: when a signal pattern recurs (e.g. "topic X repeatedly accompanies negative valence + high anomaly"), the hub promotes it to a `nodes` row of `node_kind='somatic_marker'`. Attributes: `{ pattern_signature, evoked_affect, sample_count, last_seen }`.
 
-- **Marker → situation edges**: somatic markers connect to the memory/entity nodes that triggered them via `evoked_by` edges (`edge_type='evoked_by', weight=co_occurrence_strength`). This is what lets future retrieval *feel* a topic before it reasons about it.
+- **Marker → situation edges**: somatic markers connect to the memory/entity nodes that triggered them via `evoked_by` edges (`edge_kind='associative', predicate='evoked_by', weight=co_occurrence_strength`). This is what lets future retrieval *feel* a topic before it reasons about it.
 
 - **Two-tier signal handling — baseline ephemeral, anomaly persistent**: signals partition into a high-frequency baseline stream and a sparse anomaly stream. The baseline stream (every ingest/recall/action emits one) is **not stored** — the writer folds each signal into the domain node's rolling statistics (`baseline_mean`, `baseline_std`, `last_n_values` capped circular buffer) and discards it. The anomaly stream — signals that cross the z-score threshold or trigger a regulation action — is **persisted** as a `node_kind='anomaly_event'` row. Attributes: `{ domain, metric, raw_value, z_score, window_stats_snapshot, triggered_regulation, rationale }`. Edges: `anomaly_event → observed_in_domain` (to the domain node), `anomaly_event → triggered_by` (to the memory/action/recall that fired it). This matches biology — you don't remember every heartbeat, but you do remember the *moment* your heart raced and what caused it.
 
@@ -612,7 +632,7 @@ The Empathy Bus is *partly* substrate-resident and *partly* I/O. Distinguish:
 - **In substrate** — the *patterns* the bus learns:
   - **Drive node** (`node_kind='drive'`): each SOUL.md drive is a node. Attributes: `{ name, weight, embedding, source: 'soul'|'derived', last_reinforced }`.
   - **Valence accumulator state**: lives in the domain node from §4.11 (`attributes.valence_window`). Empathy accumulator is a *view* over the same domain node, not a parallel store.
-  - **Drive ↔ memory edges** (`edge_type='aligns_with', weight=alignment_score`): every memory ingested gets scored against active drives; edges with `weight > threshold` persist. This makes "which memories matter most under drive D" a one-hop traversal.
+  - **Drive ↔ memory edges** (`edge_kind='associative', predicate='aligns_with', weight=alignment_score`): every memory ingested gets scored against active drives; edges with `weight > threshold` persist. This makes "which memories matter most under drive D" a one-hop traversal.
   - **Action outcome as node** (`node_kind='action_outcome'`): each heartbeat action result is a node. Attributes: `{ action_type, success, latency_ms, notes }`. Edges: `outcome → triggered_by_drive`, `outcome → involves_memory`.
 
 - **External (I/O, not substrate)** — file-system interactions:
@@ -653,8 +673,8 @@ Working memory is biologically a *transient* state — prefrontal sustained acti
 
 **The substrate tier** (new):
 - `node_kind='wm_snapshot'`: one row per snapshot. Attributes: `{ slot_count, captured_at, trigger_reason }`.
-- `edge_type='wm_contained'`: from snapshot node → each memory that was in WM at capture time. Edge order/recency carried as edge attribute (`slot_index`, `last_access_ns`).
-- `edge_type='wm_snapshot_of'`: from feedback event (§4.14) → wm_snapshot. Makes "what was the agent thinking when this judgment was made" a one-hop traversal.
+- `edge_kind='containment', predicate='wm_contained'`: from snapshot node → each memory that was in WM at capture time. Edge order/recency carried as edge attribute (`slot_index`, `last_access_ns`).
+- `edge_kind='provenance', predicate='wm_snapshot_of'`: from feedback event (§4.14) → wm_snapshot. Makes "what was the agent thinking when this judgment was made" a one-hop traversal.
 
 **Snapshot triggers** (when WM materializes to substrate):
 - Every metacognition feedback event (§4.14) — primary trigger; the evaluator wants to know the cognitive context being evaluated.
@@ -683,7 +703,7 @@ Working memory is biologically a *transient* state — prefrontal sustained acti
 
 Metacognition is *judgments about other cognitive operations*. Each judgment is an event with a target — a perfect fit for the node-edge model.
 
-- **Feedback event as node**: each evaluation is a `nodes` row of `node_type='metacog', node_kind='feedback'`. Attributes: `{ score, dimension, evaluator, rationale, timestamp }` where `dimension ∈ {recall_accuracy, synthesis_quality, channel_effectiveness, retrieval_relevance}`.
+- **Feedback event as node**: each evaluation is a `nodes` row of `node_kind='metacog_feedback'`. Attributes: `{ score, dimension, evaluator, rationale, timestamp }` where `dimension ∈ {recall_accuracy, synthesis_quality, channel_effectiveness, retrieval_relevance}`.
 - **Feedback → target edge**: every feedback event has an `evaluates` edge pointing to the memory/synthesis/retrieval-trace it judged.
 - **Aggregate views are derived, not stored**: "current recall accuracy" is `SELECT AVG(attributes.score) FROM nodes WHERE node_kind='feedback' AND dimension='recall_accuracy' AND created_at > now - 7d`. No materialized rollup table — if the query becomes hot, add a `node_kind='metacog_summary'` written daily by the writer.
 - **Retrieval trace as node** (already in `retrieval/`): each query execution is a `node_kind='retrieval_trace'` with attributes `{ query_text, plan_used, result_count, latency_ms }`. Feedback events evaluate these.
@@ -715,8 +735,8 @@ Metacognition is *judgments about other cognitive operations*. Each judgment is 
 Fields with **structured types and high query frequency** become typed attributes on the memory's node row:
 
 ```
-node_type='memory', attributes = {
-  core_fact:   "<NonEmptyString text>",   -- required, denormalized from body
+node_kind='memory', attributes = {
+  core_fact:   "<NonEmptyString text>",   -- required, denormalized from content
   valence:     -0.7,                       -- f64 in [-1, 1]
   domain:      "tech",                     -- enum string
   confidence:  "verified",                 -- enum string
@@ -726,37 +746,37 @@ node_type='memory', attributes = {
 
 These four scalars (`valence`, `domain`, `confidence`, `type_weights`) drive **filter predicates** in retrieval (`WHERE attributes->>'domain' = 'tech'`) and **bucket keys** in KC clustering. They are accessed on every retrieval call. Keeping them in `attributes` means a single row read returns them; no join.
 
-`core_fact` is denormalized into `attributes` (in addition to being in `nodes.body`) because retrieval ranking sometimes needs the distilled fact *without* the full memory body — and the non-empty invariant is a node-creation-time check (§6 writer validates), preserving the `NonEmptyString` guarantee.
+`core_fact` is denormalized into `attributes` (in addition to being in `nodes.content`) because retrieval ranking sometimes needs the distilled fact *without* the full memory content — and the non-empty invariant is a node-creation-time check (§6 writer validates), preserving the `NonEmptyString` guarantee.
 
-#### 4.15.2 Tier 2 — narrative fields as `describes` edges to dimension nodes
+#### 4.15.2 Tier 2 — narrative fields as `describes_<field>` edges to dimension nodes
 
 Fields with **free-text values and combinatorial reuse** (the same `location: "Caroline's house"` appears on 40 memories) become **separate nodes** with edges:
 
 ```
-node_type='memory'  ──describes──>  node_type='dimension', node_kind='location'
-                                    attributes = { value: "Caroline's house" }
+node_kind='memory'  ──describes_location──>  node_kind='dimension_location'
+                                            attributes = { value: "Caroline's house" }
 ```
 
-The 10 narrative fields (`participants`, `temporal`, `location`, `context`, `causation`, `outcome`, `method`, `relations`, `sentiment`, `stance`) become `node_kind` values under `node_type='dimension'`. Each unique value (e.g. `"Caroline's house"`) is a single node; every memory referencing it gets a `describes` edge with `edge_kind` = the field name (`describes_location`, `describes_participants`, …).
+The 10 narrative fields (`participants`, `temporal`, `location`, `context`, `causation`, `outcome`, `method`, `relations`, `sentiment`, `stance`) each get their own `node_kind`: `dimension_participants`, `dimension_location`, etc. (Schema §3.1 has only single-level `node_kind`; we encode field identity into the kind string rather than inventing a second discriminator.) Each unique value (e.g. `"Caroline's house"`) is a single node; every memory referencing it gets an edge with `edge_kind='structural', predicate='describes_<field>'` (e.g. `describes_location`, `describes_participants`).
 
 **Why edges, not duplicated strings**:
 
-1. **Discoverability** — "find every memory at Caroline's house" becomes a 1-hop edge traversal (`SELECT m.id FROM edges WHERE to_id=$loc AND edge_kind='describes_location'`), not a string LIKE scan over a million JSON blobs.
+1. **Discoverability** — "find every memory at Caroline's house" becomes a 1-hop edge traversal (`SELECT m.id FROM edges WHERE target_id=$loc AND predicate='describes_location'`), not a string LIKE scan over a million JSON blobs.
 2. **Co-occurrence cheap** — "what locations co-occur with participant Caroline?" is a 2-hop graph query, exactly what the substrate is for.
 3. **Reuse without duplication** — 40 memories at Caroline's house = 40 edges + 1 node, not 40 copies of the string. Storage cost ≈ 40 × 8 bytes (edge row) + 1 × ~30 bytes (node), vs 40 × ~30 bytes today.
 4. **Resolution can merge** — the §4 ResolutionPipeline already canonicalizes entity strings; `"Caroline's house"` and `"Caroline house"` become the same dimension node via the same merge machinery.
 
 #### 4.15.3 Tier 3 — tag set as `tagged` edges
 
-`tags: BTreeSet<String>` becomes N `tagged` edges to `node_kind='tag'` nodes. Same rationale as Tier 2 — tag reuse is the whole point of tags, edges make reuse explicit. A `tagged` edge has no weight (presence/absence is the signal); the UNIQUE constraint on `(from_id, to_id, edge_kind)` from §3.2 prevents accidental duplicates.
+`tags: BTreeSet<String>` becomes N edges (`edge_kind='structural', predicate='tagged'`) to `node_kind='tag'` nodes. Same rationale as Tier 2 — tag reuse is the whole point of tags, edges make reuse explicit. A `tagged` edge has no weight (presence/absence is the signal); the UNIQUE constraint on `(source_id, target_id, edge_kind, predicate)` from §3.2 prevents accidental duplicates.
 
 #### 4.15.4 Compatibility with current `dimension_access.rs`
 
 The 237 LoC accessor module becomes a **thin shim** post-migration:
 
 - `dims.valence()` / `.domain()` / `.confidence()` — read directly from `nodes.attributes` (single column access, no join).
-- `dims.location()` / `.participants()` / etc. — load the `describes_<field>` edges for the node, return the target node's `attributes.value`. For the common single-value case (most narrative fields are 0..1), the accessor returns `Option<String>` exactly as today.
-- `dims.tags()` — load `tagged` edges, materialize the `BTreeSet`.
+- `dims.location()` / `.participants()` / etc. — load the edges with `predicate='describes_<field>'` for the node, return the target node's `attributes.value`. For the common single-value case (most narrative fields are 0..1), the accessor returns `Option<String>` exactly as today.
+- `dims.tags()` — load edges with `predicate='tagged'`, materialize the `BTreeSet`.
 
 Callers see the same API. The `Dimensions` struct itself can be **reconstructed** on demand for code paths that still want the flat shape (e.g. legacy serialization, debug prints) — but new code traverses the graph natively. Dual-write during Phase B (§5.2) ensures the JSON blob stays valid until callers migrate.
 
@@ -815,7 +835,7 @@ The retirement is deferred until **after Phase E parity** (§5.5) so the v04 cut
 
 The active path — v0.3 `knowledge_compile` — already aligns with §3:
 
-- **Clustering output** → `node_type='topic', node_kind='knowledge_topic'` rows, attributes = `{ title, summary, source_count, created_at }`.
+- **Clustering output** → `node_kind='topic'` rows, attributes = `{ title, summary, source_count, created_at }`.
 - **Topic membership** → `edges` rows of `edge_kind='topic_member'` from topic node to each contributing memory node.
 - **Entity rollup** → `edge_kind='topic_entity'` from topic to entity node (already a node per §4.2 entity resolution).
 - **Provenance** → `edge_kind='derived_from'` from topic to the synthesis trace (§4.5 synthesis).
@@ -945,7 +965,45 @@ step — not the recommended path.
      wall-clock, ~$25. **Independently restartable.**
 10. Verify counts: post-backfill `SELECT COUNT(*) FROM nodes WHERE node_kind='memory'` == legacy memories count.
 
-**Acceptance**: full row-count + spot-check content parity report.
+**Idempotency** (re-runnable backfill — required because backfill can
+crash mid-way, dual-write may diverge, or operator may need to retry
+on a subset of rows):
+
+- **`memories → nodes`**: `id` is preserved → `INSERT OR IGNORE` on
+  `nodes(id)` makes re-run safe. Same for `entities → nodes` and
+  `memory_embeddings → node_embeddings` (PK `(node_id, model)`).
+- **Source tables without PKs that survive (`entity_relations`,
+  `memory_entities`, `hebbian_links`, `synthesis_provenance`)**:
+  edge `id` is derived **deterministically** from source row identity
+  via SHA-256 over a canonical tuple, then formatted as UUID:
+
+  ```
+  edges.id = uuid_from_hash(sha256(
+      source_table || '|' ||
+      source_id    || '|' ||      -- the row's primary key in legacy table
+      target_id    || '|' ||
+      edge_kind    || '|' ||
+      predicate
+  ))
+  ```
+
+  For tables that lack a single PK column, use the smallest UNIQUE
+  tuple as `source_id` (e.g. `hebbian_links` uses
+  `(memory_id, related_id, namespace)`; `memory_entities` uses
+  `(memory_id, entity_id, role)`). Combined with the UNIQUE constraint
+  on `edges(source_id, target_id, edge_kind, predicate)` (§3.2), this
+  makes `INSERT OR IGNORE` correct: a re-run that re-emits the same
+  edge produces the same UUID and is silently skipped.
+
+- **Verification**: backfill driver emits a `backfill_runs` audit row
+  per invocation `(run_id, table, rows_read, rows_inserted, rows_skipped_existing)`.
+  On re-run, `rows_skipped_existing` should equal `rows_inserted` from
+  the prior successful run minus any new dual-writes that landed in
+  the interim.
+
+**Acceptance**: full row-count + spot-check content parity report; running
+the full backfill driver a second time results in zero new rows and zero
+errors.
 
 ### 5.4 Phase D — switch reads (one plan at a time)
 
@@ -1015,7 +1073,7 @@ pub enum WriteOp {
     WriteEntityMention { memory_id: NodeId, entity_id: NodeId, span: Span, ... },
 
     // §4.3 Hebbian
-    BumpAssociation { from_id: NodeId, to_id: NodeId, delta: f64 },
+    BumpAssociation { source_id: NodeId, target_id: NodeId, delta: f64 },
 
     // §4.4 KC + §4.5 synthesis
     WriteKnowledgeTopic { topic: Node, members: Vec<NodeId>, entities: Vec<NodeId>, provenance: SynthesisTrace },
@@ -1222,7 +1280,7 @@ fn apply_write_memory(tx: &Transaction, op: WriteMemoryOp) -> Result<NodeId> {
     // Unified write (new, Phase B starts populating)
     tx.execute("INSERT INTO nodes (id, node_type, attributes, ...) VALUES (?, 'memory', ?, ...)", ...)?;
     for (field, value_node_id) in dimension_edges_for(&op.dimensions) {
-        tx.execute("INSERT INTO edges (from_id, to_id, edge_kind) VALUES (?, ?, ?)",
+        tx.execute("INSERT INTO edges (source_id, target_id, edge_kind, predicate) VALUES (?, ?, ?, ?)",
                    params![memory_id, value_node_id, format!("describes_{field}")])?;
     }
     tx.execute("INSERT INTO node_embeddings (node_id, vec) VALUES (?, ?)", ...)?;
@@ -1535,18 +1593,25 @@ one focused session.
   `WriteWmSnapshot` compound (§6.4 atomicity).
 
 ### 8.13 Dimensional signature (§4.15)
-- [ ] **T56** Schema: `node_dimensions` table (Tier 2 — full dimension
-  vector per node, supersedes `dimension_access.rs`'s ad-hoc storage).
-  Includes `dimension_kind`, `value`, `confidence`, indexed on
-  `(node_id, dimension_kind)`. See §4.15 storage model.
-- [ ] **T57** Dual-write: `store_raw` computes dimensions → writes both
-  legacy `dimensions` table (if present) and new `node_dimensions` during
-  Phase B.
-- [ ] **T58** Retrieval adapter: dimensional plan reads from
-  `node_dimensions` when `unified_substrate` flag is on.
-- [ ] **T59** Tier-3 aggregate cache (optional optimization, deferred
-  unless bench shows need): per-namespace rolling aggregates over
-  `node_dimensions` for fast "what's the average X dimension here" probes.
+- [ ] **T56** Implement Tier 1 (scalar dimensions in `nodes.attributes`):
+  extend `MemoryRecord` ingest path to compute `valence`/`domain`/
+  `confidence`/`type_weights` and persist them as JSON fields in
+  `nodes.attributes` at write time. No new table.
+- [ ] **T57** Implement Tier 2 (narrative fields as `describes_<field>`
+  edges): each unique narrative value becomes a `node_kind='dimension_<field>'`
+  node, every memory referencing it gets an `edge_kind='structural',
+  predicate='describes_<field>'` edge. Resolution-pipeline canonicalization
+  applies (§4.15.2). Routes through `WriteOp::Batch` for atomicity with
+  the parent `WriteMemory`.
+- [ ] **T58** Implement Tier 3 (`tagged` edges to `node_kind='tag'`
+  nodes): each tag is a node, each memory→tag is an `edge_kind='structural',
+  predicate='tagged'` edge. UNIQUE constraint on
+  `(source_id, target_id, edge_kind, predicate)` prevents dup edges.
+- [ ] **T59** Rewrite `dimension_access.rs` as a thin shim over the
+  unified schema (§4.15.4): scalar accessors read `nodes.attributes`,
+  narrative accessors load edges by `predicate='describes_<field>'`,
+  tag accessor loads edges by `predicate='tagged'`. Bench: shim cost vs
+  current accessor on a 1k-memory namespace.
 
 ### 8.14 v0.2 KC retirement (§4.16)
 - [ ] **T60** Confirm v0.2 KC has **zero production call sites** outside
@@ -1571,9 +1636,12 @@ one focused session.
   variant takes Vec<WriteOp> and commits in single transaction.
 - [ ] **T65** Implement reader WAL snapshot path (§6.5): readers acquire
   read-tx, never block on writer, see consistent snapshot.
-- [ ] **T66** Implement write journal (§6.9): append-only log of pending
-  ops, fsync'd before queue ack — replays on crash recovery before
-  accepting new writes.
+- [ ] **T66** Implement writer supervisor (§6.9): panic-catcher around
+  `apply_op`, auto-restart writer task on crash with fresh `Storage`
+  handle, transition channel to `WriterCrashed` state so callers fail
+  fast and retry. **No separate disk journal** — SQLite WAL is the
+  durable log; in-flight queue ops on crash are surfaced to callers via
+  `Err(QueueClosed)` for caller-side retry (§6.9 stance).
 - [ ] **T67** Bench: writer throughput target ~11k ops/sec (§6.6), measure
   with synthetic load mixing all WriteOp variants in production-realistic
   proportions.
@@ -1633,17 +1701,24 @@ are rare" cost model in §6.3 priority lanes.
 serialization. If the writer thread panics or stalls, **all** writes
 stall (interoception, Hebbian, ingest, metacog). Mitigations:
 (a) writer loop runs in dedicated tokio task with panic-catcher +
-auto-restart, (b) §6.9 write journal means in-flight ops survive
-restart, (c) bench T67/T68 verifies p99 stays bounded under
-realistic mixed load. Open question for v0.5: shard by namespace
-for true multi-writer (§6.7 lists 3 future sharding paths).
+auto-restart (T66), (b) in-flight queue ops on crash are *not*
+recovered — callers receive `Err(QueueClosed)` and decide retry per
+op class (idempotent ops loop; non-idempotent ops surface the error
+up the stack). This is the explicit stance in §6.9: SQLite WAL is the
+durable log, no "WAL on top of WAL". (c) bench T67/T68 verifies p99
+stays bounded under realistic mixed load. Open question for v0.5:
+shard by namespace for true multi-writer (§6.7 lists 3 future sharding
+paths).
 
-**R10. `node_dimensions` storage growth**
-Per §4.15, dimensions are stored per-node (Tier 2). At ~10 dimensions
-per memory × 10M memories that's 100M rows — non-trivial but
-manageable on SQLite with the `(node_id, dimension_kind)` index.
-Mitigation: Tier 3 aggregate cache (T59, deferred) for hot "average
-dimension over namespace" probes. Phase A test must include row-size
+**R10. Dimension edge storage growth**
+Per §4.15 Tier 2/3, narrative dimensions and tags are stored as **edges**
+to dimension/tag nodes (not as a separate `node_dimensions` table).
+At ~10 narrative dimensions per memory × 10M memories that's 100M edge
+rows — non-trivial but manageable on SQLite with the existing
+`idx_edges_source` / `idx_edges_target` indexes on `edges`. Mitigation:
+edge `attributes` JSON keeps per-edge payload minimal; aggregate caches
+("average dimension over namespace") can be added as derived nodes if
+profiling shows a hot path. Phase A test must include row-size
 estimation on RUN-0018-scale corpus.
 
 **R11. v0.2 KC retirement leaves orphan code**
