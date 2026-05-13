@@ -831,7 +831,8 @@ fn check_content_spot_check(
     }
     let mut out = Vec::new();
     spot_check_memories(conn, ns, opts, &mut out)?;
-    // T20/T21/T25 pass-through and T22/T23/T24 merge-semantics
+    spot_check_node_embeddings(conn, ns, opts, &mut out)?;
+    // T21/T25 pass-through and T22/T23/T24 merge-semantics
     // checks land in subsequent commits.
     Ok(out)
 }
@@ -1097,4 +1098,246 @@ fn check_idempotency(
     }
 
     Ok(violations)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I4 — T20 spot-check: memory_embeddings → node_embeddings
+// ─────────────────────────────────────────────────────────────────────
+
+/// Sample N legacy compound keys from `table`, optionally restricted
+/// to a namespace via JOIN to `memories`. Used by T20 whose unique
+/// key is `(memory_id, model)` (no scalar PK).
+///
+/// `ns_join_table_alias` controls the namespace clause shape: when
+/// `Some((join_table, fk_col, ns_col))` is provided AND `ns` is set,
+/// the query joins to `join_table` on `legacy.{fk_col} =
+/// join_table.id` and filters `join_table.{ns_col} = ?`. When `None`,
+/// no namespace filtering happens (the legacy table is global).
+///
+/// Sampling is seeded for reproducibility, same as `sample_legacy_ids`.
+fn sample_legacy_compound_keys(
+    conn: &Connection,
+    table: &str,
+    key_cols: (&str, &str),
+    ns_join: Option<(&str, &str, &str)>,
+    ns: Option<&str>,
+    sample_size: usize,
+    seed: u64,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+
+    let (k1, k2) = key_cols;
+    let sql = match (ns, ns_join) {
+        (Some(_), Some((join_table, fk_col, ns_col))) => format!(
+            "SELECT t.{k1}, t.{k2} FROM {table} t
+             INNER JOIN {join_table} j ON j.id = t.{fk_col}
+             WHERE j.{ns_col} = ?"
+        ),
+        _ => format!("SELECT {k1}, {k2} FROM {table}"),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let rows: Vec<(String, String)> = match (ns, ns_join) {
+        (Some(n), Some(_)) => stmt
+            .query_map(rusqlite::params![n], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        _ => stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
+
+    let mut keys = rows;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    keys.shuffle(&mut rng);
+    keys.truncate(sample_size);
+    Ok(keys)
+}
+
+/// Projection for a single memory_embeddings / node_embeddings row.
+/// Both sides hydrate into this struct so the comparison is symmetric.
+/// `created_at_epoch` is computed: legacy stores RFC3339 TEXT, unified
+/// stores REAL; we project both onto f64 seconds-since-epoch (same
+/// formula the T20 driver uses).
+#[derive(Debug, Clone, PartialEq)]
+struct EmbeddingRow {
+    memory_id: String,
+    model: String,
+    dimensions: i64,
+    embedding: Vec<u8>,
+    created_at_epoch: f64,
+}
+
+/// Parse legacy RFC3339 created_at into epoch f64 using the same
+/// formula the T20 driver applies. Returns the parsed value plus a
+/// `parsed_ok` flag so the spot-check can decide whether to compare
+/// timestamps or skip that field (legacy parse failure = driver
+/// substituted `utc_now_f64()` which is not reproducible — comparing
+/// would always fire).
+fn parse_legacy_embedding_created_at(text: &str) -> (f64, bool) {
+    match chrono::DateTime::parse_from_rfc3339(text) {
+        Ok(dt) => {
+            let dt_utc = dt.with_timezone(&chrono::Utc);
+            let epoch = dt_utc.timestamp() as f64
+                + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9);
+            (epoch, true)
+        }
+        Err(_) => (0.0, false),
+    }
+}
+
+/// I4 for T20 memory_embeddings → node_embeddings. For each sampled
+/// `(memory_id, model)` key, fetch both sides and compare scalar
+/// fields + the embedding BLOB byte-equal. `created_at` is compared
+/// at f64 precision but skipped when the legacy parse fails (the
+/// driver substitutes `utc_now()` on parse failure, which is not a
+/// parity bug, just unrecoverable data).
+fn spot_check_node_embeddings(
+    conn: &Connection,
+    ns: Option<&str>,
+    opts: &VerifyOpts,
+    out: &mut Vec<ContentMismatch>,
+) -> rusqlite::Result<()> {
+    use rusqlite::OptionalExtension;
+
+    let keys = sample_legacy_compound_keys(
+        conn,
+        "memory_embeddings",
+        ("memory_id", "model"),
+        Some(("memories", "memory_id", "namespace")),
+        ns,
+        opts.spot_check_sample_size,
+        opts.spot_check_seed,
+    )?;
+
+    for (memory_id, model) in keys {
+        let legacy: Option<EmbeddingRow> = conn
+            .query_row(
+                "SELECT memory_id, model, dimensions, embedding, created_at
+                 FROM memory_embeddings WHERE memory_id = ? AND model = ?",
+                rusqlite::params![memory_id, model],
+                |row| {
+                    let created_at_text: String = row.get(4)?;
+                    let (epoch, _ok) =
+                        parse_legacy_embedding_created_at(&created_at_text);
+                    Ok(EmbeddingRow {
+                        memory_id: row.get(0)?,
+                        model: row.get(1)?,
+                        dimensions: row.get(2)?,
+                        embedding: row.get(3)?,
+                        created_at_epoch: epoch,
+                    })
+                },
+            )
+            .optional()?;
+        let unified: Option<EmbeddingRow> = conn
+            .query_row(
+                "SELECT node_id, model, dimensions, embedding, created_at
+                 FROM node_embeddings WHERE node_id = ? AND model = ?",
+                rusqlite::params![memory_id, model],
+                |row| {
+                    Ok(EmbeddingRow {
+                        memory_id: row.get(0)?,
+                        model: row.get(1)?,
+                        dimensions: row.get(2)?,
+                        embedding: row.get(3)?,
+                        created_at_epoch: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        let row_id = format!("{memory_id}|{model}");
+        match (legacy, unified) {
+            (None, _) => {
+                out.push(ContentMismatch {
+                    legacy_table: "memory_embeddings".into(),
+                    row_id,
+                    field: "existence".into(),
+                    legacy: "missing".into(),
+                    unified: "n/a".into(),
+                });
+            }
+            (Some(_), None) => {
+                out.push(ContentMismatch {
+                    legacy_table: "memory_embeddings".into(),
+                    row_id,
+                    field: "existence".into(),
+                    legacy: "present".into(),
+                    unified: "missing".into(),
+                });
+            }
+            (Some(l), Some(u)) => {
+                compare_embedding_rows(&l, &u, &row_id, out);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Field-by-field comparison for two EmbeddingRow projections. Scalar
+/// fields compared by value; embedding BLOB compared byte-equal;
+/// created_at compared at f64 precision unless the legacy parse
+/// failed (epoch=0.0 sentinel from `parse_legacy_embedding_created_at`).
+fn compare_embedding_rows(
+    l: &EmbeddingRow,
+    u: &EmbeddingRow,
+    row_id: &str,
+    out: &mut Vec<ContentMismatch>,
+) {
+    macro_rules! cmp_field {
+        ($field:ident) => {
+            if l.$field != u.$field {
+                out.push(ContentMismatch {
+                    legacy_table: "memory_embeddings".into(),
+                    row_id: row_id.to_string(),
+                    field: stringify!($field).into(),
+                    legacy: format!("{:?}", l.$field),
+                    unified: format!("{:?}", u.$field),
+                });
+            }
+        };
+    }
+    cmp_field!(memory_id);
+    cmp_field!(model);
+    cmp_field!(dimensions);
+
+    if l.embedding != u.embedding {
+        out.push(ContentMismatch {
+            legacy_table: "memory_embeddings".into(),
+            row_id: row_id.to_string(),
+            field: "embedding".into(),
+            legacy: format!("{} bytes (hash {:?})", l.embedding.len(),
+                            blake_short(&l.embedding)),
+            unified: format!("{} bytes (hash {:?})", u.embedding.len(),
+                             blake_short(&u.embedding)),
+        });
+    }
+
+    // Created_at: skip if legacy parse failed (driver substituted
+    // utc_now() — not a parity bug, just irrecoverable). Otherwise
+    // compare at f64 epsilon-equality at microsecond precision (the
+    // driver formula has ~ns precision but RFC3339 only stores to
+    // 9 decimal digits, so 1e-6 is safe).
+    let parsed_ok = l.created_at_epoch != 0.0;
+    if parsed_ok && (l.created_at_epoch - u.created_at_epoch).abs() > 1e-6 {
+        out.push(ContentMismatch {
+            legacy_table: "memory_embeddings".into(),
+            row_id: row_id.to_string(),
+            field: "created_at_epoch".into(),
+            legacy: format!("{:.9}", l.created_at_epoch),
+            unified: format!("{:.9}", u.created_at_epoch),
+        });
+    }
+}
+
+/// 8-byte fingerprint of a BLOB for human-readable mismatch
+/// messages. Not cryptographic; used only so operators can tell at
+/// a glance "the blobs are different" without printing 6 KB hex.
+fn blake_short(bytes: &[u8]) -> [u8; 8] {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish().to_le_bytes()
 }

@@ -762,3 +762,161 @@ fn t27_ns_filter_flag_default_true_when_no_filter_requested() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// I4 — T20 spot-check tests (ISS-113)
+// ─────────────────────────────────────────────────────────────────────
+
+fn seed_legacy_embedding(
+    storage: &Storage,
+    memory_id: &str,
+    model: &str,
+    dimensions: usize,
+    created_at_rfc3339: &str,
+) -> Vec<u8> {
+    let blob: Vec<u8> = (0..dimensions * 4).map(|i| (i % 251) as u8).collect();
+    storage
+        .conn()
+        .execute(
+            r#"INSERT OR REPLACE INTO memory_embeddings
+               (memory_id, model, embedding, dimensions, created_at)
+               VALUES (?, ?, ?, ?, ?)"#,
+            params![memory_id, model, blob, dimensions as i64, created_at_rfc3339],
+        )
+        .expect("seed legacy embedding");
+    blob
+}
+
+#[test]
+fn t27_i4_node_embeddings_post_backfill_no_mismatches() {
+    use engramai::substrate::backfill::backfill_embeddings_to_node_embeddings;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // Seed memory (T12 dual-writes node), then legacy embedding, then T20.
+    let m = sample_record("mem-1");
+    storage.add(&m, "default").unwrap();
+    seed_legacy_embedding(&storage, "mem-1", "all-MiniLM-L6-v2", 4, "2026-05-13T10:30:00Z");
+    let run = backfill_embeddings_to_node_embeddings(&mut storage, None).unwrap();
+    assert_eq!(run.rows_inserted, 1);
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let emb_mismatches: Vec<_> = report
+        .content_mismatches
+        .iter()
+        .filter(|m| m.legacy_table == "memory_embeddings")
+        .collect();
+    assert!(
+        emb_mismatches.is_empty(),
+        "clean post-backfill must have zero T20 mismatches: {emb_mismatches:#?}"
+    );
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_i4_node_embeddings_blob_drift_flagged() {
+    // Mutate the unified-side embedding BLOB and confirm I4 catches
+    // it. This is the canonical silent-corruption case I4 exists to
+    // detect: row counts unchanged, but content rotted.
+    use engramai::substrate::backfill::backfill_embeddings_to_node_embeddings;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let m = sample_record("mem-1");
+    storage.add(&m, "default").unwrap();
+    seed_legacy_embedding(&storage, "mem-1", "m", 4, "2026-05-13T10:30:00Z");
+    backfill_embeddings_to_node_embeddings(&mut storage, None).unwrap();
+
+    storage
+        .conn()
+        .execute(
+            "UPDATE node_embeddings SET embedding = X'DEADBEEF' WHERE node_id = 'mem-1'",
+            [],
+        )
+        .unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report
+        .content_mismatches
+        .iter()
+        .find(|m| m.legacy_table == "memory_embeddings" && m.field == "embedding")
+        .expect("blob drift must be reported");
+    assert!(hit.row_id.starts_with("mem-1|m"));
+    assert!(!report.ok);
+}
+
+#[test]
+fn t27_i4_node_embeddings_dimensions_drift_flagged() {
+    use engramai::substrate::backfill::backfill_embeddings_to_node_embeddings;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let m = sample_record("mem-1");
+    storage.add(&m, "default").unwrap();
+    seed_legacy_embedding(&storage, "mem-1", "m", 4, "2026-05-13T10:30:00Z");
+    backfill_embeddings_to_node_embeddings(&mut storage, None).unwrap();
+
+    // Lie about the dimensions on the unified side.
+    storage
+        .conn()
+        .execute(
+            "UPDATE node_embeddings SET dimensions = 99 WHERE node_id = 'mem-1'",
+            [],
+        )
+        .unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report
+        .content_mismatches
+        .iter()
+        .find(|m| m.legacy_table == "memory_embeddings" && m.field == "dimensions")
+        .expect("dimensions drift must be reported");
+    assert!(hit.unified.contains("99"));
+    assert!(hit.legacy.contains("4"));
+    assert!(!report.ok);
+}
+
+#[test]
+fn t27_i4_node_embeddings_missing_unified_row_flagged() {
+    use engramai::substrate::backfill::backfill_embeddings_to_node_embeddings;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let m = sample_record("mem-1");
+    storage.add(&m, "default").unwrap();
+    seed_legacy_embedding(&storage, "mem-1", "m", 4, "2026-05-13T10:30:00Z");
+    backfill_embeddings_to_node_embeddings(&mut storage, None).unwrap();
+
+    storage
+        .conn()
+        .execute(
+            "DELETE FROM node_embeddings WHERE node_id = 'mem-1'",
+            [],
+        )
+        .unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report
+        .content_mismatches
+        .iter()
+        .find(|m| m.legacy_table == "memory_embeddings" && m.field == "existence")
+        .expect("missing unified row must be flagged");
+    assert_eq!(hit.unified, "missing");
+}
