@@ -1279,3 +1279,412 @@ fn t27_i4_synthesis_provenance_confidence_drift_flagged() {
     assert!(hit.legacy.contains("0.93"));
     assert!(hit.unified.contains("0.1"));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// I4 — Merge-semantics existence-only tests (ISS-113 slice 3)
+//      T22 / T23 / T24
+// ─────────────────────────────────────────────────────────────────────
+
+fn seed_legacy_relation(
+    storage: &Storage,
+    id: &str,
+    source_id: &str,
+    target_id: &str,
+    relation: &str,
+    namespace: &str,
+) {
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO entity_relations
+               (id, source_id, target_id, relation, confidence, source, namespace, created_at, metadata)
+               VALUES (?, ?, ?, ?, 1.0, NULL, ?, 1700000000.0, NULL)"#,
+            params![id, source_id, target_id, relation, namespace],
+        )
+        .expect("seed entity_relation");
+}
+
+fn seed_legacy_memory_entity(
+    storage: &Storage,
+    memory_id: &str,
+    entity_id: &str,
+    role: &str,
+) {
+    storage
+        .conn()
+        .execute(
+            "INSERT INTO memory_entities (memory_id, entity_id, role) VALUES (?, ?, ?)",
+            params![memory_id, entity_id, role],
+        )
+        .expect("seed memory_entities row");
+}
+
+fn seed_legacy_hebbian(
+    storage: &Storage,
+    source_id: &str,
+    target_id: &str,
+    strength: f64,
+    coact: i64,
+    namespace: &str,
+    signal_source: &str,
+) {
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO hebbian_links
+               (source_id, target_id, strength, coactivation_count,
+                temporal_forward, temporal_backward, direction,
+                created_at, namespace, signal_source, signal_detail)
+               VALUES (?, ?, ?, ?, 0, 0, 'forward', 1700000000.0, ?, ?, NULL)"#,
+            params![source_id, target_id, strength, coact, namespace, signal_source],
+        )
+        .expect("seed hebbian_links row");
+}
+
+// ── T22 entity_relations → edges(structural) ─────────────────────────
+
+#[test]
+fn t27_i4_entity_relations_post_backfill_no_mismatches() {
+    use engramai::substrate::backfill::{
+        backfill_entities_to_nodes, backfill_entity_relations_to_edges,
+    };
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e1','Alice','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e2','Bob','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_relation(&storage, "rel-1", "e1", "e2", "knows", "default");
+    backfill_entity_relations_to_edges(&mut storage, None).unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hits: Vec<_> = report
+        .content_mismatches
+        .iter()
+        .filter(|m| m.legacy_table == "entity_relations")
+        .collect();
+    assert!(hits.is_empty(), "clean T22: {hits:#?}");
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_i4_entity_relations_missing_unified_row_flagged() {
+    use engramai::substrate::backfill::{
+        backfill_entities_to_nodes, backfill_entity_relations_to_edges,
+    };
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e1','A','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e2','B','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_relation(&storage, "rel-1", "e1", "e2", "knows", "default");
+    backfill_entity_relations_to_edges(&mut storage, None).unwrap();
+    storage.conn().execute("DELETE FROM edges WHERE id = 'rel-1'", []).unwrap();
+
+    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report.content_mismatches.iter()
+        .find(|m| m.legacy_table == "entity_relations" && m.field == "existence")
+        .expect("missing unified row must be flagged");
+    assert_eq!(hit.unified, "missing");
+}
+
+#[test]
+fn t27_i4_entity_relations_predicate_drift_flagged() {
+    use engramai::substrate::backfill::{
+        backfill_entities_to_nodes, backfill_entity_relations_to_edges,
+    };
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e1','A','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e2','B','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_relation(&storage, "rel-1", "e1", "e2", "knows", "default");
+    backfill_entity_relations_to_edges(&mut storage, None).unwrap();
+    storage.conn().execute(
+        "UPDATE edges SET predicate = 'CORRUPTED' WHERE id = 'rel-1'", []
+    ).unwrap();
+
+    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report.content_mismatches.iter()
+        .find(|m| m.legacy_table == "entity_relations" && m.field == "predicate")
+        .expect("predicate drift must be flagged");
+    assert_eq!(hit.legacy, "knows");
+    assert_eq!(hit.unified, "CORRUPTED");
+}
+
+#[test]
+fn t27_i4_entity_relations_t23_predicate_collision_flagged() {
+    // Pin the §3.3 vs §5.3 prose drift case: T22 must NEVER produce
+    // 'subject_of' or 'object_of' (those belong to T23). If someone
+    // changes T22 driver to map 'has_subject' -> 'subject_of', the
+    // verifier must catch it.
+    use engramai::substrate::backfill::{
+        backfill_entities_to_nodes, backfill_entity_relations_to_edges,
+    };
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e1','A','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e2','B','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_relation(&storage, "rel-1", "e1", "e2", "has_subject", "default");
+    backfill_entity_relations_to_edges(&mut storage, None).unwrap();
+    // Simulate the regression — driver produced 'subject_of' instead of 'has_subject'.
+    storage.conn().execute(
+        "UPDATE edges SET predicate = 'subject_of' WHERE id = 'rel-1'", []
+    ).unwrap();
+
+    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report.content_mismatches.iter()
+        .find(|m| m.legacy_table == "entity_relations"
+              && m.field.contains("T22 must NOT use T23"))
+        .expect("T22-using-T23-predicate must be flagged");
+    assert_eq!(hit.unified, "subject_of");
+}
+
+// ── T23 memory_entities → edges (role split) ─────────────────────────
+
+#[test]
+fn t27_i4_memory_entities_post_backfill_no_mismatches() {
+    use engramai::substrate::backfill::{
+        backfill_entities_to_nodes, backfill_memories_to_nodes,
+        backfill_memory_entities_to_edges,
+    };
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let m = sample_record("mem-1");
+    storage.add(&m, "default").unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e1','Alice','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e2','Bob','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+    // memory_entities PK = (memory_id, entity_id); can't seed multiple
+    // roles for the same (mem, ent) pair. Use two distinct entities to
+    // cover both 'mention' and 'subject' paths.
+    seed_legacy_memory_entity(&storage, "mem-1", "e1", "mention");
+    seed_legacy_memory_entity(&storage, "mem-1", "e2", "subject");
+    backfill_memory_entities_to_edges(&mut storage, None).unwrap();
+
+    let opts = VerifyOpts { spot_check_sample_size: 10, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hits: Vec<_> = report.content_mismatches.iter()
+        .filter(|m| m.legacy_table == "memory_entities")
+        .collect();
+    assert!(hits.is_empty(), "clean T23: {hits:#?}");
+}
+
+#[test]
+fn t27_i4_memory_entities_role_split_subject_endpoints() {
+    // Pin §3.3 endpoint direction for 'subject' role:
+    //   provenance/mentions → source=memory, target=entity
+    //   structural/subject_of → source=entity, target=memory
+    // If the driver regresses to "always memory→entity" for subject_of,
+    // the source_id/target_id check fires.
+    use engramai::substrate::backfill::{
+        backfill_entities_to_nodes, backfill_memories_to_nodes,
+        backfill_memory_entities_to_edges,
+    };
+    use sha2::{Digest, Sha256};
+    use uuid::Uuid;
+
+    // Inline the same hash formula the driver uses (uuid_from_hash is
+    // crate-private; tests cross the crate boundary).
+    fn local_uuid_from_hash(s: &str) -> String {
+        let digest = Sha256::digest(s.as_bytes());
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        Uuid::from_bytes(bytes).to_string()
+    }
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let m = sample_record("mem-1");
+    storage.add(&m, "default").unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e1','Alice','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_memory_entity(&storage, "mem-1", "e1", "subject");
+    backfill_memory_entities_to_edges(&mut storage, None).unwrap();
+
+    // For role='subject': (edge_kind, predicate) = ('structural', 'subject_of').
+    let id = local_uuid_from_hash(
+        "memory_entities|mem-1|e1|subject|structural|subject_of"
+    );
+    // Confirm real driver produces source=mem-1, target=e1
+    // (as-built behavior — see verifier comment about §3.3 spec
+    // drift on the endpoint direction).
+    let (src, tgt): (String, String) = storage.conn().query_row(
+        "SELECT source_id, target_id FROM edges WHERE id = ?",
+        params![id], |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap();
+    assert_eq!(src, "mem-1");
+    assert_eq!(tgt, "e1");
+
+    // Now SIMULATE the regression: swap endpoints to (e1, mem-1).
+    storage.conn().execute(
+        "UPDATE edges SET source_id='e1', target_id='mem-1' WHERE id = ?",
+        params![id]
+    ).unwrap();
+    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hits: Vec<_> = report.content_mismatches.iter()
+        .filter(|m| m.legacy_table == "memory_entities"
+              && (m.field == "source_id" || m.field == "target_id"))
+        .collect();
+    assert!(!hits.is_empty(), "endpoint swap must be caught: {hits:#?}");
+}
+
+#[test]
+fn t27_i4_memory_entities_missing_unified_row_flagged() {
+    use engramai::substrate::backfill::{
+        backfill_entities_to_nodes, backfill_memories_to_nodes,
+        backfill_memory_entities_to_edges,
+    };
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let m = sample_record("mem-1");
+    storage.add(&m, "default").unwrap();
+    storage.conn().execute(
+        "INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) VALUES ('e1','A','person','default',NULL,1700000000.0,1700000000.0)",
+        [],
+    ).unwrap();
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_memory_entity(&storage, "mem-1", "e1", "mention");
+    backfill_memory_entities_to_edges(&mut storage, None).unwrap();
+    storage.conn().execute(
+        "DELETE FROM edges WHERE edge_kind='provenance' AND predicate='mentions'", []
+    ).unwrap();
+
+    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report.content_mismatches.iter()
+        .find(|m| m.legacy_table == "memory_entities" && m.field == "existence")
+        .expect("missing unified row must be flagged");
+    assert_eq!(hit.unified, "missing");
+}
+
+// ── T24 hebbian_links → edges (associative/co_activated, SUM merge) ──
+
+#[test]
+fn t27_i4_hebbian_links_post_backfill_no_mismatches() {
+    use engramai::substrate::backfill::{
+        backfill_hebbian_links_to_edges, backfill_memories_to_nodes,
+    };
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let a = sample_record("mem-a");
+    let b = sample_record("mem-b");
+    storage.add(&a, "default").unwrap();
+    storage.add(&b, "default").unwrap();
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_hebbian(&storage, "mem-a", "mem-b", 0.5, 3, "default", "corecall");
+    backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
+
+    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hits: Vec<_> = report.content_mismatches.iter()
+        .filter(|m| m.legacy_table == "hebbian_links")
+        .collect();
+    assert!(hits.is_empty(), "clean T24: {hits:#?}");
+}
+
+#[test]
+fn t27_i4_hebbian_links_sum_lower_bound_violation_flagged() {
+    // The SUM lower-bound check: unified.weight MUST be >= every
+    // individual legacy.strength. If someone "fixes" the unified
+    // weight downward (regression: applied a decay instead of
+    // preserving SUM), the verifier must catch it.
+    use engramai::substrate::backfill::{
+        backfill_hebbian_links_to_edges, backfill_memories_to_nodes,
+    };
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let a = sample_record("mem-a");
+    let b = sample_record("mem-b");
+    storage.add(&a, "default").unwrap();
+    storage.add(&b, "default").unwrap();
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_hebbian(&storage, "mem-a", "mem-b", 0.7, 5, "default", "corecall");
+    backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
+
+    // Tank the weight below the legacy strength.
+    storage.conn().execute(
+        "UPDATE edges SET weight = 0.1 WHERE edge_kind='associative'", []
+    ).unwrap();
+
+    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report.content_mismatches.iter()
+        .find(|m| m.legacy_table == "hebbian_links" && m.field.starts_with("weight"))
+        .expect("weight regression below SUM lower bound must be flagged");
+    assert!(hit.legacy.contains("0.7"));
+    assert!(hit.unified.contains("0.1"));
+}
+
+#[test]
+fn t27_i4_hebbian_links_canonical_pair_direction_independent() {
+    // Seed legacy with target<source (reverse order). The driver
+    // canonicalizes to (lo, hi) before hashing; the verifier must
+    // do the same and find the SAME edge id.
+    use engramai::substrate::backfill::{
+        backfill_hebbian_links_to_edges, backfill_memories_to_nodes,
+    };
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let a = sample_record("mem-aaaa");
+    let b = sample_record("mem-zzzz");
+    storage.add(&a, "default").unwrap();
+    storage.add(&b, "default").unwrap();
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+    // Insert with target<source by passing "mem-zzzz" as source.
+    seed_legacy_hebbian(&storage, "mem-zzzz", "mem-aaaa", 0.5, 2, "default", "corecall");
+    backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
+
+    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hits: Vec<_> = report.content_mismatches.iter()
+        .filter(|m| m.legacy_table == "hebbian_links")
+        .collect();
+    assert!(hits.is_empty(),
+        "canonicalization should produce same id regardless of input order: {hits:#?}");
+}

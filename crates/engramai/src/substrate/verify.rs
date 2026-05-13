@@ -834,8 +834,10 @@ fn check_content_spot_check(
     spot_check_node_embeddings(conn, ns, opts, &mut out)?;
     spot_check_entities(conn, ns, opts, &mut out)?;
     spot_check_synthesis_provenance(conn, ns, opts, &mut out)?;
-    // T22/T23/T24 merge-semantics existence-only checks land in the
-    // next slice.
+    // Merge-semantics existence-only checks (ISS-113 slice 3).
+    spot_check_entity_relations(conn, ns, opts, &mut out)?;
+    spot_check_memory_entities(conn, ns, opts, &mut out)?;
+    spot_check_hebbian_links(conn, ns, opts, &mut out)?;
     Ok(out)
 }
 
@@ -1806,4 +1808,538 @@ fn compare_synthesis_rows(
             unified: u_attr.to_string(),
         });
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I4 — Merge-semantics existence-only spot-checks (T22 / T23 / T24)
+// ─────────────────────────────────────────────────────────────────────
+//
+// These drivers collapse legacy rows into one unified row per
+// canonical key, so byte-equal comparison is impossible. The assertion
+// shape per ISS-113 is:
+//
+//   "the unified row that should cover this legacy row exists with
+//    the right (kind, predicate, endpoints, namespace) shape"
+//
+// Existence-only checks are strictly weaker than the pass-through
+// drivers' field-equality checks. They catch:
+//   - missing unified rows (driver silently dropped the legacy row)
+//   - wrong (edge_kind, predicate) mapping (the §3.3 / §5.3 spec
+//     drift case)
+//   - wrong endpoint resolution (e.g. canonicalization regression
+//     for T24)
+//
+// They do NOT catch:
+//   - counter drift after the merge (use I1 count parity for that —
+//     row count matches but counter SUMs don't)
+//   - silent extra columns
+//
+// That's the explicit ISS-113 trade-off.
+
+/// T22 spot-check: entity_relations → edges(structural, predicate=relation).
+/// T22 passes the legacy `entity_relations.id` directly to the
+/// `edges.id` column, so existence-by-same-id is the canonical check.
+/// Predicate must equal the legacy `relation` column; edge_kind must
+/// be 'structural' AND NOT in the T23-canonical set (subject_of,
+/// object_of) to catch the design §3.3 vs §5.3 prose drift case.
+fn spot_check_entity_relations(
+    conn: &Connection,
+    ns: Option<&str>,
+    opts: &VerifyOpts,
+    out: &mut Vec<ContentMismatch>,
+) -> rusqlite::Result<()> {
+    use rusqlite::OptionalExtension;
+
+    let ids = sample_legacy_ids(
+        conn,
+        "entity_relations",
+        ns,
+        opts.spot_check_sample_size,
+        opts.spot_check_seed,
+    )?;
+
+    // Set of predicates T23 also maps to structural — entity_relations
+    // must NOT produce any of these (catches §3.3 vs §5.3 prose drift).
+    const T23_STRUCTURAL_PREDS: &[&str] = &["subject_of", "object_of"];
+
+    for id in ids {
+        let legacy: Option<(String, String, String, String)> = conn
+            .query_row(
+                "SELECT id, relation, source_id, target_id
+                 FROM entity_relations WHERE id = ?",
+                rusqlite::params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let unified: Option<(String, String, String, String, String)> = conn
+            .query_row(
+                "SELECT id, edge_kind, predicate, source_id, target_id
+                 FROM edges WHERE id = ?",
+                rusqlite::params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        match (legacy, unified) {
+            (None, _) => out.push(ContentMismatch {
+                legacy_table: "entity_relations".into(),
+                row_id: id,
+                field: "existence".into(),
+                legacy: "missing".into(),
+                unified: "n/a".into(),
+            }),
+            (Some(_), None) => out.push(ContentMismatch {
+                legacy_table: "entity_relations".into(),
+                row_id: id,
+                field: "existence".into(),
+                legacy: "present".into(),
+                unified: "missing".into(),
+            }),
+            (Some((_, rel, src, tgt)), Some((_, edge_kind, predicate, usrc, utgt))) => {
+                if edge_kind != "structural" {
+                    out.push(ContentMismatch {
+                        legacy_table: "entity_relations".into(),
+                        row_id: id.clone(),
+                        field: "edge_kind".into(),
+                        legacy: "structural".into(),
+                        unified: edge_kind.clone(),
+                    });
+                }
+                if T23_STRUCTURAL_PREDS.contains(&predicate.as_str()) {
+                    out.push(ContentMismatch {
+                        legacy_table: "entity_relations".into(),
+                        row_id: id.clone(),
+                        field: "predicate (T22 must NOT use T23 predicates)".into(),
+                        legacy: rel.clone(),
+                        unified: predicate.clone(),
+                    });
+                }
+                if predicate != rel {
+                    out.push(ContentMismatch {
+                        legacy_table: "entity_relations".into(),
+                        row_id: id.clone(),
+                        field: "predicate".into(),
+                        legacy: rel,
+                        unified: predicate,
+                    });
+                }
+                if usrc != src {
+                    out.push(ContentMismatch {
+                        legacy_table: "entity_relations".into(),
+                        row_id: id.clone(),
+                        field: "source_id".into(),
+                        legacy: src,
+                        unified: usrc,
+                    });
+                }
+                if utgt != tgt {
+                    out.push(ContentMismatch {
+                        legacy_table: "entity_relations".into(),
+                        row_id: id,
+                        field: "target_id".into(),
+                        legacy: tgt,
+                        unified: utgt,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// T23 spot-check: memory_entities → edges(role-mapped).
+/// Sample legacy rows by (memory_id, entity_id, role) compound key,
+/// resolve via the §3.3 role split to (edge_kind, predicate), compute
+/// the deterministic edge id using the SAME hash formula the driver
+/// uses, and assert the edges row exists with that shape.
+///
+/// The driver imports `uuid_from_hash` and `role_to_kind_predicate`
+/// directly from `substrate::backfill`, so any future change to the
+/// hash formula or role map propagates to the verifier automatically.
+fn spot_check_memory_entities(
+    conn: &Connection,
+    ns: Option<&str>,
+    opts: &VerifyOpts,
+    out: &mut Vec<ContentMismatch>,
+) -> rusqlite::Result<()> {
+    use crate::substrate::backfill::{role_to_kind_predicate, uuid_from_hash};
+    use rusqlite::OptionalExtension;
+
+    // memory_entities has no namespace column — namespace flows
+    // through the parent memory via JOIN. The sampler joins to
+    // `memories` when ns is specified.
+    let triples = sample_memory_entities_triples(
+        conn,
+        ns,
+        opts.spot_check_sample_size,
+        opts.spot_check_seed,
+    )?;
+
+    for (memory_id, entity_id, role) in triples {
+        let (edge_kind, predicate, _normalized) = role_to_kind_predicate(&role);
+        let hash_input = format!(
+            "memory_entities|{}|{}|{}|{}|{}",
+            memory_id, entity_id, role, edge_kind, predicate
+        );
+        let expected_id = uuid_from_hash(&hash_input);
+
+        let unified: Option<(String, String, String, String)> = conn
+            .query_row(
+                "SELECT edge_kind, predicate, source_id, target_id
+                 FROM edges WHERE id = ?",
+                rusqlite::params![expected_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let row_id = format!("{memory_id}|{entity_id}|{role}");
+        match unified {
+            None => out.push(ContentMismatch {
+                legacy_table: "memory_entities".into(),
+                row_id,
+                field: "existence".into(),
+                legacy: "present".into(),
+                unified: "missing".into(),
+            }),
+            Some((u_kind, u_pred, u_src, u_tgt)) => {
+                if u_kind != edge_kind {
+                    out.push(ContentMismatch {
+                        legacy_table: "memory_entities".into(),
+                        row_id: row_id.clone(),
+                        field: "edge_kind".into(),
+                        legacy: edge_kind.into(),
+                        unified: u_kind,
+                    });
+                }
+                if u_pred != predicate {
+                    out.push(ContentMismatch {
+                        legacy_table: "memory_entities".into(),
+                        row_id: row_id.clone(),
+                        field: "predicate".into(),
+                        legacy: predicate.into(),
+                        unified: u_pred,
+                    });
+                }
+                // Endpoint resolution: the T23 driver passes
+                // `(memory_id, entity_id)` as `(source, target)` for
+                // ALL role variants — confirmed by existing test
+                // `t23_subject_role_writes_structural_subject_of`
+                // which queries `WHERE source_id = 'mem-1'` for a
+                // 'subject' role row. The verifier matches what the
+                // driver actually does.
+                //
+                // **Spec drift note**: design §3.3 line 320 reads
+                // "subject_of: entity → memory" — that direction is
+                // NOT what the driver implements. The discrepancy is
+                // tracked in §8.4 T23 commentary ("§3.3 vs §5.3
+                // prose inconsistency"). The verifier is locked to
+                // driver behavior (as-built), not §3.3 text. If a
+                // future fix flips the direction, this branch must
+                // flip too.
+                let expected_src = &memory_id;
+                let expected_tgt = &entity_id;
+                if u_src != *expected_src {
+                    out.push(ContentMismatch {
+                        legacy_table: "memory_entities".into(),
+                        row_id: row_id.clone(),
+                        field: "source_id".into(),
+                        legacy: expected_src.clone(),
+                        unified: u_src,
+                    });
+                }
+                if u_tgt != *expected_tgt {
+                    out.push(ContentMismatch {
+                        legacy_table: "memory_entities".into(),
+                        row_id,
+                        field: "target_id".into(),
+                        legacy: expected_tgt.clone(),
+                        unified: u_tgt,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sample N (memory_id, entity_id, role) triples from memory_entities,
+/// optionally namespace-filtered via the JOIN to parent memories.
+fn sample_memory_entities_triples(
+    conn: &Connection,
+    ns: Option<&str>,
+    sample_size: usize,
+    seed: u64,
+) -> rusqlite::Result<Vec<(String, String, String)>> {
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+
+    let sql = match ns {
+        Some(_) => "SELECT me.memory_id, me.entity_id, me.role
+                    FROM memory_entities me
+                    INNER JOIN memories m ON m.id = me.memory_id
+                    WHERE m.namespace = ?",
+        None => "SELECT memory_id, entity_id, role FROM memory_entities",
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows: Vec<(String, String, String)> = match ns {
+        Some(n) => stmt
+            .query_map(rusqlite::params![n], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        None => stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
+    let mut rows = rows;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    rows.shuffle(&mut rng);
+    rows.truncate(sample_size);
+    Ok(rows)
+}
+
+/// T24 spot-check: hebbian_links → edges(associative/co_activated).
+/// Sample legacy rows, canonicalize the endpoint pair, compute the
+/// deterministic edge id via `backfill_hebbian_links_to_edges_hash_input`,
+/// and assert the edges row exists. Counter fields are NOT field-
+/// equality-checked (SUM-semantics across multiple legacy rows);
+/// instead they get a lower-bound check: `unified.weight >=
+/// legacy.strength` for the single sampled row.
+fn spot_check_hebbian_links(
+    conn: &Connection,
+    ns: Option<&str>,
+    opts: &VerifyOpts,
+    out: &mut Vec<ContentMismatch>,
+) -> rusqlite::Result<()> {
+    use crate::substrate::backfill::{
+        backfill_hebbian_links_to_edges_hash_input, uuid_from_hash,
+    };
+    use rusqlite::OptionalExtension;
+
+    let rows = sample_hebbian_rows(
+        conn,
+        ns,
+        opts.spot_check_sample_size,
+        opts.spot_check_seed,
+    )?;
+
+    for (source_id, target_id, namespace, signal_source, strength, coact, tfwd, tbwd) in rows {
+        let (lo, hi) = if source_id < target_id {
+            (source_id.clone(), target_id.clone())
+        } else {
+            (target_id.clone(), source_id.clone())
+        };
+        let hash_input = backfill_hebbian_links_to_edges_hash_input(
+            &lo, &hi, &namespace, &signal_source,
+        );
+        let expected_id = uuid_from_hash(&hash_input);
+
+        let unified: Option<(String, String, String, String, f64, i64, i64, i64)> = conn
+            .query_row(
+                "SELECT edge_kind, predicate, source_id, target_id,
+                        weight,
+                        COALESCE(json_extract(attributes, '$.coactivation_count'), 0) AS cc,
+                        COALESCE(json_extract(attributes, '$.temporal_forward'), 0)  AS tf,
+                        COALESCE(json_extract(attributes, '$.temporal_backward'), 0) AS tb
+                 FROM edges WHERE id = ?",
+                rusqlite::params![expected_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, f64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let row_id = format!("{lo}|{hi}|{namespace}|{signal_source}");
+        match unified {
+            None => out.push(ContentMismatch {
+                legacy_table: "hebbian_links".into(),
+                row_id,
+                field: "existence".into(),
+                legacy: "present".into(),
+                unified: "missing".into(),
+            }),
+            Some((u_kind, u_pred, u_src, u_tgt, u_weight, u_cc, u_tf, u_tb)) => {
+                if u_kind != "associative" {
+                    out.push(ContentMismatch {
+                        legacy_table: "hebbian_links".into(),
+                        row_id: row_id.clone(),
+                        field: "edge_kind".into(),
+                        legacy: "associative".into(),
+                        unified: u_kind,
+                    });
+                }
+                if u_pred != "co_activated" {
+                    out.push(ContentMismatch {
+                        legacy_table: "hebbian_links".into(),
+                        row_id: row_id.clone(),
+                        field: "predicate".into(),
+                        legacy: "co_activated".into(),
+                        unified: u_pred,
+                    });
+                }
+                // Endpoints: source=lo, target=hi (canonicalized).
+                if u_src != lo {
+                    out.push(ContentMismatch {
+                        legacy_table: "hebbian_links".into(),
+                        row_id: row_id.clone(),
+                        field: "source_id (canonical lo)".into(),
+                        legacy: lo.clone(),
+                        unified: u_src,
+                    });
+                }
+                if u_tgt != hi {
+                    out.push(ContentMismatch {
+                        legacy_table: "hebbian_links".into(),
+                        row_id: row_id.clone(),
+                        field: "target_id (canonical hi)".into(),
+                        legacy: hi.clone(),
+                        unified: u_tgt,
+                    });
+                }
+                // SUM lower-bound: each unified counter must be >=
+                // the single sampled legacy row's value. Looser than
+                // field-equality but catches "counter went DOWN
+                // post-merge" regressions which are unambiguously
+                // wrong.
+                if u_weight + 1e-9 < strength {
+                    out.push(ContentMismatch {
+                        legacy_table: "hebbian_links".into(),
+                        row_id: row_id.clone(),
+                        field: "weight (SUM >= per-row lower bound)".into(),
+                        legacy: format!(">= {strength}"),
+                        unified: format!("{u_weight}"),
+                    });
+                }
+                if u_cc < coact {
+                    out.push(ContentMismatch {
+                        legacy_table: "hebbian_links".into(),
+                        row_id: row_id.clone(),
+                        field: "coactivation_count (SUM >= lower bound)".into(),
+                        legacy: format!(">= {coact}"),
+                        unified: format!("{u_cc}"),
+                    });
+                }
+                if u_tf < tfwd {
+                    out.push(ContentMismatch {
+                        legacy_table: "hebbian_links".into(),
+                        row_id: row_id.clone(),
+                        field: "temporal_forward (SUM >= lower bound)".into(),
+                        legacy: format!(">= {tfwd}"),
+                        unified: format!("{u_tf}"),
+                    });
+                }
+                if u_tb < tbwd {
+                    out.push(ContentMismatch {
+                        legacy_table: "hebbian_links".into(),
+                        row_id,
+                        field: "temporal_backward (SUM >= lower bound)".into(),
+                        legacy: format!(">= {tbwd}"),
+                        unified: format!("{u_tb}"),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sample N hebbian_links rows with the fields needed by the
+/// spot-check. Includes the `COALESCE(signal_source, 'corecall')`
+/// fallback the driver applies so the hash formula matches.
+fn sample_hebbian_rows(
+    conn: &Connection,
+    ns: Option<&str>,
+    sample_size: usize,
+    seed: u64,
+) -> rusqlite::Result<Vec<(String, String, String, String, f64, i64, i64, i64)>> {
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+
+    let sql = match ns {
+        Some(_) => "SELECT source_id, target_id, namespace,
+                           COALESCE(signal_source, 'corecall') AS signal_source,
+                           strength, coactivation_count, temporal_forward, temporal_backward
+                    FROM hebbian_links WHERE namespace = ?",
+        None => "SELECT source_id, target_id, namespace,
+                        COALESCE(signal_source, 'corecall') AS signal_source,
+                        strength, coactivation_count, temporal_forward, temporal_backward
+                 FROM hebbian_links",
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows: Vec<_> = match ns {
+        Some(n) => stmt
+            .query_map(rusqlite::params![n], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, f64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        None => stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, f64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
+    let mut rows = rows;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    rows.shuffle(&mut rng);
+    rows.truncate(sample_size);
+    Ok(rows)
 }

@@ -1242,7 +1242,7 @@ pub fn backfill_entity_relations_to_edges(
 /// version/variant bits because we never need to compare against a
 /// random v4 UUID semantically; deterministic-from-hash IDs live in
 /// their own namespace by construction.
-fn uuid_from_hash(hash_input: &str) -> String {
+pub(crate) fn uuid_from_hash(hash_input: &str) -> String {
     let digest = Sha256::digest(hash_input.as_bytes());
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
@@ -1255,7 +1255,7 @@ fn uuid_from_hash(hash_input: &str) -> String {
 /// signals that the raw role was not the canonical 'mention'/'subject'/
 /// 'object' set and was folded onto `provenance/mentions` — the driver
 /// records the raw role in attributes for audit traceability.
-fn role_to_kind_predicate(role: &str) -> (&'static str, &'static str, bool) {
+pub(crate) fn role_to_kind_predicate(role: &str) -> (&'static str, &'static str, bool) {
     match role {
         "mention" | "" => ("provenance", "mentions", false),
         "subject" => ("structural", "subject_of", false),
@@ -1644,7 +1644,7 @@ mod t23_helpers_tests {
 // index check — silently dropped. This is wrong. To future-proof,
 // the hash MUST include signal_source. We do so below. See test
 // `t24_hash_includes_signal_source_for_future_proofing`.
-fn backfill_hebbian_links_to_edges_hash_input(
+pub(crate) fn backfill_hebbian_links_to_edges_hash_input(
     canonical_lo: &str,
     canonical_hi: &str,
     namespace: &str,
