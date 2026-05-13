@@ -1582,3 +1582,509 @@ mod t23_helpers_tests {
         assert!(Uuid::parse_str(&a).is_ok());
     }
 }
+
+// =====================================================================
+// T24 — backfill `hebbian_links` → `edges(kind=associative)`
+// =====================================================================
+//
+// Phase C, heaviest table (~43,710 rows production). This is the only
+// backfill driver that performs **SQL-side merge** before insert,
+// because legacy `hebbian_links` allows both `(A, B)` and `(B, A)` as
+// separate primary keys while design §4.3 requires that associative
+// edges be canonicalized to `(min, max)` — one unified row per
+// (canonical pair, signal_source).
+//
+// Production data analysis (2026-05-13, /Users/potato/rustclaw/engram-memory.db):
+//
+//   * 43,346 total rows
+//   * 43,227 distinct canonical pairs
+//   * 119 pairs have rows in BOTH directions (collision class)
+//   * All 119 collisions are SAME signal_source — single-row-per-pair
+//     post-merge
+//   * All `signal_source = 'corecall'`, no NULL/empty
+//   * `direction = 'bidirectional'` for all rows
+//   * ~606 rows have non-zero `temporal_forward`
+//   * ~666 rows have non-zero `temporal_backward`
+//   * `signal_detail` empty everywhere in current production
+//
+// Merge policy per design §4.3:
+//   * `weight = SUM(strength)` per (canonical_pair, namespace, signal_source)
+//   * `coactivation_count = SUM(coactivation_count)` per same group
+//   * `temporal_forward = SUM(temporal_forward)`
+//   * `temporal_backward = SUM(temporal_backward)`
+//   * `created_at = MIN(created_at)` (earliest observation wins)
+//   * `direction` packed as sorted-distinct JSON array if heterogeneous,
+//     scalar string if homogeneous (current production: always
+//     `"bidirectional"`)
+//   * `signal_detail` packed as sorted-distinct JSON array if
+//     heterogeneous, scalar string if homogeneous (current production:
+//     always empty)
+//
+// Deterministic id per amended design §5.3 hash template:
+//
+//   hash_input = "hebbian_links|<min_id>|<max_id>|<namespace>|associative|co_activated"
+//
+// — canonicalization of the endpoint pair happens INSIDE the hash so
+// that `(A,B)` and `(B,A)` legacy rows both map to the same id and
+// merge via `INSERT OR IGNORE`. Signal_source is NOT in the hash —
+// design §4.3 keeps signal_source as a separate row-identity
+// dimension via the partial unique index `idx_edges_assoc_unique`.
+// Today production only has `signal_source='corecall'` so a hash that
+// included signal_source would behave identically; the choice to
+// EXCLUDE signal_source matches the design's "smallest UNIQUE tuple"
+// rule (canonical pair + namespace IS the smallest unique tuple at
+// the legacy-table level — signal_source is a future extension).
+//
+// CAVEAT: if production data ever acquires multi-signal-source rows
+// for the same pair, the hash will collide. Design §4.3 declares
+// signal_source the row-identity dimension and the partial unique
+// index covers it via `json_extract(attributes, '$.signal_source')`,
+// so the SECOND row (different signal_source, same id) would be
+// rejected by `INSERT OR IGNORE` on the primary id BEFORE the unique
+// index check — silently dropped. This is wrong. To future-proof,
+// the hash MUST include signal_source. We do so below. See test
+// `t24_hash_includes_signal_source_for_future_proofing`.
+fn backfill_hebbian_links_to_edges_hash_input(
+    canonical_lo: &str,
+    canonical_hi: &str,
+    namespace: &str,
+    signal_source: &str,
+) -> String {
+    // Matches design §5.3 amended template for hebbian_links plus
+    // signal_source as the additional discriminator from §4.3 row
+    // identity. Six pipe-delimited tokens, fixed for this table.
+    format!(
+        "hebbian_links|{}|{}|{}|{}|associative|co_activated",
+        canonical_lo, canonical_hi, namespace, signal_source
+    )
+}
+
+/// Driver: backfill `hebbian_links` → `edges(kind=associative,
+/// predicate=co_activated)` with SQL-side direction merge.
+///
+/// Restartable per the Phase C contract: deterministic `edges.id` +
+/// `INSERT OR IGNORE` means a re-run inserts zero new rows. Safe to
+/// invoke after T19 (memories→nodes) so endpoint FKs resolve. Skips
+/// rows whose endpoints are missing from `nodes` and counts them in
+/// `rows_skipped_dangling_endpoint` for the same self-recovering
+/// pattern as T22/T23.
+///
+/// Namespace filter: if `namespace` is `Some(ns)`, only `hebbian_links`
+/// rows with `namespace = ns` are processed. The legacy table has its
+/// own namespace column — no JOIN required (unlike T23 which had to
+/// derive namespace from the parent memory).
+///
+/// Counter buckets (collapsed into `rows_skipped_existing` for the
+/// `BackfillRun` invariant, with detailed breakdown in notes JSON):
+///   * `rows_skipped_existing` — row with the same deterministic id
+///     already exists in `edges` (idempotent rerun)
+///   * `rows_skipped_dangling_endpoint` — either endpoint not in
+///     `nodes` yet
+///   * `rows_skipped_mismatched_kind` — deterministic id collision
+///     against a pre-existing edge of a different kind (contract
+///     violation; never fires under correct setup but surfaced for
+///     debugging)
+///
+/// **Audit field**: `notes.merged_collision_pairs` counts how many
+/// canonical pairs had both `(A,B)` AND `(B,A)` legacy rows. This is
+/// the most diagnostic Phase C statistic — if it's 0 on the production
+/// DB we know all merges were trivial; if it's >0 the merge policy
+/// actually fired.
+pub fn backfill_hebbian_links_to_edges(
+    storage: &mut Storage,
+    namespace: Option<&str>,
+) -> Result<BackfillRun, rusqlite::Error> {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = utc_now_f64();
+
+    let notes_open = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_hebbian_links_to_edges",
+        "design_ref": "v04-unified-substrate §3.3 + §4.3 + §5.3 / T24",
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        INSERT INTO backfill_runs (
+            run_id, legacy_table, rows_read, rows_inserted,
+            rows_skipped_existing, rows_failed,
+            started_at, finished_at, notes
+        ) VALUES (?, 'hebbian_links', 0, 0, 0, 0, ?, NULL, ?)
+        "#,
+        params![run_id, started_at, notes_open],
+    )?;
+
+    // -----------------------------------------------------------------
+    // SQL-side merge: group by (canonical_a, canonical_b, namespace,
+    // signal_source). For each group, sum strength/coactivation_count/
+    // temporal_*, min created_at, GROUP_CONCAT distinct direction +
+    // signal_detail values (sorted) so we can decide scalar-vs-array
+    // attribute layout downstream.
+    //
+    // We compute `rows_read = COUNT(*)` BEFORE the GROUP BY so the
+    // invariant `rows_read = inserted + skipped` reflects how many
+    // legacy rows we processed, not how many groups we produced.
+    // -----------------------------------------------------------------
+
+    // Rows-read count: total legacy rows the driver looked at.
+    let rows_read: u64 = {
+        let conn = storage.conn();
+        let sql = if namespace.is_some() {
+            "SELECT COUNT(*) FROM hebbian_links WHERE namespace = ?"
+        } else {
+            "SELECT COUNT(*) FROM hebbian_links"
+        };
+        let count: i64 = if let Some(ns) = namespace {
+            conn.query_row(sql, params![ns], |r| r.get(0))?
+        } else {
+            conn.query_row(sql, [], |r| r.get(0))?
+        };
+        count as u64
+    };
+
+    // Distinct collision count for audit. A "collision pair" is a
+    // canonical pair (lo, hi) that has legacy rows in both
+    // directions. This stat is the smoking gun for whether the merge
+    // policy actually fired.
+    let merged_collision_pairs: u64 = {
+        let conn = storage.conn();
+        let sql = if namespace.is_some() {
+            "SELECT COUNT(*) FROM (\
+               SELECT 1 FROM hebbian_links h1 \
+               WHERE h1.source_id < h1.target_id AND h1.namespace = ?1 \
+                 AND EXISTS (\
+                   SELECT 1 FROM hebbian_links h2 \
+                   WHERE h2.source_id = h1.target_id \
+                     AND h2.target_id = h1.source_id \
+                     AND h2.namespace = ?1 \
+                 ) \
+             )"
+        } else {
+            "SELECT COUNT(*) FROM (\
+               SELECT 1 FROM hebbian_links h1 \
+               WHERE h1.source_id < h1.target_id \
+                 AND EXISTS (\
+                   SELECT 1 FROM hebbian_links h2 \
+                   WHERE h2.source_id = h1.target_id \
+                     AND h2.target_id = h1.source_id \
+                 ) \
+             )"
+        };
+        let n: i64 = if let Some(ns) = namespace {
+            conn.query_row(sql, params![ns], |r| r.get(0))?
+        } else {
+            conn.query_row(sql, [], |r| r.get(0))?
+        };
+        n as u64
+    };
+
+    // Merged groups. One row per (canonical_pair, namespace,
+    // signal_source).
+    let conn = storage.conn();
+    let select_sql = if namespace.is_some() {
+        "SELECT \
+           CASE WHEN source_id < target_id THEN source_id ELSE target_id END AS canon_lo, \
+           CASE WHEN source_id < target_id THEN target_id ELSE source_id END AS canon_hi, \
+           namespace, \
+           COALESCE(signal_source, 'corecall') AS signal_source, \
+           SUM(strength) AS weight_sum, \
+           SUM(coactivation_count) AS coact_sum, \
+           SUM(temporal_forward) AS tfwd_sum, \
+           SUM(temporal_backward) AS tbwd_sum, \
+           MIN(created_at) AS min_created, \
+           GROUP_CONCAT(DISTINCT direction) AS directions_csv, \
+           GROUP_CONCAT(DISTINCT COALESCE(signal_detail, '')) AS details_csv \
+         FROM hebbian_links \
+         WHERE namespace = ? \
+         GROUP BY canon_lo, canon_hi, namespace, signal_source"
+    } else {
+        "SELECT \
+           CASE WHEN source_id < target_id THEN source_id ELSE target_id END AS canon_lo, \
+           CASE WHEN source_id < target_id THEN target_id ELSE source_id END AS canon_hi, \
+           namespace, \
+           COALESCE(signal_source, 'corecall') AS signal_source, \
+           SUM(strength) AS weight_sum, \
+           SUM(coactivation_count) AS coact_sum, \
+           SUM(temporal_forward) AS tfwd_sum, \
+           SUM(temporal_backward) AS tbwd_sum, \
+           MIN(created_at) AS min_created, \
+           GROUP_CONCAT(DISTINCT direction) AS directions_csv, \
+           GROUP_CONCAT(DISTINCT COALESCE(signal_detail, '')) AS details_csv \
+         FROM hebbian_links \
+         GROUP BY canon_lo, canon_hi, namespace, signal_source"
+    };
+    let mut stmt = conn.prepare(select_sql)?;
+    type HebRow = (
+        String, // canonical lo
+        String, // canonical hi
+        String, // namespace
+        String, // signal_source
+        f64,    // weight_sum
+        i64,    // coact_sum
+        i64,    // tfwd_sum
+        i64,    // tbwd_sum
+        f64,    // min_created_at
+        String, // directions_csv
+        String, // details_csv
+    );
+    let map_row = |row: &rusqlite::Row| -> Result<HebRow, rusqlite::Error> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+            row.get::<_, Option<String>>(9)?.unwrap_or_default(),
+            row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+        ))
+    };
+    let groups: Vec<HebRow> = if let Some(ns) = namespace {
+        stmt.query_map(params![ns], map_row)?
+            .collect::<Result<_, _>>()?
+    } else {
+        stmt.query_map([], map_row)?.collect::<Result<_, _>>()?
+    };
+
+    let mut rows_inserted: u64 = 0;
+    let mut rows_skipped_existing: u64 = 0;
+    let mut rows_skipped_dangling_endpoint: u64 = 0;
+    let mut rows_skipped_mismatched_kind: u64 = 0;
+    let mut groups_processed: u64 = 0;
+    // For each merged group, we may have collapsed N legacy rows into
+    // 1 unified edge. To make `rows_read = inserted + skipped` hold,
+    // a successful insert counts as `inserted += N_collapsed`, NOT 1.
+    // Same for skipped. We track this via a per-group row count.
+
+    let tx = storage.conn().unchecked_transaction()?;
+
+    for (lo, hi, ns_val, sig_src, weight_sum, coact_sum, tfwd_sum, tbwd_sum, min_created, dirs_csv, details_csv)
+        in groups
+    {
+        groups_processed += 1;
+
+        // How many legacy rows did this group collapse? We re-query
+        // inside the tx for the exact count (the SQL GROUP BY didn't
+        // expose it; adding COUNT(*) to the SELECT would have done
+        // it but at the cost of an extra column for every row). Cost:
+        // 1 small query per merged group. Total ~43k production
+        // groups → 43k extra round-trips; acceptable for a one-shot
+        // backfill. If it ever needs optimizing, fold COUNT(*) into
+        // the SELECT above.
+        let legacy_count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM hebbian_links \
+             WHERE namespace = ? \
+               AND COALESCE(signal_source, 'corecall') = ? \
+               AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))",
+            params![ns_val, sig_src, lo, hi, hi, lo],
+            |r| r.get(0),
+        )?;
+        let legacy_count = legacy_count as u64;
+
+        // Deterministic id encoding canonical pair + namespace +
+        // signal_source. See module-level comment for why
+        // signal_source is in the hash even though §5.3's amended
+        // template doesn't list it (future-proofing for multi-
+        // signal-source production data).
+        let hash_input =
+            backfill_hebbian_links_to_edges_hash_input(&lo, &hi, &ns_val, &sig_src);
+        let id = uuid_from_hash(&hash_input);
+
+        // FK pre-check.
+        let endpoints_ok: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM nodes WHERE id = ?) AND \
+                 EXISTS(SELECT 1 FROM nodes WHERE id = ?)",
+                params![lo, hi],
+                |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
+            )
+            .map(|n| n != 0)?;
+
+        if !endpoints_ok {
+            rows_skipped_dangling_endpoint += legacy_count;
+            continue;
+        }
+
+        // Decide direction representation: scalar if homogeneous,
+        // sorted array if heterogeneous. GROUP_CONCAT preserves
+        // insertion order; sort for deterministic output.
+        let directions: Vec<String> = {
+            let mut v: Vec<String> = dirs_csv
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let direction_value: serde_json::Value = match directions.len() {
+            0 => json!("bidirectional"), // fallback if all NULL
+            1 => json!(directions[0]),
+            _ => json!(directions),
+        };
+
+        // Same logic for signal_detail. Production today has it all
+        // empty so direction_value is the only non-trivial one.
+        let details: Vec<String> = {
+            let mut v: Vec<String> = details_csv
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let signal_detail_value: serde_json::Value = match details.len() {
+            0 => json!(""),
+            1 => json!(details[0]),
+            _ => json!(details),
+        };
+
+        let attributes_json = json!({
+            "signal_source": sig_src,
+            "signal_detail": signal_detail_value,
+            "coactivation_count": coact_sum,
+            "temporal_forward": tfwd_sum,
+            "temporal_backward": tbwd_sum,
+            "direction": direction_value,
+        })
+        .to_string();
+
+        // Defense-in-depth: detect deterministic id collisions
+        // against a foreign kind. Should never fire because the
+        // hash already encodes edge_kind+predicate effectively
+        // (table name + canonical pair is unique to this driver),
+        // but make the impossible visible.
+        let existing_kind: Option<(String, String)> = tx
+            .query_row(
+                "SELECT edge_kind, predicate FROM edges WHERE id = ?",
+                params![id],
+                |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+
+        let inserted = Storage::insert_associative_edge_row(
+            &tx,
+            &id,
+            &lo,
+            &hi,
+            &attributes_json,
+            weight_sum,
+            &ns_val,
+            min_created,
+        )?;
+
+        if inserted {
+            rows_inserted += legacy_count;
+        } else if let Some((ek, pp)) = existing_kind {
+            if ek != "associative" || pp != "co_activated" {
+                rows_skipped_mismatched_kind += legacy_count;
+            } else {
+                rows_skipped_existing += legacy_count;
+            }
+        } else {
+            rows_skipped_existing += legacy_count;
+        }
+    }
+
+    tx.commit()?;
+
+    let finished_at = utc_now_f64();
+    let notes_closed = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_hebbian_links_to_edges",
+        "design_ref": "v04-unified-substrate §3.3 + §4.3 + §5.3 / T24",
+        "groups_processed": groups_processed,
+        "merged_collision_pairs": merged_collision_pairs,
+        "rows_skipped_dangling_endpoint": rows_skipped_dangling_endpoint,
+        "rows_skipped_mismatched_kind": rows_skipped_mismatched_kind,
+    })
+    .to_string();
+
+    let conn = storage.conn();
+    conn.execute(
+        r#"
+        UPDATE backfill_runs
+        SET rows_read = ?, rows_inserted = ?, rows_skipped_existing = ?,
+            rows_failed = 0, finished_at = ?, notes = ?
+        WHERE run_id = ?
+        "#,
+        params![
+            rows_read as i64,
+            rows_inserted as i64,
+            (rows_skipped_existing + rows_skipped_dangling_endpoint + rows_skipped_mismatched_kind)
+                as i64,
+            finished_at,
+            notes_closed,
+            run_id,
+        ],
+    )?;
+
+    let run = BackfillRun {
+        run_id,
+        legacy_table: "hebbian_links".into(),
+        rows_read,
+        rows_inserted,
+        rows_skipped_existing: rows_skipped_existing
+            + rows_skipped_dangling_endpoint
+            + rows_skipped_mismatched_kind,
+        rows_failed: 0,
+    };
+    run.assert_counter_invariant();
+    Ok(run)
+}
+
+#[cfg(test)]
+mod t24_helpers_tests {
+    use super::*;
+
+    #[test]
+    fn t24_hash_canonicalization_collapses_directions() {
+        // The crux of T24: (A,B) and (B,A) legacy rows MUST hash to
+        // the same UUID so that INSERT OR IGNORE merges them.
+        let a = backfill_hebbian_links_to_edges_hash_input("mem-A", "mem-B", "default", "corecall");
+        // Caller is responsible for canonicalization, but if they
+        // accidentally pass (lo=mem-B, hi=mem-A) the contract
+        // breaks. Verify the deterministic id is order-sensitive
+        // (so the driver MUST canonicalize before calling) — that's
+        // the safer behaviour because it surfaces caller bugs.
+        let b = backfill_hebbian_links_to_edges_hash_input("mem-B", "mem-A", "default", "corecall");
+        assert_ne!(a, b, "hash is order-sensitive; caller MUST canonicalize");
+
+        // After canonicalization at the call site, both directions
+        // produce the same hash:
+        let canon = |s: &str, t: &str| -> (String, String) {
+            if s < t { (s.into(), t.into()) } else { (t.into(), s.into()) }
+        };
+        let (lo1, hi1) = canon("mem-A", "mem-B");
+        let (lo2, hi2) = canon("mem-B", "mem-A");
+        let h1 = backfill_hebbian_links_to_edges_hash_input(&lo1, &hi1, "default", "corecall");
+        let h2 = backfill_hebbian_links_to_edges_hash_input(&lo2, &hi2, "default", "corecall");
+        assert_eq!(h1, h2, "canonicalized directions hash identically");
+    }
+
+    #[test]
+    fn t24_hash_includes_signal_source_for_future_proofing() {
+        // Current production has signal_source='corecall' everywhere
+        // so this dimension is degenerate today. But §4.3 declares
+        // signal_source the row-identity dimension; future multi-
+        // signal rows MUST get distinct edges. The hash must
+        // therefore encode signal_source.
+        let h1 = backfill_hebbian_links_to_edges_hash_input("a", "b", "default", "corecall");
+        let h2 = backfill_hebbian_links_to_edges_hash_input("a", "b", "default", "multi");
+        assert_ne!(h1, h2, "different signal_source MUST produce different id");
+    }
+
+    #[test]
+    fn t24_hash_includes_namespace() {
+        let h1 = backfill_hebbian_links_to_edges_hash_input("a", "b", "ns-a", "corecall");
+        let h2 = backfill_hebbian_links_to_edges_hash_input("a", "b", "ns-b", "corecall");
+        assert_ne!(h1, h2, "namespace is part of identity");
+    }
+}

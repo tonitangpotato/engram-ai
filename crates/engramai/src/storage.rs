@@ -1980,6 +1980,95 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// T24 — Phase C backfill helper: project a `hebbian_links` row
+    /// (or a SQL-side merged group of legacy rows covering the same
+    /// canonical pair × signal_source) into the unified `edges`
+    /// table as `edge_kind='associative', predicate='co_activated'`.
+    ///
+    /// Field mapping (per v04-unified-substrate design.md §3.3 + §5.3):
+    ///   * `id`             — caller-computed deterministic UUID over
+    ///                        the canonicalized natural key
+    ///                        `(hebbian_links, min(src,tgt), max(src,tgt),
+    ///                        namespace, edge_kind, predicate)` per the
+    ///                        amended §5.3 hash template. Two legacy
+    ///                        rows for the same pair in opposite
+    ///                        directions collapse to the same id.
+    ///   * `source_id`,
+    ///     `target_id`      — endpoints already canonicalized to
+    ///                        `(min, max)` by the caller. Both must
+    ///                        exist in `nodes` — caller checks FK
+    ///                        before calling.
+    ///   * `attributes_json` — caller-built JSON containing the full
+    ///                        signal/temporal payload required by
+    ///                        §4.6 differential decay:
+    ///                          `signal_source`, `signal_detail`,
+    ///                          `coactivation_count`, `temporal_forward`,
+    ///                          `temporal_backward`, `direction`.
+    ///                        `signal_source` is also a row-identity
+    ///                        dimension via the partial unique index
+    ///                        `idx_edges_assoc_unique` (§3.2); the
+    ///                        deterministic id must already encode the
+    ///                        same discriminator so re-runs hit the id
+    ///                        before the index.
+    ///   * `weight`         — `strength` from legacy (post-merge sum if
+    ///                        the caller merged opposite-direction rows).
+    ///   * `namespace`      — derived from the legacy row's `namespace`
+    ///                        column (NOT from endpoint nodes).
+    ///   * `created_at`     — min of merged legacy rows' `created_at`
+    ///                        (earliest observation wins; preserved as
+    ///                        `recorded_at` for §4.6 decay math).
+    ///
+    /// Idempotency: `INSERT OR IGNORE` against the deterministic
+    /// primary key. A re-run of the backfill driver produces zero new
+    /// rows (the partial unique associative index is a secondary
+    /// safety net; the primary id collision short-circuits first).
+    pub(crate) fn insert_associative_edge_row(
+        tx: &rusqlite::Transaction<'_>,
+        id: &str,
+        source_id: &str,
+        target_id: &str,
+        attributes_json: &str,
+        weight: f64,
+        namespace: &str,
+        created_at: f64,
+    ) -> Result<bool, rusqlite::Error> {
+        let rows = tx.execute(
+            r#"
+            INSERT OR IGNORE INTO edges (
+                id,
+                source_id, target_id, target_literal,
+                edge_kind, predicate_kind, predicate,
+                summary, attributes,
+                weight, activation, confidence,
+                recorded_at,
+                resolution_method,
+                namespace, created_at, updated_at
+            ) VALUES (
+                ?,
+                ?, ?, NULL,
+                'associative', 'canonical', 'co_activated',
+                '', ?,
+                ?, 0.0, 1.0,
+                ?,
+                'direct',
+                ?, ?, ?
+            )
+            "#,
+            params![
+                id,
+                source_id,
+                target_id,
+                attributes_json,
+                weight,
+                created_at,
+                namespace,
+                created_at,
+                created_at,
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
     /// Get a memory by ID.
     pub fn get(&self, id: &str) -> Result<Option<MemoryRecord>, rusqlite::Error> {
         fetch_memory_record(&self.conn, id)
