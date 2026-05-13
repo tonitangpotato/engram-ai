@@ -118,6 +118,7 @@ pub mod retrieval;
 pub mod session_wm;
 pub mod storage;
 pub mod store_api;
+pub mod substrate;
 pub mod synthesis;
 pub mod temporal_dim;
 pub mod temporal_grounding;
