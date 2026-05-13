@@ -261,6 +261,16 @@ where
                 category: CATEGORY_DB_ERROR,
                 detail: format!("upsert_topic: {e}"),
             })?;
+            // T15: unified-edges dual-write for containment. One edge per
+            // member memory, edge_kind='containment', predicate='contains',
+            // weight=1.0 (boolean membership — see helper docstring).
+            // Idempotent across re-compiles via the partial unique index.
+            store
+                .upsert_topic_containment(topic_uuid, &cluster.memory_ids, namespace)
+                .map_err(|e| ClusterFail {
+                    category: CATEGORY_DB_ERROR,
+                    detail: format!("upsert_topic_containment: {e}"),
+                })?;
             if let Some(old_id) = superseded_old {
                 store
                     .supersede_topic(old_id, topic_uuid, now)

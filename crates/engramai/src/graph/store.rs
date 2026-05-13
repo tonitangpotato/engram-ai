@@ -504,6 +504,29 @@ pub trait GraphWrite: GraphRead {
         at: DateTime<Utc>,
     ) -> Result<(), GraphError>;
 
+    /// T15 — Phase B: write containment edges from a topic to each of its
+    /// member memories into the unified `edges` table (one edge per
+    /// member, `edge_kind='containment'`, `predicate='contains'`).
+    ///
+    /// Additive next to `upsert_topic` (which still writes the legacy
+    /// `knowledge_topics.source_memories` JSON array). Idempotent
+    /// per-member via the `idx_edges_containment_unique` partial unique
+    /// index. Both endpoints must already exist as `nodes` rows — caller
+    /// invokes `insert_entity(topic_entity)` (T13) for the topic side and
+    /// memories live in `nodes` from T12.
+    ///
+    /// All members are written in one transaction so a failure on any
+    /// row leaves zero new containment edges (the caller already
+    /// committed `insert_entity` and `upsert_topic` separately under
+    /// pre-existing KC tx boundaries — that pre-existing fragmentation
+    /// is unrelated to T15 and tracked separately).
+    fn upsert_topic_containment(
+        &mut self,
+        topic_id: Uuid,
+        member_ids: &[String],
+        namespace: &str,
+    ) -> Result<(), GraphError>;
+
     // ---------------------------------------------- Pipeline-run ledger
     fn begin_pipeline_run(
         &mut self,
@@ -892,6 +915,21 @@ fn dual_write_entity_to_nodes(
     let id_text = entity.id.to_string();
     let now_unix = dt_to_unix(entity.updated_at);
 
+    // T13/T15: derive node_kind from EntityKind.
+    // - EntityKind::Topic → node_kind='topic' (design §4.4)
+    // - All others       → node_kind='entity' (design §4.2, §3.1 taxonomy)
+    //
+    // Topic is a first-class node_kind because §4.4 KC writes containment
+    // edges (topic → member memory) and `abstract_l5` retrieval plans
+    // filter via `WHERE node_kind='topic'`. Keeping topics under
+    // node_kind='entity' would force every topic query to also know it
+    // has to filter on a synthetic attributes flag — defeats the purpose
+    // of having a typed kind column.
+    let node_kind: &str = match &entity.kind {
+        crate::graph::entity::EntityKind::Topic => "topic",
+        _ => "entity",
+    };
+
     tx.execute(
         r#"
         INSERT INTO nodes (
@@ -904,7 +942,7 @@ fn dual_write_entity_to_nodes(
             history,
             fts_rowid
         ) VALUES (
-            ?1, 'entity', ?2,
+            ?1, ?19, ?2,
             ?3, ?4, ?5,
             ?6,
             ?7, ?8, ?9, ?10,
@@ -947,6 +985,7 @@ fn dual_write_entity_to_nodes(
             somatic_fingerprint,
             history_json,
             claimed_fts_rowid,
+            node_kind,
         ],
     )?;
     Ok(())
@@ -1196,7 +1235,75 @@ pub(crate) fn dual_write_hebbian_to_edges(
     Ok(())
 }
 
-/// Encode `EntityKind` as the TEXT column value. Uses serde_json so that
+/// T15 — Phase B dual-write helper: write one containment edge into the
+/// unified `edges` table for a `(topic, member_memory)` membership.
+///
+/// **Direction**: source = topic, target = member memory (design §4.4 SQL
+/// spec). Containment is a directed "container → contained" relationship,
+/// NOT canonicalized like associative co-activation. The taxonomy table
+/// in §3.2 row "containment / contains" cements this.
+///
+/// **Identity**: `(source_id, target_id, edge_kind, predicate)` — partial
+/// unique index `idx_edges_containment_unique` (`WHERE edge_kind =
+/// 'containment'`). Weight is fixed at 1.0 because KC does not currently
+/// produce per-member membership scores (§4.4 spec'd `weight=
+/// membership_score` but `ProtoCluster.memory_ids: Vec<String>` has no
+/// score field — boolean membership is a faithful fallback).
+///
+/// **Idempotency**: `INSERT … ON CONFLICT DO NOTHING` so re-compiling
+/// the same topic doesn't churn weight. Unlike associative edges this is
+/// a set, not a frequency signal.
+///
+/// **FK requirement**: both endpoints must exist as `nodes` rows. KC's
+/// caller order is `insert_entity(topic)` (T13 writes topic node) →
+/// `upsert_topic` → containment dual-write. Memory members must already
+/// be in `nodes` (T12 dual-write fires on every `Storage::add`).
+///
+/// Arguments:
+///   * `topic_id` — node id of the topic (`node_kind='topic'` per the
+///     `EntityKind::Topic` mapping in `dual_write_entity_to_nodes`).
+///   * `member_id` — node id of the contained memory (`node_kind='memory'`).
+///   * `namespace` — partition the edge belongs to.
+pub(crate) fn dual_write_containment_to_edges(
+    tx: &Transaction<'_>,
+    topic_id: &str,
+    member_id: &str,
+    namespace: &str,
+) -> Result<(), GraphError> {
+    let id = Uuid::new_v4().to_string();
+    let now = dt_to_unix(Utc::now());
+
+    tx.execute(
+        r#"
+        INSERT INTO edges (
+            id,
+            source_id, target_id,
+            edge_kind, predicate_kind, predicate,
+            summary, attributes, weight,
+            activation, confidence,
+            recorded_at,
+            namespace,
+            created_at, updated_at
+        ) VALUES (
+            ?1,
+            ?2, ?3,
+            'containment', 'canonical', 'contains',
+            '', '{}', 1.0,
+            0.0, 1.0,
+            ?4,
+            ?5,
+            ?4, ?4
+        )
+        ON CONFLICT (source_id, target_id, edge_kind, predicate)
+        WHERE edge_kind = 'containment'
+        DO NOTHING
+        "#,
+        rusqlite::params![id, topic_id, member_id, now, namespace],
+    )?;
+    Ok(())
+}
+
+
 /// `Other("foo")` and the canonical variants both round-trip exactly the
 /// way they do over the wire (single source of truth: the serde derive on
 /// `EntityKind`). For canonical variants this yields a JSON string like
@@ -4628,6 +4735,26 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         }
         Ok(())
     }
+
+    fn upsert_topic_containment(
+        &mut self,
+        topic_id: Uuid,
+        member_ids: &[String],
+        namespace: &str,
+    ) -> Result<(), GraphError> {
+        // Single transaction so partial failure leaves zero new edges.
+        // INSERT … ON CONFLICT DO NOTHING per member, so re-running
+        // `compile()` over the same cluster is a no-op (containment is
+        // set membership, not a frequency signal).
+        let topic_text = topic_id.to_string();
+        let tx = self.conn.transaction()?;
+        for member_id in member_ids {
+            dual_write_containment_to_edges(&tx, &topic_text, member_id, namespace)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     fn supersede_topic(&mut self, old: Uuid, successor: Uuid, at: DateTime<Utc>) -> Result<(), GraphError> {
         // §4.1 GUARD-3: supersede is monotonic, never erase. Mirror
         // `KnowledgeTopic::supersede` semantics — error if the row is already

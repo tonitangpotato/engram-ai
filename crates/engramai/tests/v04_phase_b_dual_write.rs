@@ -700,3 +700,294 @@ fn t14_record_coactivation_ns_dual_writes_with_corecall_signal() {
     );
     assert_eq!(legacy_count, 3, "legacy count tracks calls below threshold");
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  T15 — KC dual-write: topics → nodes(node_kind='topic'),
+//  containment edges (topic → memory) → edges(edge_kind='containment')
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Scope per design §4.4 + §8.10 T15:
+//
+//   * EntityKind::Topic, when written via `insert_entity`, must land in
+//     `nodes` with `node_kind = 'topic'` (NOT `'entity'`). This is the
+//     entity-side T13 fix that closes the §4.4 SQL contract.
+//   * `upsert_topic_containment(topic_id, member_ids, namespace)` must
+//     write one row per member into `edges` with `edge_kind='containment'`,
+//     `predicate='contains'`, source = topic, target = member,
+//     weight = 1.0.
+//   * Re-calling `upsert_topic_containment` with the same `(topic,
+//     member)` pair is a no-op (idempotent — partial unique index on
+//     `(source_id, target_id, edge_kind, predicate) WHERE edge_kind =
+//     'containment'`). Set membership, not a frequency signal.
+//   * Legacy `knowledge_topics.source_memories` JSON array stays the
+//     system of record. Dual-write is additive — T15 verifies the
+//     unified rows exist with the right shape, not that legacy
+//     numerically equals unified (legacy holds member list as JSON,
+//     unified as N edges; one is structurally normalized, the other
+//     denormalized).
+
+use engramai::graph::KnowledgeTopic;
+
+/// Insert a Topic-kind entity for the topic node, then return its uuid.
+/// Mirrors the call order KC uses in `persist_cluster`.
+fn seed_topic_entity(storage: &mut Storage, namespace: &str, title: &str) -> Uuid {
+    let topic_uuid = Uuid::new_v4();
+    let now = Utc::now();
+    let mut topic_entity = Entity {
+        id: topic_uuid,
+        canonical_name: title.into(),
+        kind: EntityKind::Topic,
+        summary: format!("summary of {title}"),
+        attributes: serde_json::json!({}),
+        history: vec![],
+        merged_into: None,
+        first_seen: now,
+        last_seen: now,
+        created_at: now,
+        updated_at: now,
+        episode_mentions: vec![],
+        memory_mentions: vec![],
+        activation: 0.0,
+        importance: 0.5,
+        identity_confidence: 0.8,
+        agent_affect: None,
+        arousal: 0.0,
+        somatic_fingerprint: None,
+        embedding: None,
+    };
+    topic_entity.summary = format!("summary of {title}");
+    let conn = storage.connection_mut();
+    let mut store = SqliteGraphStore::new(conn).with_namespace(namespace);
+    engramai::graph::store::GraphWrite::insert_entity(&mut store, &topic_entity)
+        .expect("insert topic entity");
+    topic_uuid
+}
+
+#[test]
+fn t15_topic_entity_dual_writes_with_node_kind_topic() {
+    // §4.4 contract: EntityKind::Topic → nodes(node_kind='topic'), not
+    // 'entity'. The retrieval `abstract_l5` plan in §4.7 filters by
+    // node_kind='topic'; mis-routing topics under 'entity' would
+    // silently break that plan.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t15a.db").to_str().unwrap()).unwrap();
+    let topic_uuid = seed_topic_entity(&mut storage, "default", "Pickle Topic");
+
+    let node_kind: String = storage
+        .conn()
+        .query_row(
+            "SELECT node_kind FROM nodes WHERE id = ?1",
+            params![topic_uuid.to_string()],
+            |r| r.get(0),
+        )
+        .expect("nodes row for topic entity");
+
+    assert_eq!(
+        node_kind, "topic",
+        "EntityKind::Topic must dual-write with node_kind='topic' (§4.4)"
+    );
+
+    // Non-topic kinds still route to node_kind='entity' — sanity check
+    // the discrimination is real, not a constant rewrite.
+    let person_uuid = Uuid::new_v4();
+    let now = Utc::now();
+    let person = Entity {
+        id: person_uuid,
+        canonical_name: "Alice".into(),
+        kind: EntityKind::Person,
+        summary: String::new(),
+        attributes: serde_json::json!({}),
+        history: vec![],
+        merged_into: None,
+        first_seen: now,
+        last_seen: now,
+        created_at: now,
+        updated_at: now,
+        episode_mentions: vec![],
+        memory_mentions: vec![],
+        activation: 0.0,
+        importance: 0.5,
+        identity_confidence: 0.8,
+        agent_affect: None,
+        arousal: 0.0,
+        somatic_fingerprint: None,
+        embedding: None,
+    };
+    {
+        let conn = storage.connection_mut();
+        let mut store = SqliteGraphStore::new(conn).with_namespace("default");
+        engramai::graph::store::GraphWrite::insert_entity(&mut store, &person)
+            .expect("insert person entity");
+    }
+    let person_node_kind: String = storage
+        .conn()
+        .query_row(
+            "SELECT node_kind FROM nodes WHERE id = ?1",
+            params![person_uuid.to_string()],
+            |r| r.get(0),
+        )
+        .expect("nodes row for person entity");
+    assert_eq!(
+        person_node_kind, "entity",
+        "non-Topic EntityKind still routes to node_kind='entity'"
+    );
+}
+
+#[test]
+fn t15_upsert_topic_containment_writes_one_edge_per_member() {
+    // §4.4: topic → containment → member memories. Exactly one edge per
+    // member, weight = 1.0, predicate = 'contains'.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t15b.db").to_str().unwrap()).unwrap();
+    let (m1, m2) = seed_two_memories(&mut storage);
+    let topic_uuid = seed_topic_entity(&mut storage, "default", "Cabbage Topic");
+
+    // Write topic row (FK from knowledge_topics back to graph_entities is
+    // why we seeded the entity first).
+    let now = Utc::now();
+    let now_secs = now.timestamp() as f64 + (now.timestamp_subsec_nanos() as f64) / 1e9;
+    let mut topic = KnowledgeTopic::new(
+        topic_uuid,
+        "Cabbage Topic".into(),
+        "summary".into(),
+        "default".into(),
+        now_secs,
+    );
+    topic.source_memories = vec![m1.clone(), m2.clone()];
+    {
+        let conn = storage.connection_mut();
+        let mut store = SqliteGraphStore::new(conn).with_namespace("default");
+        engramai::graph::store::GraphWrite::upsert_topic(&mut store, &topic)
+            .expect("upsert_topic");
+    }
+
+    // Now run the containment dual-write.
+    {
+        let conn = storage.connection_mut();
+        let mut store = SqliteGraphStore::new(conn).with_namespace("default");
+        engramai::graph::store::GraphWrite::upsert_topic_containment(
+            &mut store,
+            topic_uuid,
+            &[m1.clone(), m2.clone()],
+            "default",
+        )
+        .expect("upsert_topic_containment");
+    }
+
+    // Count containment edges from this topic.
+    let count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM edges \
+             WHERE edge_kind = 'containment' \
+               AND predicate = 'contains' \
+               AND source_id = ?1",
+            params![topic_uuid.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 2, "one containment edge per member memory");
+
+    // Verify edge shape — weight, predicate_kind, namespace.
+    let (weight, pkind, ns): (f64, String, String) = storage
+        .conn()
+        .query_row(
+            "SELECT weight, predicate_kind, namespace FROM edges \
+             WHERE edge_kind = 'containment' \
+               AND source_id = ?1 AND target_id = ?2",
+            params![topic_uuid.to_string(), m1],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!((weight - 1.0).abs() < 1e-9, "weight = 1.0 (boolean membership)");
+    assert_eq!(pkind, "canonical", "predicate_kind = 'canonical' for containment");
+    assert_eq!(ns, "default");
+
+    // Targets must be the seeded memory ids (no other members snuck in).
+    let mut targets: Vec<String> = storage
+        .conn()
+        .prepare(
+            "SELECT target_id FROM edges \
+             WHERE edge_kind = 'containment' AND source_id = ?1 \
+             ORDER BY target_id",
+        )
+        .unwrap()
+        .query_map(params![topic_uuid.to_string()], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    targets.sort();
+    let mut expected = vec![m1, m2];
+    expected.sort();
+    assert_eq!(targets, expected);
+}
+
+#[test]
+fn t15_upsert_topic_containment_is_idempotent() {
+    // Re-running compile() over the same cluster must not duplicate
+    // containment edges (set membership, not a frequency signal).
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t15c.db").to_str().unwrap()).unwrap();
+    let (m1, m2) = seed_two_memories(&mut storage);
+    let topic_uuid = seed_topic_entity(&mut storage, "default", "Re-run Topic");
+
+    let members = vec![m1.clone(), m2.clone()];
+    for _ in 0..3 {
+        let conn = storage.connection_mut();
+        let mut store = SqliteGraphStore::new(conn).with_namespace("default");
+        engramai::graph::store::GraphWrite::upsert_topic_containment(
+            &mut store,
+            topic_uuid,
+            &members,
+            "default",
+        )
+        .expect("upsert_topic_containment");
+    }
+
+    let count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM edges \
+             WHERE edge_kind = 'containment' AND source_id = ?1",
+            params![topic_uuid.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 2,
+        "three calls with same (topic, members) yield 2 edges, not 6"
+    );
+}
+
+#[test]
+fn t15_upsert_topic_containment_empty_members_is_noop() {
+    // Edge case: KC may receive empty member lists from a degenerate
+    // cluster (defensive; persist_cluster guards earlier, but the store
+    // API should also tolerate it).
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t15d.db").to_str().unwrap()).unwrap();
+    let topic_uuid = seed_topic_entity(&mut storage, "default", "Empty Topic");
+
+    {
+        let conn = storage.connection_mut();
+        let mut store = SqliteGraphStore::new(conn).with_namespace("default");
+        engramai::graph::store::GraphWrite::upsert_topic_containment(
+            &mut store,
+            topic_uuid,
+            &[],
+            "default",
+        )
+        .expect("empty member list must not error");
+    }
+
+    let count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM edges \
+             WHERE edge_kind = 'containment' AND source_id = ?1",
+            params![topic_uuid.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}

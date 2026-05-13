@@ -1188,6 +1188,14 @@ mod backfill_tests {
         fn upsert_topic(&mut self, _t: &KnowledgeTopic) -> Result<(), GraphError> {
             unimplemented!()
         }
+        fn upsert_topic_containment(
+            &mut self,
+            _topic_id: Uuid,
+            _member_ids: &[String],
+            _namespace: &str,
+        ) -> Result<(), GraphError> {
+            unimplemented!()
+        }
         fn supersede_topic(
             &mut self,
             _old: Uuid,
