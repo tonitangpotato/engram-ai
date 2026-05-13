@@ -920,3 +920,362 @@ fn t27_i4_node_embeddings_missing_unified_row_flagged() {
         .expect("missing unified row must be flagged");
     assert_eq!(hit.unified, "missing");
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// I4 — T21 spot-check tests (ISS-113)
+// ─────────────────────────────────────────────────────────────────────
+
+fn seed_legacy_entity(
+    storage: &Storage,
+    id: &str,
+    name: &str,
+    entity_type: &str,
+    namespace: &str,
+    metadata_json: Option<&str>,
+) {
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 1700000000.0, 1700000000.0)"#,
+            params![id, name, entity_type, namespace, metadata_json],
+        )
+        .expect("seed entities row");
+}
+
+#[test]
+fn t27_i4_entities_post_backfill_no_mismatches() {
+    use engramai::substrate::backfill::backfill_entities_to_nodes;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_entity(
+        &storage,
+        "ent-1",
+        "Alice",
+        "person",
+        "default",
+        Some(r#"{"alias":"al","note":"founder"}"#),
+    );
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let ent_mismatches: Vec<_> = report
+        .content_mismatches
+        .iter()
+        .filter(|m| m.legacy_table == "entities")
+        .collect();
+    assert!(
+        ent_mismatches.is_empty(),
+        "clean post-backfill must have zero entity mismatches: {ent_mismatches:#?}"
+    );
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_i4_entities_finding1_column_wins_regression_guard() {
+    // FINDING-1 (T21 r1): when both `entities.entity_type` column AND
+    // `entities.metadata.entity_type` are set, the COLUMN value lands
+    // in unified `nodes.attributes.entity_type`. This test pins that
+    // direction.
+    //
+    // Setup: seed with column='person', metadata.entity_type='SHADOW'.
+    // After backfill, unified should report 'person', not 'SHADOW'.
+    use engramai::substrate::backfill::backfill_entities_to_nodes;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_entity(
+        &storage,
+        "ent-shadow",
+        "Alice",
+        "person",
+        "default",
+        Some(r#"{"entity_type":"SHADOW","note":"shadow-attack"}"#),
+    );
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+
+    // Real driver output: unified.attributes.entity_type must be
+    // 'person' (column wins).
+    let attrs: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id = 'ent-shadow'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
+    assert_eq!(
+        parsed.get("entity_type").and_then(|v| v.as_str()),
+        Some("person"),
+        "column must win in real T21 output"
+    );
+
+    // Verifier must say OK (no mismatches) because driver behavior
+    // matches expected projection.
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hits: Vec<_> = report
+        .content_mismatches
+        .iter()
+        .filter(|m| m.legacy_table == "entities")
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "verifier must agree with column-wins driver: {hits:#?}"
+    );
+
+    // Now SIMULATE the inverse bug: someone "fixes" the unified
+    // attributes to use the metadata value. Verifier must catch it.
+    storage
+        .conn()
+        .execute(
+            r#"UPDATE nodes SET attributes = '{"entity_type":"SHADOW","note":"shadow-attack"}' WHERE id = 'ent-shadow'"#,
+            [],
+        )
+        .unwrap();
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let column_hits: Vec<_> = report
+        .content_mismatches
+        .iter()
+        .filter(|m| m.field.contains("FINDING-1") || m.field == "attributes.entity_type (FINDING-1 column-wins)")
+        .collect();
+    assert!(
+        !column_hits.is_empty(),
+        "verifier must catch metadata-wins regression: report={:#?}",
+        report.content_mismatches
+    );
+    assert!(!report.ok);
+}
+
+#[test]
+fn t27_i4_entities_name_to_content_drift_flagged() {
+    use engramai::substrate::backfill::backfill_entities_to_nodes;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_entity(&storage, "ent-1", "Alice", "person", "default", None);
+    backfill_entities_to_nodes(&mut storage, None).unwrap();
+
+    storage
+        .conn()
+        .execute(
+            "UPDATE nodes SET content = 'CORRUPTED' WHERE id = 'ent-1'",
+            [],
+        )
+        .unwrap();
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report
+        .content_mismatches
+        .iter()
+        .find(|m| m.legacy_table == "entities" && m.field == "name->content")
+        .expect("name->content drift must be reported");
+    assert_eq!(hit.legacy, "Alice");
+    assert_eq!(hit.unified, "CORRUPTED");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I4 — T25 spot-check tests (ISS-113)
+// ─────────────────────────────────────────────────────────────────────
+
+fn seed_legacy_provenance(
+    storage: &Storage,
+    id: &str,
+    insight_id: &str,
+    source_id: &str,
+    cluster_id: &str,
+    synthesis_timestamp: &str,
+    gate_decision: &str,
+    gate_scores: Option<&str>,
+    confidence: f64,
+    source_original_importance: Option<f64>,
+) {
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO synthesis_provenance
+               (id, insight_id, source_id, cluster_id, synthesis_timestamp,
+                gate_decision, gate_scores, confidence, source_original_importance)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            params![
+                id, insight_id, source_id, cluster_id, synthesis_timestamp,
+                gate_decision, gate_scores, confidence, source_original_importance,
+            ],
+        )
+        .expect("seed synthesis_provenance row");
+}
+
+#[test]
+fn t27_i4_synthesis_provenance_post_backfill_no_mismatches() {
+    use engramai::substrate::backfill::{
+        backfill_memories_to_nodes, backfill_synthesis_provenance_to_edges,
+    };
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    // Two memories: the insight and its source.
+    let insight = sample_record("mem-insight");
+    let src = sample_record("mem-src");
+    storage.add(&insight, "default").unwrap();
+    storage.add(&src, "default").unwrap();
+    // Run T19 so nodes are projected (FK guard).
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    seed_legacy_provenance(
+        &storage,
+        "sp-1",
+        "mem-insight",
+        "mem-src",
+        "cluster-7",
+        "2026-05-13T10:00:00Z",
+        "promote",
+        Some(r#"{"informativeness":0.81,"surprise":0.42}"#),
+        0.93,
+        Some(0.55),
+    );
+    backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let sp_mismatches: Vec<_> = report
+        .content_mismatches
+        .iter()
+        .filter(|m| m.legacy_table == "synthesis_provenance")
+        .collect();
+    assert!(
+        sp_mismatches.is_empty(),
+        "clean post-backfill must have zero T25 mismatches: {sp_mismatches:#?}"
+    );
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_i4_synthesis_provenance_gate_scores_nested_not_string() {
+    // Pin the §5.3 invariant: gate_scores in unified attributes is a
+    // PARSED nested JSON object, NOT a quoted string of the legacy
+    // text. If the driver regresses and emits the raw string, the
+    // verifier must catch it.
+    use engramai::substrate::backfill::{
+        backfill_memories_to_nodes, backfill_synthesis_provenance_to_edges,
+    };
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let insight = sample_record("mem-insight");
+    let src = sample_record("mem-src");
+    storage.add(&insight, "default").unwrap();
+    storage.add(&src, "default").unwrap();
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    seed_legacy_provenance(
+        &storage,
+        "sp-1",
+        "mem-insight",
+        "mem-src",
+        "cluster-7",
+        "2026-05-13T10:00:00Z",
+        "promote",
+        Some(r#"{"informativeness":0.81}"#),
+        0.93,
+        None,
+    );
+    backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
+
+    // Confirm real driver output: gate_scores IS an object.
+    let attrs_text: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM edges WHERE id = 'sp-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let attrs: serde_json::Value = serde_json::from_str(&attrs_text).unwrap();
+    assert!(
+        attrs.get("gate_scores").and_then(|v| v.as_object()).is_some(),
+        "gate_scores must be a parsed nested object, got: {attrs}"
+    );
+
+    // Now simulate the regression: someone writes gate_scores as a
+    // quoted string of the legacy JSON. Verifier must catch.
+    storage
+        .conn()
+        .execute(
+            r#"UPDATE edges SET attributes = '{"gate_decision":"promote","cluster_id":"cluster-7","synthesis_timestamp":"2026-05-13T10:00:00Z","gate_scores":"{\"informativeness\":0.81}"}' WHERE id = 'sp-1'"#,
+            [],
+        )
+        .unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report
+        .content_mismatches
+        .iter()
+        .find(|m| m.legacy_table == "synthesis_provenance" && m.field == "attributes")
+        .expect("attribute round-trip regression must be caught");
+    assert!(
+        hit.unified.contains(r#"\"informativeness\""#)
+            || hit.unified.contains(r#"informativeness\\""#)
+            || hit.unified.contains(r#""{"#),
+        "unified should be the string form, legacy the object form: {hit:?}"
+    );
+}
+
+#[test]
+fn t27_i4_synthesis_provenance_confidence_drift_flagged() {
+    use engramai::substrate::backfill::{
+        backfill_memories_to_nodes, backfill_synthesis_provenance_to_edges,
+    };
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let insight = sample_record("mem-insight");
+    let src = sample_record("mem-src");
+    storage.add(&insight, "default").unwrap();
+    storage.add(&src, "default").unwrap();
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+    seed_legacy_provenance(
+        &storage, "sp-1", "mem-insight", "mem-src", "c", "2026-05-13T10:00:00Z",
+        "promote", None, 0.93, None,
+    );
+    backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
+
+    storage
+        .conn()
+        .execute(
+            "UPDATE edges SET confidence = 0.10 WHERE id = 'sp-1'",
+            [],
+        )
+        .unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let hit = report
+        .content_mismatches
+        .iter()
+        .find(|m| m.legacy_table == "synthesis_provenance" && m.field == "confidence")
+        .expect("confidence drift must be reported");
+    assert!(hit.legacy.contains("0.93"));
+    assert!(hit.unified.contains("0.1"));
+}

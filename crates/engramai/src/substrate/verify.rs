@@ -832,8 +832,10 @@ fn check_content_spot_check(
     let mut out = Vec::new();
     spot_check_memories(conn, ns, opts, &mut out)?;
     spot_check_node_embeddings(conn, ns, opts, &mut out)?;
-    // T21/T25 pass-through and T22/T23/T24 merge-semantics
-    // checks land in subsequent commits.
+    spot_check_entities(conn, ns, opts, &mut out)?;
+    spot_check_synthesis_provenance(conn, ns, opts, &mut out)?;
+    // T22/T23/T24 merge-semantics existence-only checks land in the
+    // next slice.
     Ok(out)
 }
 
@@ -1340,4 +1342,468 @@ fn blake_short(bytes: &[u8]) -> [u8; 8] {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
     h.finish().to_le_bytes()
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I4 — T21 spot-check: entities → nodes(node_kind='entity')
+// ─────────────────────────────────────────────────────────────────────
+
+/// Projection for an entities → nodes row pair. The legacy `entities`
+/// table has `entity_type` as a column; the unified `nodes` row puts
+/// it into `attributes.entity_type` AND merges legacy `metadata` into
+/// attributes with **column-wins** semantics (T21 FINDING-1: if both
+/// the column and `metadata.entity_type` are set, the column value
+/// lands in the unified attributes).
+///
+/// The spot-check pins both ends of that: scalar fields by value,
+/// attributes parsed as JSON, AND a dedicated `attributes.entity_type`
+/// equals `entity_type column` check that catches the FINDING-1
+/// regression.
+#[derive(Debug, Clone)]
+struct EntityRow {
+    id: String,
+    name_or_content: String,
+    namespace: String,
+    entity_type_column: String,
+    metadata_or_attributes_json: String,
+    created_at: f64,
+    updated_at: f64,
+}
+
+/// I4 for T21 entities → nodes(node_kind='entity'). Verifies the
+/// projection IS the column-wins direction (FINDING-1 regression
+/// guard) by reading the unified `attributes.entity_type` and
+/// comparing against the legacy `entity_type` COLUMN — not the
+/// legacy metadata blob.
+fn spot_check_entities(
+    conn: &Connection,
+    ns: Option<&str>,
+    opts: &VerifyOpts,
+    out: &mut Vec<ContentMismatch>,
+) -> rusqlite::Result<()> {
+    use rusqlite::OptionalExtension;
+
+    let ids = sample_legacy_ids(
+        conn,
+        "entities",
+        ns,
+        opts.spot_check_sample_size,
+        opts.spot_check_seed,
+    )?;
+
+    for id in ids {
+        let legacy: Option<EntityRow> = conn
+            .query_row(
+                "SELECT id, name, namespace, entity_type,
+                        COALESCE(metadata, '{}'),
+                        created_at, updated_at
+                 FROM entities WHERE id = ?",
+                rusqlite::params![id],
+                |row| {
+                    Ok(EntityRow {
+                        id: row.get(0)?,
+                        name_or_content: row.get(1)?,
+                        namespace: row.get(2)?,
+                        entity_type_column: row.get(3)?,
+                        metadata_or_attributes_json: row.get(4)?,
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()?;
+        let unified: Option<EntityRow> = conn
+            .query_row(
+                "SELECT id, content, namespace, '<column-n/a>',
+                        COALESCE(attributes, '{}'),
+                        created_at, updated_at
+                 FROM nodes WHERE id = ? AND node_kind = 'entity'",
+                rusqlite::params![id],
+                |row| {
+                    Ok(EntityRow {
+                        id: row.get(0)?,
+                        name_or_content: row.get(1)?,
+                        namespace: row.get(2)?,
+                        entity_type_column: row.get(3)?,
+                        metadata_or_attributes_json: row.get(4)?,
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        match (legacy, unified) {
+            (None, _) => out.push(ContentMismatch {
+                legacy_table: "entities".into(),
+                row_id: id,
+                field: "existence".into(),
+                legacy: "missing".into(),
+                unified: "n/a".into(),
+            }),
+            (Some(_), None) => out.push(ContentMismatch {
+                legacy_table: "entities".into(),
+                row_id: id,
+                field: "existence".into(),
+                legacy: "present".into(),
+                unified: "missing".into(),
+            }),
+            (Some(l), Some(u)) => compare_entity_rows(&l, &u, out),
+        }
+    }
+    Ok(())
+}
+
+fn compare_entity_rows(
+    l: &EntityRow,
+    u: &EntityRow,
+    out: &mut Vec<ContentMismatch>,
+) {
+    macro_rules! cmp_field {
+        ($field:ident) => {
+            if l.$field != u.$field {
+                out.push(ContentMismatch {
+                    legacy_table: "entities".into(),
+                    row_id: l.id.clone(),
+                    field: stringify!($field).into(),
+                    legacy: format!("{:?}", l.$field),
+                    unified: format!("{:?}", u.$field),
+                });
+            }
+        };
+    }
+    cmp_field!(id);
+    // legacy.name → unified.content
+    if l.name_or_content != u.name_or_content {
+        out.push(ContentMismatch {
+            legacy_table: "entities".into(),
+            row_id: l.id.clone(),
+            field: "name->content".into(),
+            legacy: l.name_or_content.clone(),
+            unified: u.name_or_content.clone(),
+        });
+    }
+    cmp_field!(namespace);
+
+    // Created/updated at f64 epsilon
+    if (l.created_at - u.created_at).abs() > 1e-6 {
+        out.push(ContentMismatch {
+            legacy_table: "entities".into(),
+            row_id: l.id.clone(),
+            field: "created_at".into(),
+            legacy: format!("{:.9}", l.created_at),
+            unified: format!("{:.9}", u.created_at),
+        });
+    }
+    if (l.updated_at - u.updated_at).abs() > 1e-6 {
+        out.push(ContentMismatch {
+            legacy_table: "entities".into(),
+            row_id: l.id.clone(),
+            field: "updated_at".into(),
+            legacy: format!("{:.9}", l.updated_at),
+            unified: format!("{:.9}", u.updated_at),
+        });
+    }
+
+    // Attributes: parse both sides, then assert
+    //   (a) JSON values are equal (key-order tolerant)
+    //   (b) FINDING-1 invariant: unified.attributes.entity_type ==
+    //       legacy.entity_type COLUMN (NOT legacy.metadata.entity_type)
+    let l_attr: serde_json::Value = serde_json::from_str(&l.metadata_or_attributes_json)
+        .unwrap_or(serde_json::Value::Null);
+    let u_attr: serde_json::Value = serde_json::from_str(&u.metadata_or_attributes_json)
+        .unwrap_or(serde_json::Value::Null);
+
+    // (b) FINDING-1: column wins.
+    let unified_entity_type = u_attr
+        .get("entity_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<missing>");
+    if unified_entity_type != l.entity_type_column {
+        out.push(ContentMismatch {
+            legacy_table: "entities".into(),
+            row_id: l.id.clone(),
+            field: "attributes.entity_type (FINDING-1 column-wins)".into(),
+            legacy: l.entity_type_column.clone(),
+            unified: unified_entity_type.to_string(),
+        });
+    }
+
+    // (a) attributes JSON equal modulo the column-derived
+    //     entity_type. Compare unified attrs against legacy metadata
+    //     with the entity_type column injected with column-wins
+    //     semantics so a faithful projection compares equal.
+    let mut l_attr_obj = match l_attr {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    // Existing-wins overlay of the column value (matches driver semantics).
+    l_attr_obj.insert(
+        "entity_type".to_string(),
+        serde_json::Value::String(l.entity_type_column.clone()),
+    );
+    let expected_attrs = serde_json::Value::Object(l_attr_obj);
+    if expected_attrs != u_attr {
+        out.push(ContentMismatch {
+            legacy_table: "entities".into(),
+            row_id: l.id.clone(),
+            field: "attributes".into(),
+            legacy: expected_attrs.to_string(),
+            unified: u_attr.to_string(),
+        });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I4 — T25 spot-check: synthesis_provenance → edges(provenance/derived_from)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Projection for one synthesis_provenance ↔ edges row pair. Both
+/// sides hydrate onto this shape so the comparison is symmetric.
+/// `created_at` is f64 epoch (computed for legacy via the same
+/// RFC3339→epoch formula the driver uses).
+#[derive(Debug, Clone)]
+struct SynthesisProvenanceRow {
+    id: String,
+    source_id: String,
+    target_id: String,
+    namespace: String,
+    confidence: f64,
+    created_at_epoch: f64,
+    attributes_json: String,
+    edge_kind: String,
+    predicate: String,
+}
+
+/// Sample T25 legacy ids, optionally restricted to the namespace of
+/// the insight memory (legacy synthesis_provenance has no own
+/// namespace column — joins to memories on insight_id).
+fn sample_synthesis_provenance_ids(
+    conn: &Connection,
+    ns: Option<&str>,
+    sample_size: usize,
+    seed: u64,
+) -> rusqlite::Result<Vec<String>> {
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+
+    let sql = match ns {
+        Some(_) => "SELECT sp.id FROM synthesis_provenance sp
+                    INNER JOIN memories mi ON mi.id = sp.insight_id
+                    WHERE mi.namespace = ?",
+        None => "SELECT id FROM synthesis_provenance",
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let ids: Vec<String> = match ns {
+        Some(n) => stmt
+            .query_map(rusqlite::params![n], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        None => stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
+    let mut ids = ids;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    ids.shuffle(&mut rng);
+    ids.truncate(sample_size);
+    Ok(ids)
+}
+
+/// I4 for T25 synthesis_provenance → edges(provenance/derived_from).
+/// For each sampled legacy id, fetch both sides and compare scalar
+/// fields + JSON-parsed attributes. The unified row's edge_kind must
+/// be 'provenance' and predicate 'derived_from'.
+fn spot_check_synthesis_provenance(
+    conn: &Connection,
+    ns: Option<&str>,
+    opts: &VerifyOpts,
+    out: &mut Vec<ContentMismatch>,
+) -> rusqlite::Result<()> {
+    use rusqlite::OptionalExtension;
+
+    let ids = sample_synthesis_provenance_ids(
+        conn,
+        ns,
+        opts.spot_check_sample_size,
+        opts.spot_check_seed,
+    )?;
+
+    for id in ids {
+        // Hydrate legacy: project the same fields the driver writes.
+        let legacy: Option<SynthesisProvenanceRow> = conn
+            .query_row(
+                "SELECT sp.id, sp.insight_id, sp.source_id,
+                        mi.namespace,
+                        sp.confidence,
+                        sp.synthesis_timestamp,
+                        sp.cluster_id, sp.gate_decision, sp.gate_scores,
+                        sp.source_original_importance
+                 FROM synthesis_provenance sp
+                 JOIN memories mi ON mi.id = sp.insight_id
+                 WHERE sp.id = ?",
+                rusqlite::params![id],
+                |row| {
+                    let synth_ts: String = row.get(5)?;
+                    let (epoch, _) =
+                        parse_legacy_embedding_created_at(&synth_ts);
+
+                    // Re-derive expected attributes JSON per the
+                    // T25 driver formula (§5.3): {gate_decision,
+                    // cluster_id, synthesis_timestamp, gate_scores
+                    // [parsed], source_original_importance?}.
+                    let cluster_id: String = row.get(6)?;
+                    let gate_decision: String = row.get(7)?;
+                    let gate_scores: Option<String> = row.get(8)?;
+                    let orig_importance: Option<f64> = row.get(9)?;
+
+                    let mut attrs = serde_json::Map::new();
+                    attrs.insert(
+                        "gate_decision".to_string(),
+                        serde_json::Value::String(gate_decision),
+                    );
+                    attrs.insert(
+                        "cluster_id".to_string(),
+                        serde_json::Value::String(cluster_id),
+                    );
+                    attrs.insert(
+                        "synthesis_timestamp".to_string(),
+                        serde_json::Value::String(synth_ts.clone()),
+                    );
+                    if let Some(score_json) = gate_scores.as_deref() {
+                        if !score_json.is_empty() {
+                            let v = serde_json::from_str::<serde_json::Value>(score_json)
+                                .unwrap_or_else(|_| {
+                                    serde_json::Value::String(score_json.to_string())
+                                });
+                            attrs.insert("gate_scores".to_string(), v);
+                        }
+                    }
+                    if let Some(o) = orig_importance {
+                        if let Some(n) = serde_json::Number::from_f64(o) {
+                            attrs.insert(
+                                "source_original_importance".to_string(),
+                                serde_json::Value::Number(n),
+                            );
+                        }
+                    }
+                    let attrs_json = serde_json::to_string(
+                        &serde_json::Value::Object(attrs),
+                    ).unwrap_or_else(|_| "{}".to_string());
+
+                    Ok(SynthesisProvenanceRow {
+                        id: row.get(0)?,
+                        source_id: row.get(1)?,
+                        target_id: row.get(2)?,
+                        namespace: row.get(3)?,
+                        confidence: row.get(4)?,
+                        created_at_epoch: epoch,
+                        attributes_json: attrs_json,
+                        edge_kind: "provenance".to_string(),
+                        predicate: "derived_from".to_string(),
+                    })
+                },
+            )
+            .optional()?;
+        let unified: Option<SynthesisProvenanceRow> = conn
+            .query_row(
+                "SELECT id, source_id, target_id, namespace,
+                        confidence, created_at,
+                        COALESCE(attributes, '{}'),
+                        edge_kind, predicate
+                 FROM edges WHERE id = ?",
+                rusqlite::params![id],
+                |row| {
+                    Ok(SynthesisProvenanceRow {
+                        id: row.get(0)?,
+                        source_id: row.get(1)?,
+                        target_id: row.get(2)?,
+                        namespace: row.get(3)?,
+                        confidence: row.get(4)?,
+                        created_at_epoch: row.get(5)?,
+                        attributes_json: row.get(6)?,
+                        edge_kind: row.get(7)?,
+                        predicate: row.get(8)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        match (legacy, unified) {
+            (None, _) => out.push(ContentMismatch {
+                legacy_table: "synthesis_provenance".into(),
+                row_id: id,
+                field: "existence".into(),
+                legacy: "missing".into(),
+                unified: "n/a".into(),
+            }),
+            (Some(_), None) => out.push(ContentMismatch {
+                legacy_table: "synthesis_provenance".into(),
+                row_id: id,
+                field: "existence".into(),
+                legacy: "present".into(),
+                unified: "missing".into(),
+            }),
+            (Some(l), Some(u)) => compare_synthesis_rows(&l, &u, out),
+        }
+    }
+    Ok(())
+}
+
+fn compare_synthesis_rows(
+    l: &SynthesisProvenanceRow,
+    u: &SynthesisProvenanceRow,
+    out: &mut Vec<ContentMismatch>,
+) {
+    macro_rules! cmp_field {
+        ($field:ident) => {
+            if l.$field != u.$field {
+                out.push(ContentMismatch {
+                    legacy_table: "synthesis_provenance".into(),
+                    row_id: l.id.clone(),
+                    field: stringify!($field).into(),
+                    legacy: format!("{:?}", l.$field),
+                    unified: format!("{:?}", u.$field),
+                });
+            }
+        };
+    }
+    cmp_field!(id);
+    cmp_field!(source_id);
+    cmp_field!(target_id);
+    cmp_field!(namespace);
+    cmp_field!(edge_kind);
+    cmp_field!(predicate);
+
+    if (l.confidence - u.confidence).abs() > 1e-9 {
+        out.push(ContentMismatch {
+            legacy_table: "synthesis_provenance".into(),
+            row_id: l.id.clone(),
+            field: "confidence".into(),
+            legacy: format!("{}", l.confidence),
+            unified: format!("{}", u.confidence),
+        });
+    }
+    if (l.created_at_epoch - u.created_at_epoch).abs() > 1e-6 {
+        out.push(ContentMismatch {
+            legacy_table: "synthesis_provenance".into(),
+            row_id: l.id.clone(),
+            field: "created_at_epoch".into(),
+            legacy: format!("{:.9}", l.created_at_epoch),
+            unified: format!("{:.9}", u.created_at_epoch),
+        });
+    }
+
+    let l_attr: serde_json::Value = serde_json::from_str(&l.attributes_json)
+        .unwrap_or(serde_json::Value::Null);
+    let u_attr: serde_json::Value = serde_json::from_str(&u.attributes_json)
+        .unwrap_or(serde_json::Value::Null);
+    if l_attr != u_attr {
+        out.push(ContentMismatch {
+            legacy_table: "synthesis_provenance".into(),
+            row_id: l.id.clone(),
+            field: "attributes".into(),
+            legacy: l_attr.to_string(),
+            unified: u_attr.to_string(),
+        });
+    }
 }
