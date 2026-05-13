@@ -282,8 +282,14 @@ CREATE INDEX idx_edges_live           ON edges(edge_kind, predicate) WHERE inval
 -- (associative co-activation accumulates weight; containment is a set membership).
 -- Structural edges may legitimately have duplicates from different runs.
 CREATE UNIQUE INDEX idx_edges_assoc_unique
-    ON edges(source_id, target_id, edge_kind, predicate)
+    ON edges(source_id, target_id, edge_kind, predicate,
+             json_extract(attributes, '$.signal_source'))
     WHERE edge_kind = 'associative';
+-- Note: signal_source is part of the associative-edge identity (see §4.3).
+-- Each distinct signal_source between the same (src, tgt) pair gets its own
+-- row, so that §4.6 differential decay applies per-signal-source without
+-- mixing. SQLite supports json_extract in expression-indexed unique
+-- constraints and resolves ON CONFLICT against them — verified.
 CREATE UNIQUE INDEX idx_edges_containment_unique
     ON edges(source_id, target_id, edge_kind, predicate)
     WHERE edge_kind = 'containment';
@@ -465,11 +471,43 @@ canonical node per cluster vs (b) a `same_as` clique with no canonical.
 The substrate supports both; the resolution algorithm is a v0.4.1
 concern. See §7.2.1.
 
-### 4.3 Hebbian co-activation (currently `association/former.rs`)
+### 4.3 Hebbian co-activation (currently `association/former.rs` and `models/hebbian.rs`)
 
-**Current**: INSERT/UPDATE into `hebbian_links` on every co-recall.
+**Current**: two legacy writers into `hebbian_links`, with different
+accumulation rules:
 
-**Unified** (one canonical UPSERT, no embedded SQL-template prose):
+| Caller                                    | Trigger              | Strength update      | `coactivation_count` |
+|-------------------------------------------|----------------------|----------------------|----------------------|
+| `Storage::record_association`             | `LinkFormer` discovery | `max(existing, new)` | unchanged            |
+| `Storage::record_coactivation_ns` (`models::record_coactivation_ns`) | recall co-fire | `+ 0.1` cap 1.0 | `+= 1` |
+
+These two writers project semantically distinct events (signal-derived
+association vs. usage-driven coactivation) onto the same `hebbian_links`
+row, losing provenance. The unified substrate fixes this.
+
+**Unified: signal_source is part of the row identity.** Each distinct
+`signal_source` between the same `(source_id, target_id)` pair gets its
+own `edges` row. `signal_source` lives in `attributes` JSON, and the
+partial unique index `idx_edges_assoc_unique` (§3.2) includes
+`json_extract(attributes, '$.signal_source')` in its key so SQLite's
+`ON CONFLICT` resolves correctly. This:
+
+1. Lets §4.6 **differential decay** apply per-signal-source without
+   mixing (a hot `corecall` link decaying independently from a cold
+   `entity_overlap` signal between the same pair).
+2. Preserves provenance — retrieval can ask "which signals connect
+   these two memories?" by `SELECT ... GROUP BY signal_source`.
+3. Treats `weight` and `coactivation_count` as **sum-accumulating per
+   signal source**, which is the Hebbian frequency-weighted model the
+   legacy `record_coactivation_ns` was approximating with `+0.1` cap.
+   `record_association`'s `max` semantics are dropped in unified — they
+   were an artifact of LinkFormer always passing `config.initial_strength`
+   (a constant), so `max(c, c) = c` made max behave as first-write-wins
+   in production. Unified replaces it with sum, which carries the
+   reuse-frequency signal legacy never transmitted.
+
+**Canonical UPSERT** (one row per distinct `signal_source` between a
+pair):
 
 ```sql
 INSERT INTO edges (
@@ -479,7 +517,7 @@ INSERT INTO edges (
     :uuid, :src, :tgt, 'associative', 'co_activated', :namespace,
     :delta,
     json_object(
-        'signal_source',       :signal_source,       -- 'corecall'|'multi'|... drives differential decay (§4.6)
+        'signal_source',       :signal_source,       -- 'corecall'|'multi'|'entity'|'temporal'|... drives differential decay (§4.6)
         'signal_detail',       :signal_detail,
         'coactivation_count',  1,
         'temporal_forward',    :tf,
@@ -488,7 +526,8 @@ INSERT INTO edges (
     ),
     :now
 )
-ON CONFLICT (source_id, target_id, edge_kind, predicate)
+ON CONFLICT (source_id, target_id, edge_kind, predicate,
+             json_extract(attributes, '$.signal_source'))
 DO UPDATE SET
     weight       = edges.weight + excluded.weight,
     recorded_at  = excluded.recorded_at,
@@ -507,14 +546,32 @@ DO UPDATE SET
     );
 ```
 
+**Intentional legacy↔unified divergence** (Phase B): legacy and unified
+deliberately accumulate differently. Phase B parity tests (§8.10 T17)
+verify *existence* and *signal_source provenance*, not numeric equality
+on `weight`/`coactivation_count`:
+
+| Field                  | Legacy `hebbian_links`                                       | Unified `edges(edge_kind='associative')`     |
+|------------------------|--------------------------------------------------------------|----------------------------------------------|
+| `(src, tgt)` row count | 1 row per pair (regardless of signal source)                 | N rows per pair (one per distinct signal_source) |
+| `strength` / `weight`  | `record_association`: max; `record_coactivation_ns`: +0.1 cap | sum per signal_source                        |
+| `coactivation_count`   | 0 (record_association) or `+= 1` (record_coactivation_ns)   | `+= 1` per matching signal_source UPSERT     |
+| `signal_source`        | last writer wins (or whoever's strength was higher)          | dimension of row identity                    |
+
+Phase D adopts unified semantics by deleting `hebbian_links` and
+routing reads through unified `edges`. The divergence is therefore a
+one-way street: unified is the destination, legacy is a transient
+double-write during B/C.
+
 Three properties this UPSERT relies on:
 1. **Partial UNIQUE index** declared in §3.2 (`idx_edges_assoc_unique`)
-   covers exactly the `(source_id, target_id, edge_kind, predicate)`
-   tuple **WHERE `edge_kind='associative'`**. SQLite resolves the
-   `ON CONFLICT` target against this partial index because the inserted
-   row satisfies its `WHERE` clause. Inserts of other `edge_kind` values
-   (e.g. `structural`, `containment`) bypass this conflict target —
-   they get their own `id` UNIQUE PK conflict path if duplicates occur.
+   covers exactly `(source_id, target_id, edge_kind, predicate,
+   json_extract(attributes, '$.signal_source'))` **WHERE
+   `edge_kind='associative'`**. SQLite resolves the `ON CONFLICT`
+   target against this expression-indexed partial index because the
+   inserted row satisfies its `WHERE` clause. Inserts of other
+   `edge_kind` values (e.g. `structural`, `containment`) bypass this
+   conflict target — they get their own `id` UNIQUE PK conflict p
 2. **`predicate='co_activated'`** is the canonical value for Hebbian
    edges. Other associative predicates (e.g. `evoked_by` for somatic
    markers in §4.11) use a different conflict path (different
@@ -1958,10 +2015,15 @@ one focused session.
 ### 8.3 Phase B — dual-write
 - [x] **T12** `store_raw`: dual-write memory → nodes — 2fd9531 (dropped into `Storage::add` since it's the single canonical memory write path; `store_raw` flows through `add`)
 - [x] **T13** ResolutionPipeline: dual-write entities → nodes(kind=entity), edges — 4966ec1 (helpers `dual_write_entity_to_nodes` + `dual_write_edge_to_edges` in `graph/store.rs`; wired into `insert_entity`, `insert_edge`, `apply_graph_delta`. `source_memory_id=NULL` in Phase B — T19 backfill closes it. `merge_entities`/`supersede_edge` out of scope.)
-- [ ] **T14** Hebbian (association/former.rs): dual-write co-activation → edges
+- [ ] **T14** Hebbian (`Storage::record_association` + `record_coactivation_ns`): dual-write co-activation → `edges(edge_kind='associative')`. Both legacy writers map onto the unified UPSERT in §4.3 with `signal_source` as part of row identity. Cascade refactor: `record_association` `&self` → `&mut self`, propagate through `LinkFormer::storage`, `memory.rs:2585`, `promotion.rs:272` test helper, 5 `former.rs` tests.
 - [ ] **T15** KC (knowledge_compile): dual-write topics → nodes(kind=topic), containment edges
 - [ ] **T16** Synthesis: dual-write provenance → edges
-- [ ] **T17** Row-count parity test (CI nightly)
+- [ ] **T17** Parity test (CI nightly). **Not** raw row-count parity — legacy and unified deliberately diverge on associative edges (§4.3) and on `apply_graph_delta`'s edge-without-source-memory case (§T13 footnote). T17 asserts the following invariants per namespace:
+  - For every legacy `memories` row, unified has exactly one `nodes(kind='memory')` row with byte-equal `id`/`content`/`created_at`.
+  - For every legacy `graph_entities` row, unified has exactly one `nodes(kind='entity')` row with byte-equal `id`.
+  - For every legacy `graph_edges` row, unified has at least one `edges(edge_kind='assertion')` row with matching `(source_id, target_id, predicate)`.
+  - For every legacy `hebbian_links` row with `strength > 0`, unified has at least one `edges(edge_kind='associative', predicate='co_activated')` row matching `(source_id, target_id)`, **regardless of weight/count**.
+  - Weight and coactivation_count are *not* compared between legacy and unified for associative edges — this divergence is intentional and documented in §4.3.
 - [ ] **T18** Bench: LoCoMo J-score unchanged with dual-write (read still legacy)
 
 ### 8.4 Phase C — backfill
