@@ -1947,13 +1947,13 @@ one focused session.
 - [ ] **T04** Update `consolidation-autopilot-DRAFT.md` §2 invariants to reference unified substrate
 
 ### 8.2 Phase A — schema additive
-- [ ] **T05** Storage migration: add `nodes` table + indexes (storage.rs)
-- [ ] **T06** Storage migration: add `edges` table + indexes
-- [ ] **T07** Storage migration: add `nodes_fts` + triggers
-- [ ] **T08** Storage migration: add `node_embeddings` table
-- [ ] **T09** Bump `engram_meta.schema_version` to `0.4-additive`
-- [ ] **T10** Add Rust types: `Node`, `Edge`, `NodeKind`, `EdgeKind` (with typed `attributes` per kind)
-- [ ] **T11** Test: storage open on fresh DB creates all unified tables; open on legacy DB adds them without touching old data
+- [x] **T05** Storage migration: add `nodes` table + indexes (storage.rs) — b7b9290
+- [x] **T06** Storage migration: add `edges` table + indexes — 2ab635d
+- [x] **T07** Storage migration: add `nodes_fts` + triggers — fb03f1a
+- [x] **T08** Storage migration: add `node_embeddings` table — d7ac8cf
+- [x] **T09** Bump `engram_meta.schema_version` to `0.4-additive` — 9d18c59
+- [x] **T10** Add Rust types: `Node`, `Edge`, `NodeKind`, `EdgeKind` (with typed `attributes` per kind) — 89569f2
+- [x] **T11** Test: storage open on fresh DB creates all unified tables; open on legacy DB adds them without touching old data — ba35622 (3/3 pass)
 
 ### 8.3 Phase B — dual-write
 - [ ] **T12** `store_raw`: dual-write memory → nodes
