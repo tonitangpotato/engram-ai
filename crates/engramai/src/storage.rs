@@ -314,7 +314,106 @@ impl Storage {
             other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
         })?;
 
+        // v0.4 unified substrate: nodes table (T05)
+        Self::migrate_unified_nodes(&conn)?;
+
         Ok(Self { conn })
+    }
+
+    /// v0.4 unified substrate (T05): create the `nodes` table, its indexes, and
+    /// the `fts_rowid_counter` singleton helper per design.md §3.1.
+    ///
+    /// **Additive only** — does not touch `memories`, `entities`,
+    /// `hebbian_links`, or any existing table. Idempotent (GUARD-ss.3):
+    /// `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` +
+    /// `INSERT OR IGNORE` for the counter singleton.
+    ///
+    /// Schema version is **not** bumped here — T09 lands that after the full
+    /// T05–T08 set is in place.
+    fn migrate_unified_nodes(conn: &Connection) -> SqlResult<()> {
+        conn.execute_batch(r#"
+            CREATE TABLE IF NOT EXISTS nodes (
+                -- identity
+                id                  TEXT PRIMARY KEY,
+                node_kind           TEXT NOT NULL,
+                namespace           TEXT NOT NULL DEFAULT 'default',
+
+                -- memory-specific sub-classification (NULL for non-memory kinds)
+                layer               TEXT,
+                memory_type         TEXT,
+
+                -- content
+                content             TEXT NOT NULL,
+                summary             TEXT NOT NULL DEFAULT '',
+                attributes          TEXT NOT NULL DEFAULT '{}',
+
+                -- vector
+                embedding           BLOB,
+                embedding_model     TEXT,
+
+                -- temporal (bi-temporal)
+                occurred_at         REAL,
+                valid_from          REAL,
+                valid_to            REAL,
+                created_at          REAL NOT NULL,
+                updated_at          REAL NOT NULL,
+                first_seen          REAL,
+                last_seen           REAL,
+
+                -- decay / activation / strength
+                activation          REAL NOT NULL DEFAULT 0.0,
+                working_strength    REAL NOT NULL DEFAULT 1.0,
+                core_strength       REAL NOT NULL DEFAULT 0.0,
+                importance          REAL NOT NULL DEFAULT 0.3,
+                confidence          REAL NOT NULL DEFAULT 0.5,
+
+                -- affect
+                agent_affect        TEXT,
+                arousal             REAL NOT NULL DEFAULT 0.0,
+                somatic_fingerprint BLOB,
+
+                -- retirement
+                deleted_at          REAL,
+                superseded_by       TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+                pinned              INTEGER NOT NULL DEFAULT 0,
+
+                -- provenance
+                source              TEXT NOT NULL DEFAULT '',
+                source_run_id       TEXT,
+                consolidation_count INTEGER NOT NULL DEFAULT 0,
+                last_consolidated   REAL,
+
+                -- history (audit trail of in-place mutations, e.g. entity merges)
+                history             TEXT NOT NULL DEFAULT '[]',
+
+                -- FTS surrogate: stable integer for nodes_fts rowid (§3.3).
+                fts_rowid           INTEGER UNIQUE,
+
+                CHECK (activation       BETWEEN 0.0 AND 1.0),
+                CHECK (arousal          BETWEEN 0.0 AND 1.0),
+                CHECK (importance       BETWEEN 0.0 AND 1.0),
+                CHECK (confidence       BETWEEN 0.0 AND 1.0),
+                CHECK (working_strength BETWEEN 0.0 AND 1.0),
+                CHECK (core_strength    BETWEEN 0.0 AND 1.0)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_nodes_kind         ON nodes(node_kind, namespace);
+            CREATE INDEX IF NOT EXISTS idx_nodes_namespace    ON nodes(namespace);
+            CREATE INDEX IF NOT EXISTS idx_nodes_created      ON nodes(created_at);
+            CREATE INDEX IF NOT EXISTS idx_nodes_occurred     ON nodes(occurred_at) WHERE occurred_at IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_nodes_deleted      ON nodes(deleted_at) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_nodes_kind_active  ON nodes(node_kind, activation) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_nodes_memory_type  ON nodes(memory_type) WHERE node_kind='memory';
+            CREATE INDEX IF NOT EXISTS idx_nodes_superseded   ON nodes(superseded_by) WHERE superseded_by IS NOT NULL;
+
+            -- Monotonic counter for fts_rowid assignment (§3.3, §6 writer).
+            CREATE TABLE IF NOT EXISTS fts_rowid_counter (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 0),
+                next_value INTEGER NOT NULL DEFAULT 1
+            );
+            INSERT OR IGNORE INTO fts_rowid_counter (singleton, next_value) VALUES (0, 1);
+        "#)?;
+        Ok(())
     }
     
     /// Get a reference to the underlying database connection.
@@ -5953,5 +6052,78 @@ mod tests {
 
         let all_five = storage.list_backfill_batch(100).unwrap();
         assert_eq!(all_five.len(), 5);
+    }
+
+    // ---------------------------------------------------------------------
+    // v0.4 unified substrate — T05: nodes table + indexes
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_t05_fresh_db_creates_unified_nodes_table() {
+        let storage = test_storage();
+        let exists: Option<String> = storage
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(exists.as_deref(), Some("nodes"));
+    }
+
+    #[test]
+    fn test_t05_idempotent_migration() {
+        // Use a tempdir so the same path can be opened twice and survive Drop.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("t05-idempotent.db");
+
+        // First open creates the schema.
+        {
+            let s1 = Storage::new(&path).expect("first open");
+            let exists: Option<String> = s1
+                .conn
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            assert_eq!(exists.as_deref(), Some("nodes"));
+        }
+
+        // Re-open the same path: migration must be a no-op (no duplicate
+        // column / duplicate index errors). The nodes table still exists.
+        let s2 = Storage::new(&path).expect("re-open should be idempotent");
+        let exists: Option<String> = s2
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(exists.as_deref(), Some("nodes"));
+
+        // And exactly one counter row, still at the initial value.
+        let counter_rows: i64 = s2
+            .conn
+            .query_row("SELECT COUNT(*) FROM fts_rowid_counter", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(counter_rows, 1);
+    }
+
+    #[test]
+    fn test_t05_fts_rowid_counter_initialized() {
+        let storage = test_storage();
+        let next_value: i64 = storage
+            .conn
+            .query_row(
+                "SELECT next_value FROM fts_rowid_counter WHERE singleton=0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("counter singleton row exists");
+        assert_eq!(next_value, 1);
     }
 }
