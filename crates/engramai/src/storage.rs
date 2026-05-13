@@ -320,6 +320,9 @@ impl Storage {
         // v0.4 unified substrate: edges table (T06)
         Self::migrate_unified_edges(&conn)?;
 
+        // v0.4 unified substrate: nodes_fts + triggers (T07)
+        Self::migrate_unified_fts(&conn)?;
+
         Ok(Self { conn })
     }
 
@@ -507,6 +510,64 @@ impl Storage {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_containment_unique
                 ON edges(source_id, target_id, edge_kind, predicate)
                 WHERE edge_kind = 'containment';
+        "#)?;
+        Ok(())
+    }
+
+    /// v0.4 unified substrate (T07): create the `nodes_fts` FTS5 virtual table
+    /// and its three sync triggers per design.md §3.3.
+    ///
+    /// **Mode**: contentless FTS5 (`content=''`). The canonical text lives in
+    /// `nodes.content`/`nodes.summary`; FTS stores tokens only. Triggers
+    /// keyed by `nodes.fts_rowid` (a stable monotonic integer, NOT the SQLite
+    /// implicit rowid which is unstable across VACUUM when the PK is TEXT)
+    /// keep FTS in lockstep with `nodes`.
+    ///
+    /// **Trigger form**: contentless FTS5 deletes require the special
+    /// `INSERT INTO nodes_fts(nodes_fts, rowid, content, summary)
+    ///  VALUES ('delete', …)` command — a plain `DELETE` is rejected by FTS5.
+    /// Updates are decompose into a delete-then-insert pair on the same
+    /// `fts_rowid`.
+    ///
+    /// **Additive only** — does not touch any existing v0.3 FTS table
+    /// (which targets `memories`, not `nodes`). Idempotent (GUARD-ss.3) via
+    /// `CREATE VIRTUAL TABLE IF NOT EXISTS` + `CREATE TRIGGER IF NOT EXISTS`.
+    ///
+    /// T05 (`migrate_unified_nodes`) must run first because the triggers
+    /// reference `nodes`. Call site in `Storage::open` enforces this.
+    fn migrate_unified_fts(conn: &Connection) -> SqlResult<()> {
+        conn.execute_batch(r#"
+            -- Contentless FTS5: stores tokens only; canonical text is in
+            -- nodes.content / nodes.summary. Keyed by nodes.fts_rowid.
+            CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+                content,
+                summary,
+                tokenize='unicode61 remove_diacritics 2',
+                content=''
+            );
+
+            -- INSERT: project (fts_rowid, content, summary) into FTS.
+            CREATE TRIGGER IF NOT EXISTS nodes_fts_ai
+            AFTER INSERT ON nodes BEGIN
+                INSERT INTO nodes_fts(rowid, content, summary)
+                VALUES (new.fts_rowid, new.content, new.summary);
+            END;
+
+            -- DELETE: contentless FTS5 requires the 'delete' command form.
+            CREATE TRIGGER IF NOT EXISTS nodes_fts_ad
+            AFTER DELETE ON nodes BEGIN
+                INSERT INTO nodes_fts(nodes_fts, rowid, content, summary)
+                VALUES ('delete', old.fts_rowid, old.content, old.summary);
+            END;
+
+            -- UPDATE OF content,summary: delete-then-insert on same fts_rowid.
+            CREATE TRIGGER IF NOT EXISTS nodes_fts_au
+            AFTER UPDATE OF content, summary ON nodes BEGIN
+                INSERT INTO nodes_fts(nodes_fts, rowid, content, summary)
+                VALUES ('delete', old.fts_rowid, old.content, old.summary);
+                INSERT INTO nodes_fts(rowid, content, summary)
+                VALUES (new.fts_rowid, new.content, new.summary);
+            END;
         "#)?;
         Ok(())
     }
@@ -6306,5 +6367,179 @@ mod tests {
                 "missing index {expected}: have {names:?}"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // v0.4 unified substrate — T07: nodes_fts virtual table + triggers
+    // ---------------------------------------------------------------------
+
+    /// Helper: insert a minimal node row directly via SQL, since the higher-
+    /// level Node insert API doesn't exist yet (T10). Returns the assigned
+    /// `fts_rowid`.
+    fn insert_minimal_node(
+        conn: &Connection,
+        id: &str,
+        content: &str,
+        summary: &str,
+    ) -> i64 {
+        // Allocate fts_rowid from the singleton counter (mirrors what the
+        // T10 writer will do — kept inline here so T07 tests don't depend
+        // on a writer helper that doesn't exist yet).
+        conn.execute(
+            "UPDATE fts_rowid_counter SET next_value = next_value + 1 WHERE singleton = 0",
+            [],
+        ).expect("bump counter");
+        let fts_rowid: i64 = conn.query_row(
+            "SELECT next_value - 1 FROM fts_rowid_counter WHERE singleton = 0",
+            [],
+            |row| row.get(0),
+        ).expect("read counter");
+
+        conn.execute(
+            "INSERT INTO nodes (
+                id, node_kind, namespace, content, summary,
+                activation, arousal, importance, confidence,
+                working_strength, core_strength,
+                created_at, updated_at, fts_rowid
+            ) VALUES (
+                ?1, 'memory', 'default', ?2, ?3,
+                0.5, 0.5, 0.5, 0.5,
+                0.5, 0.5,
+                0.0, 0.0, ?4
+            )",
+            params![id, content, summary, fts_rowid],
+        ).expect("insert node");
+
+        fts_rowid
+    }
+
+    #[test]
+    fn test_t07_fresh_db_creates_fts_table_and_triggers() {
+        let storage = test_storage();
+
+        // Virtual table exists.
+        let fts_exists: Option<String> = storage
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(fts_exists.as_deref(), Some("nodes_fts"));
+
+        // All three triggers exist.
+        for expected in &["nodes_fts_ai", "nodes_fts_ad", "nodes_fts_au"] {
+            let trig: Option<String> = storage
+                .conn
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?1",
+                    params![expected],
+                    |row| row.get(0),
+                )
+                .ok();
+            assert_eq!(trig.as_deref(), Some(*expected), "trigger {expected} missing");
+        }
+    }
+
+    #[test]
+    fn test_t07_insert_trigger_makes_node_searchable() {
+        let storage = test_storage();
+        let fts_rowid = insert_minimal_node(
+            &storage.conn,
+            "n1",
+            "the quick brown fox jumps over the lazy dog",
+            "fox summary",
+        );
+
+        // MATCH against the body.
+        let found: i64 = storage.conn.query_row(
+            "SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH 'fox'",
+            [],
+            |row| row.get(0),
+        ).expect("fts query returns the inserted row");
+        assert_eq!(found, fts_rowid);
+
+        // MATCH against the summary column too.
+        let count: i64 = storage.conn.query_row(
+            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'summary'",
+            [],
+            |row| row.get(0),
+        ).expect("count query");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_t07_delete_trigger_removes_from_fts() {
+        let storage = test_storage();
+        let _ = insert_minimal_node(&storage.conn, "n1", "hello world", "");
+
+        // Before delete: FTS sees it.
+        let before: i64 = storage.conn.query_row(
+            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'hello'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(before, 1);
+
+        storage.conn.execute("DELETE FROM nodes WHERE id = 'n1'", []).expect("delete");
+
+        // After delete: FTS no longer sees it (contentless 'delete' command
+        // form fired correctly).
+        let after: i64 = storage.conn.query_row(
+            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'hello'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(after, 0);
+    }
+
+    #[test]
+    fn test_t07_update_trigger_refreshes_fts() {
+        let storage = test_storage();
+        let _ = insert_minimal_node(&storage.conn, "n1", "apples and oranges", "");
+
+        // Update content: old tokens disappear, new tokens appear, fts_rowid
+        // stays stable.
+        storage.conn.execute(
+            "UPDATE nodes SET content = 'bananas and grapes' WHERE id = 'n1'",
+            [],
+        ).expect("update content");
+
+        let old_hits: i64 = storage.conn.query_row(
+            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'apples'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(old_hits, 0, "old content tokens must be purged");
+
+        let new_hits: i64 = storage.conn.query_row(
+            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'bananas'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(new_hits, 1, "new content tokens must be indexed");
+    }
+
+    #[test]
+    fn test_t07_idempotent_migration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("t07-idempotent.db");
+
+        {
+            let _ = Storage::new(&path).expect("first open");
+        }
+        // Re-open: virtual table + triggers already exist; CREATE … IF NOT
+        // EXISTS must be silent (no "already exists" failure).
+        let s2 = Storage::new(&path).expect("re-open is idempotent");
+        let fts_exists: Option<String> = s2
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(fts_exists.as_deref(), Some("nodes_fts"));
     }
 }
