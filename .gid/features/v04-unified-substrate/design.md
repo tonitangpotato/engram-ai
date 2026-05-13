@@ -1137,11 +1137,24 @@ step — not the recommended path.
    - `entity_relations` → `edges (kind=structural)` (6531 rows).
      **Field mapping**: `entity_relations.metadata`: parse as JSON and
      **merge keys** into `edges.attributes`.
-   - `memory_entities` → `edges (kind=provenance, predicate=mentions)` (9237 rows).
-     **Field mapping**: `memory_entities.role` → `edges.predicate`
-     (role='mention' → predicate='mentions', role='subject' →
-     predicate='subject_of', etc.). If role is empty/'mention'/unknown,
-     use `predicate='mentions'`.
+   - `memory_entities` → `edges` (9237 rows), split by role per
+     the kind/predicate table in §3.3 (canonical, normative):
+
+       | role                          | edge_kind    | predicate    |
+       |-------------------------------|--------------|--------------|
+       | `'mention'` (default in prod) | `provenance` | `mentions`   |
+       | `''` (empty)                  | `provenance` | `mentions`   |
+       | `'triple'`                    | `provenance` | `mentions`   |
+       | unknown / free-form           | `provenance` | `mentions`   |
+       | `'subject'`                   | `structural` | `subject_of` |
+       | `'object'`                    | `structural` | `object_of`  |
+
+     Non-canonical roles (`'triple'`, free-form) MUST preserve the
+     raw role string in `edges.attributes.legacy_role` for audit
+     traceability; canonical roles write empty attributes (`'{}'`).
+     `namespace` and `created_at` are derived from the parent
+     memory via JOIN since the link table has no own columns for
+     these.
    - `hebbian_links` → `edges (kind=associative, predicate=co_activated)` (43710 rows).
      **Field mapping**: `strength→weight`; `namespace→namespace`;
      `created_at→created_at`. Pack all signal/temporal fields into
@@ -1180,11 +1193,29 @@ on a subset of rows):
   ))
   ```
 
-  For tables that lack a single PK column, use the smallest UNIQUE
-  tuple as `source_id` (e.g. `hebbian_links` uses
-  `(memory_id, related_id, namespace)`; `memory_entities` uses
-  `(memory_id, entity_id, role)`). Combined with the partial UNIQUE
-  indexes on `edges(source_id, target_id, edge_kind, predicate)`
+  For **link tables** whose natural key is a composite of more than
+  one column, inline all discriminator columns flat in the canonical
+  natural-key order — the number of pipe-delimited tokens is fixed
+  per source table. Concretely:
+
+  ```
+  # entity_relations (PK = id):
+  hash_input = "entity_relations|<id>|<target_id>|<edge_kind>|<predicate>"
+
+  # memory_entities (composite natural key (memory_id, entity_id, role)):
+  hash_input = "memory_entities|<memory_id>|<entity_id>|<role>|<edge_kind>|<predicate>"
+
+  # hebbian_links (composite natural key (memory_id, related_id, namespace)):
+  hash_input = "hebbian_links|<memory_id>|<related_id>|<namespace>|<edge_kind>|<predicate>"
+
+  # synthesis_provenance (PK = id):
+  hash_input = "synthesis_provenance|<id>|<source_id>|<edge_kind>|<predicate>"
+  ```
+
+  This is the **single source of truth** for hash input layout;
+  drivers MUST follow these exact templates. Combined with the
+  partial UNIQUE indexes on
+  `edges(source_id, target_id, edge_kind, predicate)`
   declared in §3.2 (covering `edge_kind='associative'` and
   `edge_kind='containment'`), this makes `INSERT OR IGNORE` correct
   for the kinds where re-emission is supposed to be idempotent: a

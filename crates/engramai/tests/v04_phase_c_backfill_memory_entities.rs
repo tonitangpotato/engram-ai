@@ -681,3 +681,56 @@ fn t23_mismatched_kind_at_same_id_counted_not_silently_skipped() {
         "mismatched-kind row must be visible in audit, not silently lumped into skipped_existing"
     );
 }
+
+#[test]
+fn t23_cross_namespace_link_inherits_memory_namespace() {
+    // Cross-NS scenario: memory lives in ns-a but mentions an entity
+    // that lives in ns-b. Per design intent, the edge tracks the
+    // OBSERVATION (a memory in ns-a noted an entity), so
+    // edges.namespace must inherit from the parent memory (ns-a),
+    // not the entity's NS (ns-b). The entity is just an endpoint.
+    //
+    // This test pins that contract. If anyone ever switches the
+    // namespace source to entity.namespace, retrieval scoped by NS
+    // would mis-locate cross-NS facts.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    seed_legacy_memory(&mut storage, "mem-1", "ns-a");
+    seed_legacy_entity(&storage, "ent-1", "X", "ns-b");
+    seed_link(&storage, "mem-1", "ent-1", "mention");
+    // Project both NS into nodes so endpoint FKs are satisfied.
+    run_node_prereqs(&mut storage);
+
+    let run = backfill_memory_entities_to_edges(&mut storage, None).expect("T23");
+    assert_eq!(run.rows_inserted, 1, "cross-NS link is valid input");
+
+    let (edge_ns, source, target): (String, String, String) = storage
+        .conn()
+        .query_row(
+            "SELECT namespace, source_id, target_id FROM edges WHERE source_id = ?",
+            params!["mem-1"],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        edge_ns, "ns-a",
+        "edges.namespace must inherit from the parent memory's NS, NOT the entity's NS"
+    );
+    assert_eq!(source, "mem-1");
+    assert_eq!(target, "ent-1");
+
+    // Sanity: target_id resolves to a real node in ns-b.
+    let target_node_ns: String = storage
+        .conn()
+        .query_row(
+            "SELECT namespace FROM nodes WHERE id = ?",
+            params!["ent-1"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        target_node_ns, "ns-b",
+        "entity node retains its own NS; only the edge inherits memory's NS"
+    );
+}
