@@ -2046,7 +2046,7 @@ one focused session.
   - LoCoMo bench *re-runs* are deferred to Phase C (when reads actually cut over to unified — that's the moment a bench delta signals something).
 
 ### 8.4 Phase C — backfill
-- [ ] **T19** Backfill driver: memories → nodes (no LLM)
+- [x] **T19** Backfill driver: memories → nodes (no LLM) — single helper `Storage::insert_memory_node_row` shared with T12 dual-write; `substrate::backfill::backfill_memories_to_nodes` wraps a two-pass driver (Pass 1 INSERT OR IGNORE, Pass 2 UPDATE for self-referential supersession), audit row in `backfill_runs`, optional namespace filter. 6/6 phase-C tests including byte-equal parity vs T12 dual-write; 21/21 phase-B + 1871/1871 lib still pass.
 - [ ] **T20** Backfill driver: memory_embeddings → node_embeddings
 - [ ] **T21** Backfill driver: entities → nodes
 - [ ] **T22** Backfill driver: entity_relations → edges

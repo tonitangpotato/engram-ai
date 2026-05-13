@@ -36,6 +36,7 @@
 //! `NodeAttributes::Unknown(Value)`.
 
 pub mod types;
+pub mod backfill;
 
 pub use types::{
     Edge, EdgeAttributes, EdgeKind, Node, NodeAttributes, NodeKind,
