@@ -742,7 +742,7 @@ Working memory is biologically a *transient* state — prefrontal sustained acti
 **The in-memory tier** (unchanged from today):
 - `session_wm.rs` keeps the Miller 7±2 ring buffer in process memory. Reads + writes are O(1), no IO.
 - On process restart, WM clears. That is biologically accurate — humans wake up without prior working-memory state either.
-- **Cold-start tracking**: the ring buffer carries a `state: WmState` flag (`cold_start | warm`). On process start, `state = cold_start`. The flag flips to `warm` after the **first recall populates the buffer** (i.e. the first time WM holds at least one memory ID derived from this session's activity, not a stub). All subsequent in-memory WM operations observe `warm` until process exit. This is a single byte; zero hot-path cost.
+- **Cold-start tracking**: the ring buffer carries a `state: WmState` flag (`cold_start | warm`). On process start, `state = cold_start`. The flag flips to `warm` exactly once per session — see the next bullet for the precise trigger. All subsequent in-memory WM operations observe `warm` until process exit. This is a single byte; zero hot-path cost.
 - **Cold→warm transition timing (precise)**: the transition fires the **first time the session's metacog loop completes its first cycle after the session opens**, OR when a `wm_snapshot` from a prior session is loaded back into the ring buffer (session resume). Whichever happens first flips the flag; the flag is read-only thereafter (it never reverts to `cold_start` within a session). Rationale: a metacog cycle is the first moment the agent has *evaluated* its own attention state — before that, the ring buffer may hold attended IDs but the agent has not yet had a chance to reason about them, which matches the biological "haven't woken up yet" semantics. Implementation note recorded against T51.
 
 **The substrate tier** (new):
@@ -888,10 +888,10 @@ The math, based on production engram data (~24k memories, dimensions field prese
 | New tag nodes                          | 0.3     | 1       |
 | Entity `mentions` edges (§4.2)         | 3       | 8       |
 | Entity nodes (resolution misses)       | 0.3     | 1       |
-| `in_episode` edge (§4.10, when active) | 0.7     | 1       |
+| `belongs_to_episode` edge (§4.10, when active) | 0.7     | 1       |
 | **Total inserts per memory**           | **~12** | **~25** |
 
-vs. today's ~5 (P50) / ~13 (P95). **Write amplification ratio: ~2.4× P50, ~1.9× P95.** (`in_episode` row reflects production data: ~70% of memories ingested during an active episode session, ~100% during interactive turns; standalone ingests like background heuristics omit episode entirely.)
+vs. today's ~5 (P50) / ~13 (P95). **Write amplification ratio: ~2.4× P50, ~1.9× P95.** (`belongs_to_episode` row reflects production data: ~70% of memories ingested during an active episode session, ~100% during interactive turns; standalone ingests like background heuristics omit episode entirely.)
 
 This is real cost but not catastrophic. Three properties make it tractable:
 
@@ -1198,7 +1198,7 @@ pub enum WriteOp {
         embedding: Option<Vec<f32>>,
         namespace: String,
         agent_id: Option<String>,
-        episode_id: Option<NodeId>,                 // §4.10: if Some, writer creates (memory, in_episode, episode) edge
+        episode_id: Option<NodeId>,                 // §4.10: if Some, writer creates (memory, belongs_to_episode, episode) edge
         reply: oneshot::Sender<Result<WriteMemoryReply>>,
     },
 
@@ -1410,7 +1410,7 @@ pub enum WriteOp {
 1. `INSERT INTO nodes(...)` for the memory itself, populating **`memory_type` and `layer` directly from the op payload** — the writer does NOT derive these from `dimensions`. Tier 1 scalar dimensions land in `nodes.attributes` JSON (no separate write).
 2. For each Tier 2 narrative field with a value: resolve or create the `dimension_<field>` node (single `INSERT ... ON CONFLICT DO NOTHING RETURNING id`, or SELECT-then-INSERT under WAL), then `INSERT INTO edges(...)` for the `containment / describes_<field>` edge. Up to 10 fields.
 3. For each Tier 3 tag: resolve or create the `tag` node, `INSERT INTO edges(...)` for the `containment / tagged` edge. Typical 0–8 tags.
-4. **Episode link** — if `episode_id` is `Some(ep)`, `INSERT INTO edges(...)` for one `containment / in_episode` edge from the memory node → episode node. Skipped entirely when `episode_id` is `None`. The caller is responsible for ensuring `ep` references an existing `node_kind='episode'` row; the writer does not create episode nodes (those go through a separate `WriteEpisode` op, out of scope here).
+4. **Episode link** — if `episode_id` is `Some(ep)`, `INSERT INTO edges(...)` for one `containment / belongs_to_episode` edge from the memory node → episode node. Skipped entirely when `episode_id` is `None`. The caller is responsible for ensuring `ep` references an existing `node_kind='episode'` row; the writer does not create episode nodes (those go through a separate `WriteEpisode` op, out of scope here).
 
 **Caller responsibility for `memory_type` and `layer`** (F4 resolution): both fields map directly to the `nodes.memory_type` and `nodes.layer` columns and MUST be supplied by the caller (currently `memory.rs::store_raw`). The writer performs no derivation from `dimensions.type_weights` or any other signal — derivation belongs in the ingest API, not the substrate writer. **Defaults**: if the caller has no better information, `memory_type = MemoryType::Episodic` and `layer = Layer::L0` are the documented fallbacks. However, the public ingest API (`store_raw` and any future ingest entry point) MUST require these as explicit arguments — no surprise defaults at the API boundary. The defaults exist only so backfill/migration tooling has a defined behavior when historical rows carry no value.
 
@@ -1739,7 +1739,7 @@ fn apply_write_memory(tx: &Transaction, op: WriteMemoryOp) -> Result<NodeId> {
   ```
 
   - The **public** mpsc channels (one per priority level) are owned by a `WriterSupervisor` task — NOT by the writer thread. Async callers always send into the supervisor.
-  - The supervisor forwards each `WriteOp` into a **private** mpsc channel that the writer thread consumes. **The writer keeps the original `oneshot::Sender` inside the `WriteOp` variant** (direct-send model) — it is NOT extracted by the supervisor. On the happy path, the writer simply calls `reply.send(Ok(...))` after the transaction commits; the supervisor is never in the data path. Forwarding cost: one channel hop, ~1µs, zero allocation.
+  - The supervisor forwards each `WriteOp` into a **private** mpsc channel that the writer thread consumes. **The writer keeps a reference to the original `oneshot::Sender` inside the `WriteOp` variant** (direct-send model) — the supervisor does not consume or short-circuit it. On the happy path, the writer simply calls `reply.send(Ok(...))` (via the wrapped slot — see next bullet) after the transaction commits; the supervisor is never in the data path. The supervisor's role on the forwarding hop is bookkeeping only: it wraps the sender in a shared slot so a crash notifier can co-own it (next bullet). Forwarding cost: one channel hop + one heap allocation, ~1µs.
   - **Why not type-erase replies into a `HashMap<OpId, oneshot::Sender<???>>`?** Because each WriteOp variant has a different reply type (`Sender<Result<WriteMemoryReply>>`, `Sender<Result<NodeId>>`, `Sender<Result<()>>`, …) and a heterogeneous map would require either a trait-object wrapper per slot or a single union reply type. Direct-send keeps replies strongly typed at the variant level and avoids any per-op heap allocation on the hot path.
   - **In-flight bookkeeping for crash recovery** uses a typed-closure map, NOT a sender map: the supervisor maintains a `HashMap<OpId, Box<dyn FnOnce(WriterCrashed) + Send>>` of *crash notifiers*. Concretely, on the public→private forwarding hop, the supervisor extracts each op's raw `oneshot::Sender<R>` from the WriteOp variant, wraps it in `Arc<Mutex<Option<oneshot::Sender<R>>>>`, and rebuilds the variant with the wrapped slot before forwarding. The writer thread and the in-flight crash-notifier closure each hold one `Arc` clone. On the happy path the writer does `slot.lock().take().unwrap().send(Ok(r))`; if a panic intervenes, the supervisor's closure does `slot.lock().take()` and finds either `Some(sender)` (still pending → sends `Err(WriterCrashed)`) or `None` (writer already replied → no-op). The `Arc<Mutex<…>>` indirection lives entirely behind the private channel — the public WriteOp surface (§6.1) keeps the raw `oneshot::Sender<R>` and is unchanged. Cost: one heap allocation + one uncontended lock per op — negligible vs the SQLite commit cost (~50µs).
   - **Op completion signaling**: when the writer commits op `i`, it sends `Ok(reply)` directly on the embedded `oneshot::Sender` and then sends a **completion tick** `OpDone(op_id_i)` on a dedicated `mpsc::UnboundedSender<OpId>` that the supervisor drains in the background. On each tick, the supervisor removes the matching entry from the in-flight map. Tick processing is best-effort cleanup; if it lags, the map grows transiently but every entry is still valid (closures are idempotent — running an already-completed entry's closure finds the `Arc<Mutex<Option<...>>>` slot empty and is a no-op).
