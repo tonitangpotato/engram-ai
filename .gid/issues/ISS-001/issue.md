@@ -1,8 +1,8 @@
 ---
-id: "ISS-001"
-title: "FTS5 Index Corruption Under Multi-Process Concurrent Writes"
+id: ISS-001
+title: FTS5 Index Corruption Under Multi-Process Concurrent Writes
 status: open
-priority: P2
+priority: P1
 created: 2026-04-26
 ---
 # ISS-001: FTS5 Index Corruption Under Multi-Process Concurrent Writes
@@ -85,3 +85,22 @@ After fix:
 
 - 2026-03-29: First corruption observed, manual FTS rebuild applied
 - 2026-04-14: 43 corruption errors in current log, root cause identified as missing transactions
+
+## 2026-05-06 — Recurrence Evidence (RustClaw2 heartbeat)
+
+The fix is not complete. Currently observing FTS corruption rebuild **on every `engram consolidate` run** for the past 10 consecutive heartbeats (≥ 9 hours):
+
+```
+[engram] FTS corruption detected during update, rebuilding index...
+Consolidation complete (1 days simulated)
+```
+
+- DB: `/Users/potato/rustclaw/engram-memory.db`
+- Frequency: 100% — every consolidate (hourly via heartbeat)
+- Reproduction: just `engram --database <db> consolidate`
+- engram binary: `/Users/potato/clawd/projects/engram/target/release/engram` (latest, commit `d54a3e1` engram-bench split)
+- Two RustClaw daemons (rustclaw + rustclaw2) sharing the DB — same multi-process scenario as 2026-04-14
+
+**Hypothesis**: the consolidate path itself contains an FTS write that is still not transaction-wrapped, OR the existing transaction wrapping in v0.3 didn't cover the consolidation code path (which was added later). Need to audit `consolidate.rs` (or wherever consolidation FTS writes live) for the same DELETE-without-tx pattern.
+
+**Status flip**: this issue was marked "FIXED 2026-04-14" in the body but `status: open` — leaving status open is correct, the fix is incomplete. Bumping to **P1** because every consolidate forces a full FTS rebuild (slow + churns the index needlessly).
