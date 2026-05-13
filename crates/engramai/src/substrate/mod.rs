@@ -37,6 +37,7 @@
 
 pub mod types;
 pub mod backfill;
+pub mod verify;
 
 pub use types::{
     Edge, EdgeAttributes, EdgeKind, Node, NodeAttributes, NodeKind,
