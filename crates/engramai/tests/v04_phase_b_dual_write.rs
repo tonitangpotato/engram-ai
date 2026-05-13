@@ -1352,3 +1352,428 @@ fn t16_full_synthesis_flow_atomic_dual_write() {
     expected.sort();
     assert_eq!(targets, expected);
 }
+
+// ===========================================================================
+// T17 — Phase B parity invariants (CI-style nightly contract)
+//
+// Per design.md §8.10 T17: legacy and unified deliberately diverge on
+// (a) associative weight/count (§4.3 — signal_source is part of unified
+// row identity, so one legacy row can fan out to N unified rows), and
+// (b) `apply_graph_delta`'s edge-without-source-memory case (§T13
+// footnote — unified can have extra edges with no backing graph_edges
+// row). T17 therefore does NOT assert raw row-count parity. Instead it
+// asserts five containment invariants per namespace:
+//
+//   I1. memories          → nodes(kind='memory')     1:1 byte-equal id/content/created_at
+//   I2. graph_entities    → nodes(kind='entity')     1:1 byte-equal id
+//   I3. graph_edges       → nodes/edges(kind='assertion')   ≥1 by (src,tgt,predicate)
+//   I4. hebbian_links>0   → edges(kind='associative')        ≥1 by (src,tgt), weight ignored
+//   I5. synthesis_prov.   → edges(kind='provenance')         1:1 by id
+//
+// The test seeds a mixed workload across multiple namespaces (driving
+// the legacy writers T12/T13/T14/T15/T16) and walks the invariants for
+// each namespace. Future writers added to Phase B (e.g., supersession,
+// merge) must extend this contract.
+
+use engramai::graph::store::GraphWrite;
+use engramai::synthesis::types::{GateScores as T17GateScores, ProvenanceRecord as T17ProvenanceRecord};
+
+/// One seeded workload unit per namespace. Tracks the IDs we wrote so
+/// the invariant checker can re-read them. We don't snapshot legacy
+/// values here — the invariants query *both* sides freshly and prove
+/// containment, never trusting in-memory state.
+///
+/// `#[allow(dead_code)]` because the current test only needs the
+/// per-namespace existence check (queried fresh from SQLite). Future
+/// T17 extensions (e.g., counting expected divergences, asserting
+/// fan-out behavior) will read these fields back.
+#[allow(dead_code)]
+struct SeededNamespace {
+    namespace: String,
+    /// memories seeded via Storage::add → also lands in nodes(kind='memory')
+    memory_ids: Vec<String>,
+    /// graph_entities ids → also lands in nodes(kind='entity')
+    entity_uuids: Vec<Uuid>,
+    /// graph_edges id → also lands in edges(kind='assertion')
+    edge_uuids: Vec<Uuid>,
+    /// (a, b) for record_association → edges(kind='associative')
+    hebbian_pairs: Vec<(String, String)>,
+    /// (insight_id, source_id, prov_id) for record_provenance →
+    /// edges(kind='provenance'). Synthesis is namespace='default' only.
+    provenance_triples: Vec<(String, String, String)>,
+}
+
+/// Drive every Phase B writer at least once for `namespace`. Returns a
+/// SeededNamespace recording every id we wrote so the invariant
+/// assertions know what to look for.
+fn t17_seed_namespace(storage: &mut Storage, namespace: &str, seed_synthesis: bool) -> SeededNamespace {
+    let now = Utc.with_ymd_and_hms(2026, 5, 13, 9, 0, 0).unwrap();
+
+    // ---- I1 seeds: memories via Storage::add (T12 dual-write) ----
+    let m1_id = format!("t17-{}-m1", namespace);
+    let m2_id = format!("t17-{}-m2", namespace);
+    let mut m1 = sample_record(&m1_id);
+    m1.created_at = now;
+    m1.content = format!("alpha mem in {} about pickles", namespace);
+    let mut m2 = sample_record(&m2_id);
+    m2.created_at = now;
+    m2.content = format!("beta mem in {} about cabbage", namespace);
+    storage.add(&m1, namespace).expect("Storage::add m1");
+    storage.add(&m2, namespace).expect("Storage::add m2");
+
+    // ---- I2 / I3 seeds: entities + edge via SqliteGraphStore (T13) ----
+    //
+    // sample_entity() builds with namespace='default'. We want the
+    // entity scoped to `namespace`, so we override the field directly
+    // on the legacy graph_entities row after insert_entity. (The
+    // graph store has no per-call namespace argument; namespace is
+    // a row column populated from the entity's context.) For T17
+    // this is acceptable — we're only verifying containment, not
+    // exercising the graph store's namespace plumbing (which is
+    // out-of-scope for Phase B dual-write).
+    let subj = sample_entity(&format!("Subj-{}", namespace));
+    let obj = sample_entity(&format!("Obj-{}", namespace));
+    let subj_id = subj.id;
+    let obj_id = obj.id;
+
+    let mut edge = Edge::new(
+        subj_id,
+        Predicate::Canonical(CanonicalPredicate::WorksAt),
+        EdgeEnd::Entity { id: obj_id },
+        Some(now),
+        now,
+    );
+    edge.summary = format!("{} works at {} in {}", subj.canonical_name, obj.canonical_name, namespace);
+    edge.resolution_method = ResolutionMethod::LlmTieBreaker;
+    edge.confidence = 0.9;
+    let edge_id = edge.id;
+
+    {
+        let conn = storage.connection_mut();
+        let mut store = SqliteGraphStore::new(conn);
+        store.insert_entity(&subj).expect("insert subj entity");
+        store.insert_entity(&obj).expect("insert obj entity");
+        store.insert_edge(&edge).expect("insert edge");
+    }
+
+    // Re-namespace the legacy rows so the per-namespace partitioning
+    // is meaningful. The dual-write helper reads namespace from the
+    // legacy row at write time, so by the time we get here the
+    // unified rows are already 'default'. We update BOTH sides so the
+    // invariants line up. (In production these rows would have been
+    // written with the correct namespace from the start; this is a
+    // test-only workaround for the graph store's missing per-call
+    // namespace API.)
+    if namespace != "default" {
+        let conn = storage.conn();
+        for id in [subj_id, obj_id] {
+            conn.execute(
+                "UPDATE graph_entities SET namespace = ?1 WHERE id = ?2",
+                params![namespace, id.as_bytes().to_vec()],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE nodes SET namespace = ?1 WHERE id = ?2",
+                params![namespace, id.to_string()],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE graph_edges SET namespace = ?1 WHERE id = ?2",
+            params![namespace, edge_id.as_bytes().to_vec()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE edges SET namespace = ?1 WHERE id = ?2",
+            params![namespace, edge_id.to_string()],
+        )
+        .unwrap();
+    }
+
+    // ---- I4 seeds: hebbian link (T14) ----
+    storage
+        .record_association(&m1_id, &m2_id, 0.5, "entity", r#"{"detail":"t17"}"#, namespace)
+        .expect("record_association");
+
+    // ---- I5 seeds: synthesis insight + provenance (T16) ----
+    // store_raw hardcodes namespace='default', so we only seed
+    // synthesis in the default namespace pass. Caller controls via
+    // `seed_synthesis`.
+    let mut provenance_triples = Vec::new();
+    if seed_synthesis {
+        let insight_id = format!("t17-{}-insight", namespace);
+        storage
+            .store_raw(&insight_id, "T17 insight body", "factual", 0.6, None)
+            .expect("store_raw insight");
+        for src in [&m1_id, &m2_id] {
+            let prov_id = format!("t17-{}-prov-{}", namespace, src);
+            let rec = T17ProvenanceRecord {
+                id: prov_id.clone(),
+                insight_id: insight_id.clone(),
+                source_id: src.clone(),
+                cluster_id: format!("t17-{}-cluster", namespace),
+                synthesis_timestamp: now,
+                gate_decision: "novelty".into(),
+                gate_scores: Some(T17GateScores {
+                    quality: 0.8,
+                    type_diversity: 2,
+                    estimated_cost: 0.01,
+                    member_count: 2,
+                }),
+                confidence: 0.7,
+                source_original_importance: Some(0.5),
+            };
+            storage.record_provenance(&rec).expect("record_provenance");
+            provenance_triples.push((insight_id.clone(), src.clone(), prov_id));
+        }
+    }
+
+    SeededNamespace {
+        namespace: namespace.to_string(),
+        memory_ids: vec![m1_id, m2_id],
+        entity_uuids: vec![subj_id, obj_id],
+        edge_uuids: vec![edge_id],
+        hebbian_pairs: vec![(format!("t17-{}-m1", namespace), format!("t17-{}-m2", namespace))],
+        provenance_triples,
+    }
+}
+
+/// Run the five containment invariants for a single namespace against
+/// a fully-seeded storage. Every assertion includes the namespace in
+/// its message so a CI failure points at which namespace diverged.
+fn t17_assert_parity_invariants_for_namespace(storage: &Storage, ns: &str) {
+    let conn = storage.conn();
+    let prefix = format!("[ns={}]", ns);
+
+    // -------------------------------------------------------------------
+    // I1a. memories(source != 'synthesis') → nodes(node_kind='memory')
+    //      For every legacy regular-memory row in this namespace,
+    //      exactly one unified nodes row with node_kind='memory' and
+    //      byte-equal id/content/created_at.
+    //
+    // I1b. memories(source = 'synthesis')  → nodes(node_kind='insight')
+    //      Synthesis insights flow through Storage::store_raw, which
+    //      dual-writes with node_kind='insight' (see T16). They're
+    //      partitioned out here so the kind check stays precise.
+    // -------------------------------------------------------------------
+    let legacy_mem_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE namespace = ?1",
+            params![ns],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(legacy_mem_count > 0, "{prefix} I1 precondition: namespace must have ≥1 memory");
+
+    let mut stmt = conn
+        .prepare("SELECT id, content, created_at, source FROM memories WHERE namespace = ?1")
+        .unwrap();
+    let rows: Vec<(String, String, f64, String)> = stmt
+        .query_map(params![ns], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    for (mid, mcontent, mcreated, msource) in &rows {
+        let expected_kind = if msource == "synthesis" { "insight" } else { "memory" };
+        let unified: (String, String, f64) = conn
+            .query_row(
+                "SELECT content, node_kind, created_at \
+                 FROM nodes WHERE id = ?1 AND node_kind = ?2 AND namespace = ?3",
+                params![mid, expected_kind, ns],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{prefix} I1: no nodes(kind={expected_kind}) for memories.id={mid} (source={msource}): {e}"
+                )
+            });
+        assert_eq!(&unified.0, mcontent, "{prefix} I1: content mismatch for {mid}");
+        assert_eq!(unified.1, expected_kind, "{prefix} I1: wrong node_kind for {mid}");
+        assert!(
+            (unified.2 - mcreated).abs() < 1e-9,
+            "{prefix} I1: created_at mismatch for {mid}: legacy={mcreated}, unified={}",
+            unified.2,
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // I2. graph_entities → nodes(node_kind='entity')
+    //     For every legacy graph_entities row, one unified nodes row
+    //     with byte-equal id (BLOB → UUID-as-string mapping).
+    // -------------------------------------------------------------------
+    let mut stmt = conn
+        .prepare("SELECT id FROM graph_entities WHERE namespace = ?1")
+        .unwrap();
+    let entity_blobs: Vec<Vec<u8>> = stmt
+        .query_map(params![ns], |r| r.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(
+        !entity_blobs.is_empty(),
+        "{prefix} I2 precondition: namespace must have ≥1 graph_entities row"
+    );
+    for blob in &entity_blobs {
+        let uuid = Uuid::from_slice(blob).expect("graph_entities.id is 16 bytes");
+        let node_kind: String = conn
+            .query_row(
+                "SELECT node_kind FROM nodes WHERE id = ?1 AND namespace = ?2",
+                params![uuid.to_string(), ns],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("{prefix} I2: no nodes row for entity uuid={uuid}: {e}"));
+        assert_eq!(node_kind, "entity", "{prefix} I2: wrong node_kind for {uuid}");
+    }
+
+    // -------------------------------------------------------------------
+    // I3. graph_edges → edges(edge_kind='assertion')
+    //     For every legacy graph_edges row with object_kind='entity'
+    //     in this namespace, ≥1 unified edges row matching
+    //     (source_id, target_id, predicate). Literal-object edges are
+    //     out of scope here (they map to edges.target_literal, not a
+    //     (src,tgt,predicate) triple, and aren't part of the T17
+    //     invariant signature).
+    // -------------------------------------------------------------------
+    let mut stmt = conn
+        .prepare(
+            "SELECT subject_id, object_entity_id, predicate_label \
+             FROM graph_edges \
+             WHERE namespace = ?1 AND object_kind = 'entity'",
+        )
+        .unwrap();
+    let legacy_edges: Vec<(Vec<u8>, Vec<u8>, String)> = stmt
+        .query_map(params![ns], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?, r.get::<_, String>(2)?))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(
+        !legacy_edges.is_empty(),
+        "{prefix} I3 precondition: namespace must have ≥1 graph_edges row with object_kind='entity'"
+    );
+    for (subj_blob, obj_blob, predicate_label) in &legacy_edges {
+        let subj_uuid = Uuid::from_slice(subj_blob).unwrap();
+        let obj_uuid = Uuid::from_slice(obj_blob).unwrap();
+        let matches: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges \
+                 WHERE edge_kind = 'assertion' \
+                   AND source_id = ?1 \
+                   AND target_id = ?2 \
+                   AND predicate = ?3 \
+                   AND namespace = ?4",
+                params![subj_uuid.to_string(), obj_uuid.to_string(), predicate_label, ns],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            matches >= 1,
+            "{prefix} I3: no edges(assertion) for ({subj_uuid}, {obj_uuid}, {predicate_label})"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // I4. hebbian_links WHERE strength > 0 → edges(edge_kind='associative')
+    //     ≥1 row matching (source_id, target_id) in either direction
+    //     (unified canonicalizes to (min, max); legacy does not). Weight
+    //     and coactivation_count are explicitly NOT compared — the
+    //     divergence is documented in §4.3.
+    // -------------------------------------------------------------------
+    let mut stmt = conn
+        .prepare(
+            "SELECT source_id, target_id, strength FROM hebbian_links \
+             WHERE namespace = ?1 AND strength > 0.0",
+        )
+        .unwrap();
+    let legacy_hebbian: Vec<(String, String, f64)> = stmt
+        .query_map(params![ns], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(
+        !legacy_hebbian.is_empty(),
+        "{prefix} I4 precondition: namespace must have ≥1 hebbian_links row with strength>0"
+    );
+    for (a, b, _strength) in &legacy_hebbian {
+        let matches: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges \
+                 WHERE edge_kind = 'associative' \
+                   AND predicate = 'co_activated' \
+                   AND namespace = ?3 \
+                   AND ((source_id = ?1 AND target_id = ?2) \
+                     OR (source_id = ?2 AND target_id = ?1))",
+                params![a, b, ns],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            matches >= 1,
+            "{prefix} I4: no edges(associative,co_activated) for hebbian pair ({a}, {b})"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // I5. synthesis_provenance → edges(edge_kind='provenance', predicate='derived_from')
+    //     1:1 by id. T16 reuses the provenance record's id as the
+    //     unified edges.id, so this is a hard equality check. (Only
+    //     run if the namespace actually had synthesis activity —
+    //     store_raw hardcodes namespace='default', so non-default
+    //     namespaces will have zero rows on both sides, which is a
+    //     trivially-satisfied invariant.)
+    // -------------------------------------------------------------------
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, insight_id, source_id FROM synthesis_provenance \
+             WHERE insight_id IN (SELECT id FROM memories WHERE namespace = ?1)",
+        )
+        .unwrap();
+    let prov_rows: Vec<(String, String, String)> = stmt
+        .query_map(params![ns], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    for (prov_id, insight_id, source_id) in &prov_rows {
+        let (edge_kind, predicate, src, tgt): (String, String, String, String) = conn
+            .query_row(
+                "SELECT edge_kind, predicate, source_id, target_id FROM edges WHERE id = ?1",
+                params![prov_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap_or_else(|e| panic!("{prefix} I5: no edges row for provenance id={prov_id}: {e}"));
+        assert_eq!(edge_kind, "provenance", "{prefix} I5: wrong edge_kind for {prov_id}");
+        assert_eq!(predicate, "derived_from", "{prefix} I5: wrong predicate for {prov_id}");
+        assert_eq!(&src, insight_id, "{prefix} I5: source_id must be insight_id for {prov_id}");
+        assert_eq!(&tgt, source_id, "{prefix} I5: target_id must be source memory id for {prov_id}");
+    }
+}
+
+#[test]
+fn t17_phase_b_parity_invariants_across_namespaces() {
+    // Mixed workload across three namespaces:
+    //   - "default": full T12-T16 coverage (incl. synthesis, which is
+    //     namespace='default' only by virtue of store_raw hardcoding)
+    //   - "alpha", "beta": memory/entity/edge/hebbian only (T12-T14)
+    //
+    // The parity helper is run for each namespace independently. If
+    // any writer fails to dual-write or any namespace-scoping bug is
+    // introduced, the assertion will localize the failure by namespace
+    // and invariant id (I1-I5).
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t17.db").to_str().unwrap()).unwrap();
+
+    // Seed all three namespaces. Synthesis only in 'default'.
+    let _seed_default = t17_seed_namespace(&mut storage, "default", true);
+    let _seed_alpha = t17_seed_namespace(&mut storage, "alpha", false);
+    let _seed_beta = t17_seed_namespace(&mut storage, "beta", false);
+
+    // Run invariants per namespace. Order doesn't matter (the helper
+    // is purely read-only) but we run 'default' first so a synthesis
+    // regression is reported before the simpler-namespace failures.
+    t17_assert_parity_invariants_for_namespace(&storage, "default");
+    t17_assert_parity_invariants_for_namespace(&storage, "alpha");
+    t17_assert_parity_invariants_for_namespace(&storage, "beta");
+}
