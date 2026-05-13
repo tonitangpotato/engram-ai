@@ -347,3 +347,92 @@ fn heb_report(storage: &Storage) -> engramai::substrate::verify::DriverCounts {
         .find(|c| c.legacy_table == "hebbian_links")
         .expect("hebbian driver row")
 }
+
+// ─────────────────────────────────────────────────────────────────
+// I2 — Audit row consistency
+// ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn t27_audit_clean_db_reports_no_violations() {
+    let tmp = tempdir().unwrap();
+    let storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let report = verify_phase_c_parity(&storage, &VerifyOpts::default()).unwrap();
+    assert!(report.audit_violations.is_empty());
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_audit_post_backfill_is_consistent() {
+    // Real backfill driver writes a real audit row. Verifier must
+    // not flag it.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_only(&mut storage, &sample_record("mem-a"), "default");
+    seed_legacy_only(&mut storage, &sample_record("mem-b"), "default");
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    let report = verify_phase_c_parity(&storage, &VerifyOpts::default()).unwrap();
+    assert!(
+        report.audit_violations.is_empty(),
+        "real backfill must produce a consistent audit row: {:#?}",
+        report.audit_violations
+    );
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_audit_corrupt_row_flagged() {
+    // Inject a finished audit row whose counters DO NOT sum.
+    // Simulates the failure mode where a writer crashes between
+    // updating sub-counters and committing the final row, then
+    // some recovery script marks the row finished anyway.
+    let tmp = tempdir().unwrap();
+    let storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO backfill_runs
+               (run_id, legacy_table, rows_read,
+                rows_inserted, rows_skipped_existing, rows_failed,
+                started_at, finished_at, notes)
+               VALUES ('run-bad', 'memories', 10, 4, 2, 1, 0.0, 1.0, '{}')"#,
+            [],
+        )
+        .unwrap();
+
+    let report = verify_phase_c_parity(&storage, &VerifyOpts::default()).unwrap();
+    assert_eq!(report.audit_violations.len(), 1);
+    let v = &report.audit_violations[0];
+    assert_eq!(v.run_id, "run-bad");
+    assert_eq!(v.legacy_table, "memories");
+    assert_eq!(v.rows_read, 10);
+    assert_eq!(v.computed_sum, 7, "4 + 2 + 1");
+    assert!(!report.ok, "audit violation must drag report.ok to false");
+}
+
+#[test]
+fn t27_audit_in_progress_row_not_flagged() {
+    // A run with finished_at IS NULL is mid-execution. Its counters
+    // are allowed to be partial; the verifier MUST skip it.
+    let tmp = tempdir().unwrap();
+    let storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO backfill_runs
+               (run_id, legacy_table, rows_read,
+                rows_inserted, rows_skipped_existing, rows_failed,
+                started_at, finished_at, notes)
+               VALUES ('run-in-flight', 'memories', 100, 5, 0, 0, 0.0, NULL, '{}')"#,
+            [],
+        )
+        .unwrap();
+
+    let report = verify_phase_c_parity(&storage, &VerifyOpts::default()).unwrap();
+    assert!(
+        report.audit_violations.is_empty(),
+        "in-progress runs must NOT be flagged: {:#?}",
+        report.audit_violations
+    );
+    assert!(report.ok);
+}

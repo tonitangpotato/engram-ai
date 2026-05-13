@@ -148,11 +148,36 @@ pub struct FkViolation {
     pub missing_node_id: String,
 }
 
+/// Audit row counter inconsistency (invariant I2).
+///
+/// Surfaced for every completed `backfill_runs` row where
+/// `rows_read != rows_inserted + rows_skipped_existing + rows_failed`.
+/// In a healthy DB this list is empty — the driver code asserts the
+/// same invariant at runtime, so a violation here implies either
+/// (a) a crash between sub-counter writes and the final commit,
+/// (b) a future writer that bypasses the helper, or
+/// (c) manual editing of the audit table.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditViolation {
+    /// Offending `backfill_runs.run_id`.
+    pub run_id: String,
+    /// Source table the run targeted, for triage.
+    pub legacy_table: String,
+    pub rows_read: u64,
+    pub rows_inserted: u64,
+    pub rows_skipped_existing: u64,
+    pub rows_failed: u64,
+    /// `inserted + skipped + failed`. Should equal `rows_read`.
+    pub computed_sum: u64,
+}
+
 /// Full verification report.
 #[derive(Debug, Clone, Serialize)]
 pub struct VerificationReport {
     /// I1 per-driver count parity.
     pub counts: Vec<DriverCounts>,
+    /// I2 audit row inconsistencies. Empty == clean.
+    pub audit_violations: Vec<AuditViolation>,
     /// I5 FK closure violations. Empty == clean.
     pub fk_violations: Vec<FkViolation>,
     /// True iff every invariant the run was asked to check passed.
@@ -166,8 +191,9 @@ impl VerificationReport {
     /// inject-divergence row).
     pub fn recompute_ok(&mut self) {
         let counts_ok = self.counts.iter().all(|c| c.ok);
+        let audit_ok = self.audit_violations.is_empty();
         let fks_ok = self.fk_violations.is_empty();
-        self.ok = counts_ok && fks_ok;
+        self.ok = counts_ok && audit_ok && fks_ok;
     }
 }
 
@@ -184,10 +210,12 @@ pub fn verify_phase_c_parity(
     let ns = opts.namespace.as_deref();
 
     let counts = check_count_parity(conn, ns)?;
+    let audit_violations = check_audit_consistency(conn)?;
     let fk_violations = check_fk_closure(conn)?;
 
     let mut report = VerificationReport {
         counts,
+        audit_violations,
         fk_violations,
         ok: false,
     };
@@ -594,5 +622,52 @@ fn check_fk_closure(conn: &Connection) -> rusqlite::Result<Vec<FkViolation>> {
     }
 
     Ok(violations)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I2 — Audit row consistency
+// ─────────────────────────────────────────────────────────────────────
+
+/// Scan every completed (`finished_at IS NOT NULL`) row in
+/// `backfill_runs` and report any whose counters violate the sum
+/// invariant `rows_read == rows_inserted + rows_skipped_existing +
+/// rows_failed`.
+///
+/// In-progress runs (NULL `finished_at`) are skipped on purpose. A
+/// driver mid-execution will transiently report partial counts; only
+/// finished rows are guaranteed-final and therefore checkable.
+///
+/// SQL-side filter rather than fetch-then-filter so a large
+/// `backfill_runs` history stays cheap.
+fn check_audit_consistency(conn: &Connection) -> rusqlite::Result<Vec<AuditViolation>> {
+    let mut stmt = conn.prepare(
+        "SELECT run_id, legacy_table, rows_read, rows_inserted,
+                rows_skipped_existing, rows_failed
+         FROM backfill_runs
+         WHERE finished_at IS NOT NULL
+           AND rows_read <> (rows_inserted + rows_skipped_existing + rows_failed)",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let rows_read: i64 = row.get(2)?;
+        let rows_inserted: i64 = row.get(3)?;
+        let rows_skipped_existing: i64 = row.get(4)?;
+        let rows_failed: i64 = row.get(5)?;
+        let computed_sum =
+            (rows_inserted + rows_skipped_existing + rows_failed).max(0) as u64;
+        Ok(AuditViolation {
+            run_id: row.get(0)?,
+            legacy_table: row.get(1)?,
+            rows_read: rows_read.max(0) as u64,
+            rows_inserted: rows_inserted.max(0) as u64,
+            rows_skipped_existing: rows_skipped_existing.max(0) as u64,
+            rows_failed: rows_failed.max(0) as u64,
+            computed_sum,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
