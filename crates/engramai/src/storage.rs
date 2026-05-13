@@ -3070,32 +3070,78 @@ impl Storage {
         debug_assert_eq!(bytes.len(), dimensions * 4,
             "Blob size mismatch: {} bytes for {} dimensions", bytes.len(), dimensions);
         
-        let now = chrono::Utc::now().to_rfc3339();
-        
-        self.conn.execute(
+        let now_dt = chrono::Utc::now();
+        let now = now_dt.to_rfc3339();
+        // Same instant in epoch seconds (sub-second precision) for the
+        // unified `node_embeddings` table, whose `created_at` is `REAL`.
+        let now_epoch = now_dt.timestamp() as f64
+            + (now_dt.timestamp_subsec_nanos() as f64) / 1e9;
+
+        // Phase B (T20 follow-up) dual-write: every legacy
+        // `memory_embeddings` insert also lands in the unified
+        // `node_embeddings` table with `node_id = memory_id`. The FK
+        // to `nodes(id)` is satisfied because `Storage::add` already
+        // T12-dual-wrote the parent memory→nodes row (unconditional,
+        // not flag-gated), so by the time `store_embedding` runs the
+        // parent node always exists. See `insert_node_embedding_row`
+        // for the backfill counterpart (T20) — we deliberately do
+        // **not** call that helper here because its semantics are
+        // `INSERT OR IGNORE` (preserves whichever side wrote first,
+        // safe for re-runnable backfill), whereas live writes from
+        // `store_embedding` use `INSERT OR REPLACE` so that
+        // re-embedding a memory with a new vector cleanly overwrites
+        // the prior (memory_id, model) entry on both sides. Two
+        // statements share one transaction to keep both tables in
+        // lockstep.
+        let tx = self.conn.transaction()?;
+        tx.execute(
             r#"
             INSERT OR REPLACE INTO memory_embeddings (memory_id, model, embedding, dimensions, created_at)
             VALUES (?, ?, ?, ?, ?)
             "#,
             params![memory_id, model, bytes, dimensions as i64, now],
         )?;
-        
+        tx.execute(
+            r#"
+            INSERT OR REPLACE INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+            params![memory_id, model, bytes, dimensions as i64, now_epoch],
+        )?;
+        tx.commit()?;
+
         Ok(())
     }
     
     /// Get embedding for a memory using a specific model.
     ///
     /// Returns None if no embedding exists for this (memory_id, model) pair.
+    ///
+    /// **Phase D (T29.3)**: when `self.unified_substrate` is `true`,
+    /// reads from `node_embeddings` (keyed by `node_id`); otherwise
+    /// reads from legacy `memory_embeddings`. Both tables stay in
+    /// lockstep through `store_embedding`'s dual-write
+    /// (`memory_id == node_id` by T12 construction).
     pub fn get_embedding(&self, memory_id: &str, model: &str) -> Result<Option<Vec<f32>>, rusqlite::Error> {
         let model = Self::normalize_model_id(model);
-        let result: Option<Vec<u8>> = self.conn
-            .query_row(
-                "SELECT embedding FROM memory_embeddings WHERE memory_id = ? AND model = ?",
-                params![memory_id, model],
-                |row| row.get(0),
-            )
-            .optional()?;
-        
+        let result: Option<Vec<u8>> = if self.unified_substrate {
+            self.conn
+                .query_row(
+                    "SELECT embedding FROM node_embeddings WHERE node_id = ? AND model = ?",
+                    params![memory_id, model],
+                    |row| row.get(0),
+                )
+                .optional()?
+        } else {
+            self.conn
+                .query_row(
+                    "SELECT embedding FROM memory_embeddings WHERE memory_id = ? AND model = ?",
+                    params![memory_id, model],
+                    |row| row.get(0),
+                )
+                .optional()?
+        };
+
         Ok(result.map(|bytes| bytes_to_f32_vec(&bytes)))
     }
     
@@ -3103,22 +3149,42 @@ impl Storage {
     ///
     /// Returns (memory_id, embedding) pairs for the given model only.
     /// Cross-model comparison is undefined behavior per protocol.
+    ///
+    /// Filters to live (non-deleted, non-superseded) memories. Under
+    /// the unified path the same liveness predicate is applied via the
+    /// `memories` JOIN — `node_embeddings` itself has no liveness
+    /// columns, so we route through the legacy table-of-record. This
+    /// is intentional and bug-for-bug with the legacy reader: callers
+    /// already pre-filter by namespace upstream when needed.
     pub fn get_all_embeddings(&self, model: &str) -> Result<Vec<(String, Vec<f32>)>, rusqlite::Error> {
         let model = Self::normalize_model_id(model);
-        let mut stmt = self.conn.prepare(
-            r#"SELECT e.memory_id, e.embedding FROM memory_embeddings e
-            JOIN memories m ON e.memory_id = m.id
-            WHERE e.model = ? AND m.deleted_at IS NULL
-            AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
-        )?;
-        
-        let rows = stmt.query_map(params![model], |row| {
-            let memory_id: String = row.get(0)?;
-            let bytes: Vec<u8> = row.get(1)?;
-            Ok((memory_id, bytes_to_f32_vec(&bytes)))
-        })?;
-        
-        rows.collect()
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                r#"SELECT e.node_id, e.embedding FROM node_embeddings e
+                JOIN memories m ON e.node_id = m.id
+                WHERE e.model = ? AND m.deleted_at IS NULL
+                AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
+            )?;
+            let rows = stmt.query_map(params![model], |row| {
+                let memory_id: String = row.get(0)?;
+                let bytes: Vec<u8> = row.get(1)?;
+                Ok((memory_id, bytes_to_f32_vec(&bytes)))
+            })?;
+            rows.collect()
+        } else {
+            let mut stmt = self.conn.prepare(
+                r#"SELECT e.memory_id, e.embedding FROM memory_embeddings e
+                JOIN memories m ON e.memory_id = m.id
+                WHERE e.model = ? AND m.deleted_at IS NULL
+                AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
+            )?;
+            let rows = stmt.query_map(params![model], |row| {
+                let memory_id: String = row.get(0)?;
+                let bytes: Vec<u8> = row.get(1)?;
+                Ok((memory_id, bytes_to_f32_vec(&bytes)))
+            })?;
+            rows.collect()
+        }
     }
     
     /// Get embeddings for a specific namespace and model.
@@ -3136,23 +3202,38 @@ impl Storage {
         if ns == "*" {
             return self.get_all_embeddings(&model);
         }
-        
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT e.memory_id, e.embedding FROM memory_embeddings e
-            JOIN memories m ON e.memory_id = m.id
-            WHERE m.namespace = ? AND e.model = ? AND m.deleted_at IS NULL
-            AND (m.superseded_by IS NULL OR m.superseded_by = '')
-            "#
-        )?;
-        
-        let rows = stmt.query_map(params![ns, model], |row| {
-            let memory_id: String = row.get(0)?;
-            let bytes: Vec<u8> = row.get(1)?;
-            Ok((memory_id, bytes_to_f32_vec(&bytes)))
-        })?;
-        
-        rows.collect()
+
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT e.node_id, e.embedding FROM node_embeddings e
+                JOIN memories m ON e.node_id = m.id
+                WHERE m.namespace = ? AND e.model = ? AND m.deleted_at IS NULL
+                AND (m.superseded_by IS NULL OR m.superseded_by = '')
+                "#
+            )?;
+            let rows = stmt.query_map(params![ns, model], |row| {
+                let memory_id: String = row.get(0)?;
+                let bytes: Vec<u8> = row.get(1)?;
+                Ok((memory_id, bytes_to_f32_vec(&bytes)))
+            })?;
+            rows.collect()
+        } else {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT e.memory_id, e.embedding FROM memory_embeddings e
+                JOIN memories m ON e.memory_id = m.id
+                WHERE m.namespace = ? AND e.model = ? AND m.deleted_at IS NULL
+                AND (m.superseded_by IS NULL OR m.superseded_by = '')
+                "#
+            )?;
+            let rows = stmt.query_map(params![ns, model], |row| {
+                let memory_id: String = row.get(0)?;
+                let bytes: Vec<u8> = row.get(1)?;
+                Ok((memory_id, bytes_to_f32_vec(&bytes)))
+            })?;
+            rows.collect()
+        }
     }
     
     // === Soft-Delete / Lifecycle Methods ===
@@ -3259,18 +3340,29 @@ impl Storage {
     /// Used to find memories that need (re)embedding when switching models
     /// or during backfill operations.
     pub fn get_memories_without_embeddings(&self, model: &str) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT m.id FROM memories m
-            LEFT JOIN memory_embeddings e ON m.id = e.memory_id AND e.model = ?
-            WHERE e.memory_id IS NULL
-            "#
-        )?;
-        
-        let rows = stmt.query_map(params![model], |row| row.get(0))?;
-        rows.collect()
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT m.id FROM memories m
+                LEFT JOIN node_embeddings e ON m.id = e.node_id AND e.model = ?
+                WHERE e.node_id IS NULL
+                "#
+            )?;
+            let rows = stmt.query_map(params![model], |row| row.get(0))?;
+            rows.collect()
+        } else {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT m.id FROM memories m
+                LEFT JOIN memory_embeddings e ON m.id = e.memory_id AND e.model = ?
+                WHERE e.memory_id IS NULL
+                "#
+            )?;
+            let rows = stmt.query_map(params![model], |row| row.get(0))?;
+            rows.collect()
+        }
     }
-    
+
     /// Get embedding statistics, optionally filtered by model.
     pub fn embedding_stats(&self) -> Result<EmbeddingStats, rusqlite::Error> {
         let total_memories: usize = self.conn.query_row(
@@ -3278,27 +3370,43 @@ impl Storage {
             [],
             |row| row.get(0),
         )?;
-        
-        // Count distinct memory_ids with any embedding
-        let embedded_count: usize = self.conn.query_row(
-            "SELECT COUNT(DISTINCT memory_id) FROM memory_embeddings",
-            [],
-            |row| row.get(0),
-        )?;
-        
-        // Get the most common model
-        let model: Option<String> = self.conn.query_row(
-            "SELECT model FROM memory_embeddings GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        ).optional()?;
-        
-        let dimensions: Option<usize> = self.conn.query_row(
-            "SELECT dimensions FROM memory_embeddings LIMIT 1",
-            [],
-            |row| row.get::<_, i64>(0).map(|d| d as usize),
-        ).optional()?;
-        
+
+        let (embedded_count, model, dimensions) = if self.unified_substrate {
+            let embedded_count: usize = self.conn.query_row(
+                "SELECT COUNT(DISTINCT node_id) FROM node_embeddings",
+                [],
+                |row| row.get(0),
+            )?;
+            let model: Option<String> = self.conn.query_row(
+                "SELECT model FROM node_embeddings GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            ).optional()?;
+            let dimensions: Option<usize> = self.conn.query_row(
+                "SELECT dimensions FROM node_embeddings LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0).map(|d| d as usize),
+            ).optional()?;
+            (embedded_count, model, dimensions)
+        } else {
+            let embedded_count: usize = self.conn.query_row(
+                "SELECT COUNT(DISTINCT memory_id) FROM memory_embeddings",
+                [],
+                |row| row.get(0),
+            )?;
+            let model: Option<String> = self.conn.query_row(
+                "SELECT model FROM memory_embeddings GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            ).optional()?;
+            let dimensions: Option<usize> = self.conn.query_row(
+                "SELECT dimensions FROM memory_embeddings LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0).map(|d| d as usize),
+            ).optional()?;
+            (embedded_count, model, dimensions)
+        };
+
         Ok(EmbeddingStats {
             total_memories,
             embedded_count,
@@ -4997,13 +5105,23 @@ impl Storage {
     /// Used by association discovery when the caller doesn't know
     /// which model was used for a specific memory.
     pub fn get_embedding_for_memory(&self, memory_id: &str) -> Result<Option<Vec<f32>>, rusqlite::Error> {
-        let result: Option<Vec<u8>> = self.conn
-            .query_row(
-                "SELECT embedding FROM memory_embeddings WHERE memory_id = ?1 LIMIT 1",
-                params![memory_id],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let result: Option<Vec<u8>> = if self.unified_substrate {
+            self.conn
+                .query_row(
+                    "SELECT embedding FROM node_embeddings WHERE node_id = ?1 LIMIT 1",
+                    params![memory_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+        } else {
+            self.conn
+                .query_row(
+                    "SELECT embedding FROM memory_embeddings WHERE memory_id = ?1 LIMIT 1",
+                    params![memory_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+        };
         Ok(result.map(|bytes| bytes_to_f32_vec(&bytes)))
     }
 
@@ -7976,5 +8094,285 @@ mod tests {
             "SELECT COUNT(*) FROM engram_meta WHERE key='schema_version'",
             [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    // =============================================================
+    // T29.3 — Phase D embeddings read-switch.
+    //
+    // Pattern mirrors T29.1 (subscriptions) and T29.2
+    // (synthesis_provenance): open two `Storage` handles on the same
+    // SQLite file — one with `unified_substrate=false` (legacy reader),
+    // one with `true` (unified reader) — drive writes through one
+    // handle (which dual-writes to both tables), then assert both
+    // reader paths return byte-equivalent results.
+    //
+    // These tests pin three contracts:
+    //   1. **Writer parity** — every `store_embedding` call lands in
+    //      both `memory_embeddings` and `node_embeddings`, byte-equal.
+    //   2. **Reader parity** — each of the six switched readers
+    //      returns identical results across both paths.
+    //   3. **Table isolation** — the unified reader filters on
+    //      `node_embeddings` rows only; a stray `nodes` row without
+    //      an accompanying embedding row must not appear.
+    // =============================================================
+
+    fn t29_3_open_pair(dir: &std::path::Path) -> (Storage, Storage) {
+        let path = dir.join("t29_3.db");
+        // The legacy handle is constructed first so its `Storage::new`
+        // (which calls `migrate_unified_*`) sets up the unified schema
+        // and tables; the unified handle then opens the same file
+        // with `unified_substrate=true` to exercise the unified read
+        // path. Order doesn't matter functionally — migrations are
+        // idempotent — but doing it this way keeps the legacy default
+        // visible in the helper signature.
+        let legacy = Storage::new(&path).expect("legacy handle");
+        let unified = Storage::with_unified_substrate(&path, true)
+            .expect("unified handle");
+        (legacy, unified)
+    }
+
+    fn t29_3_seed_memory(s: &mut Storage, id: &str, ns: &str) {
+        let when = chrono::Utc::now();
+        let mut rec = make_record(id, "embedding test content", when);
+        s.add(&mut rec, ns).expect("seed memory row");
+    }
+
+    fn t29_3_seed_embedding(
+        s: &mut Storage,
+        memory_id: &str,
+        ns: &str,
+        model: &str,
+        emb: &[f32],
+    ) {
+        // Ensure parent memory row exists in BOTH legacy `memories`
+        // and unified `nodes` (T12 dual-write covers nodes
+        // unconditionally), satisfying `node_embeddings.node_id` FK.
+        t29_3_seed_memory(s, memory_id, ns);
+        s.store_embedding(memory_id, emb, model, emb.len())
+            .expect("dual-write embedding");
+    }
+
+    fn t29_3_sort_pairs(mut v: Vec<(String, Vec<f32>)>) -> Vec<(String, Vec<f32>)> {
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// Writer-side parity: a single `store_embedding` call writes
+    /// bit-identical rows to both legacy and unified tables (same id,
+    /// same model, same blob, same dimensions). Without this guarantee
+    /// the Phase D readers below would compare apples to oranges.
+    #[test]
+    fn t29_3_dual_write_writer_parity() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, _unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        let emb = vec![0.1f32, 0.2, 0.3, 0.4];
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &emb);
+
+        let legacy_blob: Vec<u8> = legacy.conn.query_row(
+            "SELECT embedding FROM memory_embeddings WHERE memory_id='m1' AND model=?",
+            params![model],
+            |r| r.get(0),
+        ).unwrap();
+        let unified_blob: Vec<u8> = legacy.conn.query_row(
+            "SELECT embedding FROM node_embeddings WHERE node_id='m1' AND model=?",
+            params![model],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(legacy_blob, unified_blob,
+            "T29.3 dual-write: memory_embeddings and node_embeddings blobs must match byte-for-byte");
+
+        // Re-store with a new vector — INSERT OR REPLACE semantics
+        // must update BOTH sides, not leave a stale row behind on one.
+        let emb2 = vec![0.9f32, 0.8, 0.7, 0.6];
+        legacy.store_embedding("m1", &emb2, model, emb2.len()).unwrap();
+        let legacy_blob2: Vec<u8> = legacy.conn.query_row(
+            "SELECT embedding FROM memory_embeddings WHERE memory_id='m1' AND model=?",
+            params![model],
+            |r| r.get(0),
+        ).unwrap();
+        let unified_blob2: Vec<u8> = legacy.conn.query_row(
+            "SELECT embedding FROM node_embeddings WHERE node_id='m1' AND model=?",
+            params![model],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(legacy_blob2, unified_blob2,
+            "T29.3 re-store: REPLACE must overwrite both sides");
+        assert_ne!(legacy_blob, legacy_blob2, "sanity: blob actually changed");
+    }
+
+    #[test]
+    fn t29_3_get_embedding_unified_matches_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        let emb = vec![0.5f32, 0.25, 0.125, 0.0625];
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &emb);
+
+        let from_legacy = legacy.get_embedding("m1", model).unwrap();
+        let from_unified = unified.get_embedding("m1", model).unwrap();
+        assert_eq!(from_legacy, from_unified);
+        assert_eq!(from_unified, Some(emb));
+
+        // Wrong model returns None on both paths.
+        assert_eq!(legacy.get_embedding("m1", "openai/text-embed").unwrap(), None);
+        assert_eq!(unified.get_embedding("m1", "openai/text-embed").unwrap(), None);
+
+        // Unknown memory id returns None on both paths.
+        assert_eq!(legacy.get_embedding("missing", model).unwrap(), None);
+        assert_eq!(unified.get_embedding("missing", model).unwrap(), None);
+    }
+
+    #[test]
+    fn t29_3_get_embedding_for_memory_unified_matches_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        let emb = vec![1.0f32, 2.0, 3.0];
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &emb);
+
+        assert_eq!(
+            legacy.get_embedding_for_memory("m1").unwrap(),
+            unified.get_embedding_for_memory("m1").unwrap()
+        );
+        assert_eq!(unified.get_embedding_for_memory("m1").unwrap(), Some(emb));
+        assert_eq!(legacy.get_embedding_for_memory("nope").unwrap(), None);
+        assert_eq!(unified.get_embedding_for_memory("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn t29_3_get_all_embeddings_unified_matches_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &vec![0.1f32, 0.2]);
+        t29_3_seed_embedding(&mut legacy, "m2", "default", model, &vec![0.3f32, 0.4]);
+        t29_3_seed_embedding(&mut legacy, "m3", "other-ns", model, &vec![0.5f32, 0.6]);
+
+        let mut legacy_all = legacy.get_all_embeddings(model).unwrap();
+        let mut unified_all = unified.get_all_embeddings(model).unwrap();
+        legacy_all = t29_3_sort_pairs(legacy_all);
+        unified_all = t29_3_sort_pairs(unified_all);
+        assert_eq!(legacy_all, unified_all);
+        assert_eq!(unified_all.len(), 3);
+
+        // Soft-delete a memory — both paths must drop it (liveness
+        // predicate is on `memories`, JOINed identically by both).
+        legacy.soft_delete("m1").unwrap();
+        let l = t29_3_sort_pairs(legacy.get_all_embeddings(model).unwrap());
+        let u = t29_3_sort_pairs(unified.get_all_embeddings(model).unwrap());
+        assert_eq!(l, u);
+        assert_eq!(u.len(), 2);
+    }
+
+    #[test]
+    fn t29_3_get_embeddings_in_namespace_unified_matches_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        t29_3_seed_embedding(&mut legacy, "m1", "alpha", model, &vec![0.1f32, 0.2]);
+        t29_3_seed_embedding(&mut legacy, "m2", "alpha", model, &vec![0.3f32, 0.4]);
+        t29_3_seed_embedding(&mut legacy, "m3", "beta", model, &vec![0.5f32, 0.6]);
+
+        let l_alpha = t29_3_sort_pairs(legacy.get_embeddings_in_namespace(Some("alpha"), model).unwrap());
+        let u_alpha = t29_3_sort_pairs(unified.get_embeddings_in_namespace(Some("alpha"), model).unwrap());
+        assert_eq!(l_alpha, u_alpha);
+        assert_eq!(u_alpha.len(), 2);
+
+        // Wildcard delegates to get_all_embeddings — also must match.
+        let l_star = t29_3_sort_pairs(legacy.get_embeddings_in_namespace(Some("*"), model).unwrap());
+        let u_star = t29_3_sort_pairs(unified.get_embeddings_in_namespace(Some("*"), model).unwrap());
+        assert_eq!(l_star, u_star);
+        assert_eq!(u_star.len(), 3);
+
+        // Unknown namespace → empty on both paths.
+        let l_none: Vec<_> = legacy.get_embeddings_in_namespace(Some("ghost"), model).unwrap();
+        let u_none: Vec<_> = unified.get_embeddings_in_namespace(Some("ghost"), model).unwrap();
+        assert_eq!(l_none, u_none);
+        assert!(u_none.is_empty());
+    }
+
+    #[test]
+    fn t29_3_get_memories_without_embeddings_unified_matches_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        // m1 has embedding, m2 does not.
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &vec![0.1f32, 0.2]);
+        t29_3_seed_memory(&mut legacy, "m2", "default");
+
+        let mut l = legacy.get_memories_without_embeddings(model).unwrap();
+        let mut u = unified.get_memories_without_embeddings(model).unwrap();
+        l.sort();
+        u.sort();
+        assert_eq!(l, u);
+        assert_eq!(u, vec!["m2".to_string()]);
+
+        // Different model: both m1 AND m2 should appear (neither has
+        // an embedding under the other model).
+        let mut l2 = legacy.get_memories_without_embeddings("openai/text-embed").unwrap();
+        let mut u2 = unified.get_memories_without_embeddings("openai/text-embed").unwrap();
+        l2.sort();
+        u2.sort();
+        assert_eq!(l2, u2);
+        assert_eq!(u2, vec!["m1".to_string(), "m2".to_string()]);
+    }
+
+    #[test]
+    fn t29_3_embedding_stats_unified_matches_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model_a = "ollama/nomic-embed-text";
+        let model_b = "openai/text-embed";
+        // Two memories under model A, one under model B.
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model_a, &vec![0.1f32, 0.2]);
+        t29_3_seed_embedding(&mut legacy, "m2", "default", model_a, &vec![0.3f32, 0.4]);
+        // m3: same memory under model B
+        t29_3_seed_embedding(&mut legacy, "m3", "default", model_b, &vec![0.5f32, 0.6]);
+
+        let l = legacy.embedding_stats().unwrap();
+        let u = unified.embedding_stats().unwrap();
+        assert_eq!(l.total_memories, u.total_memories);
+        assert_eq!(l.embedded_count, u.embedded_count);
+        assert_eq!(l.embedded_count, 3); // distinct memory_ids
+        assert_eq!(l.model, u.model);
+        // Top model is model_a (2 rows) — pinned for both paths.
+        assert_eq!(u.model.as_deref(), Some(model_a));
+        assert_eq!(l.dimensions, u.dimensions);
+        assert_eq!(u.dimensions, Some(2));
+    }
+
+    /// Pin the table-isolation contract: a `nodes` row that has no
+    /// matching `node_embeddings` entry must not bleed into unified
+    /// reader output. Without this guard, a future refactor that
+    /// joins through `nodes` instead of `node_embeddings` would
+    /// silently surface entity / topic / insight nodes alongside
+    /// memory embeddings.
+    #[test]
+    fn t29_3_unified_path_ignores_nodes_without_embedding_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        // Seed one memory with an embedding.
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &vec![0.1f32, 0.2]);
+
+        // Inject a stray entity node — no embedding row attached.
+        // (This mimics what T21 backfill writes for `entity` nodes;
+        // we don't reuse the helper to keep this test independent of
+        // backfill's evolving column set.)
+        legacy.conn.execute(
+            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+             VALUES ('ent-1', 'entity', 'default', '', ?, ?)",
+            params![now_f64(), now_f64()],
+        ).unwrap();
+
+        let unified_all = unified.get_all_embeddings(model).unwrap();
+        assert_eq!(unified_all.len(), 1);
+        assert_eq!(unified_all[0].0, "m1");
+        // Sanity: `embedding_stats` doesn't count the entity either,
+        // because COUNT(DISTINCT node_id) ranges over node_embeddings,
+        // not nodes.
+        let stats = unified.embedding_stats().unwrap();
+        assert_eq!(stats.embedded_count, 1);
     }
 }
