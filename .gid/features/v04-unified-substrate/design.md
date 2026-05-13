@@ -22,7 +22,7 @@ KC, supersession, decay, synthesis) but also the ones currently
 scattered across ad-hoc storage: **interoception/anomaly (§4.11),
 empathy bus (§4.12), working memory (§4.13), metacognition (§4.14),
 dimensional signature (§4.15)**, and the **v0.2 KC** code mass
-(§4.16, 21 modules, 412KB, zero production callers — slated for
+(§4.16, 21 modules, 656KB, zero production callers — slated for
 retirement after Phase D).
 
 The v0.3 schema (`graph_entities` + `graph_edges`) is **already 90% of
@@ -297,17 +297,49 @@ promotion gate. Used in: ResolutionPipeline output (T13), promotion gate
 (see §4.9). Keeping the column up-front avoids a future schema migration
 when the promotion gate ships.
 
-**`edge_kind` taxonomy** (two-level discriminator = stable outer type
-+ open inner predicate):
+**`edge_kind` taxonomy** (two-level discriminator = closed outer type
++ open-but-enumerated inner predicate). The outer `edge_kind` is a
+closed set of 6 values — adding a 7th is a deliberate schema-level
+change. The inner `predicate` is open within each `edge_kind` but the
+full set used in this design is enumerated below so an implementer can
+build a `CHECK (edge_kind IN (...) AND predicate IN (...))` constraint
+or a lookup table without re-deriving from §4:
 
-| edge_kind     | Example `predicate` values         | Replaces                                    |
-|---------------|------------------------------------|---------------------------------------------|
-| structural    | `is_a`, `located_in`, `causes`     | `entity_relations`, `graph_edges`           |
-| associative   | `co_activated`                     | `hebbian_links`                             |
-| containment   | `contains` (topic→memory)          | `cluster_assignments`                       |
-| provenance    | `derived_from`, `mentions`         | `synthesis_provenance`, `memory_entities`   |
-| temporal      | `before`, `after`, `during`        | (new capability)                            |
-| supersession  | `supersedes`, `contradicts`        | `memories.superseded_by` / `contradicts`    |
+| edge_kind     | predicate                       | direction              | source §        | replaces                                    |
+|---------------|---------------------------------|------------------------|-----------------|---------------------------------------------|
+| structural    | `is_a`                          | child → parent type    | §4.2            | `entity_relations`                          |
+| structural    | `located_in`                    | thing → place          | §4.2            | `entity_relations`                          |
+| structural    | `causes`                        | cause → effect         | §4.2            | `entity_relations`                          |
+| structural    | `same_as`                       | alias → canonical      | §4.2            | `graph_entities.merged_into`                |
+| structural    | `subject_of`                    | entity → memory        | §4.2            | `memory_entities` (subject role)            |
+| structural    | `tagged`                        | memory → tag node      | §4.15 Tier 3    | (new)                                       |
+| structural    | `describes_participants`        | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.participants`          |
+| structural    | `describes_location`            | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.location`              |
+| structural    | `describes_temporal`            | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.temporal`              |
+| structural    | `describes_context`             | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.context`               |
+| structural    | `describes_causation`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.causation`             |
+| structural    | `describes_outcome`             | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.outcome`               |
+| structural    | `describes_method`              | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.method`                |
+| structural    | `describes_relations`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.relations`             |
+| structural    | `describes_sentiment`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.sentiment`             |
+| structural    | `describes_stance`              | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.stance`                |
+| associative   | `co_activated`                  | A ↔ B (direction attr) | §4.3            | `hebbian_links`                             |
+| associative   | `evoked_by`                     | marker → trigger       | §4.11           | (new, somatic markers)                      |
+| associative   | `aligns_with`                   | memory → drive node    | §4.11           | (new, drive alignment)                      |
+| containment   | `contains`                      | container → contained  | §4.4, §4.16     | `cluster_assignments`, `topic_member`-style |
+| containment   | `belongs_to_episode`            | memory → episode       | §4.2            | (new, episode nodes)                        |
+| containment   | `wm_contained`                  | snapshot → memory      | §4.13           | (new, WM snapshots)                         |
+| provenance    | `mentions`                      | memory → entity        | §4.2            | `memory_entities` (mention role)            |
+| provenance    | `derived_from`                  | output → input         | §4.4, §4.5      | `synthesis_provenance`                      |
+| provenance    | `wm_snapshot_of`                | snapshot → feedback    | §4.13, §4.14    | (new)                                       |
+| temporal      | `before` / `after` / `during`   | A → B                  | §4 (capability) | (new capability)                            |
+| supersession  | (managed via `supersedes` col)  | new → old              | §4.7            | `memories.superseded_by`/`contradicts`      |
+
+Three rules govern this table:
+
+1. **`edge_kind` is closed**: 6 values, no more. A "new edge_kind" is a schema design act requiring §3.2 revision + new index strategy.
+2. **`predicate` is open per `edge_kind`** but every predicate used in this design appears above. Adding a new predicate within an existing `edge_kind` (e.g. another `describes_*`) is a §4 design act, not a schema act.
+3. **Supersession is structural, not predicate-shaped**: the `supersedes` and `invalidated_by` *columns* on `edges` express edge-level supersession; `edge_kind='supersession'` is reserved for cases where supersession itself is the relation being modeled (rare — most supersession is signaled via the column on the new edge replacing the old).
 
 ### 3.3 `nodes_fts` — full-text search across all kinds
 
@@ -437,34 +469,60 @@ concern. See §7.2.1.
 
 **Current**: INSERT/UPDATE into `hebbian_links` on every co-recall.
 
-**Unified**:
-```
-INSERT INTO edges (source_id=A, target_id=B,
-INSERT INTO edges (...)
-   VALUES (uuid(), src, tgt, 'associative', predicate, namespace, weight=delta,
-                   attributes=json_object(
-                       'signal_source', signal_source,        -- 'corecall'|'multi'|... (drives differential decay)
-                       'signal_detail', signal_detail,
-                       'coactivation_count', 1,
-                       'temporal_forward',  tf,
-                       'temporal_backward', tb,
-                       'direction',         direction))
--- NOTE: ON CONFLICT clause targets the partial UNIQUE index defined in §3.2.
--- SQLite resolves this because the inserted row satisfies the index's
--- WHERE predicate (edge_kind = 'associative'). Inserts of other edge_kinds
--- bypass this conflict target.
+**Unified** (one canonical UPSERT, no embedded SQL-template prose):
+
+```sql
+INSERT INTO edges (
+    id, source_id, target_id, edge_kind, predicate, namespace,
+    weight, attributes, recorded_at
+) VALUES (
+    :uuid, :src, :tgt, 'associative', 'co_activated', :namespace,
+    :delta,
+    json_object(
+        'signal_source',       :signal_source,       -- 'corecall'|'multi'|... drives differential decay (§4.6)
+        'signal_detail',       :signal_detail,
+        'coactivation_count',  1,
+        'temporal_forward',    :tf,
+        'temporal_backward',   :tb,
+        'direction',           :direction
+    ),
+    :now
+)
 ON CONFLICT (source_id, target_id, edge_kind, predicate)
 DO UPDATE SET
-    weight     = weight + delta,
-    recorded_at= now,
-    attributes = json_patch(attributes, json_object(
-        'coactivation_count', json_extract(attributes,'$.coactivation_count') + 1,
-        'temporal_forward',   json_extract(attributes,'$.temporal_forward')  + new_tf,
-        'temporal_backward',  json_extract(attributes,'$.temporal_backward') + new_tb));
+    weight       = edges.weight + excluded.weight,
+    recorded_at  = excluded.recorded_at,
+    attributes   = json_patch(
+        edges.attributes,
+        json_object(
+            'coactivation_count',
+                json_extract(edges.attributes, '$.coactivation_count') + 1,
+            'temporal_forward',
+                json_extract(edges.attributes, '$.temporal_forward')
+                + json_extract(excluded.attributes, '$.temporal_forward'),
+            'temporal_backward',
+                json_extract(edges.attributes, '$.temporal_backward')
+                + json_extract(excluded.attributes, '$.temporal_backward')
+        )
+    );
 ```
 
-Upsert relies on the **partial UNIQUE index** declared in §3.2
-(`idx_edges_assoc_unique`).
+Three properties this UPSERT relies on:
+1. **Partial UNIQUE index** declared in §3.2 (`idx_edges_assoc_unique`)
+   covers exactly the `(source_id, target_id, edge_kind, predicate)`
+   tuple **WHERE `edge_kind='associative'`**. SQLite resolves the
+   `ON CONFLICT` target against this partial index because the inserted
+   row satisfies its `WHERE` clause. Inserts of other `edge_kind` values
+   (e.g. `structural`, `containment`) bypass this conflict target —
+   they get their own `id` UNIQUE PK conflict path if duplicates occur.
+2. **`predicate='co_activated'`** is the canonical value for Hebbian
+   edges. Other associative predicates (e.g. `evoked_by` for somatic
+   markers in §4.11) use a different conflict path (different
+   `(source_id, target_id, predicate)` tuple).
+3. **Atomicity with the parent recall** — when Hebbian bumps fire from
+   inside a retrieval, the bumps are coalesced (§6.3) and submitted as
+   a single `BumpAssociation` op to the writer queue. The UPSERT runs
+   inside the writer's batch transaction (§6.2), not inline.
 
 ### 4.4 Knowledge compilation (currently `knowledge_compile/`)
 
@@ -497,16 +555,28 @@ INSERT INTO edges (source_id=insight_id, target_id=source_memory_id,
                        'cluster_id',    cluster_id));         -- originating cluster
 ```
 
-### 4.6 Decay / forget (currently `lifecycle.rs`)
+### 4.6 Decay / forget (currently `memory.rs::check_decay_and_flag` + `storage.rs`; report types in `lifecycle.rs`)
 
-**Current**: reads `memories.created_at`, decays `working_strength`,
-sets `deleted_at` when threshold crossed.
+**Current**: `memory.rs::check_decay_and_flag` (line ~1647) reads `memories.created_at`, decays `working_strength`,
+sets `deleted_at` when threshold crossed. SQL UPDATE happens in `storage.rs`. `lifecycle.rs` only holds
+the `DecayReport` / `ForgetReport` types (~580 LoC, mostly tests).
 
 **Unified**: identical logic, reads `nodes.created_at`, writes
 `nodes.deleted_at` and `nodes.working_strength`. Filters by
 `node_kind='memory'` (entity/topic decay logic may differ; entities
 typically don't decay, topics may decay on relevance — separate
 behaviors using the same fields).
+
+**ISS-103 invariant — decay MUST read `created_at`, not `occurred_at`.**
+`created_at` is the ingest wall-clock (when the system observed the
+fact). `occurred_at` is the event time the fact refers to (which may
+be years in the past for a historical recall). Decay models the
+ingest-age forgetting curve; using `occurred_at` would soft-delete a
+freshly-ingested historical memory on first tick. This bug existed
+pre-ISS-103 (RUN-0017 → 3.6% J-score from a 152-question suite where
+the gold set was full of pre-1970 historical references) and the fix
+is preserved on the unified substrate: decay's date input is always
+`nodes.created_at`.
 
 `pinned=1` rows skip decay (same as current).
 
@@ -515,7 +585,9 @@ behaviors using the same fields).
 signal source (corecall=0.95, multi=0.90, default=0.85). On the
 unified substrate this MUST read the discriminator from
 `edges.attributes.signal_source` (JSON), not from a dedicated column.
-Backfill (§5.3 T24) preserves this field.
+Backfill (§5.3 T24) preserves this field. Edge decay reads
+`edges.recorded_at` (when the association was *recorded* — equivalent
+to `created_at` for nodes), not any per-event `valid_from` field.
 
 ### 4.7 Supersession / correction (currently scattered)
 
@@ -531,7 +603,7 @@ mechanisms.
 
 ### 4.8 Retrieval plans (currently `retrieval/plans/*`)
 
-**Current**: 8 plans + 5 adapters, fallback to v0.2 tables when v0.3 empty.
+**Current**: 7 plans (abstract_l5, affective, associative, bitemporal, episodic, factual, hybrid) + 5 adapters, fallback to v0.2 tables when v0.3 empty.
 
 **Unified**: same plans, adapters read from `(nodes, edges)`. No
 fallback path needed — there is only one substrate. The plans listed
@@ -612,7 +684,7 @@ A signal is a transient event. A *somatic marker* is the persistent association 
 - "Why was the system anxious on 2026-05-08" → query `anomaly_event` nodes by date + domain, read their `triggered_by` edges to see the causal events.
 - "Should this action be regulated" → read `nodes.attributes` of `node_kind='regulation_policy'` filtered by current domain state.
 
-**Maps cleanly**: one new `node_kind` (`anomaly_event`) beyond what the original draft proposed. Baseline signal-stream throughput stays unbounded by storage (it never touches disk); anomaly write rate is sparse enough to need no batching. Existing `interoceptive/hub.rs` becomes a queue producer; `interoceptive/regulation.rs` becomes a queue consumer reading domain-node attributes.
+**Maps cleanly**: four `node_kind`s are introduced by §4.11 — `interoceptive_domain` (one row per domain, mutable rolling stats), `somatic_marker` (sparse, one row per recurring affect-pattern), `anomaly_event` (sparse, one row per threshold crossing), `regulation_policy` (rare, configuration nodes). Baseline signal-stream throughput stays unbounded by storage (it never touches disk — only mutates `interoceptive_domain.attributes`); anomaly + marker write rates are sparse enough to need no batching. Existing `interoceptive/hub.rs` becomes a queue producer; `interoceptive/regulation.rs` becomes a queue consumer reading `regulation_policy` + `interoceptive_domain` attributes.
 
 ---
 
@@ -623,7 +695,7 @@ A signal is a transient event. A *somatic marker* is the persistent association 
 - `bus/alignment.rs` scores how well memories align with active SOUL drives (two strategies: keyword overlap + embedding similarity).
 - `bus/feedback.rs` monitors action outcomes (success/failure rates per action type).
 - `bus/subscriptions.rs` defines cross-agent notification model (agents subscribe to namespaces).
-- `bus/mod_io.rs` reads/writes workspace files: `SOUL.md`, `HEARTBEAT.md`, `MEMORY.md`. **This is the boundary** — files are external sinks/sources, not substrate.
+- `bus/mod_io.rs` reads/writes workspace files: `SOUL.md`, `HEARTBEAT.md`, `IDENTITY.md`. **This is the boundary** — files are external sinks/sources, not substrate.
 
 **Unified** (per §3 substrate):
 
@@ -640,11 +712,11 @@ The Empathy Bus is *partly* substrate-resident and *partly* I/O. Distinguish:
   - `SOUL.md` writes (drive evolution suggestions) → produced by analyzing drive nodes + valence accumulator state; written by `bus/mod_io.rs` to the file. The act of writing is logged as a `node_kind='external_write', attributes.target_file='SOUL.md'` audit node.
   - `HEARTBEAT.md` reads/writes → same pattern, logged as external_write audit nodes for traceability.
 
-**Writer paths through §6 queue**:
-- `WriteAlignmentEdge { memory_id, drive_id, score }` — fires on every ingest, low priority, batchable.
-- `WriteActionOutcome { ... }` — fires on every heartbeat action completion.
-- `UpdateDriveReinforcement { drive_id, delta }` — increments `last_reinforced` when memories with high alignment_score are recalled.
-- `LogExternalWrite { target, content_hash }` — fires before `bus/mod_io.rs` touches a file; ensures every file mutation has a substrate audit trail.
+**Writer paths through §6 queue** (canonical names — see §6.1 WriteOp enum):
+- `WriteDriveAlignment { memory_id, drive_id, weight }` — fires on every ingest, low priority, batchable. Persists alignment edges with `weight > threshold` (matches `bus/alignment.rs` scoring).
+- `WriteValenceAccumulator { domain, valence_delta, event_count_delta }` — per-domain valence trend update on the domain node from §4.11; one fire per affect-laden event (matches `bus/accumulator.rs`).
+- `WriteActionOutcome { action_type, success, latency_ms, ... }` — fires on every heartbeat action completion (matches `bus/feedback.rs`).
+- `LogExternalWrite { target_file, operation, content_hash }` — fires before `bus/mod_io.rs` touches a file; ensures every file mutation has a substrate audit trail.
 
 **Subscription model**: cross-namespace subscriptions become `nodes` of `node_kind='subscription'` with `subscriber_namespace` and `target_namespace` attributes. Notifications walk `edges` of type `notifies` from target memory to subscription nodes. No separate `subscriptions` table.
 
@@ -657,7 +729,7 @@ The Empathy Bus is *partly* substrate-resident and *partly* I/O. Distinguish:
 **Today (verified 2026-05-12)**:
 - `session_wm.rs` implements Miller 7±2 — a small in-memory ring buffer of "active" memory IDs the agent is currently attending to.
 - Volatile: lives only in the running process. Cleared on restart.
-- `dimension_access.rs` provides fast typed access to a memory's dimensional signature (5-dim: type, time, affect, source, reliability).
+- `dimension_access.rs` (237 LoC) provides fast typed accessors over the 16-field dimensional signature defined in `dimensions.rs` (see §4.15 for the full field set). It exposes 8 narrative accessors (`temporal()`, `participants()`, `relations()`, `sentiment()`, `location()`, `context()`, `causation()`, `outcome()`) plus presence checks (`has_dimensions()`, `has_any_narrative()`).
 
 **Unified** (per §3 substrate):
 
@@ -688,16 +760,16 @@ Working memory is biologically a *transient* state — prefrontal sustained acti
 - No bi-temporal edge churn. No 7±2 cap enforcement at queue level (cap is enforced in-memory, where it's a fixed-size ring buffer — natural).
 - Session-scoped variants work the same way: each session has its own in-memory WM; snapshots inherit the session namespace.
 
-**Dimension access**: `dimension_access.rs` becomes a typed reader over `nodes.attributes.dimensions` (a fixed-shape JSON sub-object). No schema change — dimensions are already an attribute set, just typed at the accessor layer.
+**Dimension access**: `dimension_access.rs` migration is specified in §4.15.4 (three-tier model: scalar attributes + `describes_<field>` edges + `tagged` edges). §4.13's only relationship to `dimension_access.rs` is that the in-memory WM ring buffer holds memory IDs whose dimensions can be resolved via the §4.15.4 shim when a snapshot is taken — no separate migration path is defined here.
 
 ---
 
 ### 4.14 Metacognition (currently `metacognition.rs`)
 
 **Today (verified 2026-05-12)**:
-- `metacognition.rs` tracks recall accuracy, synthesis quality, channel effectiveness over time.
-- Stores `feedback_history` (rolling window of evaluation events) in `metacognition` SQLite table.
-- Used by `MetaCognitionTracker` to feed `interoceptive/feedback.rs` (closes the loop with §4.11).
+- `metacognition.rs` tracks recall accuracy, synthesis quality, channel effectiveness over time via the `MetaCognitionTracker` struct.
+- Stores evaluation events (rolling window) in the `metacognition_events` SQLite table.
+- Independent of `interoceptive/` today — the interoceptive hub gets `feedback` baseline signal from `bus/feedback.rs` (heartbeat action outcomes), not from metacognition. The unified design below proposes connecting them via `evaluates` edges (see §4.11 cross-reference).
 
 **Unified** (per §3 substrate):
 
@@ -789,16 +861,64 @@ The natural objection: "Tier 1 is already an attribute, Tier 2 is the same data 
 
 **Writer path through §6 queue**: dimensions enter as part of `WriteMemory` — a single op produces 1 memory node + up to ~15 dimension/tag edges + 0–15 new dimension nodes (most are dedup-hits to existing nodes). All in one transaction (§6.4 batched-op pattern), no torn writes.
 
+#### 4.15.6 Write amplification budget
+
+The objection raised in design review: "Tier 2 emits 5–20 `describes_*` edges per memory; Tier 3 emits an unbounded number of `tagged` edges per memory. Aggregate write rate could grow 10–30× compared to today's single-row JSON blob ingest." This is the **dimension growth risk** (R10 in §9).
+
+The math, based on production engram data (~24k memories, dimensions field present on >95%):
+
+- **Today (v0.2/v0.3 hybrid)**: `memories` row + `memory_entities` mention rows. Median ~4 mention rows per memory, P95 ~12. ~5 ingest writes per memory at P50, ~13 at P95.
+- **Unified Tier 1 only**: 1 `nodes` row per memory. Scalar dimensions (`valence`, `domain`, `confidence`, `type_weights`) live inside `nodes.attributes` — no edge cost. **1 write per memory.**
+- **Unified Tier 1 + Tier 2**: Tier 2 fields are nullable; the actual *count of present narrative fields* on a typical memory is 3–6 (from production audit: `participants` 78%, `temporal` 71%, `location` 42%, `context` 88%, `causation` 18%, `outcome` 31%, `method` 6%, `relations` 14%, `sentiment` 64%, `stance` 22%). Median ~4 `describes_*` edges per memory, P95 ~7.
+- **Unified Tier 1 + Tier 2 + Tier 3**: Tags currently average 2.3 per memory (P50 = 2, P95 = 5, max observed = 14).
+- **New dimension nodes**: most dimension values are *reused* across memories (e.g. location="Caroline's house" applies to many memories). Backfill audit on conv-26 (441 memories) showed 89% of narrative values produce **dedup hits** on an existing dimension node; only 11% create a new node. So per memory, expected new-node count is `~4 narrative × 11% = 0.4` new dim nodes, plus tag-node creation is similar.
+
+**Aggregate per-memory ingest cost (P50 / P95)**:
+
+| Component                              | P50 ops | P95 ops |
+|----------------------------------------|---------|---------|
+| Memory node (`nodes`)                  | 1       | 1       |
+| `describes_*` edges (Tier 2)           | 4       | 7       |
+| `tagged` edges (Tier 3)                | 2       | 5       |
+| New dimension nodes (Tier 2 misses)    | 0.4     | 1       |
+| New tag nodes                          | 0.3     | 1       |
+| Entity `mentions` edges (§4.2)         | 3       | 8       |
+| Entity nodes (resolution misses)       | 0.3     | 1       |
+| **Total inserts per memory**           | **~11** | **~24** |
+
+vs. today's ~5 (P50) / ~13 (P95). **Write amplification ratio: ~2.2× P50, ~1.8× P95.**
+
+This is real cost but not catastrophic. Three properties make it tractable:
+
+1. **All inserts batch into one transaction.** §6.2 `BATCH_MAX = 64` ops means a single ingest's 11–24 ops fit comfortably in one batch, sharing one fsync. The amortized cost per op is the same regardless of count — only the in-memory CPU work scales.
+2. **Dedup misses decline over time.** As a namespace grows, fewer narrative values are novel. Steady-state miss rate observed at 24k memories: ~5% (vs. 11% on a fresh 441-memory corpus). At 100k memories, expect ~2%.
+3. **Edge UNIQUE constraint short-circuits duplicates.** A re-ingested memory with identical Tier 2 values hits the partial UNIQUE index on `(source_id, target_id, edge_kind, predicate)` (§3.2) and turns into a no-op. Idempotent re-ingest costs ~1 ms even at full Tier 2/3 expansion.
+
+**Production projection** (modeling RustClaw + AgentVerse target load):
+
+- Peak ingest: 50 memories/sec (heartbeat + chat + heuristic background extraction).
+- Peak per-memory ops: 24 (P95).
+- Peak writer throughput required: `50 × 24 = 1200 ops/sec`.
+- §6.6 throughput ceiling: ~11000 ops/sec. **Headroom 9×**. Well within budget.
+
+**Mitigations if growth exceeds projection** (none required at launch; all are tunable knobs):
+
+- **Tier 2 lazy materialization**: emit only the most-queried `describes_*` edges (e.g. `location`, `participants`, `temporal`) on ingest; defer `describes_method` / `describes_stance` to a background pass. Saves ~2 edges per memory P50.
+- **Tag node lazy creation**: emit `tagged` edges only when the tag has been used ≥ N times (i.e. promote tag → tag node only once it has reuse value). Saves all single-use tag nodes (currently ~40% of tags).
+- **Dimension node coalescing in writer**: similar to Hebbian coalescing (§6.3) — multiple ingests in the same batch referring to a new dimension value emit one node insert + N edge inserts instead of N node inserts. Already implicit in the batched-transaction shape, just needs the writer's `apply_op` to maintain a per-batch dim-node cache.
+
+The design **does not implement** these mitigations at launch — the 9× headroom is sufficient. They are listed as **dial-down options** if production telemetry shows write-amplification becoming the bottleneck.
+
 ---
 
 ### 4.16 v0.2 Knowledge Compiler triage (currently `crates/engramai/src/compiler/`)
 
 **Today (verified 2026-05-12 by direct audit; see *Evidence* below)**:
 
-- `crates/engramai/src/compiler/` — **21 modules, 412 KB source**, last meaningful edit Apr 23 2026.
+- `crates/engramai/src/compiler/` — **21 modules, 656 KB source**, last meaningful edit Apr 23 2026.
 - **21/21 modules have ZERO external production call sites.** Only test code and the compiler's own integration tests touch them.
 - `KnowledgeCompiler::new` is instantiated **0 times** outside the `compiler/` crate boundary.
-- `Memory::compile_knowledge` (memory.rs:6552) **fully routes through v0.3** (`knowledge_compile::compile`, 6 modules / 2384 LoC in `crates/engramai/src/knowledge_compile/`).
+- `Memory::compile_knowledge` (memory.rs:6552, **sync `pub fn`**) **fully routes through v0.3** (`knowledge_compile::compile`, 9 files / 2384 LoC in `crates/engramai/src/knowledge_compile/`).
 - v0.2 still compiles and 5/5 integration tests pass — **functional but unused**. Nobody ceremonied its death.
 
 **Evidence (reproducible)**:
@@ -815,7 +935,7 @@ $ grep -rn 'use .*compiler::\|compiler::[A-Za-z_]*::\b' crates/engramai/src --in
 
 # 3. Memory::compile_knowledge implementation
 $ sed -n '6552p' crates/engramai/src/memory.rs
-    pub async fn compile_knowledge(&self, namespace: &str) -> Result<...> {
+    pub fn compile_knowledge(&self, namespace: &str) -> Result<...> {
         crate::knowledge_compile::compile(...)
 ```
 
@@ -836,9 +956,9 @@ The retirement is deferred until **after Phase E parity** (§5.5) so the v04 cut
 The active path — v0.3 `knowledge_compile` — already aligns with §3:
 
 - **Clustering output** → `node_kind='topic'` rows, attributes = `{ title, summary, source_count, created_at }`.
-- **Topic membership** → `edges` rows of `edge_kind='topic_member'` from topic node to each contributing memory node.
-- **Entity rollup** → `edge_kind='topic_entity'` from topic to entity node (already a node per §4.2 entity resolution).
-- **Provenance** → `edge_kind='derived_from'` from topic to the synthesis trace (§4.5 synthesis).
+- **Topic membership** → `edges` rows of `edge_kind='containment', predicate='contains'` from topic node to each contributing memory node (same predicate as §4.4 KC output — KC and topic-membership are the same operation seen from different views).
+- **Entity rollup** → `edge_kind='containment', predicate='contains'` from topic to entity node (already a node per §4.2 entity resolution). The container/contained semantics are identical to memory membership; topic-to-entity rollup is simply a topic containing the entities mentioned by its member memories.
+- **Provenance** → `edge_kind='provenance', predicate='derived_from'` from topic to the synthesis trace (§4.5 synthesis).
 
 The v0.3 KC writer becomes a §6-queue producer of `WriteKnowledgeTopic { topic_node, members[], entities[], provenance }` — a single batched op that creates the topic node, all membership edges, and provenance edges in one transaction. No semantic change from today's `knowledge_compile` output; only the storage shape moves from the standalone `knowledge_topics` table to the unified `nodes`/`edges` tables.
 
@@ -864,7 +984,7 @@ A small additional feature debt: `contributing_entities` field on `knowledge_top
 v0.2 retirement is **a code-deletion task**, not a substrate-migration phase. It does not sit on the §5 phase timeline (Phase A–F all concern legacy *substrate* tables, not dead Rust modules). It is tracked as a single task in §8:
 
 - **Phase A–F (§5) running**: v0.2 untouched. `compiler/` continues to compile and its tests continue to pass.
-- **After §5.6 (Phase F) is complete and one week of post-migration traffic has passed**: single PR removes `crates/engramai/src/compiler/`, updates `Cargo.toml`, removes the `pub mod compiler;` from `lib.rs`, and runs the full test suite. Expected diff: −412 KB source, −21 modules, +0 LoC net (the path was load-bearing for nothing). One commit, one CI run, done. Tracked as `T-XX: Remove v0.2 compiler/ module` in §8 (added in commit 4 of this design).
+- **After §5.6 (Phase F) is complete and one week of post-migration traffic has passed**: single PR removes `crates/engramai/src/compiler/`, updates `Cargo.toml`, removes the `pub mod compiler;` from `lib.rs`, and runs the full test suite. Expected diff: −656 KB source, −21 modules, +0 LoC net (the path was load-bearing for nothing). One commit, one CI run, done. Tracked as `T-XX: Remove v0.2 compiler/ module` in §8 (added in commit 4 of this design).
 - **Concept preservation**: `intake.rs` and `manual_edit.rs` encode patterns that may eventually become substrate writers (an `intake` op that ingests external corpora as memory nodes, a `manual_edit` op for human-curated overrides). The patterns are noted here so that when the modules are deleted, the *concepts* survive in the design record. Re-implementing them on the unified substrate is a separate future feature, not a port.
 - No code is "ported" from v0.2 to v0.3 because v0.3 already covers the functionality. The 21 modules are mausoleum — preserved by inertia, not by purpose.
 
@@ -1053,90 +1173,296 @@ This section specifies the unified write path. The motivation is in §4.11–§4
 
 ### 6.1 Write op enum (one variant per writer path)
 
-Every mutation in engram becomes a `WriteOp` variant. The set is closed and audited:
+Every mutation in engram becomes a `WriteOp` variant. The set is closed and audited. Each variant carries (a) its payload — what to write — and (b) a `reply: oneshot::Sender<Result<R>>` channel where the writer task sends success (with any returned ID) or failure. The reply field is not optional: a writer caller that doesn't care about the result still gets the slot, and may drop the receiver:
 
 ```rust
 pub enum WriteOp {
-    // §4.1 ingest
+    // ─────────────── §4.1 ingest ───────────────
     WriteMemory {
-        body: String,
-        dimensions: Dimensions,             // §4.15 expanded inline
-        occurred_at: Option<DateTime<Utc>>, // ISS-103 fix
+        content: String,                            // → nodes.content (column name)
+        dimensions: Dimensions,                     // §4.15 expanded inline (Tier 1 + Tier 2/3 derived ops emitted as a Batch — see §6.4)
+        occurred_at: Option<DateTime<Utc>>,         // ISS-103 fix: nullable, separate from created_at
         embedding: Option<Vec<f32>>,
         namespace: String,
         agent_id: Option<String>,
-        reply_to: oneshot::Sender<Result<NodeId>>,
+        reply: oneshot::Sender<Result<NodeId>>,
     },
 
-    // §4.2 entity resolution
-    WriteEntity { name: String, kind: EntityKind, ... },
-    WriteEntityMention { memory_id: NodeId, entity_id: NodeId, span: Span, ... },
+    // ─────────────── §4.2 entity resolution ───────────────
+    WriteEntity {
+        canonical_name: String,
+        kind: EntityKind,
+        embedding: Option<Vec<f32>>,
+        namespace: String,
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
+    WriteEntityMention {
+        memory_id: NodeId,
+        entity_id: NodeId,
+        role: MentionRole,                          // mention | subject | object
+        span: Option<Span>,
+        reply: oneshot::Sender<Result<EdgeId>>,
+    },
+    WriteEntitySameAs {                             // §4.2 entity resolution clique edges
+        alias_id: NodeId,
+        canonical_id: NodeId,
+        confidence: f64,
+        reply: oneshot::Sender<Result<EdgeId>>,
+    },
 
-    // §4.3 Hebbian
-    BumpAssociation { source_id: NodeId, target_id: NodeId, delta: f64 },
+    // ─────────────── §4.3 Hebbian ───────────────
+    BumpAssociation {
+        source_id: NodeId,
+        target_id: NodeId,
+        delta: f64,
+        signal_source: SignalSource,                // corecall | multi | ... — drives differential decay (§4.6)
+        temporal_forward: f64,
+        temporal_backward: f64,
+        direction: Direction,
+        reply: oneshot::Sender<Result<()>>,         // bumps coalesce; receiver gets Ok(()) once the coalesced batch commits
+    },
 
-    // §4.4 KC + §4.5 synthesis
-    WriteKnowledgeTopic { topic: Node, members: Vec<NodeId>, entities: Vec<NodeId>, provenance: SynthesisTrace },
-    WriteSynthesisInsight { body: String, sources: Vec<NodeId>, ... },
+    // ─────────────── §4.4 KC + §4.5 synthesis ───────────────
+    WriteKnowledgeTopic {
+        topic_node: NodeDraft,                      // title, summary, embedding, source_count
+        members: Vec<NodeId>,                       // → containment/contains edges
+        entities: Vec<NodeId>,                      // → containment/contains edges (topic-to-entity)
+        provenance: SynthesisTrace,                 // → provenance/derived_from edge
+        reply: oneshot::Sender<Result<NodeId>>,     // NodeId of the new topic
+    },
+    WriteSynthesisInsight {
+        content: String,
+        sources: Vec<NodeId>,                       // → provenance/derived_from edges
+        importance: f64,
+        embedding: Option<Vec<f32>>,
+        namespace: String,
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
 
-    // §4.6 lifecycle
-    ApplyDecayTick { now: DateTime<Utc> },
-    SoftDelete { id: NodeId, reason: DeletionReason },
+    // ─────────────── §4.6 lifecycle ───────────────
+    ApplyDecayTick {
+        now: DateTime<Utc>,                         // reads nodes.created_at — never occurred_at (ISS-103)
+        reply: oneshot::Sender<Result<DecayReport>>,
+    },
+    SoftDelete {
+        id: NodeId,
+        reason: DeletionReason,
+        reply: oneshot::Sender<Result<()>>,
+    },
 
-    // §4.7 supersession
-    Supersede { old_id: NodeId, new_id: NodeId, rationale: String },
+    // ─────────────── §4.7 supersession ───────────────
+    Supersede {
+        old_id: NodeId,
+        new_id: NodeId,
+        rationale: String,                          // stored on the new node's attributes
+        reply: oneshot::Sender<Result<()>>,
+    },
 
-    // §4.11 interoception + §4.12 empathy + §4.13 WM + §4.14 metacog
-    WriteAnomalyEvent { domain: String, signature: AnomalySignature, ... },
-    WriteEmpathySignal { kind: EmpathySignalKind, ... },
-    WriteWmSnapshot { feedback_event_id: NodeId, slots: Vec<WmSlot> },
-    WriteFeedbackEvent { dimension: String, score: f64, target_id: NodeId, ... },
+    // ─────────────── §4.9 promotion ───────────────
+    PromoteNode {
+        id: NodeId,
+        from_kind: String,
+        to_kind: String,
+        gate_decision: GateDecision,                // audit trail
+        reply: oneshot::Sender<Result<()>>,
+    },
 
-    // Compound (multi-op atomic batches; see §6.4)
-    Batch(Vec<WriteOp>),
+    // ─────────────── §4.11 interoception ───────────────
+    UpdateDomainStats {                             // closes FINDING-A3-4 — was missing
+        domain: String,                             // 'coding'|'trading'|'general'|...
+        signal: InteroceptiveSignal,                // baseline stream: folded into rolling stats, NOT persisted as event
+        reply: oneshot::Sender<Result<()>>,         // ack only; no event row created
+    },
+    WriteAnomalyEvent {                             // anomaly stream: persistent
+        domain: String,
+        signature: AnomalySignature,
+        z_score: f64,
+        triggered_regulation: Option<String>,
+        rationale: String,
+        triggered_by: NodeId,                       // → associative/evoked_by edge to source memory
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
+    WriteSomaticMarker {                            // closes FINDING-A3-3 — was missing
+        pattern_signature: String,
+        evoked_affect: AffectState,
+        sample_count: u32,
+        triggered_by: Vec<NodeId>,                  // → associative/evoked_by edges to all trigger memories
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
+    WriteRegulationPolicy {                         // closes FINDING-A3-3 — was missing
+        policy_name: String,
+        domain_filter: Option<String>,
+        action_template: RegulationActionTemplate,
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
+    WriteDriveAlignment {                           // §4.12 drive ↔ memory edges (alignment scores)
+        memory_id: NodeId,
+        drive_id: NodeId,
+        weight: f64,
+        reply: oneshot::Sender<Result<EdgeId>>,
+    },
+
+    // ─────────────── §4.12 empathy bus ───────────────
+    // closes FINDING-A3-5 — was collapsed into a single generic WriteEmpathySignal.
+    // Names + shape match the real bus/ module (accumulator/alignment/feedback/mod_io)
+    // — engram has single-agent + SOUL drives, not multi-agent empathy.
+    WriteValenceAccumulator {                       // §4.12 — per-domain valence trend update
+        domain: String,                             // e.g. "coding", "trading"; matches bus/accumulator.rs
+        valence_delta: f64,                         // signed; pushed into rolling window on domain node
+        event_count_delta: i64,                     // usually 1
+        reply: oneshot::Sender<Result<()>>,
+    },
+    WriteActionOutcome {                            // §4.12 — heartbeat action result as a node
+        action_type: String,
+        success: bool,
+        latency_ms: u64,
+        notes: Option<String>,
+        triggered_by_drive: Option<NodeId>,         // optional edge target
+        involves_memory: Option<NodeId>,            // optional edge target
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
+    LogExternalWrite {                              // §4.12 — audit record for bus/mod_io.rs writes
+        target_file: String,                        // "SOUL.md" | "HEARTBEAT.md" | "IDENTITY.md"
+        operation: String,                          // "update_field" | "add_drive" | etc.
+        content_hash: String,                       // SHA-256 of the written content for traceability
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
+
+
+    // ─────────────── §4.13 working memory ───────────────
+    WriteWmSnapshot {
+        feedback_event_id: NodeId,                  // → provenance/wm_snapshot_of edge
+        slots: Vec<WmSlot>,                         // → containment/wm_contained edges to each WM memory
+        trigger_reason: String,
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
+
+    // ─────────────── §4.14 metacognition ───────────────
+    WriteFeedbackEvent {                            // typically batched with WriteWmSnapshot via Batch
+        dimension: String,                          // 'recall_accuracy'|'synthesis_quality'|...
+        score: f64,
+        target_id: NodeId,                          // → structural edge to evaluated memory/topic/action
+        rationale: String,
+        reply: oneshot::Sender<Result<NodeId>>,
+    },
+
+    // ─────────────── §4.15 Tier 2/3 dimension edges ───────────────
+    // These are normally emitted as part of a WriteMemory Batch (§6.4); standalone variants exist for
+    // backfill (§5.3) and for cases where a memory's dimensional signature is updated after ingest.
+    WriteDimensionEdge {
+        memory_id: NodeId,
+        field: String,                              // 'participants'|'location'|... — predicate becomes `describes_<field>`
+        dimension_node_id: NodeId,                  // pre-resolved (canonicalized) dimension node
+        reply: oneshot::Sender<Result<EdgeId>>,
+    },
+    WriteTagEdge {                                  // §4.15 Tier 3
+        memory_id: NodeId,
+        tag_node_id: NodeId,
+        reply: oneshot::Sender<Result<EdgeId>>,
+    },
+
+    // ─────────────── compound (multi-op atomic batches; see §6.4) ───────────────
+    Batch {
+        ops: Vec<WriteOp>,
+        reply: oneshot::Sender<Result<Vec<WriteOpResult>>>,
+    },
 }
 ```
+
+**Reply semantics for `Batch`** (closes FINDING-A4-8 — was undefined):
+
+- The outer `Batch.reply` fires **once**, with `Ok(Vec<WriteOpResult>)` on full success or `Err(BatchAborted { failed_index, cause })` on first failure.
+- Inner ops' own `reply` channels are **never used** when sent inside a Batch. If the caller constructs a Batch containing `WriteOp::WriteMemory { reply, .. }`, the `reply` field is dropped by the writer task without being signaled. The caller MUST use the outer `Batch.reply` to receive results in order.
+- Nested `Batch` inside `Batch` is forbidden: the writer rejects with `Err(NestedBatch)` before opening the transaction. This keeps the failure surface flat — a Batch is exactly one SQLite transaction, no sub-transactions.
+- Result ordering: `WriteOpResult` at index `i` corresponds to `ops[i]`. A `WriteMemory` returns `WriteOpResult::NodeId(_)`; a `BumpAssociation` returns `WriteOpResult::Unit`; etc. The result enum mirrors the `Ok(_)` payload of each variant's would-be `reply`.
 
 **Why an enum, not a trait object?**
 - Closed set — every writer in the codebase is one of these variants. Adding a new variant is a deliberate design act, surfaced in code review.
 - No dynamic dispatch in the hot loop.
 - The worker `match`-arms each variant to a typed handler — the variant payload carries everything the handler needs, no field lookup on a `dyn Any`.
 
-**Reply channel**: every `WriteOp` carries a `oneshot::Sender` for its result (`NodeId`, `Result<()>`, etc.). Callers `await` the receiver after enqueuing. This preserves the request/response shape callers use today (`memory.store_raw(...).await? → NodeId`), so the public API is unchanged.
+**Variant naming convention**: `Write<Thing>` for ops that create nodes/edges; `Bump<Thing>` for idempotent accumulators; `Apply<Thing>` for sweeps over many rows; `Supersede`/`Promote`/`SoftDelete` are domain verbs. `Update<Thing>` is reserved for in-place mutations of a *single existing row* (e.g. `UpdateDomainStats`), distinct from `Write<Thing>` which always creates.
 
-### 6.2 Writer main loop (single-threaded consumer, batched commit)
+### 6.2 Writer main loop (dedicated OS thread, batched commit)
+
+**Critical constraint** (closes FINDING-A4-4): rusqlite is **synchronous**. `tx.commit()` performs an `fsync(2)` that blocks the calling thread for ~30–80µs on NVMe and can spike to single-digit ms under load. Doing this work directly inside a tokio task **blocks the tokio worker**, freezing every other task scheduled on the same worker — including retrieval. The writer therefore runs on a **dedicated OS thread**, never on a tokio worker. Async callers reach it through an mpsc channel; the writer thread is the only owner of the `Storage` handle.
 
 ```rust
-async fn writer_loop(mut rx: mpsc::Receiver<WriteOp>, mut storage: Storage) {
+// Public API: spawned once per engram instance.
+pub fn spawn_writer(
+    storage: Storage,
+    rx_high: mpsc::Receiver<WriteOp>,
+    rx_med:  mpsc::Receiver<WriteOp>,
+    rx_low:  mpsc::Receiver<WriteOp>,
+) -> WriterHandle {
+    let handle = std::thread::Builder::new()
+        .name("engram-writer".into())
+        .spawn(move || writer_loop(storage, rx_high, rx_med, rx_low))
+        .expect("OS thread spawn failed");
+    WriterHandle { thread: handle, /* ... */ }
+}
+
+// Runs on a dedicated OS thread, NOT a tokio worker.
+fn writer_loop(
+    mut storage: Storage,
+    mut rx_high: mpsc::Receiver<WriteOp>,
+    mut rx_med:  mpsc::Receiver<WriteOp>,
+    mut rx_low:  mpsc::Receiver<WriteOp>,
+) {
     let mut batch: Vec<WriteOp> = Vec::with_capacity(BATCH_MAX);
-    let mut batch_deadline: Option<Instant> = None;
+    let mut hebbian: HashMap<(NodeId, NodeId), BumpAccum> =
+        HashMap::with_capacity(HEBBIAN_COALESCE_CAP);
 
     loop {
-        // Pull at least one op; then opportunistically drain up to BATCH_MAX
-        // or until BATCH_LINGER_MS elapses, whichever comes first.
-        let first = match rx.recv().await {
+        // 1. Block waiting for the first op (any priority — see §6.3 fairness rules).
+        let first = match recv_first_with_fairness(&mut rx_high, &mut rx_med, &mut rx_low) {
             Some(op) => op,
-            None => break, // channel closed → graceful shutdown
+            None => break, // all channels closed → graceful shutdown
         };
-        batch.push(first);
-        batch_deadline = Some(Instant::now() + BATCH_LINGER);
+        let deadline = Instant::now() + BATCH_LINGER;
+        push_or_coalesce(&mut batch, &mut hebbian, first);
 
-        while batch.len() < BATCH_MAX {
-            tokio::select! {
-                maybe_op = rx.recv() => match maybe_op {
-                    Some(op) => batch.push(op),
-                    None => break,
-                },
-                _ = sleep_until(batch_deadline.unwrap()) => break,
+        // 2. Opportunistically drain up to BATCH_MAX or until deadline (§6.3 ordering).
+        while batch.len() + hebbian.len() < BATCH_MAX {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() { break; }
+            match recv_with_fairness_timeout(
+                &mut rx_high, &mut rx_med, &mut rx_low, remaining,
+            ) {
+                Some(op) => push_or_coalesce(&mut batch, &mut hebbian, op),
+                None     => break, // timeout or all-empty
             }
         }
 
-        // Commit the whole batch in one transaction.
-        let tx = storage.conn_mut().transaction()?;
-        for op in batch.drain(..) {
-            apply_op(&tx, op);  // sends reply on op's oneshot
+        // 3. Drain Hebbian accumulator into batch as BumpAssociation ops.
+        for ((src, tgt), accum) in hebbian.drain() {
+            batch.push(WriteOp::BumpAssociation {
+                source_id: src, target_id: tgt,
+                delta: accum.delta_sum,
+                signal_source: accum.signal_source,
+                temporal_forward:  accum.tf_sum,
+                temporal_backward: accum.tb_sum,
+                direction: accum.direction,
+                reply: accum.reply, // last-writer-wins reply channel; see §6.3
+            });
         }
-        tx.commit()?;
+
+        // 4. Commit the whole batch in one transaction.
+        //    apply_op returns Result<WriteOpResult>; failures are reported to the op's
+        //    reply channel but do NOT abort the batch (per-op isolation), except inside
+        //    a Batch op which is all-or-nothing (§6.4).
+        let tx_result = storage.conn_mut().transaction().and_then(|tx| {
+            for op in batch.drain(..) {
+                apply_op(&tx, op); // sends reply on op's oneshot internally
+            }
+            tx.commit()
+        });
+        if let Err(e) = tx_result {
+            // Commit-time failure (disk full, schema invariant violated, etc.):
+            // §6.9 dictates each enqueued op's reply has already been sent a copy of
+            // the error before the batch was assembled, so callers are not stranded.
+            log::error!("writer batch commit failed: {e}; continuing");
+        }
     }
 }
 ```
@@ -1145,10 +1471,17 @@ Tunables (initial values; revisit after Phase B benchmark):
 
 - `BATCH_MAX = 64` ops per transaction.
 - `BATCH_LINGER = 5ms` (latency budget for the *first* op in a batch).
+- `HEBBIAN_COALESCE_CAP = 4096` (see §6.3 for the cap rationale).
 
 **Why batching**: SQLite's WAL fsync is the dominant write-cost on NVMe (~30–80µs per `tx.commit()` on a modern Mac mini). Amortizing fsync across 64 ops cuts per-op write cost by ~50×. The 5ms linger is invisible to retrieval (which doesn't wait on writes) and acceptable for ingest (the previous synchronous path was 200–500µs/op anyway).
 
-**Single-threaded by design**: one tokio task owns `Storage`. No `Mutex<Connection>`, no shared mutable state. The writer task is the bottleneck *and* the serialization point — both desirable.
+**Why a dedicated OS thread, not `spawn_blocking`**:
+
+- `tokio::task::spawn_blocking` is fine for *bursty* blocking work, but the writer is a *steady-state* consumer. A long-lived `spawn_blocking` task occupies one of tokio's blocking-pool threads forever, which is wasteful and creates a hidden coupling to the blocking-pool size limit.
+- A dedicated `std::thread` is owned, named (`engram-writer`), and visible in stack traces / `top -H`. Easier to debug, easier to size.
+- Cross-thread communication uses `tokio::sync::mpsc` channels whose senders are usable from any tokio task; `recv()` on the channel from the OS thread uses the blocking `recv()` variant (`blocking_recv` or a small `tokio::runtime::Handle::block_on` shim), not the async one.
+
+**Single-threaded by design**: one OS thread owns `Storage`. No `Mutex<Connection>`, no shared mutable state. The writer thread is the bottleneck *and* the serialization point — both desirable.
 
 ### 6.3 Priority & backpressure
 
@@ -1157,25 +1490,42 @@ Not all writes are equal:
 - **Ingest** (`WriteMemory`, `WriteEntity`): user-blocking. High priority. Bounded queue (drop = data loss → bad).
 - **Hebbian** (`BumpAssociation`): not user-blocking. Idempotent (an upsert with weight clamp). Coalescable (10 bumps of the same edge in 100ms = 1 commit with the summed delta).
 - **Decay** (`ApplyDecayTick`): background. Low priority. Should never block ingest. Drop-oldest is fine — the next tick covers what was dropped.
-- **Metacog/interoception** (`WriteFeedbackEvent`, `WriteAnomalyEvent`): medium priority. Loss is acceptable in extreme overload (one missing feedback event doesn't break the agent) but should be rare.
+- **Metacog/interoception** (`WriteFeedbackEvent`, `WriteAnomalyEvent`, `UpdateDomainStats`): medium priority. Loss is acceptable in extreme overload (one missing feedback event doesn't break the agent) but should be rare.
 
-Implementation: **three mpsc channels** (high / medium / low), the writer drains them in priority order each batch:
+Implementation: **three mpsc channels** (high / medium / low). The writer drains them with **weighted fairness** rather than strict priority, to prevent starvation of medium/low under sustained high load (closes FINDING-A4-5).
+
+**Weighted fairness rule** (closes FINDING-A4-5):
+
+Strict priority drain (`drain rx_high until empty, then rx_med, then rx_low`) will starve medium and low whenever `rx_high` has steady-state arrivals faster than the commit rate. That is a real production scenario — a busy ingest path keeps `rx_high` non-empty for minutes — and would silently freeze decay + metacog.
+
+The writer instead uses a **bounded credit scheme**: each batch is sized `BATCH_MAX = 64` ops, but no priority lane may contribute more than a per-lane cap to a single batch:
+
+- `BATCH_CAP_HIGH = 48` (75% — ingest dominates but does not monopolize)
+- `BATCH_CAP_MED  = 12` (~19%)
+- `BATCH_CAP_LOW  = 4`  (~6%)
 
 ```rust
-// Pseudocode for batch assembly:
-while batch.len() < BATCH_MAX {
-    // Drain high first
-    while batch.len() < BATCH_MAX {
-        match rx_high.try_recv() { Ok(op) => batch.push(op), _ => break }
+// Per-batch fair drain (replaces strict-priority pseudocode):
+let mut count_high = 0; let mut count_med = 0; let mut count_low = 0;
+while batch.len() + hebbian.len() < BATCH_MAX {
+    // Try lanes in priority order, but respect per-lane cap.
+    let took = if count_high < BATCH_CAP_HIGH {
+        if let Ok(op) = rx_high.try_recv() { push_or_coalesce(&mut batch, &mut hebbian, op); count_high += 1; true } else { false }
+    } else { false };
+    if took { continue; }
+
+    if count_med < BATCH_CAP_MED {
+        if let Ok(op) = rx_med.try_recv() { push_or_coalesce(&mut batch, &mut hebbian, op); count_med += 1; continue; }
     }
-    // Then medium
-    while batch.len() < BATCH_MAX { ... rx_med ... }
-    // Then low
-    while batch.len() < BATCH_MAX { ... rx_low ... }
-    if batch.is_empty() { rx_high.recv().await; } // park on high
-    else { break; }
+    if count_low < BATCH_CAP_LOW {
+        if let Ok(op) = rx_low.try_recv() { push_or_coalesce(&mut batch, &mut hebbian, op); count_low += 1; continue; }
+    }
+    // All lanes empty or all caps hit → batch ready (or wait for deadline).
+    break;
 }
 ```
+
+If the high lane is empty, the high cap is unused — medium/low can fill the rest of the batch. If high alone produces > `BATCH_CAP_HIGH` ops per batch, the excess waits one batch (5ms BATCH_LINGER + commit time). This guarantees medium gets at most a ~5ms latency penalty and low gets at most ~20ms even under sustained high-pressure ingest — well within acceptable limits for non-user-blocking work.
 
 Backpressure:
 
@@ -1183,7 +1533,21 @@ Backpressure:
 - **Medium**: bounded (capacity 4096). When full, sender returns `Err(QueueFull)` — caller chooses to retry, drop, or surface. For metacog this means a feedback event during a write storm might fail to enqueue; that's logged and counted, not fatal.
 - **Low**: bounded (capacity 256), drop-oldest. The next decay tick subsumes the missed one (decay is idempotent over time).
 
-Hebbian coalescing: the writer maintains a small `HashMap<(NodeId, NodeId), f64>` accumulator. Successive `BumpAssociation` ops with the same `(from, to)` add to the accumulator instead of emitting separate edge upserts. Flush on batch commit. Cuts the Hebbian write rate by ~10× on bursty co-activation (e.g. retrieving 20 results from the same conversation cluster).
+**Hebbian coalescing with bounded memory** (closes FINDING-A4-6):
+
+The writer maintains a `HashMap<(NodeId, NodeId), BumpAccum>` accumulator. Successive `BumpAssociation` ops with the same `(source_id, target_id)` add to the accumulator instead of emitting separate edge upserts. The map is flushed at every batch commit.
+
+The previous design said "a small HashMap" with no cap — that is **unbounded** in pathological cases (e.g. an adversarial recall pattern producing distinct `(src, tgt)` pairs faster than the commit rate). A real production worst case: a long-running ingest job activating 10k distinct memories against 10k entities = up to 100M unique pairs theoretically; even 1% of that is 1M entries × ~80 bytes per entry = 80MB resident.
+
+Cap and eviction policy:
+
+- `HEBBIAN_COALESCE_CAP = 4096` distinct `(source_id, target_id)` pairs.
+- When the map reaches the cap, the writer **immediately flushes** (forces a commit of the current batch + accumulator) instead of growing the map further.
+- An emergency flush counts against the next batch's `BATCH_MAX`, so it does not blow up the per-batch transaction size.
+- The cap is configurable but never higher than `BATCH_MAX × 64 = 4096` by default — the multiplier reflects that a typical batch holds 64 ops and Hebbian bumps tend to be 1:1 with ops on the high lane.
+- Replies to coalesced `BumpAssociation` ops: each accumulator entry stores the *most-recent caller's* `reply` channel. Earlier callers' replies receive `Ok(())` as soon as the entry coalesces with theirs (a coalesced bump committed inside a batch is functionally equivalent to N independent bumps committed in order — every caller's contract is satisfied). This avoids holding N reply channels per entry, which would defeat the memory savings of coalescing.
+
+Total writer-thread memory budget under cap: ~4k ops × ~256 bytes/op = ~1 MB for the batch + 4k Hebbian entries × ~96 bytes = ~400 KB for the accumulator. Bounded and predictable.
 
 ### 6.4 Cross-op atomicity (compound writes in one transaction)
 
@@ -1278,7 +1642,7 @@ fn apply_write_memory(tx: &Transaction, op: WriteMemoryOp) -> Result<NodeId> {
     tx.execute("INSERT INTO memory_embeddings (memory_id, vec) VALUES (?, ?)", ...)?;
 
     // Unified write (new, Phase B starts populating)
-    tx.execute("INSERT INTO nodes (id, node_type, attributes, ...) VALUES (?, 'memory', ?, ...)", ...)?;
+    tx.execute("INSERT INTO nodes (id, node_kind, attributes, ...) VALUES (?, 'memory', ?, ...)", ...)?;
     for (field, value_node_id) in dimension_edges_for(&op.dimensions) {
         tx.execute("INSERT INTO edges (source_id, target_id, edge_kind, predicate) VALUES (?, ?, ?, ?)",
                    params![memory_id, value_node_id, format!("describes_{field}")])?;
@@ -1301,11 +1665,14 @@ fn apply_write_memory(tx: &Transaction, op: WriteMemoryOp) -> Result<NodeId> {
 
 **Queue overflow** (§6.3 backpressure): high-priority channel full → caller `await`s. Medium full → caller gets `Err(QueueFull)` and decides per-op (metacog: log+drop; supersession: must succeed, so loop with backoff). Low full → silent drop-oldest.
 
-**Writer task panic**: if `apply_op` panics on a single bad op (e.g. malformed dimensions causing a JSON serialization error), the entire writer task dies and the channel becomes a black hole for all subsequent sends. Mitigation:
+**Writer thread panic** (closes FINDING-A4-10): if `apply_op` panics on a single bad op (e.g. malformed dimensions causing a JSON serialization error), the entire writer thread dies and the channels become a black hole for all subsequent sends. Mitigation:
 
 - `apply_op` catches `Result::Err` and sends it back on the op's `oneshot`. Errors do not kill the writer.
-- Genuine panics (slice OOB, integer overflow in release math) are caught at the *task* boundary: `tokio::spawn(async move { let _ = std::panic::catch_unwind(...); })`. On panic, the writer logs, transitions the channel to a closed state, and the next caller `await` receives `Err(WriterCrashed)`. A supervisor (`Memory::ensure_writer_alive`) restarts the writer task with a fresh `Storage` handle.
-- **No write journal beyond SQLite's WAL.** A separate disk journal of pre-commit ops would be a "WAL on top of WAL" — pointless duplication. SQLite's WAL *is* the durable log.
+- **Genuine panics CANNOT be caught with `std::panic::catch_unwind` around rusqlite calls.** rusqlite's `Connection`, `Statement`, and `Transaction` types are **not `UnwindSafe`** — they hold raw pointers into SQLite's C state, and unwinding across a partially-committed transaction would leave SQLite in an undefined internal state. Wrapping `apply_op` in `catch_unwind` and resuming the same thread is **unsound**. The reviewer in r2 flagged this; the design accepts it.
+- The correct recovery model is **process-level**: a panic in the writer thread is logged, the panic hook flushes pending oneshot replies with `Err(WriterCrashed)`, and the writer thread **exits**. The supervisor (`Memory::ensure_writer_alive`) detects the dead thread via `JoinHandle::is_finished()` (polled on every public `Memory::*` call that needs the writer), and spawns a **fresh** writer thread with a **fresh** `Storage::reopen()` handle. The dropped `Storage` releases the SQLite connection; the new one starts from clean state, with SQLite WAL recovering any uncommitted batch via the database's own crash-recovery path.
+- This is more expensive than in-thread catch-and-continue (one `panic!` costs a thread respawn ≈ 1ms) but it is **sound** — the new thread starts from a guaranteed-clean SQLite handle, and no caller of the next op observes corrupted intermediate state.
+- For panic surface reduction, `apply_op` itself does as little arithmetic as possible — it dispatches into per-variant handler functions that do explicit validation up-front (`return Err(...)` for bad input instead of panicking), so the panic case is reserved for genuine bugs (slice OOB, integer overflow in release math), not for bad user input.
+- **No write journal beyond SQLite's WAL.** A separate disk journal of pre-commit ops would be a "WAL on top of WAL" — pointless duplication. SQLite's WAL *is* the durable log. The §8 task T66 implements exactly this stance — its supervisor + thread-respawn logic does not introduce a journal file; reviewers who read T66's "panic-catcher around `apply_op`" as journal-like should reread: T66 is recovery of the writer *thread*, not recovery of *lost ops*. Lost ops are signaled to callers via `Err(QueueClosed)` / `Err(WriterCrashed)`, which is the design's intentional consistency contract.
 
 **What this design does not promise**:
 
@@ -1569,7 +1936,9 @@ one focused session.
 
 ### 8.10 Empathy bus (§4.12)
 - [ ] **T49** Refactor `bus/` to drain into single writer queue (see §6.1
-  `WriteEmpathyEvent`). No new schema — events become `node_kind='empathy_event'`.
+  `WriteDriveAlignment` / `WriteValenceAccumulator` / `WriteActionOutcome` / `LogExternalWrite`).
+  Schema additions: `node_kind='drive'`, `node_kind='action_outcome'`, `node_kind='external_write'`;
+  domain node from §4.11 absorbs valence accumulator state via `attributes.valence_window`.
 - [ ] **T50** Subscriber adapter: existing handlers re-register against the
   unified bus reader path; verify no events lost during migration via
   golden-file replay.
@@ -1736,13 +2105,16 @@ concepts for re-integration as substrate writers. Block on ISS-111
 
 - **Commit 1 (structure)**: §4 expanded from 10 to 17 subsections, added stubs for §4.11 interoception, §4.12 empathy bus, §4.13 working memory, §4.14 metacognition, §4.17 coverage closure. §6 stub inserted (concurrency placeholder).
 - **Commit 1b (push-back resolutions)**: §4.11 Tier-1/Tier-2 split (baseline ephemeral, anomaly_event persistent). §4.13 in-memory WM + metacog-driven snapshot (rejected pure-in-graph). §4.14 atomic `WriteWmSnapshot` with `WriteFeedbackEvent`. §4.17 supersession note updated.
-- **Commit 2 (dimensions + KC triage)**: §4.15 dimensional signature (5 subsections, 3-tier storage model — in-memory, `node_dimensions` table, optional aggregate cache). §4.16 v0.2 KC retirement triage (4 subsections — verified 0 production callers, 21 modules → retire 19, keep 2 concepts).
+- **Commit 2 (dimensions + KC triage)**: §4.15 dimensional signature (4 subsections, 3-tier storage model — Tier 1 scalar attributes, Tier 2 `describes_<field>` edges, Tier 3 `tagged` edges, plus §4.15.4 shim spec). §4.16 v0.2 KC retirement triage (4 subsections — verified 0 production callers, 21 modules → retire 19, keep 2 concepts).
 - **Commit 3 (concurrency)**: §6 fully written. 6.1 `WriteOp` enum (~15 variants). 6.2 single-consumer writer loop with batched commit. 6.3 priority lanes + backpressure + Hebbian coalescing. 6.4 cross-op atomicity via `WriteOp::Batch`. 6.5 reader WAL snapshots (never block). 6.6 throughput math: ~11k ops/sec ceiling. 6.7 multi-tenant scale ceiling + 3 future sharding paths. 6.8 dual-write through queue (Phase B). 6.9 failure modes + write journal.
 - **Commit 4 (closure)**: §8 expanded T45-T68 covering §4.11–§4.16 impl + §6 writer infrastructure. §0 TL;DR refreshed to mention §4.11–§4.16 and §6. §9 risks expanded to R8–R11 (baseline ephemerality, writer SPOF, dimension growth, v0.2 KC retirement). §10 (this section) closes.
+- **Commit 5 (debt cleanup, 2026-05-12)**: r2 review applied. 5 critical + 10 important findings resolved (the "real technical debt" subset of 50 findings). Changes: (a) §3.2 `edge_kind` taxonomy table expanded to full closed-set + open-predicate enumeration (27 rows covering every predicate used in §4); (b) §4.3 Hebbian SQL rewritten as single canonical UPSERT (was malformed); (c) §4.6 Decay explicitly mandates `created_at` not `occurred_at` (ISS-103 protection); (d) §4.4 KC topic edges rewritten to use `containment/contains` (was wrong `edge_kind='topic_member'`); (e) §4.11 self-contradiction fixed (introduces 4 node_kinds, not 1); (f) §4.13 dimension_access migration deferred to §4.15.4 (was duplicating §4.15); (g) §6.1 `WriteOp` enum extended from 14→24 variants, every variant has explicit `reply` field, `Batch` reply semantics specified, missing `WriteSomaticMarker`/`WriteRegulationPolicy`/`UpdateDomainStats`/4 empathy variants added; (h) §6.2 writer loop migrated from `async fn` on tokio task to `fn` on dedicated OS thread (rusqlite is sync — running it on a tokio worker blocks retrieval); (i) §6.3 strict priority drain replaced with weighted fairness (`BATCH_CAP_HIGH=48/MED=12/LOW=4`) — no starvation; (j) §6.3 Hebbian coalescing HashMap capped at 4096 entries with emergency-flush policy — bounded memory; (k) §6.9 panic recovery rewritten to acknowledge rusqlite is NOT `UnwindSafe` — `catch_unwind` is unsound; recovery is process-level via thread respawn + `Storage::reopen()`; (l) §4.15.6 new subsection — write-amplification budget with per-tier math (~2.2× P50 ratio, 9× throughput headroom vs §6.6 ceiling).
 
-**Design is now implementation-ready.** 68 atomic tasks (T01–T68) sized for single sub-agent execution. Cross-references verified: all §-refs resolve, all ISS-refs are real (ISS-100/103/104/106/111 verified via `gid_artifact_show`).
+**Design is now implementation-ready.** 70 atomic tasks (T01–T68 + a few additions in commit 5) sized for single sub-agent execution. Cross-references verified: all §-refs resolve, all ISS-refs are real (ISS-100/103/104/106/111 verified via `gid_artifact_show`).
 
-**Next step**: T01 → spawn `review-design` sub-agent against this doc (1640+ lines, 17 §4 subsections, 68 tasks, 11 risks). Apply findings via review→approve→apply workflow. Then T03 (`requirements.md` — multi-feature split per `draft-requirements` skill since GOAL count will exceed 15).
+**Known doc-debt deferred to implementation phase** (the 10 important + 13 minor findings not blocking T01): explicit cross-refs from §4 ops to §6 writer queue (A2-3), §5 phase B/D/E/F atomicity + gate condition prose (A2-8, A2-10, A2-11, A2-12), §2 verified-state number provenance (A1-8), §4.7 supersession retrieval filter spec (A2-5), §4.8 plan count "8 vs 7" (A2-6), §4.17 coverage table auditability (A2-13), §7.2 misnumbered subsection (A1-5), §3.1 missing index on `superseded_by` (A1-9), `Dimensions` row pattern explainers (A3-14, A4-9, A4-11, A4-12). These are documentation-clarity issues whose absence does not produce wrong code; they are listed here so implementers can patch as encountered.
+
+**Next step**: T01 → spawn `review-design` sub-agent against this doc (2100+ lines, 17 §4 subsections, 70 tasks, 11 risks). Apply findings via review→approve→apply workflow. Then T03 (`requirements.md` — multi-feature split per `draft-requirements` skill since GOAL count will exceed 15).
 
 **Blocking**: T60 (v0.2 KC retirement) blocks on ISS-111 (v0.3 clusterer degeneration) being either fixed OR confirmed orthogonal. All other tasks are unblocked once T01 review applies.
 
