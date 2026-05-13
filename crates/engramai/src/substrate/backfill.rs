@@ -2178,23 +2178,39 @@ pub fn backfill_synthesis_provenance_to_edges(
     };
     let rows_read = rows_read as u64;
 
-    // Hydrate. JOIN to memories to fetch insight namespace.
+    // Hydrate. JOIN to memories to fetch insight namespace; LEFT
+    // JOIN twice to `nodes` to fold the FK guard into the SELECT
+    // (T25-r1 FINDING-2 — saves ~903 per-row round-trips); LEFT JOIN
+    // to `edges` to fold the existing-edge probe used for the
+    // mismatched-kind defense-in-depth (T25-r1 FINDING-4).
     let conn = storage.conn();
     let select_sql = if namespace.is_some() {
         "SELECT sp.id, sp.insight_id, sp.source_id, sp.cluster_id, \
                 sp.synthesis_timestamp, sp.gate_decision, sp.gate_scores, \
                 sp.confidence, sp.source_original_importance, \
-                mi.namespace \
+                mi.namespace, \
+                (ni.id IS NOT NULL AND ns.id IS NOT NULL) AS endpoints_ok, \
+                ee.edge_kind AS existing_edge_kind, \
+                ee.predicate AS existing_edge_predicate \
          FROM synthesis_provenance sp \
          JOIN memories mi ON mi.id = sp.insight_id \
+         LEFT JOIN nodes ni ON ni.id = sp.insight_id \
+         LEFT JOIN nodes ns ON ns.id = sp.source_id \
+         LEFT JOIN edges ee ON ee.id = sp.id \
          WHERE mi.namespace = ?"
     } else {
         "SELECT sp.id, sp.insight_id, sp.source_id, sp.cluster_id, \
                 sp.synthesis_timestamp, sp.gate_decision, sp.gate_scores, \
                 sp.confidence, sp.source_original_importance, \
-                mi.namespace \
+                mi.namespace, \
+                (ni.id IS NOT NULL AND ns.id IS NOT NULL) AS endpoints_ok, \
+                ee.edge_kind AS existing_edge_kind, \
+                ee.predicate AS existing_edge_predicate \
          FROM synthesis_provenance sp \
-         JOIN memories mi ON mi.id = sp.insight_id"
+         JOIN memories mi ON mi.id = sp.insight_id \
+         LEFT JOIN nodes ni ON ni.id = sp.insight_id \
+         LEFT JOIN nodes ns ON ns.id = sp.source_id \
+         LEFT JOIN edges ee ON ee.id = sp.id"
     };
     let mut stmt = conn.prepare(select_sql)?;
     type SpRow = (
@@ -2208,6 +2224,9 @@ pub fn backfill_synthesis_provenance_to_edges(
         f64,            // confidence
         Option<f64>,    // source_original_importance
         String,         // namespace (from insight memory)
+        bool,           // endpoints_ok (both nodes projected)
+        Option<String>, // existing_edge_kind (None when no row)
+        Option<String>, // existing_edge_predicate
     );
     let map_row = |row: &rusqlite::Row| -> Result<SpRow, rusqlite::Error> {
         Ok((
@@ -2221,6 +2240,9 @@ pub fn backfill_synthesis_provenance_to_edges(
             row.get(7)?,
             row.get(8)?,
             row.get(9)?,
+            row.get(10)?,
+            row.get(11)?,
+            row.get(12)?,
         ))
     };
     let rows: Vec<SpRow> = if let Some(ns) = namespace {
@@ -2250,16 +2272,15 @@ pub fn backfill_synthesis_provenance_to_edges(
         confidence,
         source_original_importance,
         ns_val,
+        endpoints_ok,
+        existing_edge_kind,
+        existing_edge_predicate,
     ) in &rows
     {
         // FK guard: both endpoints must have projected nodes.
-        let endpoints_ok: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM nodes WHERE id = ?) \
-             AND EXISTS(SELECT 1 FROM nodes WHERE id = ?)",
-            params![insight_id, source_id],
-            |r: &rusqlite::Row<'_>| r.get::<_, bool>(0),
-        )?;
-        if !endpoints_ok {
+        // Folded into the outer SELECT via LEFT JOIN nodes (T25-r1
+        // FINDING-2 — eliminated ~903 per-row round-trips).
+        if !*endpoints_ok {
             rows_skipped_dangling_endpoint += 1;
             continue;
         }
@@ -2323,16 +2344,16 @@ pub fn backfill_synthesis_provenance_to_edges(
             .expect("serializing serde_json::Map cannot fail");
 
         // Defense-in-depth: check id collision under a different
-        // edge_kind/predicate. Under correct contract this never
+        // edge_kind/predicate. Folded into the outer SELECT via
+        // LEFT JOIN edges (T25-r1 FINDING-4 — eliminated ~903
+        // per-row round-trips). Under correct contract this never
         // fires — legacy.id is a UUID minted by the synthesis writer
         // and no other driver uses raw UUIDs as edge ids.
-        let existing_kind: Option<(String, String)> = tx
-            .query_row(
-                "SELECT edge_kind, predicate FROM edges WHERE id = ?",
-                params![id],
-                |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            )
-            .optional()?;
+        let existing_kind: Option<(String, String)> =
+            match (existing_edge_kind, existing_edge_predicate) {
+                (Some(k), Some(p)) => Some((k.clone(), p.clone())),
+                _ => None,
+            };
 
         let inserted = Storage::insert_provenance_edge_row(
             &tx,

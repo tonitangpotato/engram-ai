@@ -623,6 +623,29 @@ INSERT INTO edges (source_id=insight_id, target_id=source_memory_id,
                        'cluster_id',    cluster_id));         -- originating cluster
 ```
 
+> **Attributes shape — open question (T25-r1 FINDING-1, 2026-05-13)**
+>
+> The Phase B writer (T16, `storage.rs::store_synthesis_provenance`) and
+> the Phase C backfill (T25, `substrate::backfill::backfill_synthesis_provenance_to_edges`)
+> currently produce DIFFERENT `attributes` JSON shapes for the same logical row:
+>
+> | key | Phase B T16 | Phase C T25 |
+> |---|---|---|
+> | `gate_decision` | always present | always present |
+> | `gate_scores` | always present (`null` when NULL) | omitted when NULL/empty |
+> | `cluster_id` | always present | always present |
+> | `source_original_importance` | always present (`null` when NULL) | omitted when NULL |
+> | `synthesis_timestamp` | NOT emitted | always present (RFC3339) |
+>
+> Because `INSERT OR IGNORE` is used, whichever writer fires first wins; the
+> attributes blob a reader sees depends on race order. T27 verifier MUST
+> either (a) treat missing-key ≡ null-key for these attributes and ignore
+> `synthesis_timestamp` divergence, or (b) pin one canonical shape and
+> align both writers. Recommend (b) with Phase C's shape (synthesis_timestamp
+> preserved, omit-NULL convention), reasoning: forensic value of preserving
+> the original synthesis time is non-zero, and JSON omit-NULL is the
+> standard convention. Decision deferred to T27 implementation.
+
 ### 4.6 Decay / forget (currently `memory.rs::check_decay_and_flag` + `storage.rs`; report types in `lifecycle.rs`)
 
 **Current**: `memory.rs::check_decay_and_flag` (line ~1647) reads `memories.created_at`, decays `working_strength`,
