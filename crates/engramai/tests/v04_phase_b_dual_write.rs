@@ -645,3 +645,58 @@ fn t14_reverse_direction_collapses_to_same_row() {
         "target_id must be lexicographic max of pair"
     );
 }
+
+#[test]
+fn t14_record_coactivation_ns_dual_writes_with_corecall_signal() {
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t14e.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    // Three co-fires below threshold (still in tracking phase) — legacy
+    // does not "form" the link (strength stays 0), but dual-write still
+    // produces one edges row with weight = 3 × 0.1 = 0.3 and
+    // coactivation_count = 3. signal_source must be 'corecall'.
+    let _ = storage.record_coactivation_ns(&a, &b, 5, "default").unwrap();
+    let _ = storage.record_coactivation_ns(&a, &b, 5, "default").unwrap();
+    let _ = storage.record_coactivation_ns(&a, &b, 5, "default").unwrap();
+
+    let (weight, coact, sig_source): (f64, i64, String) = storage
+        .conn()
+        .query_row(
+            "SELECT weight, \
+                    json_extract(attributes, '$.coactivation_count'), \
+                    json_extract(attributes, '$.signal_source') \
+             FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+
+    assert_eq!(sig_source, "corecall", "record_coactivation_ns must tag signal_source='corecall'");
+    assert!(
+        (weight - 0.3).abs() < 1e-9,
+        "weight = 3 × 0.1 = 0.3 (sum-accumulating), got {weight}"
+    );
+    assert_eq!(coact, 3, "coactivation_count counts every call, regardless of threshold");
+
+    // Legacy hebbian_links still in tracking phase (strength = 0, count = 3).
+    let (legacy_strength, legacy_count): (f64, i32) = storage
+        .conn()
+        .query_row(
+            "SELECT strength, coactivation_count FROM hebbian_links \
+             WHERE (source_id = ?1 AND target_id = ?2) \
+                OR (source_id = ?2 AND target_id = ?1) \
+             LIMIT 1",
+            params![a, b],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        legacy_strength, 0.0,
+        "legacy strength stays 0 below threshold (gated semantics preserved)"
+    );
+    assert_eq!(legacy_count, 3, "legacy count tracks calls below threshold");
+}

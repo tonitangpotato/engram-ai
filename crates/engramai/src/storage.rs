@@ -2810,6 +2810,21 @@ impl Storage {
     }
     
     /// Record co-activation with namespace tracking.
+    ///
+    /// Legacy semantics: threshold-gated Hebbian link formation. The first
+    /// `threshold` co-activations only increment `coactivation_count`; the
+    /// link "forms" (strength=1.0) when count crosses the threshold; further
+    /// recalls add `+0.1` (capped at 1.0).
+    ///
+    /// T14 dual-write (design §4.3): every call ALSO performs one UPSERT
+    /// into `edges(edge_kind='associative')` with `signal_source='corecall'`
+    /// and `delta_weight=0.1`. This replaces legacy's threshold-gated +0.1
+    /// approximation with a true sum-accumulating Hebbian frequency signal.
+    /// The legacy threshold/cap logic stays untouched on `hebbian_links`
+    /// because v0.4 readers still resolve associative info via legacy;
+    /// unified-edges divergence is documented in §4.3's comparison table
+    /// and verified by T17 parity (existence + signal_source, not numeric
+    /// equality).
     pub fn record_coactivation_ns(
         &mut self,
         id1: &str,
@@ -2818,63 +2833,92 @@ impl Storage {
         namespace: &str,
     ) -> Result<bool, rusqlite::Error> {
         let (id1, id2) = if id1 < id2 { (id1, id2) } else { (id2, id1) };
-        
-        // Check existing link
-        let existing: Option<(f64, i32)> = self.conn
-            .query_row(
-                "SELECT strength, coactivation_count FROM hebbian_links WHERE source_id = ? AND target_id = ?",
-                params![id1, id2],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        
-        match existing {
-            Some((strength, _count)) if strength > 0.0 => {
-                // Link already formed, strengthen it
-                let new_strength = (strength + 0.1).min(1.0);
-                self.conn.execute(
-                    "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                    params![new_strength, id1, id2],
-                )?;
-                // Also update reverse link
-                self.conn.execute(
-                    "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                    params![new_strength, id2, id1],
-                )?;
-                Ok(false)
-            }
-            Some((_, count)) => {
-                // Tracking phase, increment count
-                let new_count = count + 1;
-                if new_count >= threshold {
-                    // Threshold reached, form link
-                    self.conn.execute(
-                        "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
-                        params![new_count, id1, id2],
+
+        let tx = self.conn.transaction()?;
+        let result = {
+            // Check existing link
+            let existing: Option<(f64, i32)> = tx
+                .query_row(
+                    "SELECT strength, coactivation_count FROM hebbian_links WHERE source_id = ? AND target_id = ?",
+                    params![id1, id2],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+
+            let formed = match existing {
+                Some((strength, _count)) if strength > 0.0 => {
+                    // Link already formed, strengthen it
+                    let new_strength = (strength + 0.1).min(1.0);
+                    tx.execute(
+                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
+                        params![new_strength, id1, id2],
                     )?;
-                    // Create reverse link
-                    self.conn.execute(
-                        "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 1.0, ?, ?, ?)",
-                        params![id2, id1, new_count, now_f64(), namespace],
+                    // Also update reverse link
+                    tx.execute(
+                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
+                        params![new_strength, id2, id1],
                     )?;
-                    Ok(true)
-                } else {
-                    self.conn.execute(
-                        "UPDATE hebbian_links SET coactivation_count = ? WHERE source_id = ? AND target_id = ?",
-                        params![new_count, id1, id2],
-                    )?;
-                    Ok(false)
+                    false
                 }
-            }
-            None => {
-                // First co-activation, create tracking record
-                self.conn.execute(
-                    "INSERT INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 0.0, 1, ?, ?)",
-                    params![id1, id2, now_f64(), namespace],
-                )?;
-                Ok(false)
-            }
-        }
+                Some((_, count)) => {
+                    // Tracking phase, increment count
+                    let new_count = count + 1;
+                    if new_count >= threshold {
+                        // Threshold reached, form link
+                        tx.execute(
+                            "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
+                            params![new_count, id1, id2],
+                        )?;
+                        // Create reverse link
+                        tx.execute(
+                            "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 1.0, ?, ?, ?)",
+                            params![id2, id1, new_count, now_f64(), namespace],
+                        )?;
+                        true
+                    } else {
+                        tx.execute(
+                            "UPDATE hebbian_links SET coactivation_count = ? WHERE source_id = ? AND target_id = ?",
+                            params![new_count, id1, id2],
+                        )?;
+                        false
+                    }
+                }
+                None => {
+                    // First co-activation, create tracking record
+                    tx.execute(
+                        "INSERT INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 0.0, 1, ?, ?)",
+                        params![id1, id2, now_f64(), namespace],
+                    )?;
+                    false
+                }
+            };
+
+            // T14: unified-edges dual-write. signal_source='corecall'
+            // marks this as recall-driven co-activation (vs. LinkFormer's
+            // 'entity'/'temporal'/etc. signals). delta_weight=0.1 matches
+            // legacy's per-recall increment so sum-accumulating weight on
+            // edges tracks Hebbian frequency exactly.
+            crate::graph::store::dual_write_hebbian_to_edges(
+                &tx,
+                id1,
+                id2,
+                "corecall",
+                "{}",
+                0.1,
+                namespace,
+            )
+            .map_err(|e| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("dual_write_hebbian_to_edges failed: {e}"),
+                )))
+            })?;
+
+            Ok::<bool, rusqlite::Error>(formed)
+        }?;
+
+        tx.commit()?;
+        Ok(result)
     }
     
     // === Cross-Namespace Hebbian Methods (Phase 3) ===
@@ -2883,6 +2927,12 @@ impl Storage {
     ///
     /// When memories from different namespaces are recalled together,
     /// this creates a Hebbian link that spans namespaces.
+    ///
+    /// T14 dual-write (design §4.3): every call ALSO performs one UPSERT
+    /// into `edges(edge_kind='associative')` with `signal_source='corecall'`
+    /// and `delta_weight=0.1`. The unified edge's `namespace` column holds
+    /// the synthesized `"ns1:ns2"` marker (matches the legacy convention
+    /// for cross-NS rows). See `record_coactivation_ns` for the rationale.
     pub fn record_cross_namespace_coactivation(
         &mut self,
         id1: &str,
@@ -2895,73 +2945,101 @@ impl Storage {
         if ns1 == ns2 {
             return self.record_coactivation_ns(id1, id2, threshold, ns1);
         }
-        
+
         // Ensure consistent ordering
         let (id1, id2, ns1, ns2) = if (ns1, id1) < (ns2, id2) {
             (id1, id2, ns1, ns2)
         } else {
             (id2, id1, ns2, ns1)
         };
-        
-        // Check existing link
-        let existing: Option<(f64, i32)> = self.conn
-            .query_row(
-                "SELECT strength, coactivation_count FROM hebbian_links WHERE source_id = ? AND target_id = ?",
-                params![id1, id2],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        
-        // Use "cross" as special namespace marker for cross-namespace links
+
+        // Use "ns1:ns2" as namespace marker for cross-namespace links
         let cross_ns = format!("{}:{}", ns1, ns2);
-        
-        match existing {
-            Some((strength, _count)) if strength > 0.0 => {
-                // Link already formed, strengthen it
-                let new_strength = (strength + 0.1).min(1.0);
-                self.conn.execute(
-                    "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                    params![new_strength, id1, id2],
-                )?;
-                // Also update reverse link
-                self.conn.execute(
-                    "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                    params![new_strength, id2, id1],
-                )?;
-                Ok(false)
-            }
-            Some((_, count)) => {
-                // Tracking phase, increment count
-                let new_count = count + 1;
-                if new_count >= threshold {
-                    // Threshold reached, form link
-                    self.conn.execute(
-                        "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
-                        params![new_count, id1, id2],
+
+        let tx = self.conn.transaction()?;
+        let result = {
+            // Check existing link
+            let existing: Option<(f64, i32)> = tx
+                .query_row(
+                    "SELECT strength, coactivation_count FROM hebbian_links WHERE source_id = ? AND target_id = ?",
+                    params![id1, id2],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+
+            let formed = match existing {
+                Some((strength, _count)) if strength > 0.0 => {
+                    // Link already formed, strengthen it
+                    let new_strength = (strength + 0.1).min(1.0);
+                    tx.execute(
+                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
+                        params![new_strength, id1, id2],
                     )?;
-                    // Create reverse link
-                    self.conn.execute(
-                        "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 1.0, ?, ?, ?)",
-                        params![id2, id1, new_count, now_f64(), &cross_ns],
+                    // Also update reverse link
+                    tx.execute(
+                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
+                        params![new_strength, id2, id1],
                     )?;
-                    Ok(true)
-                } else {
-                    self.conn.execute(
-                        "UPDATE hebbian_links SET coactivation_count = ? WHERE source_id = ? AND target_id = ?",
-                        params![new_count, id1, id2],
-                    )?;
-                    Ok(false)
+                    false
                 }
-            }
-            None => {
-                // First co-activation, create tracking record
-                self.conn.execute(
-                    "INSERT INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 0.0, 1, ?, ?)",
-                    params![id1, id2, now_f64(), &cross_ns],
-                )?;
-                Ok(false)
-            }
-        }
+                Some((_, count)) => {
+                    // Tracking phase, increment count
+                    let new_count = count + 1;
+                    if new_count >= threshold {
+                        // Threshold reached, form link
+                        tx.execute(
+                            "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
+                            params![new_count, id1, id2],
+                        )?;
+                        // Create reverse link
+                        tx.execute(
+                            "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 1.0, ?, ?, ?)",
+                            params![id2, id1, new_count, now_f64(), &cross_ns],
+                        )?;
+                        true
+                    } else {
+                        tx.execute(
+                            "UPDATE hebbian_links SET coactivation_count = ? WHERE source_id = ? AND target_id = ?",
+                            params![new_count, id1, id2],
+                        )?;
+                        false
+                    }
+                }
+                None => {
+                    // First co-activation, create tracking record
+                    tx.execute(
+                        "INSERT INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 0.0, 1, ?, ?)",
+                        params![id1, id2, now_f64(), &cross_ns],
+                    )?;
+                    false
+                }
+            };
+
+            // T14: unified-edges dual-write — see record_coactivation_ns
+            // for full rationale. cross_ns ("ns1:ns2") goes into the
+            // namespace column so cross-NS associative facts stay
+            // distinguishable from same-NS ones.
+            crate::graph::store::dual_write_hebbian_to_edges(
+                &tx,
+                id1,
+                id2,
+                "corecall",
+                "{}",
+                0.1,
+                &cross_ns,
+            )
+            .map_err(|e| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("dual_write_hebbian_to_edges failed: {e}"),
+                )))
+            })?;
+
+            Ok::<bool, rusqlite::Error>(formed)
+        }?;
+
+        tx.commit()?;
+        Ok(result)
     }
     
     /// Discover cross-namespace Hebbian links between two namespaces.
