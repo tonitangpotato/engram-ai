@@ -2084,3 +2084,326 @@ mod t24_helpers_tests {
         assert_ne!(h1, h2, "namespace is part of identity");
     }
 }
+
+// =============================================================
+// T25 — synthesis_provenance → edges (provenance, derived_from)
+// =============================================================
+
+/// T25 — Phase C backfill: project `synthesis_provenance` rows into
+/// the unified `edges` table as
+/// `edge_kind='provenance', predicate='derived_from'`.
+///
+/// Field mapping (per v04-unified-substrate design.md §3.3 + §4.5 + §5.3):
+///   * `id`              — **legacy.id passed through verbatim** (NOT
+///                         a hash). Provenance is append-only and has
+///                         no partial unique index per §3.2; Phase B's
+///                         T16 dual-write uses legacy.id directly so a
+///                         re-emission via Phase B AFTER backfill
+///                         collides with the backfilled edge on PK
+///                         (idempotent), rather than landing as a
+///                         second edge under a hashed id.
+///   * `source_id`       — `legacy.insight_id` (insight is "derived from"
+///                         the source, so edge points insight → source).
+///   * `target_id`       — `legacy.source_id`.
+///   * `edge_kind`       — `'provenance'` (closed taxonomy §3.3).
+///   * `predicate`       — `'derived_from'` (§3.3 row 9).
+///   * `confidence`      — `legacy.confidence` passed through. **This is
+///                         the first Phase C driver to pass a legacy
+///                         confidence column through to the helper
+///                         (others used 1.0 because their legacy tables
+///                         had no confidence column).** Establishes the
+///                         FINDING-3 policy: legacy-column-wins when
+///                         present, default-to-1.0 otherwise.
+///   * `namespace`       — derived from `insight_id`'s memory namespace
+///                         (JOIN). synthesis_provenance has no own NS
+///                         column; same pattern as T23 memory_entities.
+///   * `attributes` JSON — embeds `gate_decision`, parsed `gate_scores`,
+///                         `cluster_id`, `source_original_importance`,
+///                         `synthesis_timestamp` (verbatim string).
+///   * `created_at`,
+///   * `recorded_at`,
+///   * `updated_at`      — all parsed from `synthesis_timestamp` (RFC3339
+///                         string in legacy) per Phase B T16 convention.
+///
+/// FK guard: skip rows whose `insight_id` or `source_id` has no
+/// projected node in unified `nodes` (i.e. T19 hasn't run yet, or
+/// the parent memory was hard-deleted). Recorded in audit notes as
+/// `rows_skipped_dangling_endpoint`. Re-run after T19 picks them up.
+///
+/// Re-run semantics: per-row `INSERT OR IGNORE`. On second run, any
+/// edge whose id is already in `edges` increments `rows_skipped_existing`.
+/// Mismatched-kind defense-in-depth: if a row with the same id exists
+/// under a different `edge_kind` / `predicate`, increment
+/// `rows_skipped_mismatched_kind`. Under correct contract this cannot
+/// happen (legacy.id is a UUID minted by the synthesis writer; no
+/// other driver uses raw UUIDs as edge ids).
+pub fn backfill_synthesis_provenance_to_edges(
+    storage: &mut Storage,
+    namespace: Option<&str>,
+) -> Result<BackfillRun, rusqlite::Error> {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = utc_now_f64();
+
+    let notes_open = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_synthesis_provenance_to_edges",
+        "design_ref": "v04-unified-substrate §5.3 / T25",
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        INSERT INTO backfill_runs (
+            run_id, legacy_table, rows_read, rows_inserted,
+            rows_skipped_existing, rows_failed,
+            started_at, finished_at, notes
+        ) VALUES (?, 'synthesis_provenance', 0, 0, 0, 0, ?, NULL, ?)
+        "#,
+        params![run_id, started_at, notes_open],
+    )?;
+
+    // Count is namespace-scoped via the JOIN on memories(insight_id).
+    let rows_read: i64 = if let Some(ns) = namespace {
+        storage.conn().query_row(
+            "SELECT COUNT(*) FROM synthesis_provenance sp \
+             JOIN memories mi ON mi.id = sp.insight_id \
+             WHERE mi.namespace = ?",
+            params![ns],
+            |r| r.get(0),
+        )?
+    } else {
+        storage
+            .conn()
+            .query_row("SELECT COUNT(*) FROM synthesis_provenance", [], |r| r.get(0))?
+    };
+    let rows_read = rows_read as u64;
+
+    // Hydrate. JOIN to memories to fetch insight namespace.
+    let conn = storage.conn();
+    let select_sql = if namespace.is_some() {
+        "SELECT sp.id, sp.insight_id, sp.source_id, sp.cluster_id, \
+                sp.synthesis_timestamp, sp.gate_decision, sp.gate_scores, \
+                sp.confidence, sp.source_original_importance, \
+                mi.namespace \
+         FROM synthesis_provenance sp \
+         JOIN memories mi ON mi.id = sp.insight_id \
+         WHERE mi.namespace = ?"
+    } else {
+        "SELECT sp.id, sp.insight_id, sp.source_id, sp.cluster_id, \
+                sp.synthesis_timestamp, sp.gate_decision, sp.gate_scores, \
+                sp.confidence, sp.source_original_importance, \
+                mi.namespace \
+         FROM synthesis_provenance sp \
+         JOIN memories mi ON mi.id = sp.insight_id"
+    };
+    let mut stmt = conn.prepare(select_sql)?;
+    type SpRow = (
+        String,         // id
+        String,         // insight_id
+        String,         // source_id
+        String,         // cluster_id
+        String,         // synthesis_timestamp (RFC3339)
+        String,         // gate_decision
+        Option<String>, // gate_scores (JSON string or NULL)
+        f64,            // confidence
+        Option<f64>,    // source_original_importance
+        String,         // namespace (from insight memory)
+    );
+    let map_row = |row: &rusqlite::Row| -> Result<SpRow, rusqlite::Error> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+            row.get(9)?,
+        ))
+    };
+    let rows: Vec<SpRow> = if let Some(ns) = namespace {
+        stmt.query_map(params![ns], map_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map([], map_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    drop(stmt);
+
+    let tx = storage.conn().unchecked_transaction()?;
+
+    let mut rows_inserted: u64 = 0;
+    let mut rows_skipped_existing: u64 = 0;
+    let mut rows_skipped_dangling_endpoint: u64 = 0;
+    let mut rows_skipped_mismatched_kind: u64 = 0;
+
+    for (
+        id,
+        insight_id,
+        source_id,
+        cluster_id,
+        synthesis_timestamp,
+        gate_decision,
+        gate_scores,
+        confidence,
+        source_original_importance,
+        ns_val,
+    ) in &rows
+    {
+        // FK guard: both endpoints must have projected nodes.
+        let endpoints_ok: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM nodes WHERE id = ?) \
+             AND EXISTS(SELECT 1 FROM nodes WHERE id = ?)",
+            params![insight_id, source_id],
+            |r: &rusqlite::Row<'_>| r.get::<_, bool>(0),
+        )?;
+        if !endpoints_ok {
+            rows_skipped_dangling_endpoint += 1;
+            continue;
+        }
+
+        // Parse synthesis_timestamp (RFC3339) → unix epoch.
+        // synthesis_timestamp is stored as RFC3339 in legacy. Fall
+        // back to current time if parsing fails (never observed in
+        // production but defensive — a malformed legacy row would
+        // otherwise crash the whole run).
+        let ts_unix: f64 = match chrono::DateTime::parse_from_rfc3339(synthesis_timestamp) {
+            Ok(dt) => {
+                let dt_utc = dt.with_timezone(&chrono::Utc);
+                dt_utc.timestamp() as f64
+                    + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9)
+            }
+            Err(_) => utc_now_f64(),
+        };
+
+        // Build attributes JSON. gate_scores in legacy is a TEXT
+        // column holding pre-encoded JSON; we parse and re-embed so
+        // it lands as a nested object, not a quoted string.
+        let mut attrs = serde_json::Map::new();
+        attrs.insert(
+            "gate_decision".to_string(),
+            serde_json::Value::String(gate_decision.clone()),
+        );
+        attrs.insert(
+            "cluster_id".to_string(),
+            serde_json::Value::String(cluster_id.clone()),
+        );
+        attrs.insert(
+            "synthesis_timestamp".to_string(),
+            serde_json::Value::String(synthesis_timestamp.clone()),
+        );
+        if let Some(score_json) = gate_scores.as_deref() {
+            if !score_json.is_empty() {
+                match serde_json::from_str::<serde_json::Value>(score_json) {
+                    Ok(v) => {
+                        attrs.insert("gate_scores".to_string(), v);
+                    }
+                    Err(_) => {
+                        // Malformed legacy gate_scores — preserve as
+                        // a string so the operator can see it.
+                        attrs.insert(
+                            "gate_scores".to_string(),
+                            serde_json::Value::String(score_json.to_string()),
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(orig) = source_original_importance {
+            attrs.insert(
+                "source_original_importance".to_string(),
+                serde_json::Number::from_f64(*orig)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null),
+            );
+        }
+        let attrs_json = serde_json::to_string(&serde_json::Value::Object(attrs))
+            .expect("serializing serde_json::Map cannot fail");
+
+        // Defense-in-depth: check id collision under a different
+        // edge_kind/predicate. Under correct contract this never
+        // fires — legacy.id is a UUID minted by the synthesis writer
+        // and no other driver uses raw UUIDs as edge ids.
+        let existing_kind: Option<(String, String)> = tx
+            .query_row(
+                "SELECT edge_kind, predicate FROM edges WHERE id = ?",
+                params![id],
+                |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+
+        let inserted = Storage::insert_provenance_edge_row(
+            &tx,
+            id,
+            insight_id,
+            source_id,
+            "derived_from",
+            &attrs_json,
+            *confidence,
+            ns_val,
+            ts_unix,
+        )?;
+
+        if inserted {
+            rows_inserted += 1;
+        } else if let Some((ek, pp)) = existing_kind {
+            if ek != "provenance" || pp != "derived_from" {
+                rows_skipped_mismatched_kind += 1;
+            } else {
+                rows_skipped_existing += 1;
+            }
+        } else {
+            rows_skipped_existing += 1;
+        }
+    }
+
+    tx.commit()?;
+
+    let finished_at = utc_now_f64();
+    let notes_closed = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_synthesis_provenance_to_edges",
+        "design_ref": "v04-unified-substrate §5.3 / T25",
+        "rows_skipped_dangling_endpoint": rows_skipped_dangling_endpoint,
+        "rows_skipped_mismatched_kind": rows_skipped_mismatched_kind,
+        "confidence_policy": "legacy.confidence pass-through (FINDING-3 reference impl)",
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        UPDATE backfill_runs
+           SET rows_read = ?,
+               rows_inserted = ?,
+               rows_skipped_existing = ?,
+               rows_failed = 0,
+               finished_at = ?,
+               notes = ?
+         WHERE run_id = ?
+        "#,
+        params![
+            rows_read as i64,
+            rows_inserted as i64,
+            (rows_skipped_existing + rows_skipped_dangling_endpoint + rows_skipped_mismatched_kind)
+                as i64,
+            finished_at,
+            notes_closed,
+            run_id,
+        ],
+    )?;
+
+    let run = BackfillRun {
+        run_id,
+        legacy_table: "synthesis_provenance".to_string(),
+        rows_read,
+        rows_inserted,
+        rows_skipped_existing: rows_skipped_existing
+            + rows_skipped_dangling_endpoint
+            + rows_skipped_mismatched_kind,
+        rows_failed: 0,
+    };
+    run.assert_counter_invariant();
+    Ok(run)
+}
