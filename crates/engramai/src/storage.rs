@@ -2522,6 +2522,15 @@ impl Storage {
     ///   - `signal_source="corecall"` marks this as recall-driven.
     ///   - `namespace="default"` because this overload is
     ///     namespace-agnostic.
+    ///
+    /// **Behavior change**: the legacy table has no FK on (source_id,
+    /// target_id); the unified `edges` table REFERENCES nodes(id). If
+    /// either endpoint is missing from `nodes`, the dual-write will
+    /// fail FK, the whole transaction rolls back, and the call returns
+    /// a SQLite error. Previously this method silently inserted an
+    /// orphan legacy row. This is the desired fail-fast behavior for
+    /// Phase B lockstep; callers must ensure both ids have been added
+    /// via `Storage::add` first.
     pub fn record_coactivation(
         &mut self,
         id1: &str,
@@ -2660,6 +2669,15 @@ impl Storage {
         donor_id: &str,
         target_id: &str,
     ) -> Result<usize, rusqlite::Error> {
+        // Defensive guard: donor == target would cause the final DELETE
+        // (WHERE source_id = donor OR target_id = donor) to wipe the
+        // surviving memory's entire hebbian neighborhood. Pre-existing
+        // legacy code had no guard for this — ISS-116 closes both sides
+        // (legacy + unified edges) so we add the guard once at entry.
+        if donor_id == target_id {
+            return Ok(0);
+        }
+
         // Collect all donor-touching hebbian neighbours BEFORE opening
         // the transaction (the call uses &self).
         let links = self.get_hebbian_links_weighted(donor_id)?;

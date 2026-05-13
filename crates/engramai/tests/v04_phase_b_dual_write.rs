@@ -2584,3 +2584,41 @@ fn iss116_merge_hebbian_links_mirrors_donor_repoint_to_edges() {
         .unwrap();
     assert!((strength_p1 - 0.7).abs() < 1e-9);
 }
+
+#[test]
+fn iss116_merge_hebbian_links_rejects_self_merge() {
+    // Defensive guard: if donor == target, the merge driver would
+    // otherwise issue `DELETE … WHERE source_id=donor OR target_id=
+    // donor` against both substrates and wipe the survivor's entire
+    // hebbian neighborhood. Pre-existing legacy bug pinned to no-op
+    // semantics by the entry guard added in ISS-116.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("iss116e.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    // Seed a hebbian link a<->b so there's something to destroy if
+    // the guard ever regresses.
+    storage
+        .record_association(&a, &b, 0.6, "entity", "{}", "default")
+        .unwrap();
+    assert_eq!(count_assoc_edges(storage.conn(), &a, &b), 1);
+
+    let transferred = storage.merge_hebbian_links(&a, &a).unwrap();
+    assert_eq!(transferred, 0, "self-merge is a no-op");
+
+    // Pre-existing link must survive untouched.
+    assert_eq!(
+        count_assoc_edges(storage.conn(), &a, &b),
+        1,
+        "self-merge must NOT wipe the survivor's hebbian neighborhood"
+    );
+    let strength: f64 = storage.conn()
+        .query_row(
+            "SELECT strength FROM hebbian_links \
+             WHERE (source_id=?1 AND target_id=?2) OR (source_id=?2 AND target_id=?1)",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((strength - 0.6).abs() < 1e-9, "legacy strength preserved");
+}
