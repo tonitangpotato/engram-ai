@@ -5907,7 +5907,7 @@ impl Memory {
         namespace: &str,
         min_importance: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection())?;
+        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.subscribe(agent_id, namespace, min_importance)?;
         Ok(())
     }
@@ -5918,7 +5918,7 @@ impl Memory {
         agent_id: &str,
         namespace: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection())?;
+        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.unsubscribe(agent_id, namespace)
     }
     
@@ -5927,7 +5927,7 @@ impl Memory {
         &self,
         agent_id: &str,
     ) -> Result<Vec<Subscription>, Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection())?;
+        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.list_subscriptions(agent_id)
     }
     
@@ -5939,7 +5939,7 @@ impl Memory {
         &self,
         agent_id: &str,
     ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection())?;
+        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.check_notifications(agent_id)
     }
     
@@ -5948,7 +5948,7 @@ impl Memory {
         &self,
         agent_id: &str,
     ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection())?;
+        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.peek_notifications(agent_id)
     }
 
