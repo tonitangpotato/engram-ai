@@ -1957,7 +1957,7 @@ one focused session.
 
 ### 8.3 Phase B — dual-write
 - [x] **T12** `store_raw`: dual-write memory → nodes — 2fd9531 (dropped into `Storage::add` since it's the single canonical memory write path; `store_raw` flows through `add`)
-- [ ] **T13** ResolutionPipeline: dual-write entities → nodes(kind=entity), edges
+- [x] **T13** ResolutionPipeline: dual-write entities → nodes(kind=entity), edges — 4966ec1 (helpers `dual_write_entity_to_nodes` + `dual_write_edge_to_edges` in `graph/store.rs`; wired into `insert_entity`, `insert_edge`, `apply_graph_delta`. `source_memory_id=NULL` in Phase B — T19 backfill closes it. `merge_entities`/`supersede_edge` out of scope.)
 - [ ] **T14** Hebbian (association/former.rs): dual-write co-activation → edges
 - [ ] **T15** KC (knowledge_compile): dual-write topics → nodes(kind=topic), containment edges
 - [ ] **T16** Synthesis: dual-write provenance → edges
