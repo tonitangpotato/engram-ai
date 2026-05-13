@@ -1956,7 +1956,7 @@ one focused session.
 - [x] **T11** Test: storage open on fresh DB creates all unified tables; open on legacy DB adds them without touching old data — ba35622 (3/3 pass)
 
 ### 8.3 Phase B — dual-write
-- [ ] **T12** `store_raw`: dual-write memory → nodes
+- [x] **T12** `store_raw`: dual-write memory → nodes — 2fd9531 (dropped into `Storage::add` since it's the single canonical memory write path; `store_raw` flows through `add`)
 - [ ] **T13** ResolutionPipeline: dual-write entities → nodes(kind=entity), edges
 - [ ] **T14** Hebbian (association/former.rs): dual-write co-activation → edges
 - [ ] **T15** KC (knowledge_compile): dual-write topics → nodes(kind=topic), containment edges
