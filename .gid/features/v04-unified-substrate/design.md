@@ -312,17 +312,17 @@ or a lookup table without re-deriving from §4:
 | structural    | `causes`                        | cause → effect         | §4.2            | `entity_relations`                          |
 | structural    | `same_as`                       | alias → canonical      | §4.2            | `graph_entities.merged_into`                |
 | structural    | `subject_of`                    | entity → memory        | §4.2            | `memory_entities` (subject role)            |
-| structural    | `tagged`                        | memory → tag node      | §4.15 Tier 3    | (new)                                       |
-| structural    | `describes_participants`        | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.participants`          |
-| structural    | `describes_location`            | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.location`              |
-| structural    | `describes_temporal`            | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.temporal`              |
-| structural    | `describes_context`             | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.context`               |
-| structural    | `describes_causation`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.causation`             |
-| structural    | `describes_outcome`             | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.outcome`               |
-| structural    | `describes_method`              | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.method`                |
-| structural    | `describes_relations`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.relations`             |
-| structural    | `describes_sentiment`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.sentiment`             |
-| structural    | `describes_stance`              | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.stance`                |
+| containment   | `tagged`                        | memory → tag node      | §4.15 Tier 3    | (new — set membership, idempotent)          |
+| containment   | `describes_participants`        | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.participants`          |
+| containment   | `describes_location`            | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.location`              |
+| containment   | `describes_temporal`            | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.temporal`              |
+| containment   | `describes_context`             | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.context`               |
+| containment   | `describes_causation`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.causation`             |
+| containment   | `describes_outcome`             | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.outcome`               |
+| containment   | `describes_method`              | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.method`                |
+| containment   | `describes_relations`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.relations`             |
+| containment   | `describes_sentiment`           | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.sentiment`             |
+| containment   | `describes_stance`              | memory → dim node      | §4.15 Tier 2    | `memories.dimensions.stance`                |
 | associative   | `co_activated`                  | A ↔ B (direction attr) | §4.3            | `hebbian_links`                             |
 | associative   | `evoked_by`                     | marker → trigger       | §4.11           | (new, somatic markers)                      |
 | associative   | `aligns_with`                   | memory → drive node    | §4.11           | (new, drive alignment)                      |
@@ -612,7 +612,7 @@ operate, but their data source is uniform.
 
 Specifically:
 - `episodic` plan → `nodes WHERE node_kind='memory' AND occurred_at BETWEEN ...`
-- `factual` plan → traverse `edges WHERE edge_kind='structural'`
+- `factual` plan → traverse `edges WHERE edge_kind IN ('structural', 'containment')` — structural for entity relations (is_a, located_in, same_as), containment for dimensional set membership (describes_location, tagged, …)
 - `associative` plan → traverse `edges WHERE edge_kind='associative'` (replaces Hebbian spreading)
 - `abstract_l5` plan → `nodes WHERE node_kind='topic'` + `edges WHERE predicate='contains'`
 - `bitemporal` plan → `edges WHERE valid_from/valid_to filter`
@@ -742,9 +742,10 @@ Working memory is biologically a *transient* state — prefrontal sustained acti
 **The in-memory tier** (unchanged from today):
 - `session_wm.rs` keeps the Miller 7±2 ring buffer in process memory. Reads + writes are O(1), no IO.
 - On process restart, WM clears. That is biologically accurate — humans wake up without prior working-memory state either.
+- **Cold-start tracking**: the ring buffer carries a `state: WmState` flag (`cold_start | warm`). On process start, `state = cold_start`. The flag flips to `warm` after the **first recall populates the buffer** (i.e. the first time WM holds at least one memory ID derived from this session's activity, not a stub). All subsequent in-memory WM operations observe `warm` until process exit. This is a single byte; zero hot-path cost.
 
 **The substrate tier** (new):
-- `node_kind='wm_snapshot'`: one row per snapshot. Attributes: `{ slot_count, captured_at, trigger_reason }`.
+- `node_kind='wm_snapshot'`: one row per snapshot. Attributes: `{ slot_count, captured_at, trigger_reason, wm_state }` — `wm_state` is the cold/warm flag at capture time, persisted so downstream analysis can distinguish "agent had genuinely empty WM" from "agent had just restarted and not yet recalled anything".
 - `edge_kind='containment', predicate='wm_contained'`: from snapshot node → each memory that was in WM at capture time. Edge order/recency carried as edge attribute (`slot_index`, `last_access_ns`).
 - `edge_kind='provenance', predicate='wm_snapshot_of'`: from feedback event (§4.14) → wm_snapshot. Makes "what was the agent thinking when this judgment was made" a one-hop traversal.
 
@@ -782,7 +783,7 @@ Metacognition is *judgments about other cognitive operations*. Each judgment is 
 
 **Writer path through §6 queue**:
 - `WriteFeedbackEvent { dimension, score, target_id, evaluator, rationale }` — medium priority, no batching constraint (these are rare).
-- `WriteWmSnapshot { feedback_event_id, slot_contents }` — fires in the same transaction as `WriteFeedbackEvent` so the snapshot and the evaluation are atomically linked (§4.13 demand-driven trigger).
+- `WriteWmSnapshot { feedback_event_id, slot_contents, wm_state }` — fires in the same transaction as `WriteFeedbackEvent` so the snapshot and the evaluation are atomically linked (§4.13 demand-driven trigger). `wm_state ∈ {cold_start, warm}` is captured from the in-memory ring buffer at snapshot time; a `cold_start` snapshot is a legitimate observation (the agent really had empty WM post-restart), not a data-quality bug, but downstream metacog analysis can filter on it.
 - Aggregation is **read-time** (one SQL query) unless a daily summary node is materialized; that's a separate background op.
 
 **Why this works**:
@@ -829,7 +830,9 @@ node_kind='memory'  ──describes_location──>  node_kind='dimension_locati
                                             attributes = { value: "Caroline's house" }
 ```
 
-The 10 narrative fields (`participants`, `temporal`, `location`, `context`, `causation`, `outcome`, `method`, `relations`, `sentiment`, `stance`) each get their own `node_kind`: `dimension_participants`, `dimension_location`, etc. (Schema §3.1 has only single-level `node_kind`; we encode field identity into the kind string rather than inventing a second discriminator.) Each unique value (e.g. `"Caroline's house"`) is a single node; every memory referencing it gets an edge with `edge_kind='structural', predicate='describes_<field>'` (e.g. `describes_location`, `describes_participants`).
+The 10 narrative fields (`participants`, `temporal`, `location`, `context`, `causation`, `outcome`, `method`, `relations`, `sentiment`, `stance`) each get their own `node_kind`: `dimension_participants`, `dimension_location`, etc. (Schema §3.1 has only single-level `node_kind`; we encode field identity into the kind string rather than inventing a second discriminator.) Each unique value (e.g. `"Caroline's house"`) is a single node; every memory referencing it gets an edge with `edge_kind='containment', predicate='describes_<field>'` (e.g. `describes_location`, `describes_participants`).
+
+**Why `containment` and not `structural`**: a dimension edge is set-membership semantics — a memory either has this location/participant/etc. or it doesn't, and re-ingesting the same value MUST be a no-op (not a second edge with the same predicate). §3.2's partial UNIQUE index on `(source_id, target_id, edge_kind, predicate) WHERE edge_kind='containment'` enforces this idempotence at the SQL layer. `structural` edges are reserved for relations that may legitimately repeat across runs (e.g. parser-emitted AST edges, multiple `derived_from` provenance links with different `source_run_id`).
 
 **Why edges, not duplicated strings**:
 
@@ -840,7 +843,7 @@ The 10 narrative fields (`participants`, `temporal`, `location`, `context`, `cau
 
 #### 4.15.3 Tier 3 — tag set as `tagged` edges
 
-`tags: BTreeSet<String>` becomes N edges (`edge_kind='structural', predicate='tagged'`) to `node_kind='tag'` nodes. Same rationale as Tier 2 — tag reuse is the whole point of tags, edges make reuse explicit. A `tagged` edge has no weight (presence/absence is the signal); the UNIQUE constraint on `(source_id, target_id, edge_kind, predicate)` from §3.2 prevents accidental duplicates.
+`tags: BTreeSet<String>` becomes N edges (`edge_kind='containment', predicate='tagged'`) to `node_kind='tag'` nodes. Same rationale as Tier 2 — tag reuse is the whole point of tags, edges make reuse explicit. A `tagged` edge has no weight (presence/absence is the signal); the partial UNIQUE index on `(source_id, target_id, edge_kind, predicate) WHERE edge_kind='containment'` from §3.2 prevents accidental duplicates (re-ingest of the same tag is a no-op).
 
 #### 4.15.4 Compatibility with current `dimension_access.rs`
 
@@ -1110,10 +1113,16 @@ on a subset of rows):
   For tables that lack a single PK column, use the smallest UNIQUE
   tuple as `source_id` (e.g. `hebbian_links` uses
   `(memory_id, related_id, namespace)`; `memory_entities` uses
-  `(memory_id, entity_id, role)`). Combined with the UNIQUE constraint
-  on `edges(source_id, target_id, edge_kind, predicate)` (§3.2), this
-  makes `INSERT OR IGNORE` correct: a re-run that re-emits the same
-  edge produces the same UUID and is silently skipped.
+  `(memory_id, entity_id, role)`). Combined with the partial UNIQUE
+  indexes on `edges(source_id, target_id, edge_kind, predicate)`
+  declared in §3.2 (covering `edge_kind='associative'` and
+  `edge_kind='containment'`), this makes `INSERT OR IGNORE` correct
+  for the kinds where re-emission is supposed to be idempotent: a
+  re-run that re-emits the same Hebbian bump, the same dimension
+  edge, or the same tag edge produces the same UUID and is silently
+  skipped. `structural` / `provenance` / `temporal` edges that
+  legitimately repeat across runs are not constrained by the partial
+  index and accumulate.
 
 - **Verification**: backfill driver emits a `backfill_runs` audit row
   per invocation `(run_id, table, rows_read, rows_inserted, rows_skipped_existing)`.
@@ -1180,12 +1189,12 @@ pub enum WriteOp {
     // ─────────────── §4.1 ingest ───────────────
     WriteMemory {
         content: String,                            // → nodes.content (column name)
-        dimensions: Dimensions,                     // §4.15 expanded inline (Tier 1 + Tier 2/3 derived ops emitted as a Batch — see §6.4)
+        dimensions: Dimensions,                     // §4.15: macro-op. Writer expands inline (see note below)
         occurred_at: Option<DateTime<Utc>>,         // ISS-103 fix: nullable, separate from created_at
         embedding: Option<Vec<f32>>,
         namespace: String,
         agent_id: Option<String>,
-        reply: oneshot::Sender<Result<NodeId>>,
+        reply: oneshot::Sender<Result<WriteMemoryReply>>,
     },
 
     // ─────────────── §4.2 entity resolution ───────────────
@@ -1334,6 +1343,7 @@ pub enum WriteOp {
         feedback_event_id: NodeId,                  // → provenance/wm_snapshot_of edge
         slots: Vec<WmSlot>,                         // → containment/wm_contained edges to each WM memory
         trigger_reason: String,
+        wm_state: WmState,                          // cold_start | warm — §4.13 in-memory ring buffer flag
         reply: oneshot::Sender<Result<NodeId>>,
     },
 
@@ -1346,9 +1356,14 @@ pub enum WriteOp {
         reply: oneshot::Sender<Result<NodeId>>,
     },
 
-    // ─────────────── §4.15 Tier 2/3 dimension edges ───────────────
-    // These are normally emitted as part of a WriteMemory Batch (§6.4); standalone variants exist for
-    // backfill (§5.3) and for cases where a memory's dimensional signature is updated after ingest.
+    // ─────────────── §4.15 Tier 2/3 dimension edges (standalone variants) ───────────────
+    // PRIMARY path: dimension edges are NOT caller-constructed for normal memory ingest;
+    // the writer expands `WriteMemory.dimensions` inline into the same SQL transaction
+    // (macro-op semantics, see §6.1 note below). These standalone variants exist only for:
+    //   - Backfill (§5.3) when migrating legacy memories that already have node rows
+    //   - Post-ingest dimension correction (rare; e.g. resolution canonicalization later
+    //     merges two dimension_location nodes and edges must be repointed)
+    // Callers writing fresh memories MUST use `WriteMemory { dimensions, .. }` — not Batch.
     WriteDimensionEdge {
         memory_id: NodeId,
         field: String,                              // 'participants'|'location'|... — predicate becomes `describes_<field>`
@@ -1383,26 +1398,59 @@ pub enum WriteOp {
 
 **Variant naming convention**: `Write<Thing>` for ops that create nodes/edges; `Bump<Thing>` for idempotent accumulators; `Apply<Thing>` for sweeps over many rows; `Supersede`/`Promote`/`SoftDelete` are domain verbs. `Update<Thing>` is reserved for in-place mutations of a *single existing row* (e.g. `UpdateDomainStats`), distinct from `Write<Thing>` which always creates.
 
+**Macro-op semantics for `WriteMemory`** (closes r3-p4a-FINDING-6 — was ambiguous):
+
+`WriteMemory` is a **macro-op**: a single `WriteOp` variant the writer expands internally into multiple SQL statements within one transaction. Specifically, `apply_write_memory(tx, op)` performs:
+
+1. `INSERT INTO nodes(...)` for the memory itself (Tier 1 scalar dimensions land in `nodes.attributes` JSON — no separate write).
+2. For each Tier 2 narrative field with a value: resolve or create the `dimension_<field>` node (single `INSERT ... ON CONFLICT DO NOTHING RETURNING id`, or SELECT-then-INSERT under WAL), then `INSERT INTO edges(...)` for the `containment / describes_<field>` edge. Up to 10 fields.
+3. For each Tier 3 tag: resolve or create the `tag` node, `INSERT INTO edges(...)` for the `containment / tagged` edge. Typical 0–8 tags.
+
+This produces up to ~20 SQL statements per `WriteMemory`, all inside the same `BEGIN ... COMMIT`. **Callers do not decompose `WriteMemory` into `Batch([WriteMemory{no dims}, WriteDimensionEdge, ...])`** — the macro-op exists precisely so the caller surface stays one op and the atomicity boundary is the writer's responsibility, not the caller's.
+
+The reply payload:
+
+```rust
+pub struct WriteMemoryReply {
+    pub memory_id: NodeId,
+    pub dimension_edges: Vec<(String, EdgeId)>,    // (field_name, edge_id) — empty if Tier 2 fields all None
+    pub tag_edges: Vec<EdgeId>,                    // empty if tags empty
+}
+```
+
+Callers who don't care about edge IDs ignore those vectors. Callers performing post-ingest fix-ups (rare) get the IDs they need without a second SELECT.
+
+**Why macro-op, not Batch-of-WriteMemory-plus-sub-ops**:
+
+- The dimension/tag node resolution (step 2/3 above) needs to **see the memory_id from step 1** to construct the edge. In a caller-constructed `Batch`, the caller would have to know the memory ID *before* the writer assigns it — impossible without round-tripping. Macro-op lets the writer chain the assignments in one frame.
+- `Batch` results are positional (`WriteOpResult` at index `i` corresponds to `ops[i]`). A `WriteMemory` macro-op produces a *single* `WriteMemoryReply` at its slot — clean. A decomposed Batch would have ~20 slots, most of which the caller doesn't care about, and the caller would have to know the exact ordering to interpret them.
+- **No nested-Batch issue.** Because `WriteMemory` is a single variant (not a `Batch` itself), wrapping it in a Batch — e.g. `Batch([WriteMemory, WriteEntity])` for a multi-row atomic write — is legal. The "nested Batch forbidden" rule (§6.4) is only violated if a caller puts a `Batch` *variant* inside another `Batch.ops` vector; macro-ops don't trigger it.
+
+`WriteDimensionEdge` and `WriteTagEdge` standalone variants remain in the enum for the migration backfill path (§5.3) and post-ingest correction. They are NOT the normal write path.
+
 ### 6.2 Writer main loop (dedicated OS thread, batched commit)
 
 **Critical constraint** (closes FINDING-A4-4): rusqlite is **synchronous**. `tx.commit()` performs an `fsync(2)` that blocks the calling thread for ~30–80µs on NVMe and can spike to single-digit ms under load. Doing this work directly inside a tokio task **blocks the tokio worker**, freezing every other task scheduled on the same worker — including retrieval. The writer therefore runs on a **dedicated OS thread**, never on a tokio worker. Async callers reach it through an mpsc channel; the writer thread is the only owner of the `Storage` handle.
 
 ```rust
-// Public API: spawned once per engram instance.
-pub fn spawn_writer(
-    storage: Storage,
-    rx_high: mpsc::Receiver<WriteOp>,
-    rx_med:  mpsc::Receiver<WriteOp>,
-    rx_low:  mpsc::Receiver<WriteOp>,
-) -> WriterHandle {
-    let handle = std::thread::Builder::new()
-        .name("engram-writer".into())
-        .spawn(move || writer_loop(storage, rx_high, rx_med, rx_low))
-        .expect("OS thread spawn failed");
-    WriterHandle { thread: handle, /* ... */ }
+// Public API: the supervisor is the durable handle. `spawn` constructs the
+// public channels (one per priority), wires private channels into a fresh
+// writer thread, and returns the supervisor handle. On writer panic the
+// supervisor respawns the thread (see §6.9); the public channels and the
+// supervisor itself outlive any single writer-thread generation.
+pub fn spawn_writer(storage_path: PathBuf) -> WriterSupervisor {
+    let (tx_high_pub, rx_high_pub) = mpsc::channel(QUEUE_CAP_HIGH);
+    let (tx_med_pub,  rx_med_pub)  = mpsc::channel(QUEUE_CAP_MED);
+    let (tx_low_pub,  rx_low_pub)  = mpsc::channel(QUEUE_CAP_LOW);
+
+    let supervisor = WriterSupervisor::new(storage_path, rx_high_pub, rx_med_pub, rx_low_pub);
+    supervisor.start_generation();  // forks the first writer thread + private channels
+    supervisor
 }
 
-// Runs on a dedicated OS thread, NOT a tokio worker.
+// Internal: writer thread entry point. The supervisor owns this thread's
+// JoinHandle and the private mpsc receivers (rx_*_priv). On panic the
+// thread exits; the supervisor detects via JoinHandle and respawns.
 fn writer_loop(
     mut storage: Storage,
     mut rx_high: mpsc::Receiver<WriteOp>,
@@ -1665,14 +1713,38 @@ fn apply_write_memory(tx: &Transaction, op: WriteMemoryOp) -> Result<NodeId> {
 
 **Queue overflow** (§6.3 backpressure): high-priority channel full → caller `await`s. Medium full → caller gets `Err(QueueFull)` and decides per-op (metacog: log+drop; supersession: must succeed, so loop with backoff). Low full → silent drop-oldest.
 
-**Writer thread panic** (closes FINDING-A4-10): if `apply_op` panics on a single bad op (e.g. malformed dimensions causing a JSON serialization error), the entire writer thread dies and the channels become a black hole for all subsequent sends. Mitigation:
+**Writer thread panic** (closes FINDING-A4-10 + r3-p4a-FINDING-5): if `apply_op` panics on a single bad op (e.g. malformed dimensions causing a JSON serialization error), the entire writer thread dies and the channels become a black hole for all subsequent sends. Mitigation:
 
 - `apply_op` catches `Result::Err` and sends it back on the op's `oneshot`. Errors do not kill the writer.
 - **Genuine panics CANNOT be caught with `std::panic::catch_unwind` around rusqlite calls.** rusqlite's `Connection`, `Statement`, and `Transaction` types are **not `UnwindSafe`** — they hold raw pointers into SQLite's C state, and unwinding across a partially-committed transaction would leave SQLite in an undefined internal state. Wrapping `apply_op` in `catch_unwind` and resuming the same thread is **unsound**. The reviewer in r2 flagged this; the design accepts it.
-- The correct recovery model is **process-level**: a panic in the writer thread is logged, the panic hook flushes pending oneshot replies with `Err(WriterCrashed)`, and the writer thread **exits**. The supervisor (`Memory::ensure_writer_alive`) detects the dead thread via `JoinHandle::is_finished()` (polled on every public `Memory::*` call that needs the writer), and spawns a **fresh** writer thread with a **fresh** `Storage::reopen()` handle. The dropped `Storage` releases the SQLite connection; the new one starts from clean state, with SQLite WAL recovering any uncommitted batch via the database's own crash-recovery path.
-- This is more expensive than in-thread catch-and-continue (one `panic!` costs a thread respawn ≈ 1ms) but it is **sound** — the new thread starts from a guaranteed-clean SQLite handle, and no caller of the next op observes corrupted intermediate state.
+
+- The correct recovery model is **process-level with supervisor-owned channels**. Concretely:
+
+  ```text
+  ┌──────────────┐  WriteOp        ┌──────────────┐  WriteOp     ┌────────────┐
+  │ async caller │ ──────────────► │  Supervisor  │ ───────────► │  Writer    │
+  └──────────────┘   mpsc(public)  │ (owns recvs) │ mpsc(private)│  (thread)  │
+                                   └──────────────┘              └────────────┘
+                                          ▲                            │
+                                          └────── JoinHandle ──────────┘
+  ```
+
+  - The **public** mpsc channels (one per priority level) are owned by a `WriterSupervisor` task — NOT by the writer thread. Async callers always send into the supervisor.
+  - The supervisor forwards each `WriteOp` into a **private** mpsc channel that the writer thread consumes. It keeps a copy of the `oneshot::Sender` reply (or a stable per-op `op_id` indexing into a `HashMap<OpId, oneshot::Sender>`) before forwarding. Forwarding cost: one channel hop, ~1µs.
+  - When the writer thread panics, its `JoinHandle::join()` returns `Err`. The supervisor observes this in one of two ways:
+    1. Its forward task gets `Err(SendError)` when the private channel's receiver is dropped (panicking thread's stack unwinds the receiver).
+    2. A watchdog `tokio::select!` includes `tokio::task::spawn_blocking(|| handle.join())` returning.
+  - On panic detection, the supervisor:
+    1. Closes the private channel send half (drops it).
+    2. Iterates its in-flight `HashMap` of pending replies — sends `Err(WriterCrashed { generation, cause })` to every `oneshot::Sender`.
+    3. Drains the public mpsc receivers up to a bound (e.g. 1024 ops) — for each, sends `Err(WriterCrashed)` on the op's reply channel. Beyond the bound, simply drops; those callers' `oneshot::Receiver.await` yields `RecvError`, which they treat as equivalent to `WriterCrashed` (the public contract documents this equivalence).
+    4. Calls `Storage::reopen()` on a fresh `PathBuf` (the old `Storage` was owned by the panicking thread and has already been dropped during unwind, releasing the SQLite connection).
+    5. Spawns a fresh writer thread with the new `Storage` and a fresh private channel, increments `generation` (so any straggler replies from the old generation can be discriminated), and resumes forwarding.
+
+- This is more expensive than in-thread catch-and-continue (one `panic!` costs ≈ 1ms thread respawn + ≤ 1µs per drained in-flight op) but it is **sound** — the new thread starts from a guaranteed-clean SQLite handle, no caller observes corrupted intermediate state, and every caller whose op was in-flight either gets `WriterCrashed` (graceful, supervisor-delivered) or `RecvError` (rare, beyond-bound drain). The public API documents these two as equivalent failure modes.
+- The `WriterCrashed` error carries `generation: u64` so test harnesses + observability can confirm "this caller's op was lost to the panic at generation N" without ambiguity.
 - For panic surface reduction, `apply_op` itself does as little arithmetic as possible — it dispatches into per-variant handler functions that do explicit validation up-front (`return Err(...)` for bad input instead of panicking), so the panic case is reserved for genuine bugs (slice OOB, integer overflow in release math), not for bad user input.
-- **No write journal beyond SQLite's WAL.** A separate disk journal of pre-commit ops would be a "WAL on top of WAL" — pointless duplication. SQLite's WAL *is* the durable log. The §8 task T66 implements exactly this stance — its supervisor + thread-respawn logic does not introduce a journal file; reviewers who read T66's "panic-catcher around `apply_op`" as journal-like should reread: T66 is recovery of the writer *thread*, not recovery of *lost ops*. Lost ops are signaled to callers via `Err(QueueClosed)` / `Err(WriterCrashed)`, which is the design's intentional consistency contract.
+- **No write journal beyond SQLite's WAL.** A separate disk journal of pre-commit ops would be a "WAL on top of WAL" — pointless duplication. SQLite's WAL *is* the durable log. The §8 task T66 implements the supervisor + thread-respawn logic described above — it does not introduce a journal file. Lost ops are signaled to callers via `Err(WriterCrashed)` / `Err(RecvError)`, which is the design's intentional consistency contract.
 
 **What this design does not promise**:
 
@@ -1968,14 +2040,16 @@ one focused session.
   `nodes.attributes` at write time. No new table.
 - [ ] **T57** Implement Tier 2 (narrative fields as `describes_<field>`
   edges): each unique narrative value becomes a `node_kind='dimension_<field>'`
-  node, every memory referencing it gets an `edge_kind='structural',
+  node, every memory referencing it gets an `edge_kind='containment',
   predicate='describes_<field>'` edge. Resolution-pipeline canonicalization
-  applies (§4.15.2). Routes through `WriteOp::Batch` for atomicity with
-  the parent `WriteMemory`.
+  applies (§4.15.2). Routes through `WriteOp::WriteMemory` macro-op (§6.1),
+  whose `dimensions` field the writer expands inline into the same
+  transaction as the parent memory INSERT — no caller-constructed `Batch`.
 - [ ] **T58** Implement Tier 3 (`tagged` edges to `node_kind='tag'`
-  nodes): each tag is a node, each memory→tag is an `edge_kind='structural',
-  predicate='tagged'` edge. UNIQUE constraint on
-  `(source_id, target_id, edge_kind, predicate)` prevents dup edges.
+  nodes): each tag is a node, each memory→tag is an `edge_kind='containment',
+  predicate='tagged'` edge. Partial UNIQUE index from §3.2
+  (`idx_edges_containment_unique`) prevents dup edges; re-ingest of the
+  same tag is a SQL no-op.
 - [ ] **T59** Rewrite `dimension_access.rs` as a thin shim over the
   unified schema (§4.15.4): scalar accessors read `nodes.attributes`,
   narrative accessors load edges by `predicate='describes_<field>'`,
@@ -2005,12 +2079,19 @@ one focused session.
   variant takes Vec<WriteOp> and commits in single transaction.
 - [ ] **T65** Implement reader WAL snapshot path (§6.5): readers acquire
   read-tx, never block on writer, see consistent snapshot.
-- [ ] **T66** Implement writer supervisor (§6.9): panic-catcher around
-  `apply_op`, auto-restart writer task on crash with fresh `Storage`
-  handle, transition channel to `WriterCrashed` state so callers fail
-  fast and retry. **No separate disk journal** — SQLite WAL is the
-  durable log; in-flight queue ops on crash are surfaced to callers via
-  `Err(QueueClosed)` for caller-side retry (§6.9 stance).
+- [ ] **T66** Implement writer supervisor (§6.9): `WriterSupervisor`
+  owns the public per-priority mpsc receivers + a `HashMap<OpId,
+  oneshot::Sender>` of in-flight replies. Forwarder task moves ops
+  from public → private channels into the writer thread; on writer
+  panic (detected via `JoinHandle::join()` returning Err), iterate
+  in-flight map sending `Err(WriterCrashed { generation, cause })` to
+  every pending reply, drain the public receivers up to 1024 with the
+  same error (further callers see `RecvError` = equivalent per public
+  contract), call `Storage::reopen()`, spawn fresh writer thread,
+  increment `generation`. **No separate disk journal** — SQLite WAL
+  is the durable log; in-flight queue ops on crash are surfaced to
+  callers via `Err(WriterCrashed)` / `Err(RecvError)` for caller-side
+  retry (§6.9 stance).
 - [ ] **T67** Bench: writer throughput target ~11k ops/sec (§6.6), measure
   with synthetic load mixing all WriteOp variants in production-realistic
   proportions.
