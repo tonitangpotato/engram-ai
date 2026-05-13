@@ -1,17 +1,17 @@
 ---
 id: ISS-113
-title: "Phase C verifier I4 content spot-check: extend coverage from T19 to T20-T25 drivers"
-status: open
+title: 'Phase C verifier I4 content spot-check: extend coverage from T19 to T20-T25 drivers'
+status: done
 priority: P2
 severity: minor
 labels:
-  - v04-substrate
-  - phase-c
-  - verifier
-  - follow-up
+- v04-substrate
+- phase-c
+- verifier
+- follow-up
 relates_to:
-  - v04-unified-substrate
-  - ISS-112
+- v04-unified-substrate
+- ISS-112
 ---
 
 # Phase C verifier I4 content spot-check: extend coverage from T19 to T20-T25 drivers
@@ -106,3 +106,50 @@ inside `crates/engramai/src/substrate/verify.rs`.
   shape prototype
 - `.gid/features/v04-unified-substrate/design.md` §3.3 (role split), §4.3 (Hebbian
   canonicalization), §5.3 (edge id derivation)
+
+## Resolution (2026-05-13)
+
+Shipped across 3 commits:
+
+- 423fb48 — T20 memory_embeddings (compound-key sampler + byte-equal
+  BLOB comparison)
+- d24a46a — T21 entities (FINDING-1 column-wins regression guard)
+  + T25 synthesis_provenance (gate_scores nested-object round-trip)
+- 36d5bbb — T22 entity_relations + T23 memory_entities (role split
+  + endpoint direction) + T24 hebbian_links (canonical-pair SUM
+  lower-bound check)
+
+All 7 Phase C drivers now have I4 content spot-check coverage.
+Total: 22 → 42 verifier tests, no regressions in 1877 lib tests or
+73 Phase C backfill tests.
+
+### Design discovery
+
+T23 implementation surfaced a spec drift: design §3.3 line 320
+documents `subject_of: entity → memory` for role='subject', but the
+T23 driver (substrate/backfill.rs:1457) writes `memory → entity` for
+ALL roles, and the existing
+`t23_subject_role_writes_structural_subject_of` integration test
+locks the as-built behavior. Verifier matches as-built. Docs fix
+tracked separately (not in scope for ISS-113).
+
+### Visibility changes
+
+- `substrate::backfill::uuid_from_hash` and `role_to_kind_predicate`
+  changed from private to `pub(crate)`. Used by the verifier to share
+  the deterministic-id formula and role map. Public API surface
+  unchanged.
+
+### Coverage shape per driver
+
+- **Pass-through (field-equal)**: T19 (memories), T20 (embeddings),
+  T21 (entities — incl. FINDING-1 column-wins), T25 (synthesis
+  provenance — incl. parsed-JSON gate_scores)
+- **Merge-semantics (existence + shape)**: T22 (entity_relations —
+  predicate-collision guard for T22 vs T23), T23 (memory_entities —
+  role-mapped (kind, predicate), as-built endpoint direction),
+  T24 (hebbian_links — canonicalized pair, SUM lower-bound on
+  counter fields)
+
+Phase D (read-switch) can now proceed against a content-verified
+parity gate.

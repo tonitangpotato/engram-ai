@@ -814,9 +814,36 @@ fn check_audit_consistency(conn: &Connection) -> rusqlite::Result<Vec<AuditViola
 
 /// Drive I4 across every driver that has a spot-check implementation.
 ///
-/// Current coverage: T19 memories→nodes only. Other drivers land in
-/// follow-up commits; the dispatch shape makes it easy to add them
-/// one at a time without touching the report assembly.
+/// Coverage (ISS-113 complete, all 7 Phase C drivers):
+///
+/// * **Pass-through (field-equal)**:
+///   - T19 memories → nodes
+///   - T20 memory_embeddings → node_embeddings (byte-equal BLOB,
+///     created_at RFC3339→epoch matching driver formula)
+///   - T21 entities → nodes(node_kind='entity') (incl. FINDING-1
+///     column-wins regression guard for `attributes.entity_type`)
+///   - T25 synthesis_provenance → edges(provenance/derived_from)
+///     (incl. parsed-JSON gate_scores round-trip per §5.3)
+///
+/// * **Merge-semantics (existence + shape, no field-equality)**:
+///   - T22 entity_relations → edges(structural/<relation>)
+///     (incl. T22-must-NOT-use-T23-predicates collision guard)
+///   - T23 memory_entities → edges(role-mapped) — uses
+///     `backfill::{uuid_from_hash, role_to_kind_predicate}` for the
+///     deterministic edge id + role map so any future driver change
+///     propagates here automatically. Endpoint direction is locked
+///     to the as-built T23 driver behavior (source=memory,
+///     target=entity for ALL roles), NOT design §3.3 line 320 which
+///     documents `entity → memory` for subject_of/object_of. See
+///     ISS-113 resolution notes.
+///   - T24 hebbian_links → edges(associative/co_activated) — uses
+///     shared `backfill_hebbian_links_to_edges_hash_input` +
+///     canonicalized `(lo, hi)` endpoints. Counter fields (weight,
+///     coactivation_count, temporal_forward, temporal_backward)
+///     checked with a **SUM lower-bound** (`unified >= per-row
+///     legacy`) rather than field-equality, because the driver
+///     collapses multiple legacy rows by GROUP BY (canonical_pair,
+///     namespace, signal_source).
 ///
 /// `opts.spot_check_sample_size == 0` disables the check entirely
 /// (returns empty Vec without touching the DB), letting CI dial it
