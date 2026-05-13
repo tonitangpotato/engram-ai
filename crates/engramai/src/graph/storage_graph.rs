@@ -112,6 +112,22 @@ pub fn init_graph_tables(conn: &Connection) -> Result<(), GraphError> {
     // re-issue — `IF NOT EXISTS` makes it a no-op.
     conn.execute_batch(GRAPH_POST_ALTER_INDEXES)?;
 
+    // Step 5: v0.4 unified-substrate migrations (T05–T09). Required here
+    // because `init_graph_tables` is the canonical "set up a fresh graph
+    // DB" entry point used by unit tests and any caller that opens its
+    // own `Connection` without going through `Storage::new`. The
+    // dual-write helpers (`dual_write_entity_to_nodes`,
+    // `dual_write_edge_to_edges`) target `nodes` / `edges` /
+    // `fts_rowid_counter` — without these migrations the dual-write
+    // would fail at runtime on every graph mutation.
+    //
+    // Idempotent: every migration uses `CREATE TABLE/INDEX/TRIGGER IF
+    // NOT EXISTS` and `INSERT OR IGNORE`, so calling here AND from
+    // `Storage::new` on the same connection is a no-op the second
+    // time around.
+    crate::storage::Storage::migrate_v04_substrate(conn)
+        .map_err(GraphError::Sqlite)?;
+
     Ok(())
 }
 

@@ -836,6 +836,245 @@ fn unix_to_dt(secs: f64) -> Result<DateTime<Utc>, GraphError> {
         .ok_or(GraphError::Invariant("timestamp out of range"))
 }
 
+/// T13 — Phase B dual-write helper: project an `Entity` into the unified
+/// `nodes` table as `node_kind='entity'` on the SAME connection used by
+/// the legacy `graph_entities` write.
+///
+/// Idempotency:
+///   * `INSERT OR IGNORE` on first call (the FTS trigger fires once).
+///   * Subsequent calls with the same id update the mutable fields
+///     (canonical_name → `content`, summary, attributes, embedding,
+///     activation/importance/confidence, last_seen, updated_at, history,
+///     agent_affect, arousal, somatic_fingerprint). `fts_rowid` is
+///     **preserved** across updates so the FTS row stays valid.
+///
+/// Field mapping per design.md §3.1:
+///   * `nodes.id`         ← `entity.id.to_string()` (UUID → TEXT)
+///   * `nodes.content`    ← `entity.canonical_name`
+///   * `nodes.summary`    ← `entity.summary`
+///   * `nodes.attributes` ← caller-supplied attributes_json
+///   * `nodes.embedding`  ← caller-supplied embedding blob (same encoding
+///                          as `graph_entities.embedding`, no reformat)
+///   * `nodes.first_seen / last_seen / created_at / updated_at` ← copied
+///   * `nodes.activation / importance / arousal` ← direct copy
+///   * `nodes.confidence` ← `entity.identity_confidence`
+///   * `nodes.agent_affect` (TEXT) ← caller-supplied agent_affect_json
+///   * `nodes.somatic_fingerprint` (BLOB) ← caller-supplied fp_blob
+///   * `nodes.namespace`  ← namespace (caller passes `self.namespace`)
+///
+/// The caller has already serialized the JSON / fingerprint fields for
+/// the legacy `graph_entities` INSERT — we accept them as-is to keep the
+/// dual-write byte-equal.
+#[allow(clippy::too_many_arguments)]
+fn dual_write_entity_to_nodes(
+    tx: &Transaction<'_>,
+    entity: &Entity,
+    attributes_json: &str,
+    history_json: &str,
+    agent_affect_json: Option<&str>,
+    somatic_fingerprint: Option<&[u8]>,
+    embedding_blob: Option<&[u8]>,
+    namespace: &str,
+) -> Result<(), GraphError> {
+    // Claim a fresh fts_rowid via the singleton counter. The fts_rowid
+    // is only used when the INSERT path wins (new row); for UPSERT
+    // updates the ON CONFLICT clause leaves fts_rowid untouched, so
+    // gaps in the counter are harmless and rare.
+    let claimed_fts_rowid: i64 = tx.query_row(
+        "UPDATE fts_rowid_counter
+         SET next_value = next_value + 1
+         WHERE singleton = 0
+         RETURNING next_value - 1",
+        [],
+        |r| r.get(0),
+    )?;
+
+    let id_text = entity.id.to_string();
+    let now_unix = dt_to_unix(entity.updated_at);
+
+    tx.execute(
+        r#"
+        INSERT INTO nodes (
+            id, node_kind, namespace,
+            content, summary, attributes,
+            embedding,
+            first_seen, last_seen, created_at, updated_at,
+            activation, importance, confidence, arousal,
+            agent_affect, somatic_fingerprint,
+            history,
+            fts_rowid
+        ) VALUES (
+            ?1, 'entity', ?2,
+            ?3, ?4, ?5,
+            ?6,
+            ?7, ?8, ?9, ?10,
+            ?11, ?12, ?13, ?14,
+            ?15, ?16,
+            ?17,
+            ?18
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            content      = excluded.content,
+            summary      = excluded.summary,
+            attributes   = excluded.attributes,
+            embedding    = excluded.embedding,
+            last_seen    = max(nodes.last_seen, excluded.last_seen),
+            updated_at   = excluded.updated_at,
+            activation   = excluded.activation,
+            importance   = excluded.importance,
+            confidence   = excluded.confidence,
+            arousal      = excluded.arousal,
+            agent_affect = excluded.agent_affect,
+            somatic_fingerprint = excluded.somatic_fingerprint,
+            history      = excluded.history
+        "#,
+        rusqlite::params![
+            id_text,
+            namespace,
+            entity.canonical_name,
+            entity.summary,
+            attributes_json,
+            embedding_blob,
+            dt_to_unix(entity.first_seen),
+            dt_to_unix(entity.last_seen),
+            dt_to_unix(entity.created_at),
+            now_unix,
+            entity.activation,
+            entity.importance,
+            entity.identity_confidence,
+            entity.arousal,
+            agent_affect_json,
+            somatic_fingerprint,
+            history_json,
+            claimed_fts_rowid,
+        ],
+    )?;
+    Ok(())
+}
+
+/// T13 — Phase B dual-write helper: project a resolution-pipeline `Edge`
+/// into the unified `edges` table as `edge_kind='assertion'`.
+///
+/// Field mapping (legacy `graph_edges` → unified `edges`):
+///   * `id`              UUID blob → TEXT (UUID string)
+///   * `subject_id`      → `source_id` (TEXT)
+///   * `predicate_kind`  → `predicate_kind` (same TEXT)
+///   * `predicate_label` → `predicate` (renamed)
+///   * `object_entity_id` → `target_id` (TEXT) IFF object is an entity
+///   * `object_literal`  → `target_literal` IFF object is a literal
+///   * `summary`, `valid_from/to`, `recorded_at`,
+///     `invalidated_at/by`, `supersedes`, `agent_affect`,
+///     `activation`, `confidence`, `resolution_method`,
+///     `namespace`, `created_at` — direct copy
+///   * `memory_id` (TEXT in legacy) → `source_memory_id` (TEXT)
+///   * `updated_at` ← `created_at` on first write (no in-place updates here)
+///   * `edge_kind` is set to `'assertion'` — all resolution-pipeline
+///     edges are subject-predicate-object assertions. Other kinds
+///     (`containment`, `co_activation`, `provenance`) come from T14-T16.
+///
+/// `episode_id` is intentionally dropped — design §7.4 plans to remove
+/// it from the unified edges schema. If a future query needs episode
+/// scoping it goes through a separate containment edge (memory →
+/// episode), not a denormalized column.
+///
+/// Idempotency: `INSERT OR IGNORE` keyed on `id` — replaying the same
+/// edge upsert is a no-op. We do not UPSERT-update edges in the
+/// resolution path; mutations to a resolved fact go through
+/// `supersede_edge` (separate ticket).
+#[allow(clippy::too_many_arguments)]
+fn dual_write_edge_to_edges(
+    tx: &Transaction<'_>,
+    edge: &Edge,
+    predicate_kind: &str,
+    predicate_label: &str,
+    object_entity_blob: Option<&[u8]>,
+    object_literal: Option<&str>,
+    resolution_text: &str,
+    agent_affect_json: Option<&str>,
+    namespace: &str,
+) -> Result<(), GraphError> {
+    let id_text = edge.id.to_string();
+    let source_id_text = edge.subject_id.to_string();
+    // Convert the legacy UUID-blob target into a TEXT id IFF the edge's
+    // object is an entity reference. The CHECK constraint on `edges`
+    // requires exactly one of (target_id, target_literal) to be NULL —
+    // mirroring the legacy `graph_edges` CHECK, so any edge that
+    // passes the legacy INSERT will pass here too.
+    let target_id_text: Option<String> = match object_entity_blob {
+        Some(blob) if blob.len() == 16 => {
+            Some(Uuid::from_slice(blob).unwrap().to_string())
+        }
+        Some(_) => return Err(GraphError::Invariant("object_entity_id blob length != 16")),
+        None => None,
+    };
+    let invalidated_by_text: Option<String> = edge.invalidated_by.map(|u| u.to_string());
+    let supersedes_text: Option<String> = edge.supersedes.map(|u| u.to_string());
+    let recorded_at_unix = dt_to_unix(edge.recorded_at);
+    let created_at_unix = dt_to_unix(edge.created_at);
+
+    tx.execute(
+        r#"
+        INSERT OR IGNORE INTO edges (
+            id,
+            source_id, target_id, target_literal,
+            edge_kind, predicate_kind, predicate,
+            summary, attributes, weight,
+            activation, confidence,
+            valid_from, valid_to, recorded_at,
+            invalidated_at, invalidated_by, supersedes,
+            agent_affect,
+            source_memory_id, resolution_method,
+            namespace, created_at, updated_at
+        ) VALUES (
+            ?1,
+            ?2, ?3, ?4,
+            'assertion', ?5, ?6,
+            ?7, '{}', 1.0,
+            ?8, ?9,
+            ?10, ?11, ?12,
+            ?13, ?14, ?15,
+            ?16,
+            NULL, ?17,
+            ?18, ?19, ?19
+        )
+        "#,
+        rusqlite::params![
+            id_text,
+            source_id_text,
+            target_id_text,
+            object_literal,
+            predicate_kind,
+            predicate_label,
+            edge.summary,
+            edge.activation,
+            edge.confidence,
+            opt_dt_to_unix(edge.valid_from),
+            opt_dt_to_unix(edge.valid_to),
+            recorded_at_unix,
+            opt_dt_to_unix(edge.invalidated_at),
+            invalidated_by_text,
+            supersedes_text,
+            agent_affect_json,
+            // NOTE: source_memory_id intentionally NULL in Phase B.
+            // The legacy `graph_edges.memory_id` still carries the
+            // legacy string id (`mem-N` form), but the unified
+            // `edges.source_memory_id` FK targets `nodes(id)`, which
+            // only contains memory rows that flowed through
+            // `Storage::add` (T12 dual-write). Memory rows seeded
+            // directly into the legacy `memories` table (e.g. test
+            // fixtures, historic backfill) have no corresponding
+            // `nodes` row yet — Phase C backfill (T19) closes that
+            // gap. Until then we leave source_memory_id NULL so the
+            // dual-write succeeds atomically; provenance is still
+            // recoverable via the legacy `graph_edges.memory_id`.
+            resolution_text,
+            namespace,
+            created_at_unix,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Encode `EntityKind` as the TEXT column value. Uses serde_json so that
 /// `Other("foo")` and the canonical variants both round-trip exactly the
 /// way they do over the wire (single source of truth: the serde derive on
@@ -3195,9 +3434,12 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         let embedding_blob: Option<Vec<u8>> =
             entity_embedding_to_blob(e.embedding.as_deref(), self.embedding_dim)?;
 
-        // Single-statement INSERT runs in SQLite autocommit; FK + CHECK
-        // failures bubble up as `GraphError::Sqlite`.
-        self.conn.execute(
+        // T13 dual-write: legacy + unified rows go through one transaction
+        // so a failure on either side rolls back both. Previously this was
+        // a single-statement autocommit; the transaction is a no-op for
+        // the happy path and the right thing on error.
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO graph_entities (
                 id, canonical_name, kind, summary, attributes,
                 first_seen, last_seen, created_at, updated_at,
@@ -3233,6 +3475,21 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                 embedding_blob,
             ],
         )?;
+
+        // T13 dual-write: mirror into unified `nodes` (kind=entity).
+        // Same byte content as the legacy row — same JSON, same blobs.
+        dual_write_entity_to_nodes(
+            &tx,
+            e,
+            &attributes_json,
+            &history_json,
+            agent_affect_json.as_deref(),
+            fp_blob.as_deref(),
+            embedding_blob.as_deref(),
+            &self.namespace,
+        )?;
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -3743,7 +4000,11 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         // re-defaulted to `Recovered` (the post-write canonical value for
         // non-`Migrated` edges). See DevNote #5 in the file header for the
         // rationale and the planned schema follow-up.
-        self.conn.execute(
+        //
+        // T13 dual-write: wrap legacy + unified writes in a single
+        // transaction so they're atomic.
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO graph_edges (
                 id, subject_id,
                 predicate_kind, predicate_label,
@@ -3785,7 +4046,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                 edge.invalidated_by.map(|u| u.as_bytes().to_vec()),
                 edge.supersedes.map(|u| u.as_bytes().to_vec()),
                 edge.episode_id.map(|u| u.as_bytes().to_vec()),
-                edge.memory_id,
+                edge.memory_id.clone(),
                 resolution_text,
                 edge.activation,
                 edge.confidence,
@@ -3794,6 +4055,30 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                 self.namespace,
             ],
         )?;
+
+        // T13 dual-write: mirror into unified `edges`. Re-serialize
+        // agent_affect_json because the legacy params! above moved it
+        // by-value through ToSql (actually params! borrows, but match
+        // arm guard on edge.agent_affect was consumed in the `let
+        // agent_affect_json` binding above — we'd have to clone there
+        // to keep it, so just re-serialize).
+        let agent_affect_json_for_dual = match &edge.agent_affect {
+            Some(v) => Some(serde_json::to_string(v)?),
+            None => None,
+        };
+        dual_write_edge_to_edges(
+            &tx,
+            edge,
+            predicate_kind,
+            &predicate_label,
+            object_entity_blob.as_deref(),
+            object_literal.as_deref(),
+            &resolution_text,
+            agent_affect_json_for_dual.as_deref(),
+            &self.namespace,
+        )?;
+
+        tx.commit()?;
         Ok(())
     }
     fn invalidate_edge(
@@ -4760,6 +5045,23 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                     embedding_blob,
                 ],
             )?;
+
+            // T13 dual-write: mirror entity upsert into unified `nodes`.
+            // Same transaction `tx`, so either both rows land or neither.
+            // `dual_write_entity_to_nodes` does its own ON CONFLICT UPSERT
+            // so re-running with the same id is fine (matches the
+            // graph_entities ON CONFLICT semantics above).
+            dual_write_entity_to_nodes(
+                &tx,
+                e,
+                &attributes_json,
+                &history_json,
+                agent_affect_json.as_deref(),
+                fingerprint_blob.as_deref(),
+                embedding_blob.as_deref(),
+                &self.namespace,
+            )?;
+
             report.entities_upserted += 1;
         }
 
@@ -4863,6 +5165,33 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                     self.namespace,
                 ],
             )?;
+
+            // T13 dual-write: mirror the resolution-pipeline edge into
+            // unified `edges` as `edge_kind='assertion'`. Same `tx` so
+            // either both rows land or neither. The entity rows the
+            // edge references were dual-written above (step 3), so
+            // FK source_id REFERENCES nodes(id) is satisfied.
+            //
+            // Note: re-serializing agent_affect_json for the helper —
+            // the original was consumed by the legacy params! call.
+            // Cheap, only fires on resolution-driven edges (low write
+            // rate compared to memories).
+            let agent_affect_json_for_dual = match &edge.agent_affect {
+                Some(v) => Some(serde_json::to_string(v)?),
+                None => None,
+            };
+            dual_write_edge_to_edges(
+                &tx,
+                edge,
+                predicate_kind,
+                &predicate_label,
+                object_entity_blob.as_deref(),
+                object_literal.as_deref(),
+                &resolution_text,
+                agent_affect_json_for_dual.as_deref(),
+                &self.namespace,
+            )?;
+
             inserted_edge_ids.push(edge.id);
             report.edges_inserted += 1;
 

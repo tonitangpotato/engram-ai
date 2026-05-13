@@ -179,3 +179,194 @@ fn t12_add_memory_dual_writes_to_nodes() {
         .unwrap();
     assert_eq!(fts_rows, 1, "nodes_fts got a duplicate row after failed second add");
 }
+
+// ===========================================================================
+// T13 — ResolutionPipeline entity + edge dual-write
+// ===========================================================================
+
+use engramai::graph::{
+    CanonicalPredicate, Edge, EdgeEnd, Entity, EntityKind, Predicate, ResolutionMethod,
+};
+use engramai::graph::store::SqliteGraphStore;
+use engramai::graph::storage_graph::init_graph_tables;
+use rusqlite::Connection;
+use uuid::Uuid;
+
+/// Build a minimal Entity for the test.
+fn sample_entity(name: &str) -> Entity {
+    let now = Utc::now();
+    Entity {
+        id: Uuid::new_v4(),
+        canonical_name: name.into(),
+        kind: EntityKind::Other("test".into()),
+        summary: String::new(),
+        attributes: serde_json::json!({}),
+        history: vec![],
+        merged_into: None,
+        first_seen: now,
+        last_seen: now,
+        created_at: now,
+        updated_at: now,
+        episode_mentions: vec![],
+        memory_mentions: vec![],
+        activation: 0.0,
+        importance: 0.5,
+        identity_confidence: 0.8,
+        agent_affect: None,
+        arousal: 0.0,
+        somatic_fingerprint: None,
+        embedding: None,
+    }
+}
+
+#[test]
+fn t13_insert_entity_dual_writes_to_nodes_kind_entity() {
+    let mut conn = Connection::open_in_memory().expect("open in-memory");
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    init_graph_tables(&conn).expect("init graph tables");
+
+    let e = sample_entity("Alice");
+    let eid = e.id;
+    {
+        let mut store = SqliteGraphStore::new(&mut conn);
+        engramai::graph::store::GraphWrite::insert_entity(&mut store, &e)
+            .expect("insert_entity");
+    }
+
+    // Legacy row landed.
+    let (legacy_name, legacy_ns): (String, String) = conn
+        .query_row(
+            "SELECT canonical_name, namespace FROM graph_entities WHERE id = ?1",
+            params![eid.as_bytes().to_vec()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("legacy graph_entities row");
+    assert_eq!(legacy_name, "Alice");
+    assert_eq!(legacy_ns, "default");
+
+    // Unified row landed with kind=entity and same content.
+    let (kind, content, ns): (String, String, String) = conn
+        .query_row(
+            "SELECT node_kind, content, namespace FROM nodes WHERE id = ?1",
+            params![eid.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("unified nodes row");
+    assert_eq!(kind, "entity");
+    assert_eq!(content, "Alice");
+    assert_eq!(ns, "default");
+
+    // FTS picked up the canonical_name.
+    let fts_rowid: i64 = conn
+        .query_row(
+            "SELECT fts_rowid FROM nodes WHERE id = ?1",
+            params![eid.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let hit_rowid: i64 = conn
+        .query_row(
+            "SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH 'Alice'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("FTS hit");
+    assert_eq!(hit_rowid, fts_rowid);
+}
+
+#[test]
+fn t13_insert_edge_dual_writes_to_unified_edges() {
+    let mut conn = Connection::open_in_memory().expect("open in-memory");
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    init_graph_tables(&conn).expect("init graph tables");
+
+    // graph_edges.memory_id FK → memories(id). The table must exist
+    // for SQLite to even parse the FK clause on insert, even when the
+    // inserted memory_id is NULL. init_graph_tables does NOT create
+    // `memories` (that's owned by Storage::open in the legacy
+    // bootstrap), so we create a minimal stub here. No rows needed.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, content TEXT);",
+    )
+    .unwrap();
+
+    let subj_e = sample_entity("Bob");
+    let obj_e = sample_entity("Acme");
+    let subj = subj_e.id;
+    let obj = obj_e.id;
+
+    let now = Utc::now();
+    let mut edge = Edge::new(
+        subj,
+        Predicate::Canonical(CanonicalPredicate::WorksAt),
+        EdgeEnd::Entity { id: obj },
+        Some(now),
+        now,
+    );
+    edge.summary = "Bob works at Acme".into();
+    // memory_id intentionally NOT set — keeps this test focused on the
+    // entity-edge dual-write path. The Phase B behavior for
+    // source_memory_id (always NULL in unified edges) is asserted
+    // below.
+    edge.resolution_method = ResolutionMethod::LlmTieBreaker;
+    edge.confidence = 0.9;
+    let eid = edge.id;
+
+    {
+        let mut store = SqliteGraphStore::new(&mut conn);
+        use engramai::graph::store::GraphWrite;
+        store.insert_entity(&subj_e).expect("insert subj");
+        store.insert_entity(&obj_e).expect("insert obj");
+        store.insert_edge(&edge).expect("insert_edge");
+    }
+
+    // Legacy graph_edges row landed (sanity).
+    let legacy_summary: String = conn
+        .query_row(
+            "SELECT summary FROM graph_edges WHERE id = ?1",
+            params![eid.as_bytes().to_vec()],
+            |r| r.get(0),
+        )
+        .expect("legacy graph_edges row");
+    assert_eq!(legacy_summary, "Bob works at Acme");
+
+    // Unified edges row landed with edge_kind='assertion'.
+    let (edge_kind, source_id, target_id, predicate, summary): (
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT edge_kind, source_id, target_id, predicate, summary
+             FROM edges WHERE id = ?1",
+            params![eid.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .expect("unified edges row");
+    assert_eq!(edge_kind, "assertion");
+    assert_eq!(source_id, subj.to_string());
+    assert_eq!(target_id.as_deref(), Some(obj.to_string().as_str()));
+    assert_eq!(predicate, "works_at");
+    assert_eq!(summary, "Bob works at Acme");
+
+    // source_memory_id is intentionally NULL in Phase B (T13 docstring
+    // explains why): even when edge.memory_id is set, the unified
+    // `edges.source_memory_id` FK targets `nodes(id)` (specifically a
+    // memory node), and memories that were not written via
+    // `Storage::add` (T12 dual-write) don't have a corresponding
+    // unified node yet. Phase C backfill (T19) closes the gap. Until
+    // then we always write NULL here so the dual-write succeeds atomically.
+    let sm_id: Option<String> = conn
+        .query_row(
+            "SELECT source_memory_id FROM edges WHERE id = ?1",
+            params![eid.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        sm_id.is_none(),
+        "source_memory_id should be NULL until Phase C backfill"
+    );
+}

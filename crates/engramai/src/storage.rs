@@ -335,6 +335,25 @@ impl Storage {
         Ok(Self { conn })
     }
 
+    /// Run all v0.4 Phase A migrations (T05–T09) on a foreign connection.
+    ///
+    /// Exposed for code paths that init their own connection without going
+    /// through `Storage::new` — specifically `graph::storage_graph::init_graph_tables`,
+    /// which is called from unit tests that open `Connection::open_in_memory()`
+    /// directly and need the unified substrate tables for the dual-write
+    /// helpers (`dual_write_entity_to_nodes`, `dual_write_edge_to_edges`,
+    /// `Storage::add` memory→nodes) to find their target tables.
+    ///
+    /// Idempotent (GUARD-ss.3): re-running is a no-op on every migration.
+    pub(crate) fn migrate_v04_substrate(conn: &Connection) -> SqlResult<()> {
+        Self::migrate_unified_nodes(conn)?;
+        Self::migrate_unified_edges(conn)?;
+        Self::migrate_unified_fts(conn)?;
+        Self::migrate_unified_node_embeddings(conn)?;
+        Self::bump_schema_version_v04_additive(conn)?;
+        Ok(())
+    }
+
     /// v0.4 unified substrate (T05): create the `nodes` table, its indexes, and
     /// the `fts_rowid_counter` singleton helper per design.md §3.1.
     ///
@@ -584,6 +603,16 @@ impl Storage {
     /// the version string unchanged, and the next `open()` retries the
     /// missing pieces.
     fn bump_schema_version_v04_additive(conn: &Connection) -> SqlResult<()> {
+        // Ensure engram_meta exists. `Storage::new` creates it in the
+        // legacy bootstrap section (storage.rs:738), but
+        // `migrate_v04_substrate` is also called from
+        // `init_graph_tables` (tests/foreign-connection paths) where
+        // the legacy bootstrap hasn't run. Creating it here is
+        // idempotent and cheap.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS engram_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )?;
         conn.execute(
             "INSERT OR REPLACE INTO engram_meta (key, value) VALUES ('schema_version', '0.4-additive')",
             [],
