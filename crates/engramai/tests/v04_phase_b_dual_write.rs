@@ -2315,3 +2315,272 @@ fn t18_read_isolation_unaffected_by_unified_table_mutation() {
          contract (legacy is the sole read source through Phase B)."
     );
 }
+
+// =============================================================
+// ISS-116 — Phase B dual-WRITE gaps in hebbian_links writers
+// =============================================================
+//
+// T14 wired dual_write_hebbian_to_edges into three writers:
+// record_coactivation_ns, record_cross_namespace_coactivation,
+// record_association. ISS-116 closes four additional gaps:
+// record_coactivation, decay_hebbian_links,
+// decay_hebbian_links_differential, merge_hebbian_links.
+//
+// Each test below pins the per-writer parity contract: after the
+// call, the affected hebbian_links rows have matching edges
+// (edge_kind='associative') rows with consistent endpoints and
+// weight-semantics-per-writer.
+// =============================================================
+
+/// Count associative edges between two memories (either direction).
+fn count_assoc_edges(conn: &rusqlite::Connection, a: &str, b: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM edges WHERE edge_kind = 'associative' \
+         AND ((source_id = ?1 AND target_id = ?2) OR (source_id = ?2 AND target_id = ?1))",
+        params![a, b],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Fetch (weight, signal_source, coactivation_count) for one edge.
+fn assoc_edge_attrs(
+    conn: &rusqlite::Connection,
+    a: &str,
+    b: &str,
+) -> Option<(f64, String, i64)> {
+    conn.query_row(
+        "SELECT weight, \
+                json_extract(attributes, '$.signal_source'), \
+                json_extract(attributes, '$.coactivation_count') \
+         FROM edges WHERE edge_kind = 'associative' \
+         AND ((source_id = ?1 AND target_id = ?2) OR (source_id = ?2 AND target_id = ?1))",
+        params![a, b],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .ok()
+}
+
+#[test]
+fn iss116_record_coactivation_dual_writes_to_edges() {
+    // Pin: every record_coactivation call also UPSERTs into edges,
+    // matching record_coactivation_ns's policy (unconditional
+    // delta_weight=0.1, signal_source='corecall', namespace='default').
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("iss116a.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    // First call — tracking phase on legacy (strength=0). Edges still
+    // gets one row with weight=0.1 (pre-existing T14 divergence
+    // preserved for consistency).
+    let formed = storage.record_coactivation(&a, &b, 2).unwrap();
+    assert!(!formed, "threshold=2 not reached on first call");
+
+    assert_eq!(count_assoc_edges(storage.conn(), &a, &b), 1, "one assoc edge after first call");
+    let (w1, sig, coact1) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
+    assert!((w1 - 0.1).abs() < 1e-9, "first call seeds weight=0.1, got {w1}");
+    assert_eq!(sig, "corecall", "signal_source='corecall' for record_coactivation");
+    assert_eq!(coact1, 1, "coactivation_count starts at 1");
+
+    // Second call — threshold crossed on legacy (strength→1.0).
+    // Edges accumulates: weight+=0.1, coactivation_count+=1.
+    let formed = storage.record_coactivation(&a, &b, 2).unwrap();
+    assert!(formed, "threshold=2 reached on second call");
+    assert_eq!(count_assoc_edges(storage.conn(), &a, &b), 1, "still single row after second call");
+    let (w2, _, coact2) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
+    assert!((w2 - 0.2).abs() < 1e-9, "weight accumulates: 0.1+0.1=0.2, got {w2}");
+    assert_eq!(coact2, 2, "coactivation_count=2 after two calls");
+
+    // Third call — legacy strengthens (0.1 cap). Edges keeps adding.
+    storage.record_coactivation(&a, &b, 2).unwrap();
+    let (w3, _, coact3) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
+    assert!((w3 - 0.3).abs() < 1e-9, "weight=0.3 after three calls, got {w3}");
+    assert_eq!(coact3, 3);
+}
+
+#[test]
+fn iss116_decay_hebbian_links_mirrors_to_edges() {
+    // Pin: bulk multiplicative decay applies symmetrically to both
+    // hebbian_links.strength and edges.weight, scoped to assoc edges.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("iss116b.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    // Form a Hebbian link with strength > 0 on both sides:
+    // record_association uses delta_weight directly + immediately
+    // forms the legacy link at the provided strength.
+    storage
+        .record_association(&a, &b, 0.5, "entity", "{}", "default")
+        .unwrap();
+    let (w_pre, _, _) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
+    assert!((w_pre - 0.5).abs() < 1e-9, "pre-decay edge weight=0.5");
+    let strength_pre: f64 = storage.conn()
+        .query_row(
+            "SELECT strength FROM hebbian_links \
+             WHERE (source_id=?1 AND target_id=?2) OR (source_id=?2 AND target_id=?1)",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((strength_pre - 0.5).abs() < 1e-9);
+
+    // Apply 0.8 decay factor.
+    storage.decay_hebbian_links(0.8).unwrap();
+    let (w_post, _, _) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
+    assert!(
+        (w_post - 0.4).abs() < 1e-9,
+        "edges.weight decayed 0.5 * 0.8 = 0.4, got {w_post}"
+    );
+    let strength_post: f64 = storage.conn()
+        .query_row(
+            "SELECT strength FROM hebbian_links \
+             WHERE (source_id=?1 AND target_id=?2) OR (source_id=?2 AND target_id=?1)",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((strength_post - 0.4).abs() < 1e-9, "legacy strength matches");
+
+    // Decay to below 0.1 threshold → prune on both sides.
+    // 0.4 * 0.2 = 0.08 < 0.1 → both rows deleted.
+    let pruned = storage.decay_hebbian_links(0.2).unwrap();
+    assert!(pruned >= 1, "at least one legacy row pruned");
+    assert_eq!(
+        count_assoc_edges(storage.conn(), &a, &b),
+        0,
+        "edges row pruned in lockstep with legacy"
+    );
+}
+
+#[test]
+fn iss116_decay_hebbian_links_differential_mirrors_to_edges() {
+    // Pin: differential decay (per signal_source CASE WHEN) applies
+    // the right factor on the edges side via json_extract(attributes).
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("iss116c.db").to_str().unwrap()).unwrap();
+
+    // Three memory rows so we have two distinct pairs.
+    let now = Utc.with_ymd_and_hms(2026, 5, 13, 8, 0, 0).unwrap();
+    let mut rec_a = sample_record("iss116c-a");
+    rec_a.created_at = now;
+    rec_a.content = "alpha".into();
+    let mut rec_b = sample_record("iss116c-b");
+    rec_b.created_at = now;
+    rec_b.content = "beta".into();
+    let mut rec_c = sample_record("iss116c-c");
+    rec_c.created_at = now;
+    rec_c.content = "gamma".into();
+    storage.add(&rec_a, "default").unwrap();
+    storage.add(&rec_b, "default").unwrap();
+    storage.add(&rec_c, "default").unwrap();
+    let (a, b, c) = ("iss116c-a", "iss116c-b", "iss116c-c");
+
+    // Pair AB → signal_source='corecall', initial strength 0.6
+    storage
+        .record_association(a, b, 0.6, "corecall", "{}", "default")
+        .unwrap();
+    // Pair AC → signal_source='entity', initial strength 0.6
+    storage
+        .record_association(a, c, 0.6, "entity", "{}", "default")
+        .unwrap();
+
+    // Apply differential decay: corecall=0.9, multi=0.5, other (incl. entity)=0.3.
+    storage
+        .decay_hebbian_links_differential(0.9, 0.5, 0.3)
+        .unwrap();
+    let conn = storage.conn();
+    // AB (corecall): 0.6 * 0.9 = 0.54 — preserved
+    let (w_ab, _, _) = assoc_edge_attrs(conn, a, b).unwrap();
+    assert!((w_ab - 0.54).abs() < 1e-9, "corecall edge: 0.6*0.9=0.54, got {w_ab}");
+    // AC (entity → else branch): 0.6 * 0.3 = 0.18 — preserved
+    let (w_ac, _, _) = assoc_edge_attrs(conn, a, c).unwrap();
+    assert!((w_ac - 0.18).abs() < 1e-9, "entity edge: 0.6*0.3=0.18, got {w_ac}");
+    // Legacy and unified track the same numbers.
+    let strength_ab: f64 = conn
+        .query_row(
+            "SELECT strength FROM hebbian_links \
+             WHERE (source_id=?1 AND target_id=?2) OR (source_id=?2 AND target_id=?1)",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((strength_ab - 0.54).abs() < 1e-9);
+}
+
+#[test]
+fn iss116_merge_hebbian_links_mirrors_donor_repoint_to_edges() {
+    // Pin: when a donor is merged into target, both sides re-point
+    // and max-merge their associative neighborhood, and the donor
+    // rows are deleted on both sides.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("iss116d.db").to_str().unwrap()).unwrap();
+
+    let now = Utc.with_ymd_and_hms(2026, 5, 13, 8, 0, 0).unwrap();
+    // donor + target + two other peers.
+    let ids = ["donor", "target", "peer1", "peer2"];
+    for id in ids {
+        let mut rec = sample_record(id);
+        rec.created_at = now;
+        rec.content = format!("memory {id}");
+        storage.add(&rec, "default").unwrap();
+    }
+
+    // Donor has two hebbian neighbours: peer1 (weight 0.7) and peer2 (0.3).
+    // Target already has a hebbian link to peer1 (weight 0.4) — merge
+    // must keep the max (0.7).
+    storage
+        .record_association("donor", "peer1", 0.7, "entity", "{}", "default")
+        .unwrap();
+    storage
+        .record_association("donor", "peer2", 0.3, "entity", "{}", "default")
+        .unwrap();
+    storage
+        .record_association("target", "peer1", 0.4, "entity", "{}", "default")
+        .unwrap();
+
+    // Sanity: donor edges exist pre-merge.
+    let conn0 = storage.conn();
+    assert_eq!(count_assoc_edges(conn0, "donor", "peer1"), 1);
+    assert_eq!(count_assoc_edges(conn0, "donor", "peer2"), 1);
+    assert_eq!(count_assoc_edges(conn0, "target", "peer1"), 1);
+
+    let transferred = storage.merge_hebbian_links("donor", "target").unwrap();
+    assert!(transferred >= 2, "expect 2 donor neighbours transferred, got {transferred}");
+
+    let conn = storage.conn();
+    // Donor side completely cleared on both substrates.
+    assert_eq!(count_assoc_edges(conn, "donor", "peer1"), 0);
+    assert_eq!(count_assoc_edges(conn, "donor", "peer2"), 0);
+    let donor_legacy: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM hebbian_links \
+             WHERE source_id='donor' OR target_id='donor'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(donor_legacy, 0, "donor hebbian rows cleared");
+
+    // Target inherits both neighbours.
+    assert_eq!(count_assoc_edges(conn, "target", "peer1"), 1);
+    assert_eq!(count_assoc_edges(conn, "target", "peer2"), 1);
+
+    // Max-weight semantics: target→peer1 was 0.4, donor→peer1 was 0.7
+    // → merged value is 0.7.
+    let (w_p1, _, _) = assoc_edge_attrs(conn, "target", "peer1").unwrap();
+    assert!((w_p1 - 0.7).abs() < 1e-9, "max(0.4, 0.7)=0.7 on edges, got {w_p1}");
+    // target→peer2 is freshly minted at donor's weight (0.3).
+    let (w_p2, _, _) = assoc_edge_attrs(conn, "target", "peer2").unwrap();
+    assert!((w_p2 - 0.3).abs() < 1e-9, "fresh minted at 0.3, got {w_p2}");
+    // Legacy mirrors.
+    let strength_p1: f64 = conn
+        .query_row(
+            "SELECT strength FROM hebbian_links \
+             WHERE (source_id='target' AND target_id='peer1') \
+                OR (source_id='peer1' AND target_id='target')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((strength_p1 - 0.7).abs() < 1e-9);
+}

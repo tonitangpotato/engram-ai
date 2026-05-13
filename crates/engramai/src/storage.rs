@@ -2505,6 +2505,23 @@ impl Storage {
     }
 
     /// Record co-activation for Hebbian learning.
+    ///
+    /// **ISS-116 (Phase B dual-WRITE)**: this method was added to T14's
+    /// dual-write coverage on 2026-05-13. Every call now also UPSERTs
+    /// into `edges` (edge_kind='associative') so the unified substrate
+    /// stays in lockstep with `hebbian_links`. The dual-write mirrors
+    /// the namespaced variant's policy:
+    ///
+    ///   - **Unconditional**: every call adds `delta_weight=0.1` on
+    ///     edges, regardless of which legacy branch (formed,
+    ///     threshold-crossing, tracking) fired. This intentionally
+    ///     accumulates edge weight from the first recall even when the
+    ///     legacy row sits at `strength=0` during the tracking phase.
+    ///     Pre-existing T14 divergence preserved here for consistency
+    ///     across the three coactivation writers.
+    ///   - `signal_source="corecall"` marks this as recall-driven.
+    ///   - `namespace="default"` because this overload is
+    ///     namespace-agnostic.
     pub fn record_coactivation(
         &mut self,
         id1: &str,
@@ -2512,79 +2529,117 @@ impl Storage {
         threshold: i32,
     ) -> Result<bool, rusqlite::Error> {
         let (id1, id2) = if id1 < id2 { (id1, id2) } else { (id2, id1) };
-        
-        // Check existing link
-        let existing: Option<(f64, i32)> = self.conn
-            .query_row(
-                "SELECT strength, coactivation_count FROM hebbian_links WHERE source_id = ? AND target_id = ?",
-                params![id1, id2],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        
-        match existing {
-            Some((strength, _count)) if strength > 0.0 => {
-                // Link already formed, strengthen it
-                let new_strength = (strength + 0.1).min(1.0);
-                self.conn.execute(
-                    "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                    params![new_strength, id1, id2],
-                )?;
-                // Also update reverse link
-                self.conn.execute(
-                    "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                    params![new_strength, id2, id1],
-                )?;
-                Ok(false)
-            }
-            Some((_, count)) => {
-                // Tracking phase, increment count
-                let new_count = count + 1;
-                if new_count >= threshold {
-                    // Threshold reached, form link
-                    self.conn.execute(
-                        "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
-                        params![new_count, id1, id2],
+
+        let tx = self.conn.transaction()?;
+        let formed = {
+            // Check existing link
+            let existing: Option<(f64, i32)> = tx
+                .query_row(
+                    "SELECT strength, coactivation_count FROM hebbian_links WHERE source_id = ? AND target_id = ?",
+                    params![id1, id2],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+
+            match existing {
+                Some((strength, _count)) if strength > 0.0 => {
+                    // Link already formed, strengthen it
+                    let new_strength = (strength + 0.1).min(1.0);
+                    tx.execute(
+                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
+                        params![new_strength, id1, id2],
                     )?;
-                    // Create reverse link
-                    self.conn.execute(
-                        "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?, ?, 1.0, ?, ?)",
-                        params![id2, id1, new_count, now_f64()],
+                    // Also update reverse link
+                    tx.execute(
+                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
+                        params![new_strength, id2, id1],
                     )?;
-                    Ok(true)
-                } else {
-                    self.conn.execute(
-                        "UPDATE hebbian_links SET coactivation_count = ? WHERE source_id = ? AND target_id = ?",
-                        params![new_count, id1, id2],
+                    false
+                }
+                Some((_, count)) => {
+                    // Tracking phase, increment count
+                    let new_count = count + 1;
+                    if new_count >= threshold {
+                        // Threshold reached, form link
+                        tx.execute(
+                            "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
+                            params![new_count, id1, id2],
+                        )?;
+                        // Create reverse link
+                        tx.execute(
+                            "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?, ?, 1.0, ?, ?)",
+                            params![id2, id1, new_count, now_f64()],
+                        )?;
+                        true
+                    } else {
+                        tx.execute(
+                            "UPDATE hebbian_links SET coactivation_count = ? WHERE source_id = ? AND target_id = ?",
+                            params![new_count, id1, id2],
+                        )?;
+                        false
+                    }
+                }
+                None => {
+                    // First co-activation, create tracking record
+                    tx.execute(
+                        "INSERT INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?, ?, 0.0, 1, ?)",
+                        params![id1, id2, now_f64()],
                     )?;
-                    Ok(false)
+                    false
                 }
             }
-            None => {
-                // First co-activation, create tracking record
-                self.conn.execute(
-                    "INSERT INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?, ?, 0.0, 1, ?)",
-                    params![id1, id2, now_f64()],
-                )?;
-                Ok(false)
-            }
-        }
+        };
+
+        // ISS-116: unified-edges dual-write. Matches record_coactivation_ns
+        // policy — one unconditional UPSERT with delta_weight=0.1 per call.
+        crate::graph::store::dual_write_hebbian_to_edges(
+            &tx,
+            id1,
+            id2,
+            "corecall",
+            "{}",
+            0.1,
+            "default",
+        )
+        .map_err(|e| match e {
+            crate::graph::GraphError::Sqlite(s) => s,
+            other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
+        })?;
+
+        tx.commit()?;
+        Ok(formed)
     }
 
     /// Decay all Hebbian links by a factor.
     pub fn decay_hebbian_links(&mut self, factor: f64) -> Result<usize, rusqlite::Error> {
-        // Decay all links
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+
+        // Legacy side
+        tx.execute(
             "UPDATE hebbian_links SET strength = strength * ? WHERE strength > 0",
             params![factor],
         )?;
-        
-        // Prune very weak links
-        let pruned = self.conn.execute(
+        let pruned = tx.execute(
             "DELETE FROM hebbian_links WHERE strength > 0 AND strength < 0.1",
             [],
         )?;
-        
+
+        // ISS-116: unified-edges mirror. `edges.weight` plays the role
+        // of `hebbian_links.strength`; `edge_kind='associative'` scopes
+        // the bulk op to hebbian rows only. Prune threshold is the
+        // same 0.1 floor.
+        tx.execute(
+            "UPDATE edges SET weight = weight * ? \
+             WHERE edge_kind = 'associative' AND weight > 0",
+            params![factor],
+        )?;
+        tx.execute(
+            "DELETE FROM edges \
+             WHERE edge_kind = 'associative' AND weight > 0 AND weight < 0.1",
+            [],
+        )?;
+
+        tx.commit()?;
         Ok(pruned)
     }
 
@@ -2593,42 +2648,67 @@ impl Storage {
     /// - If link already exists on target, keeps max weight
     /// - Drops self-links (source==target after repoint)
     /// - Deletes all donor links after transfer
+    ///
+    /// **ISS-116 (Phase B dual-WRITE)**: mirror-merges the donor's
+    /// `edges` rows (edge_kind='associative') into `target`'s edge
+    /// neighborhood with the same max-weight semantics, then deletes
+    /// the donor's edges. Both legacy and unified sides run in a
+    /// single transaction so a partial failure cannot leave the two
+    /// substrates inconsistent.
     pub fn merge_hebbian_links(
         &mut self,
         donor_id: &str,
         target_id: &str,
     ) -> Result<usize, rusqlite::Error> {
-        // Get all links involving the donor
+        // Collect all donor-touching hebbian neighbours BEFORE opening
+        // the transaction (the call uses &self).
         let links = self.get_hebbian_links_weighted(donor_id)?;
+
+        // Collect donor-touching associative edges with their
+        // canonicalised "other endpoint" + weight. We do this outside
+        // the tx for the same reason: borrow shape.
+        let edge_neighbours: Vec<(String, f64)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT source_id, target_id, weight FROM edges \
+                 WHERE edge_kind = 'associative' \
+                   AND (source_id = ?1 OR target_id = ?1)",
+            )?;
+            let rows = stmt.query_map(params![donor_id], |row| {
+                let s: String = row.get(0)?;
+                let t: String = row.get(1)?;
+                let w: f64 = row.get(2)?;
+                let other = if s == donor_id { t } else { s };
+                Ok((other, w))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let tx = self.conn.transaction()?;
         let mut transferred = 0;
-        
+
+        // === Legacy side ===
         for (other_id, weight) in &links {
-            // Skip self-links
             if other_id == target_id {
                 continue;
             }
-            
-            // Check if target already has a link to this other memory
-            let existing_weight: Option<f64> = self.conn.query_row(
+            let existing_weight: Option<f64> = tx.query_row(
                 "SELECT strength FROM hebbian_links WHERE \
                  (source_id = ?1 AND target_id = ?2) OR (source_id = ?2 AND target_id = ?1)",
                 params![target_id, other_id],
                 |row| row.get(0),
             ).optional()?;
-            
+
             match existing_weight {
                 Some(existing) => {
-                    // Update to max weight
                     let max_weight = existing.max(*weight);
-                    self.conn.execute(
+                    tx.execute(
                         "UPDATE hebbian_links SET strength = ?1 WHERE \
                          (source_id = ?2 AND target_id = ?3) OR (source_id = ?3 AND target_id = ?2)",
                         params![max_weight, target_id, other_id],
                     )?;
                 }
                 None => {
-                    // Create new link from target to other
-                    self.conn.execute(
+                    tx.execute(
                         "INSERT OR IGNORE INTO hebbian_links \
                          (source_id, target_id, strength, coactivation_count, \
                           temporal_forward, temporal_backward, direction, created_at, namespace) \
@@ -2639,13 +2719,69 @@ impl Storage {
             }
             transferred += 1;
         }
-        
-        // Delete all donor links
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM hebbian_links WHERE source_id = ?1 OR target_id = ?1",
             params![donor_id],
         )?;
-        
+
+        // === ISS-116: unified-edges mirror ===
+        // For every associative edge touching donor_id, fold its weight
+        // into the (target_id, other) edge with max-weight semantics
+        // (matching legacy). Self-edges (other == target_id) are
+        // dropped, mirroring the skip above.
+        for (other_id, donor_weight) in &edge_neighbours {
+            if other_id == target_id {
+                continue;
+            }
+            let (lo, hi) = if target_id < other_id.as_str() {
+                (target_id, other_id.as_str())
+            } else {
+                (other_id.as_str(), target_id)
+            };
+            let existing_w: Option<f64> = tx.query_row(
+                "SELECT weight FROM edges WHERE edge_kind = 'associative' \
+                 AND source_id = ?1 AND target_id = ?2",
+                params![lo, hi],
+                |row| row.get(0),
+            ).optional()?;
+            match existing_w {
+                Some(existing) => {
+                    let max_w = existing.max(*donor_weight);
+                    tx.execute(
+                        "UPDATE edges SET weight = ?1 \
+                         WHERE edge_kind = 'associative' \
+                           AND source_id = ?2 AND target_id = ?3",
+                        params![max_w, lo, hi],
+                    )?;
+                }
+                None => {
+                    // Mint a fresh edge row for the surviving pair.
+                    // Reuses dual_write_hebbian_to_edges so the new
+                    // row matches T14's shape (attributes JSON, etc.).
+                    crate::graph::store::dual_write_hebbian_to_edges(
+                        &tx,
+                        lo,
+                        hi,
+                        "corecall",
+                        "{}",
+                        *donor_weight,
+                        "default",
+                    )
+                    .map_err(|e| match e {
+                        crate::graph::GraphError::Sqlite(s) => s,
+                        other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
+                    })?;
+                }
+            }
+        }
+        // Delete all donor-touching associative edges.
+        tx.execute(
+            "DELETE FROM edges WHERE edge_kind = 'associative' \
+             AND (source_id = ?1 OR target_id = ?1)",
+            params![donor_id],
+        )?;
+
+        tx.commit()?;
         Ok(transferred)
     }
 
@@ -2662,8 +2798,10 @@ impl Storage {
         decay_multi: f64,
         decay_single: f64,
     ) -> Result<usize, rusqlite::Error> {
-        // Apply differential decay rates based on signal_source
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+
+        // Legacy side
+        tx.execute(
             "UPDATE hebbian_links SET strength = strength * CASE \
                 WHEN signal_source = 'corecall' THEN ?1 \
                 WHEN signal_source = 'multi' THEN ?2 \
@@ -2672,13 +2810,33 @@ impl Storage {
             WHERE strength > 0",
             params![decay_corecall, decay_multi, decay_single],
         )?;
-
-        // Prune very weak links (same threshold as uniform decay)
-        let pruned = self.conn.execute(
+        let pruned = tx.execute(
             "DELETE FROM hebbian_links WHERE strength > 0 AND strength < 0.1",
             [],
         )?;
 
+        // ISS-116: unified-edges mirror. `signal_source` lives inside
+        // `edges.attributes` (JSON); `json_extract` gives the predicate
+        // selectivity needed to apply the same CASE WHEN. This is
+        // slower than the column-backed legacy predicate but correct.
+        // FOLLOWUP-ISS-116-perf: consider a generated column or
+        // partial index keyed by signal_source for hot decay paths.
+        tx.execute(
+            "UPDATE edges SET weight = weight * CASE \
+                WHEN json_extract(attributes, '$.signal_source') = 'corecall' THEN ?1 \
+                WHEN json_extract(attributes, '$.signal_source') = 'multi'    THEN ?2 \
+                ELSE ?3 \
+            END \
+            WHERE edge_kind = 'associative' AND weight > 0",
+            params![decay_corecall, decay_multi, decay_single],
+        )?;
+        tx.execute(
+            "DELETE FROM edges \
+             WHERE edge_kind = 'associative' AND weight > 0 AND weight < 0.1",
+            [],
+        )?;
+
+        tx.commit()?;
         Ok(pruned)
     }
 

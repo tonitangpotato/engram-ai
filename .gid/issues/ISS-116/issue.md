@@ -1,12 +1,17 @@
 ---
 id: ISS-116
-title: "Phase B dual-WRITE gaps in hebbian_links writers — record_coactivation, decay, merge"
-status: in_progress
+title: Phase B dual-WRITE gaps in hebbian_links writers — record_coactivation, decay, merge
+status: done
 priority: P1
 severity: degradation
-labels: [v04-unified-substrate, phase-b, dual-write, t29-blocker]
+labels:
+- v04-unified-substrate
+- phase-b
+- dual-write
+- t29-blocker
 created: 2026-05-13
 blocks: T29.4
+resolved: 2026-05-13
 ---
 
 # Phase B dual-WRITE gaps in hebbian_links writers
@@ -149,3 +154,93 @@ correctness regressions in neighbor-strength-sensitive recall paths.
 
 Filed and fixed in one PR with ISS-116 referencing this issue from
 each commit message.
+
+---
+
+## Resolution (2026-05-13)
+
+Fixed in single commit. All four writers now wrap legacy + unified
+mutations in one transaction.
+
+### Behavioural changes
+
+**`record_coactivation`** (storage.rs:2508)
+- Wrapped body in `Transaction`.
+- Appended unconditional `dual_write_hebbian_to_edges` at end with
+  `(signal_source="corecall", signal_detail="{}", delta_weight=0.1,
+  namespace="default")`. Matches `record_coactivation_ns` policy.
+- All four legacy branches (formed, threshold-cross, tracking-incr,
+  first-insert) collapse to one edges UPSERT — intentional, mirrors
+  the ns variant.
+
+**`decay_hebbian_links`** (storage.rs:2614)
+- Wrapped in tx.
+- Appended `UPDATE edges SET weight = weight * ? WHERE edge_kind =
+  'associative' AND weight > 0` + `DELETE FROM edges WHERE
+  edge_kind='associative' AND weight > 0 AND weight < 0.1`.
+
+**`decay_hebbian_links_differential`** (storage.rs:2714)
+- Wrapped in tx.
+- Appended mirror UPDATE using `json_extract(attributes,
+  '$.signal_source')` for the CASE WHEN predicate. Slower than
+  column-backed predicate; FOLLOWUP-ISS-116-perf may consider
+  generated column or partial index by signal_source.
+
+**`merge_hebbian_links`** (storage.rs:2651)
+- Pre-tx: read donor's `edges` neighbours (canonicalised "other
+  endpoint" + weight).
+- Inside tx: legacy donor-repoint loop (unchanged) + unified mirror
+  loop: for each donor neighbour, UPSERT `(target, other)` with
+  max-weight semantics. Fresh-mint path reuses
+  `dual_write_hebbian_to_edges` for shape consistency.
+- DELETE all donor-touching associative edges at end of tx.
+
+### Tests added (`v04_phase_b_dual_write`)
+
+- `iss116_record_coactivation_dual_writes_to_edges` — three
+  successive calls, asserts weight accumulation (0.1 → 0.2 → 0.3) +
+  coactivation_count increment + signal_source='corecall'.
+- `iss116_decay_hebbian_links_mirrors_to_edges` — initial weight 0.5
+  → 0.8x decay → 0.4 on both sides → 0.2x decay drops below 0.1
+  prune threshold → both sides cleared.
+- `iss116_decay_hebbian_links_differential_mirrors_to_edges` — two
+  edges with distinct signal_source ('corecall' / 'entity'), one
+  decay call with three factors, asserts each edge multiplied by
+  the correct CASE branch.
+- `iss116_merge_hebbian_links_mirrors_donor_repoint_to_edges` —
+  donor with two neighbours (one overlapping target's existing
+  neighbour at lower weight), assert max-merge on overlap + fresh
+  mint on non-overlap + donor edges cleared + legacy + unified
+  agree.
+
+### Verification
+
+- 1902/1902 lib pass
+- 25/25 v04_phase_b_dual_write (+4 ISS-116)
+- 42/42 v04_phase_c_verifier
+- 7×backfill drivers green
+- 36/36 lifecycle (hebbian merge/decay heavy users) unchanged
+
+### Pre-existing semantic divergence (preserved, documented)
+
+T14's namespaced writers and the new ISS-116 closure both accept
+that `edges.weight` accumulates from the **first** recall, while
+legacy `hebbian_links.strength` stays at 0 during the tracking phase
+until the threshold is crossed. This is intentional for consistency
+across the four coactivation writers (record_coactivation,
+record_coactivation_ns, record_cross_namespace_coactivation,
+record_association). Both substrates remain self-consistent — they
+just measure "strength" differently.
+
+If a Phase D consumer of edge weight needs legacy semantics (zero
+during tracking), the fix is at the read site (filter out edges
+where the legacy mirror row has strength=0). Filed as a documented
+follow-up only — no consumer hits this today.
+
+### Out of scope (separately tracked)
+
+- ISS-117 (to be filed): `link_memory_entity` /
+  `upsert_entity_relation` writer gap on `memory_entities` /
+  `entity_relations`. Will surface at T29.5 entity read-switch.
+
+Closes ISS-116. T29.4 hebbian read-switch is now unblocked.
