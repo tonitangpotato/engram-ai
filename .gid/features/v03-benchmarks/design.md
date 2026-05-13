@@ -55,8 +55,8 @@ If any sibling changes a public API that a driver depends on, this feature's dri
 
 Every GOAL in `requirements.md` has a section below that defines its measurement:
 
-- **GOAL-5.1** (LOCOMO overall ≥ 68.5%) → §3.1, §4.1
-- **GOAL-5.2** (LOCOMO temporal ≥ Graphiti) → §3.1, §4.1
+- **GOAL-5.1** (LOCOMO overall ≥ 68.5%) → §3.1, §3.1.1, §4.1
+- **GOAL-5.2** (LOCOMO temporal ≥ Graphiti) → §3.1, §3.1.1, §4.1
 - **GOAL-5.3** (LongMemEval ≥ v0.2 + 15pp) → §3.2, §4.1, §5.1
 - **GOAL-5.4** (≤ 3 LLM calls / episode over N=500) → §3.3, §4.1
 - **GOAL-5.5** (100% v0.2 tests pass post-migration) → §3.4, §4.1, §5.2
@@ -89,13 +89,16 @@ A **driver** is a Rust binary (under the standalone `engram-bench` repo at `../e
 **Procedure:**
 1. For each LOCOMO conversation, construct a fresh engramai `Memory` instance with an in-memory SQLite backend.
 2. Replay the conversation episodes via the standard `ingest(episode)` API (owned by v03-resolution).
-3. For each query in the conversation's question set, call `Memory::graph_query(...)` (owned by v03-retrieval §6.2), capture the typed `RetrievalOutcome`, and extract the answer string per LOCOMO's scoring conventions.
-4. Score each answer against the gold label using LOCOMO's official scorer (vendored as a library, see §9.1).
+3. For each query in the conversation's question set:
+   - **3a. Retrieve context.** Call `Memory::graph_query(...)` (owned by v03-retrieval §6.2), capture the typed `RetrievalOutcome`. Take the top-K ranked results (K configurable, default K=5 — rationale in §3.1.1). Concatenate their `content` fields into a single `context_block` with one record per line, prefixed by an integer index (`[1] …\n[2] …\n…`). If `RetrievalOutcome` returns fewer than K results, use what is available; if zero results, the predicted answer is the empty string and step 3b is skipped.
+   - **3b. Extract short answer.** Invoke the LOCOMO answer-extraction LLM (§3.1.1) with `(query, context_block)`. The LLM returns a short-form answer string conforming to LOCOMO's scoring conventions (see §3.1.1 for prompt, model, and post-processing). This is the `predicted` value the scorer consumes.
+   - **3c. Record raw retrieval.** The retrieved record IDs (top-K) and their fusion scores are emitted into `locomo_per_query.jsonl` alongside `predicted`/`gold`/`score` so retrieval quality can be analyzed independently of answer-extraction quality (a low score with correct top-K → answer-extraction issue; low score with wrong top-K → retrieval issue).
+4. Score `predicted` against the gold label using LOCOMO's official scorer (vendored as a library, see §9.1).
 5. Aggregate scores by category and overall. Temporal category is reported separately per GOAL-5.2.
 
 **Output:**
 - `locomo_summary.json`: `{overall: f64, by_category: {temporal: f64, …}, n_queries: usize}`
-- `locomo_per_query.jsonl`: one line per query with `{id, category, predicted, gold, score, latency_ms}`
+- `locomo_per_query.jsonl`: one line per query with `{id, category, predicted, gold, score, latency_ms, retrieved_top_k: [{record_id, fusion_score}, …], n_retrieved_used, answer_extraction_latency_ms}`
 - Reproducibility record (§6).
 
 **Gate bindings:**
@@ -104,8 +107,57 @@ A **driver** is a Rust binary (under the standalone `engram-bench` repo at `../e
 
 **Determinism:**
 - Fusion weights frozen via `FusionConfig::locked()` — cross-ref `v03-retrieval/design.md §5.4`.
-- Temperature=0 for any LLM calls; model identifiers pinned in the reproducibility record.
+- Temperature=0 for any LLM calls; model identifiers pinned in the reproducibility record. LOCOMO answer-extraction model and prompt are pinned per §3.1.1.
 - Query order: file order (deterministic).
+
+### 3.1.1 Answer extraction (LOCOMO scoring protocol)
+
+**Why this exists.** LOCOMO's scoring rule is exact-match (EM) and substring-match (F1-token) against a gold short-answer string (e.g., gold = `"2020"`, gold = `"red"`, gold = `"Tuesday"`). Feeding a paragraph of retrieved context directly into an EM scorer produces near-zero scores even when retrieval is correct (see ISS-101 evidence). The official LOCOMO protocol — and every reported number on the LOCOMO leaderboard, including mem0 (41.8%) and Graphiti (50%) — assumes a short-answer extraction step between retrieval and scoring. This sub-section pins that step.
+
+**Top-K rationale (K=5 default).** mem0 and Graphiti report numbers using top-K retrieval, not top-1. Using top-1 would (a) make our numbers structurally non-comparable to upstream baselines and (b) hide engram's graph + spreading-activation differentiation, since the scorer would never see the multi-record context where graph traversal helps. K=5 matches mem0's published configuration. K is configurable via `--top-k` for ablations; the ship-gate run uses K=5 and records the value in the reproducibility record.
+
+**Context budget.** The concatenated `context_block` is truncated at 8000 tokens (model context budget minus prompt + response headroom). Truncation is record-boundary-aware: drop trailing records whole rather than mid-record. The number of records actually included (≤ K) is recorded per query.
+
+**Model.** `claude-3-haiku-20240307` via Anthropic OAuth (Max Plan). Rationale:
+- Zero API cost — OAuth Max Plan is already paid; this avoids a multi-dollar-per-run cost line that would otherwise gate iteration speed (conv-26 alone has 199 questions × N runs).
+- Same model family already used in-tree: `cogmembench/locomo_trial.py` (the existing J-score harness), engramai extractor (`extractor.rs:289`), and `engram-bench/src/harness/repro.rs` defaults — single-judge consistency means cross-benchmark deltas (J-score vs LOCOMO EM) reflect metric differences only, not judge differences.
+- Deviates from upstream LOCOMO's GPT-4-turbo. This deviation is (a) disclosed in §10.1 reporting and (b) handled by the human-rated parity fixture below — no LLM-judge benchmark is bit-comparable across model families anyway.
+
+**OAuth integration.** Reuse the headers from `cogmembench/locomo_trial.py`: `anthropic-beta: claude-code-20250219,oauth-2025-04-20`, `user-agent: claude-cli/2.1.92 (external, cli)`. Auth token resolution is the same precedence the existing harness uses (env var → keychain → fail loud). No new dependency: Anthropic SDK is already a transitive dep via engramai.
+
+**Prompt.** A single-shot extraction prompt, committed verbatim to `engram-bench/src/answer_gen/locomo_prompt.txt` and referenced by SHA-256 in the reproducibility record. The prompt template is:
+
+```
+You are extracting a short answer from retrieved memory context to answer a question.
+
+QUESTION:
+{query}
+
+RETRIEVED CONTEXT (ranked by relevance):
+{context_block}
+
+Output ONLY the short answer — a single word, number, date, or short noun phrase as appropriate. Do not include explanation, reasoning, or prefixes like "Answer:". If the context does not contain enough information, output the single token: UNKNOWN.
+```
+
+`{query}` and `{context_block}` are the only template substitutions. Temperature=0, max_tokens=64, stop_sequences=`["\n\n"]`.
+
+**Post-processing.** The LLM response is normalized before scoring: strip leading/trailing whitespace, strip a leading `Answer:` prefix if the model emits one despite instruction, lowercase. The LOCOMO scorer applies its own further normalization (punctuation strip, article removal); this layer only handles model-formatting noise, not semantic normalization.
+
+**Cost & budget.** Conv-26 has 199 questions. A full LOCOMO run is ~10 conversations × ~200 questions = ~2000 calls. Each call: ~8000 input tokens (context) + ~30 output tokens. Under OAuth Max Plan: $0 marginal. Under per-token billing (fallback path if OAuth unavailable): ~$3-5 per full run at Haiku 3 rates. The CI release-qualification run is gated to OAuth-only; per-token fallback requires `ENGRAM_BENCH_ALLOW_PAID=1` to prevent accidental burn.
+
+**Failure modes.**
+- *OAuth auth fails* → driver fails loud per GUARD-2, reports `[FAIL-ERROR] GOAL-5.1: answer extraction auth failed`. Does NOT fall back to per-token billing without explicit env opt-in.
+- *Rate limit / 429* → exponential backoff (max 3 retries, 1/2/4 second delays). After 3 retries, fail the query (predicted = `UNKNOWN`), continue the run, and surface the rate-limit count in the summary. A run with > 1% rate-limit failures is reported as `status = "degraded"` and does not satisfy GOAL-5.1.
+- *Model returns empty* → predicted = `UNKNOWN`, scorer treats as miss.
+- *Context block exceeds budget after K=1 record* → record is truncated mid-content; this case is logged but does not fail the run (LOCOMO records are short enough that this should not happen; the log is a tripwire).
+
+**Determinism.** Temperature=0 makes Haiku deterministic for identical (model_version, prompt, context) tuples on the same day. Anthropic does not guarantee determinism across server-side model updates — the reproducibility record captures `model_version_response_header` from the Anthropic API response so a non-deterministic re-run is detectable post-hoc.
+
+**Human-rated parity fixture (validity check).** A fixed 50-query subset of LOCOMO is hand-scored once by potato (gold answer ↔ predicted answer judged ✓/✗ manually). The driver's automated EM score on this subset must agree with the human score within ±5 percentage points. If divergence > 5pp, the answer-extraction layer is broken (prompt is mis-extracting, or post-processing is too aggressive) and the LOCOMO number cannot be trusted. This fixture is committed under `fixtures/locomo/parity-50/` and run as a pre-flight check before any GOAL-5.1 / GOAL-5.2 evaluation. **This is the validity floor for the entire LOCOMO measurement** — without it, "we got 70% on LOCOMO" is unverifiable.
+
+**Reproducibility record additions** (cross-ref §6.1):
+- `[answer_extraction]` table: `model`, `model_version_response_header`, `auth_method` (`"oauth"` | `"api_key"`), `prompt_sha256`, `top_k`, `context_token_budget`, `temperature`, `max_tokens`.
+- `[result]` additions: `parity_fixture_agreement_pct` (must be ≥ 95% for the run to be valid), `rate_limit_failure_count`.
 
 ### 3.2 LongMemEval driver
 
@@ -432,10 +484,23 @@ rerank_model = "…"
 llm_model = "…"
 llm_temperature = 0.0
 
+[answer_extraction]
+# Populated by LOCOMO driver only; null for other drivers. See §3.1.1.
+model = "claude-3-haiku-20240307"
+model_version_response_header = "…"     # captured from Anthropic API response
+auth_method = "oauth"                   # "oauth" | "api_key"
+prompt_sha256 = "…"                     # sha256 of locomo_prompt.txt
+top_k = 5
+context_token_budget = 8000
+temperature = 0.0
+max_tokens = 64
+
 [result]
 # driver-specific summary, e.g., for locomo:
 locomo_overall = 0.xxx
 locomo_by_category = { temporal = 0.xxx, … }
+parity_fixture_agreement_pct = 0.xxx       # LOCOMO only; § 3.1.1 validity floor (must ≥ 0.95)
+rate_limit_failure_count = 0               # LOCOMO only; runs with >1% are status="degraded"
 
 [gates]
 # evaluated gate outcomes for this run

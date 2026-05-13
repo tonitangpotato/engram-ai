@@ -1941,7 +1941,7 @@ Each item is sized for a single sub-agent task (≤300 lines output) or
 one focused session.
 
 ### 8.1 Setup
-- [ ] **T01** This doc reviewed and approved (review-design skill, apply findings)
+- [x] **T01** This doc reviewed and approved — 5 review rounds (r1 pre-expansion → r5 spot-check) completed 2026-05-12, all Critical findings applied via commits 3-9 (`reviews/design-r1.md` through `design-r5.md`)
 - [x] **T02** Resolve §7 open questions (potato decisions) — closed Round 3 2026-05-12 via first-principles cognitive-substrate framing; see §7 and `reviews/design-r1.md` Round 3
 - [ ] **T03** Write requirements doc `v04-unified-substrate/requirements.md` (GOAL-1.1 ... GOAL-N) — derives from §3, §4
 - [ ] **T04** Update `consolidation-autopilot-DRAFT.md` §2 invariants to reference unified substrate

@@ -542,13 +542,50 @@ Independent of time budgets, each plan has cost caps:
 - `max_hops: 1` (v0.3 default) — cap on edge traversal depth
 - `max_edges_visited: 500` — aggregate cap across all anchors
 - `max_candidates: 1000` — cap on memories passed to rerank
-- `K_seed: 10` (Associative) — seed recall size
 - `K_pool: 100` (Associative) — candidate pool after edge-hop expansion
-- `K_seed_affective: 3 * requested_k` (Affective, §4.5 step 2) — seed recall size for affect-weighted candidate pool, capped at **60** to bound cost
-- `affect_divergence_sample_rate: 0.01` (Affective, §4.5 step 5) — fraction of Affective calls that compute the neutral-state comparison ranking for Kendall-tau telemetry (default 1%; tests pin ≥ 0.01)
-- `τ_graph_filter: 0.3` (Episodic, §4.2 step 3) — entity-signal score above which an Episodic query still triggers a 1-hop graph expansion (chosen so episodic queries with weak entity hints still get graph enrichment; tuned against the routing benchmark)
+- `memory_limit_per_entity_cap: 100` (Factual) — per-anchor hard ceiling on memory candidates (matches `5 × 100 = 500` envelope of `max_edges_visited`)
+- `K_seed_max: 60` (Affective) — hard ceiling on Affective seed pool
+- `τ_graph_filter: 0.3` (Episodic, §4.2 step 3) — entity-signal score above which an Episodic query still triggers a 1-hop graph expansion
+- `affect_divergence_sample_rate: 0.01` (Affective, §4.5 step 5) — fraction of Affective calls that compute the neutral-state comparison ranking for Kendall-tau telemetry
 
-Hitting a cap is recorded in the trace but is **not** an error. Caps are the mechanism by which cost stays bounded even on pathological queries.
+#### 7.3.1 Overfetch principle (ISS-105 generalization of §4.5)
+
+All sub-plans that contribute to `fuse_rrf` ranking must produce
+**`α × requested_k` candidates**, where `α = 3` is the *overfetch
+ratio*. This guarantees RRF has a real selection pool — without
+overfetch, fusion degenerates into set-union-with-dedup and adds no
+ranking signal beyond what each sub-plan already provides.
+
+The principle was first applied in §4.5 (Affective: `K_seed_affective
+= min(3 × requested_k, 60)`) and is now uniform:
+
+| Sub-plan | Operating point (per query) | Hard ceiling |
+|---|---|---|
+| Factual | `effective_limit = α × requested_k / max(1, anchors.len())` per anchor | `memory_limit_per_entity_cap = 100` |
+| Associative | `K_seed = α × requested_k` (legacy `K_seed = 10` removed by ISS-104) | `K_pool = 100` |
+| Affective | `K_seed_affective = α × requested_k` | `K_seed_max = 60` |
+| Abstract | `k_topics = α × requested_k / E` where E is empirical expansion factor | `k_topics_max` (deferred to ISS-106 — Abstract is currently inert in benchmarks because `knowledge_topics` is unpopulated) |
+
+**Episodic is excluded.** Its K is the time-window truncation at
+`query.limit` directly — it doesn't compete with other sub-plans for
+ranking slots, so overfetch would waste cost without benefit.
+
+**Why α = 3:** chosen by §4.5 design and validated across sub-plans
+in ISS-105. Higher α gives RRF more selection signal but costs
+linearly more rows and risks saturating `max_candidates = 1000`.
+α = 3 sits at the inflection — large enough that fusion does real
+work, small enough that the K=50 case fits within the existing
+candidate budget.
+
+**Per-query interaction with `max_candidates = 1000`:** at K=50 the
+sum of sub-plan candidates is ≤ 100 (Assoc) + 60 (Affect) +
+500 (Factual: 5 × 100 cap) + 50 (Epis) = 710 — well within budget.
+Abstract is deferred until ISS-106 lands, at which point this sum
+must be re-checked.
+
+Hitting a cap is recorded in the trace but is **not** an error. Caps
+are the mechanism by which cost stays bounded even on pathological
+queries.
 
 ---
 
