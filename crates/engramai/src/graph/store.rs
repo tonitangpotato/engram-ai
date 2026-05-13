@@ -1099,8 +1099,14 @@ fn dual_write_edge_to_edges(
 ///   * `src`, `tgt` — memory IDs (canonicalization happens internally).
 ///   * `signal_source` — `"corecall"`, `"multi"`, `"entity"`, `"temporal"`,
 ///     `"signal"`, etc. — drives §4.6 differential decay.
-///   * `signal_detail` — caller-supplied JSON string (e.g.
-///     `r#"{"entity_overlap":0.4}"#`) or `"{}"`.
+///   * `signal_detail` — caller-supplied opaque string stored verbatim
+///     under `attributes.signal_detail`. By design (§4.3) this is treated
+///     as a string blob, NOT a nested JSON object — if a caller passes
+///     `r#"{"entity_overlap":0.4}"#`, it round-trips as a literal string
+///     `"{\"entity_overlap\":0.4}"` and readers must `json()`-parse it
+///     out before structural access. Use `"{}"` when there's nothing to
+///     attach. This avoids accidental schema commitment in attributes
+///     and lets §4.6 decay treat it as provenance metadata only.
 ///   * `delta_weight` — increment to add to existing weight; the first
 ///     write also seeds `weight = delta_weight`.
 ///   * `namespace` — partition the edge belongs to.

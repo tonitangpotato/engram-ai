@@ -2907,11 +2907,9 @@ impl Storage {
                 0.1,
                 namespace,
             )
-            .map_err(|e| {
-                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("dual_write_hebbian_to_edges failed: {e}"),
-                )))
+            .map_err(|e| match e {
+                crate::graph::GraphError::Sqlite(s) => s,
+                other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
             })?;
 
             Ok::<bool, rusqlite::Error>(formed)
@@ -3028,11 +3026,9 @@ impl Storage {
                 0.1,
                 &cross_ns,
             )
-            .map_err(|e| {
-                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("dual_write_hebbian_to_edges failed: {e}"),
-                )))
+            .map_err(|e| match e {
+                crate::graph::GraphError::Sqlite(s) => s,
+                other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
             })?;
 
             Ok::<bool, rusqlite::Error>(formed)
