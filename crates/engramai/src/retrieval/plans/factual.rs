@@ -172,12 +172,28 @@ pub struct FactualPlanInputs<'a> {
     /// [`GraphRead::edges_of`]. `None` ⇒ all predicates.
     pub predicate_filter: Option<Predicate>,
 
-    /// Per-anchor cap on memories retrieved by
+    /// Per-anchor **hard cap** on memories retrieved by
     /// [`GraphRead::memories_mentioning_entity`]. The plan caps the total
     /// candidate set at `max_anchors * memory_limit_per_entity` (in
     /// practice the graph is sparse and this rarely binds; the cap exists
     /// to keep traversal bounded under degenerate hub-entity cases).
+    ///
+    /// Note: this is the *ceiling*, not the operating point. The plan
+    /// computes a per-query `effective_limit` from `requested_k` and the
+    /// number of resolved anchors (ISS-105 — overfetch principle from
+    /// design §4.5 / §7.3 generalized to Factual). `memory_limit_per_entity`
+    /// only binds when the overfetch formula would exceed it.
     pub memory_limit_per_entity: usize,
+
+    /// User-requested result count from
+    /// [`crate::retrieval::api::GraphQuery::limit`]. Used to size the
+    /// per-anchor recall budget so Factual contributes
+    /// `α × requested_k` candidates to fuse_rrf, where α = 3 is the
+    /// overfetch ratio inherited from Affective (design §4.5 step 2 +
+    /// §7.3, ISS-105). The plan computes
+    /// `effective_limit = min(α × requested_k / anchors.len(),
+    /// memory_limit_per_entity)` after entity resolution.
+    pub requested_k: usize,
 
     /// Optional fixed entity allowlist from
     /// [`crate::retrieval::api::GraphQuery::entity_filter`]. When set,
@@ -199,6 +215,12 @@ impl FactualPlanInputs<'_> {
     pub const DEFAULT_MAX_ANCHORS: usize = 5;
     /// Default per-entity memory cap (design §4.1 latency envelope).
     pub const DEFAULT_MEMORY_LIMIT_PER_ENTITY: usize = 100;
+    /// Overfetch ratio α from design §4.5 / §7.3 (ISS-105). Each
+    /// fuse-contributing sub-plan should produce α × requested_k
+    /// candidates so RRF has a real selection pool, not just a
+    /// merge-with-dedup output. α = 3 is the value chosen by
+    /// Affective and generalized to Factual / Associative here.
+    pub const OVERFETCH_RATIO: usize = 3;
 }
 
 /// Per-edge candidate row surfaced by the Factual plan.
@@ -473,7 +495,28 @@ impl FactualPlan {
         // first so seen_via is biased toward anchor coverage (the
         // graph_score signal in fusion uses this).
         let mut memories: BTreeMap<MemoryId, BTreeSet<Uuid>> = BTreeMap::new();
-        let limit = inputs.memory_limit_per_entity.max(1);
+
+        // Per-anchor recall budget (ISS-105):
+        //
+        //   effective_limit = min(α × requested_k / max(1, anchors.len()),
+        //                         memory_limit_per_entity)
+        //
+        // Rationale: Factual must contribute ≈ α × requested_k candidates
+        // to fuse_rrf so RRF has a real selection pool (design §4.5
+        // overfetch principle). The per-anchor share is the total
+        // budget divided by actual anchor count, then floored at 1
+        // and ceilinged at the structural cap. Falls back to the
+        // legacy `memory_limit_per_entity` when `requested_k == 0`
+        // (defensive — `GraphQuery::limit` is required by the API).
+        let effective_limit = if inputs.requested_k == 0 {
+            inputs.memory_limit_per_entity.max(1)
+        } else {
+            let total_budget = FactualPlanInputs::OVERFETCH_RATIO
+                .saturating_mul(inputs.requested_k);
+            let per_anchor = total_budget / anchors.len().max(1);
+            per_anchor.clamp(1, inputs.memory_limit_per_entity.max(1))
+        };
+        let limit = effective_limit;
 
         for anchor in &anchors {
             let hits = graph.memories_mentioning_entity(anchor.entity_id, limit)?;
@@ -651,6 +694,7 @@ mod tests {
         edges_as_of_map: HashMap<Uuid, Vec<Edge>>,
         memories_of: HashMap<Uuid, Vec<String>>,
         memories_calls: RefCell<usize>,
+        memories_limits_seen: RefCell<Vec<usize>>,
     }
 
     impl StubGraph {
@@ -756,6 +800,7 @@ mod tests {
             limit: usize,
         ) -> Result<Vec<String>, GraphError> {
             *self.memories_calls.borrow_mut() += 1;
+            self.memories_limits_seen.borrow_mut().push(limit);
             let mut out = self.memories_of.get(&entity).cloned().unwrap_or_default();
             if out.len() > limit {
                 out.truncate(limit);
@@ -806,6 +851,10 @@ mod tests {
             max_anchors: FactualPlanInputs::DEFAULT_MAX_ANCHORS,
             predicate_filter: None,
             memory_limit_per_entity: FactualPlanInputs::DEFAULT_MEMORY_LIMIT_PER_ENTITY,
+            // Tests pre-date ISS-105 overfetch wiring; 0 selects the
+            // legacy "use memory_limit_per_entity directly" branch so
+            // existing assertions keep their semantics.
+            requested_k: 0,
             entity_filter: None,
         }
     }
@@ -1140,5 +1189,120 @@ mod tests {
             FactualOutcome::Cutoff.to_retrieval_outcome(true),
             RetrievalOutcome::EntityFoundNoEdges { .. }
         ));
+    }
+
+    /// ISS-105 regression: when `requested_k > 0`, the per-anchor
+    /// recall budget must be `min(α × requested_k / anchors.len(),
+    /// memory_limit_per_entity)`, not `memory_limit_per_entity`
+    /// directly. Locks in the overfetch principle (design §4.5 / §7.3
+    /// generalized to Factual).
+    #[test]
+    fn iss105_overfetch_per_anchor_limit_scales_with_requested_k() {
+        let plan = FactualPlan::new();
+
+        // Case 1: 1 anchor, requested_k = 10 → effective_limit = 30
+        // (3 × 10 / 1, well under cap of 100).
+        {
+            let mut graph = StubGraph::default();
+            let alice = Uuid::from_u128(1);
+            graph.add_memories(alice, vec!["m1"]);
+            let resolver = FixedResolver(vec![ResolvedAnchor {
+                entity_id: alice,
+                canonical_name: "Alice".into(),
+                match_strength: 1.0,
+            }]);
+            let mut inputs = make_inputs("alice");
+            inputs.requested_k = 10;
+            inputs.memory_limit_per_entity = 100;
+            let mut b = budget();
+            let _ = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+            assert_eq!(
+                graph.memories_limits_seen.borrow().as_slice(),
+                &[30],
+                "1 anchor × K=10, α=3 → per-anchor limit = 30"
+            );
+        }
+
+        // Case 2: 1 anchor, requested_k = 50 → effective_limit = 100
+        // (3 × 50 = 150 clamped to memory_limit_per_entity = 100).
+        {
+            let mut graph = StubGraph::default();
+            let alice = Uuid::from_u128(1);
+            graph.add_memories(alice, vec!["m1"]);
+            let resolver = FixedResolver(vec![ResolvedAnchor {
+                entity_id: alice,
+                canonical_name: "Alice".into(),
+                match_strength: 1.0,
+            }]);
+            let mut inputs = make_inputs("alice");
+            inputs.requested_k = 50;
+            inputs.memory_limit_per_entity = 100;
+            let mut b = budget();
+            let _ = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+            assert_eq!(
+                graph.memories_limits_seen.borrow().as_slice(),
+                &[100],
+                "1 anchor × K=50 → 150 clamped to cap=100"
+            );
+        }
+
+        // Case 3: requested_k = 0 falls back to memory_limit_per_entity
+        // (legacy test path stays valid).
+        {
+            let mut graph = StubGraph::default();
+            let alice = Uuid::from_u128(1);
+            graph.add_memories(alice, vec!["m1"]);
+            let resolver = FixedResolver(vec![ResolvedAnchor {
+                entity_id: alice,
+                canonical_name: "Alice".into(),
+                match_strength: 1.0,
+            }]);
+            let mut inputs = make_inputs("alice");
+            inputs.requested_k = 0;
+            inputs.memory_limit_per_entity = 50;
+            let mut b = budget();
+            let _ = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+            assert_eq!(
+                graph.memories_limits_seen.borrow().as_slice(),
+                &[50],
+                "requested_k=0 → use memory_limit_per_entity directly"
+            );
+        }
+    }
+
+    /// ISS-105 regression: with multiple anchors, the overfetch budget
+    /// is divided across them so the user-facing K stays invariant to
+    /// anchor count (5 anchors × K=50 → 30 per anchor, total ≈ 150 = α·K).
+    #[test]
+    fn iss105_overfetch_budget_split_across_anchors() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+        let ids: Vec<Uuid> = (1..=5).map(|i| Uuid::from_u128(i)).collect();
+        for id in &ids {
+            graph.add_memories(*id, vec!["m"]);
+        }
+        let resolver = FixedResolver(
+            ids.iter()
+                .enumerate()
+                .map(|(i, id)| ResolvedAnchor {
+                    entity_id: *id,
+                    canonical_name: format!("E{i}"),
+                    match_strength: 1.0,
+                })
+                .collect(),
+        );
+        let mut inputs = make_inputs("e0 e1 e2 e3 e4");
+        inputs.requested_k = 50;
+        inputs.memory_limit_per_entity = 100;
+        inputs.max_anchors = 5;
+        let mut b = budget();
+        let _ = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+        // 5 anchors, no linked entities → 5 calls, each with limit
+        // = 3 × 50 / 5 = 30.
+        let limits = graph.memories_limits_seen.borrow();
+        assert_eq!(limits.len(), 5, "one call per anchor");
+        for l in limits.iter() {
+            assert_eq!(*l, 30, "α·K / anchors = 3×50/5 = 30");
+        }
     }
 }

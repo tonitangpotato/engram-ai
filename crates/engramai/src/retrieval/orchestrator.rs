@@ -572,7 +572,12 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                     min_confidence: self.query.min_confidence.map(|f| f as f32),
                     max_anchors: 5,
                     predicate_filter: None,
-                    memory_limit_per_entity: 50,
+                    // Hard cap (design §4.1 envelope: 5 anchors × 100 =
+                    // 500 candidates max). Operating point is the
+                    // overfetch formula `α × requested_k / anchors`
+                    // computed inside the plan (ISS-105).
+                    memory_limit_per_entity: 100,
+                    requested_k: self.query.limit,
                     entity_filter: self.query.entity_filter.as_deref(),
                 };
                 let plan = crate::retrieval::plans::factual::FactualPlan::new();
@@ -810,7 +815,10 @@ pub(crate) fn execute_plan(
                 min_confidence: query.min_confidence.map(|f| f as f32),
                 max_anchors: 5,
                 predicate_filter: None,
-                memory_limit_per_entity: 50,
+                // Hard cap; operating point set by overfetch formula
+                // inside the plan (ISS-105).
+                memory_limit_per_entity: 100,
+                requested_k: query.limit,
                 entity_filter: query.entity_filter.as_deref(),
             };
             let plan = crate::retrieval::plans::factual::FactualPlan::new();
@@ -918,9 +926,20 @@ pub(crate) fn execute_plan(
                 query: &query,
                 budget,
             };
+            // ISS-K_SEED-CAP (2026-05-06): K_seed default = 10 silently
+            // caps the fused candidate pool at ~10 even when the driver
+            // requests larger top-K (RUN-0020 K=15 → 145/152 queries got
+            // exactly 10 candidates, jsonl-verified). Surface k_seed via
+            // query.limit so retrieval can actually saturate the
+            // requested top-K. K_pool default 100 is wide enough to
+            // absorb seed counts up to ~33 without breaking the §4.3
+            // expansion budget; if query.limit > K_pool we don't bother
+            // raising the pool — clamping at the existing pool keeps
+            // the §7.3 cost caps intact.
             let plan = crate::retrieval::plans::associative::AssociativePlan::new(
                 collaborators.seed_recaller,
-            );
+            )
+            .with_k_seed(query.limit);
             let result = plan.execute(inputs, graph);
             let scored = associative_to_scored(&result, loader);
             // ISS-063: Associative is the terminal plan. If it returns
@@ -1153,7 +1172,10 @@ fn run_factual_fallback_for_hybrid(
         min_confidence: query.min_confidence.map(|f| f as f32),
         max_anchors: 5,
         predicate_filter: None,
-        memory_limit_per_entity: 50,
+        // Hard cap; operating point set by overfetch formula inside
+        // the plan (ISS-105).
+        memory_limit_per_entity: 100,
+        requested_k: query.limit,
         entity_filter: query.entity_filter.as_deref(),
     };
     let plan = crate::retrieval::plans::factual::FactualPlan::new();
@@ -1237,9 +1259,13 @@ fn run_associative_fallback(
         query,
         budget,
     };
+    // ISS-K_SEED-CAP — fallback path. Same reasoning as the primary
+    // PlanKind::Associative branch above: surface query.limit as
+    // k_seed so the fused pool can actually saturate top-K.
     let plan = crate::retrieval::plans::associative::AssociativePlan::new(
         collaborators.seed_recaller,
-    );
+    )
+    .with_k_seed(query.limit);
     let result = plan.execute(inputs, graph);
     let scored = associative_to_scored(&result, loader);
 
