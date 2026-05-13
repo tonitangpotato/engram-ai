@@ -298,6 +298,26 @@ pub struct MemoryConfig {
     /// and parameter adjustment suggestions.
     #[serde(default)]
     pub metacognition_enabled: bool,
+
+    /// Phase D read-switch flag for v0.4 unified substrate (default: false).
+    ///
+    /// When `false` (default), retrieval reads from legacy tables
+    /// (`memories`, `entities`, `memory_embeddings`, `entity_relations`,
+    /// `memory_entities`, `hebbian_links`, `synthesis_provenance`).
+    /// When `true`, retrieval reads from the unified substrate
+    /// (`nodes`, `edges`, `node_embeddings`).
+    ///
+    /// Writes are unaffected by this flag — Phase B (T13–T18) dual-writes
+    /// keep both sides in sync until Phase E (T34–T37) removes legacy
+    /// writes. See `.gid/features/v04-unified-substrate/design.md` §5.4
+    /// and §8.5 for the read-switch plan.
+    ///
+    /// Parity gate: enable in production only after `verify_phase_c_parity`
+    /// (substrate::verify::verify_phase_c_parity) reports zero violations
+    /// AND the LoCoMo J-score on unified is ≥ legacy baseline (currently
+    /// 42.1% per RUN-0018).
+    #[serde(default)]
+    pub unified_substrate: bool,
 }
 
 fn default_entity_weight() -> f64 {
@@ -398,6 +418,7 @@ impl Default for MemoryConfig {
             promotion: PromotionConfig::default(),
             metacognition_enabled: false,
             intent_classification: IntentClassificationConfig::default(),
+            unified_substrate: false,
         }
     }
 }
@@ -603,5 +624,70 @@ mod tests {
         assert!((deserialized.association.link_threshold - 0.6).abs() < f64::EPSILON);
         // Other fields preserved
         assert!((deserialized.mu1 - config.mu1).abs() < f64::EPSILON);
+    }
+
+    /// T28 (Phase D §8.5): `unified_substrate` flag defaults to false so
+    /// existing deployments stay on legacy reads until explicitly opted in.
+    #[test]
+    fn test_unified_substrate_default_off() {
+        let config = MemoryConfig::default();
+        assert!(
+            !config.unified_substrate,
+            "unified_substrate must default to false until the Phase D parity \
+             gate (verify_phase_c_parity + LoCoMo J-score) is cleared in prod"
+        );
+    }
+
+    /// All v0.3 presets must inherit `unified_substrate = false` via
+    /// `..Default::default()`. If a future preset overrides the flag it must
+    /// document why; this test guards against accidental flips.
+    #[test]
+    fn test_unified_substrate_off_in_all_presets() {
+        assert!(!MemoryConfig::chatbot().unified_substrate, "chatbot");
+        assert!(!MemoryConfig::task_agent().unified_substrate, "task_agent");
+        assert!(
+            !MemoryConfig::personal_assistant().unified_substrate,
+            "personal_assistant",
+        );
+        assert!(!MemoryConfig::researcher().unified_substrate, "researcher");
+    }
+
+    /// Round-trip the flag through serde to confirm the `#[serde(default)]`
+    /// attribute doesn't drop user-set values, and that an explicit `true`
+    /// survives ser/de unchanged.
+    #[test]
+    fn test_unified_substrate_serde_roundtrip() {
+        let mut config = MemoryConfig::default();
+        config.unified_substrate = true;
+
+        let json = serde_json::to_string(&config).expect("serialize");
+        let deserialized: MemoryConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(deserialized.unified_substrate);
+    }
+
+    /// Backwards-compat: configs written before T28 do not carry the
+    /// `unified_substrate` key. They must deserialize cleanly and default
+    /// to the safe (legacy-read) value. This is what `#[serde(default)]`
+    /// is for; the test pins it so future refactors can't silently drop it.
+    #[test]
+    fn test_unified_substrate_absent_key_defaults_false() {
+        // Minimal config JSON omitting unified_substrate entirely.
+        let default_json = serde_json::to_string(&MemoryConfig::default())
+            .expect("serialize default");
+        let value: serde_json::Value =
+            serde_json::from_str(&default_json).expect("parse to value");
+        let mut obj = value
+            .as_object()
+            .expect("config is a json object")
+            .clone();
+        obj.remove("unified_substrate");
+        let stripped = serde_json::to_string(&obj).expect("reserialize");
+
+        let deserialized: MemoryConfig =
+            serde_json::from_str(&stripped).expect("deserialize without flag");
+        assert!(
+            !deserialized.unified_substrate,
+            "missing key must fall back to the safe default (false)"
+        );
     }
 }
