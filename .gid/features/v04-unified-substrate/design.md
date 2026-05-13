@@ -1205,8 +1205,13 @@ on a subset of rows):
   # memory_entities (composite natural key (memory_id, entity_id, role)):
   hash_input = "memory_entities|<memory_id>|<entity_id>|<role>|<edge_kind>|<predicate>"
 
-  # hebbian_links (composite natural key (memory_id, related_id, namespace)):
-  hash_input = "hebbian_links|<memory_id>|<related_id>|<namespace>|<edge_kind>|<predicate>"
+  # hebbian_links (composite natural key + signal_source as §4.3
+  # row-identity dimension; signal_source MUST be in the hash so a
+  # future write of the same canonical pair with a different
+  # signal_source gets a distinct edge and is NOT silently rejected
+  # by INSERT OR IGNORE on the primary id before the partial unique
+  # index `idx_edges_assoc_unique` can catch it):
+  hash_input = "hebbian_links|<memory_id>|<related_id>|<namespace>|<signal_source>|<edge_kind>|<predicate>"
 
   # synthesis_provenance (PK = id):
   hash_input = "synthesis_provenance|<id>|<source_id>|<edge_kind>|<predicate>"

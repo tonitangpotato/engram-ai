@@ -1780,7 +1780,10 @@ pub fn backfill_hebbian_links_to_edges(
     };
 
     // Merged groups. One row per (canonical_pair, namespace,
-    // signal_source).
+    // signal_source). `legacy_count` (COUNT(*)) is folded into the
+    // GROUP BY result itself so the merge loop doesn't have to
+    // re-query per group — saves ~43k round-trips at production scale
+    // (T24-r1 FINDING-2).
     let conn = storage.conn();
     let select_sql = if namespace.is_some() {
         "SELECT \
@@ -1794,7 +1797,8 @@ pub fn backfill_hebbian_links_to_edges(
            SUM(temporal_backward) AS tbwd_sum, \
            MIN(created_at) AS min_created, \
            GROUP_CONCAT(DISTINCT direction) AS directions_csv, \
-           GROUP_CONCAT(DISTINCT COALESCE(signal_detail, '')) AS details_csv \
+           GROUP_CONCAT(DISTINCT COALESCE(signal_detail, '')) AS details_csv, \
+           COUNT(*) AS legacy_count \
          FROM hebbian_links \
          WHERE namespace = ? \
          GROUP BY canon_lo, canon_hi, namespace, signal_source"
@@ -1810,7 +1814,8 @@ pub fn backfill_hebbian_links_to_edges(
            SUM(temporal_backward) AS tbwd_sum, \
            MIN(created_at) AS min_created, \
            GROUP_CONCAT(DISTINCT direction) AS directions_csv, \
-           GROUP_CONCAT(DISTINCT COALESCE(signal_detail, '')) AS details_csv \
+           GROUP_CONCAT(DISTINCT COALESCE(signal_detail, '')) AS details_csv, \
+           COUNT(*) AS legacy_count \
          FROM hebbian_links \
          GROUP BY canon_lo, canon_hi, namespace, signal_source"
     };
@@ -1827,6 +1832,7 @@ pub fn backfill_hebbian_links_to_edges(
         f64,    // min_created_at
         String, // directions_csv
         String, // details_csv
+        u64,    // legacy_count (rows collapsed in this group)
     );
     let map_row = |row: &rusqlite::Row| -> Result<HebRow, rusqlite::Error> {
         Ok((
@@ -1841,6 +1847,7 @@ pub fn backfill_hebbian_links_to_edges(
             row.get(8)?,
             row.get::<_, Option<String>>(9)?.unwrap_or_default(),
             row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+            row.get::<_, i64>(11)? as u64,
         ))
     };
     let groups: Vec<HebRow> = if let Some(ns) = namespace {
@@ -1862,28 +1869,17 @@ pub fn backfill_hebbian_links_to_edges(
 
     let tx = storage.conn().unchecked_transaction()?;
 
-    for (lo, hi, ns_val, sig_src, weight_sum, coact_sum, tfwd_sum, tbwd_sum, min_created, dirs_csv, details_csv)
+    for (lo, hi, ns_val, sig_src, weight_sum, coact_sum, tfwd_sum, tbwd_sum, min_created, dirs_csv, details_csv, legacy_count)
         in groups
     {
         groups_processed += 1;
 
-        // How many legacy rows did this group collapse? We re-query
-        // inside the tx for the exact count (the SQL GROUP BY didn't
-        // expose it; adding COUNT(*) to the SELECT would have done
-        // it but at the cost of an extra column for every row). Cost:
-        // 1 small query per merged group. Total ~43k production
-        // groups → 43k extra round-trips; acceptable for a one-shot
-        // backfill. If it ever needs optimizing, fold COUNT(*) into
-        // the SELECT above.
-        let legacy_count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM hebbian_links \
-             WHERE namespace = ? \
-               AND COALESCE(signal_source, 'corecall') = ? \
-               AND ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))",
-            params![ns_val, sig_src, lo, hi, hi, lo],
-            |r| r.get(0),
-        )?;
-        let legacy_count = legacy_count as u64;
+        // legacy_count comes pre-computed from the outer GROUP BY's
+        // COUNT(*) aggregate (T24-r1 FINDING-2 fix). Previously this
+        // block re-queried `SELECT COUNT(*) FROM hebbian_links WHERE
+        // ...` per group, costing ~43k extra round-trips at
+        // production scale. Folding into the outer SELECT is one
+        // extra column for zero scan-cost overhead.
 
         // Deterministic id encoding canonical pair + namespace +
         // signal_source. See module-level comment for why
