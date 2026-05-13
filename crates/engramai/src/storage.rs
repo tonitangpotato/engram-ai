@@ -156,6 +156,25 @@ fn generate_entity_id(name: &str, entity_type: &str, namespace: &str) -> String 
 /// SQLite-backed memory storage with FTS5 search.
 pub struct Storage {
     conn: Connection,
+    /// v0.4 unified substrate read-switch.
+    ///
+    /// When `true`, Phase D read adapters fetch rows from the unified
+    /// `nodes` / `edges` / `node_embeddings` tables instead of the
+    /// legacy per-concept tables (`memories`, `synthesis_provenance`,
+    /// `memory_embeddings`, `entities`, …). Writes are always
+    /// dual-routed (Phase B), so flipping this flag is a pure read
+    /// swap — see `.gid/features/v04-unified-substrate/design.md` §5.4.
+    ///
+    /// Captured at construction time via
+    /// [`Storage::with_unified_substrate`] from
+    /// `MemoryConfig::unified_substrate`. There is intentionally no
+    /// setter: read mode is a process-lifecycle decision, not a
+    /// request-time toggle. Avoids stale-flag risk from setter
+    /// patterns.
+    ///
+    /// Defaults to `false` so existing constructors (`Storage::new`)
+    /// keep legacy behavior bit-identical.
+    unified_substrate: bool,
 }
 
 // ---------------------------------------------------------------------
@@ -221,7 +240,31 @@ impl Storage {
     /// Open or create a SQLite database at the given path.
     ///
     /// Use `:memory:` for an in-memory database.
+    ///
+    /// Defaults to legacy read mode (`unified_substrate = false`). To
+    /// open with v0.4 unified-substrate reads enabled, use
+    /// [`Storage::with_unified_substrate`].
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+        Self::with_unified_substrate(path, false)
+    }
+
+    /// Open or create a SQLite database with the v0.4 unified-substrate
+    /// read flag explicitly set.
+    ///
+    /// `unified_substrate = true` makes Phase D read adapters fetch
+    /// from `nodes` / `edges` / `node_embeddings` instead of the
+    /// legacy per-concept tables. Writes are always dual-routed
+    /// (Phase B), so this is a pure read swap. See
+    /// `.gid/features/v04-unified-substrate/design.md` §5.4.
+    ///
+    /// **The flag is captured at construction time**: this is
+    /// deliberate — read mode is a process-lifecycle decision, not a
+    /// request-time toggle. Avoids stale-flag risk from setter
+    /// patterns.
+    pub fn with_unified_substrate<P: AsRef<Path>>(
+        path: P,
+        unified_substrate: bool,
+    ) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
         
         // Enable WAL mode for better concurrency + busy timeout for multi-process access
@@ -336,7 +379,10 @@ impl Storage {
         // (all are idempotent per GUARD-ss.3).
         Self::bump_schema_version_v04_additive(&conn)?;
 
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            unified_substrate,
+        })
     }
 
     /// Run all v0.4 Phase A migrations (T05–T09) on a foreign connection.

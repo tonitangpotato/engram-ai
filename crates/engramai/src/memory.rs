@@ -933,8 +933,8 @@ impl Memory {
     /// If Ollama is available, embeddings will be used for semantic search.
     /// Otherwise, falls back to FTS5 keyword matching.
     pub fn new(path: &str, config: Option<MemoryConfig>) -> Result<Self, Box<dyn std::error::Error>> {
-        let storage = Storage::new(path)?;
         let config = config.unwrap_or_default();
+        let storage = Storage::with_unified_substrate(path, config.unified_substrate)?;
         let created_at = Utc::now();
         
         // Create embedding provider (optional - check if Ollama is available)
@@ -1004,8 +1004,8 @@ impl Memory {
         path: &str,
         config: Option<MemoryConfig>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let storage = Storage::new(path)?;
         let config = config.unwrap_or_default();
+        let storage = Storage::with_unified_substrate(path, config.unified_substrate)?;
         let created_at = Utc::now();
         
         // Create embedding provider and validate Ollama is available
@@ -1069,9 +1069,9 @@ impl Memory {
         config: Option<MemoryConfig>,
         embedding_config: EmbeddingConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let storage = Storage::new(path)?;
         let mut config = config.unwrap_or_default();
         config.embedding = embedding_config;
+        let storage = Storage::with_unified_substrate(path, config.unified_substrate)?;
         let created_at = Utc::now();
         
         // Create embedding provider (optional - check if Ollama is available)
@@ -1139,8 +1139,8 @@ impl Memory {
         workspace_dir: &str,
         config: Option<MemoryConfig>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let storage = Storage::new(path)?;
         let config = config.unwrap_or_default();
+        let storage = Storage::with_unified_substrate(path, config.unified_substrate)?;
         let created_at = Utc::now();
         
         // Create Empathy Bus using storage's connection
