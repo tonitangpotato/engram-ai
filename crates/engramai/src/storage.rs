@@ -1383,7 +1383,82 @@ impl Storage {
             "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
             params![rowid, tokenized],
         )?;
-        
+
+        // T12 — Phase B dual-write: every memory row also lands in
+        // `nodes` as `node_kind='memory'`. Read-side code still goes
+        // through `memories` until Phase D flip; the unified row is
+        // populated so KC / retrieval can adopt it incrementally
+        // without a separate backfill window for new writes.
+        //
+        // Field mapping per design.md §3.1 + §5.3:
+        //   - id, content, layer, memory_type, namespace: direct copy
+        //   - created_at, occurred_at, last_consolidated: same f64 epoch
+        //   - working_strength, core_strength, importance, pinned,
+        //     consolidation_count, source: direct copy
+        //   - attributes: reuse the same metadata JSON
+        //   - superseded_by: '' → NULL (design §5.3 mapping)
+        //   - fts_rowid: claim next value from fts_rowid_counter
+        //
+        // Idempotency: `INSERT OR IGNORE` so re-running add() with
+        // the same id (e.g. via consolidation flows) doesn't error.
+        let next_fts_rowid: i64 = tx.query_row(
+            "UPDATE fts_rowid_counter
+             SET next_value = next_value + 1
+             WHERE singleton = 0
+             RETURNING next_value - 1",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let superseded_by_opt: Option<&str> = record
+            .contradicted_by
+            .as_deref()
+            .filter(|s| !s.is_empty());
+
+        tx.execute(
+            r#"
+            INSERT OR IGNORE INTO nodes (
+                id, node_kind, namespace,
+                layer, memory_type,
+                content, summary, attributes,
+                occurred_at, created_at, updated_at, last_consolidated,
+                working_strength, core_strength, importance,
+                consolidation_count, pinned,
+                source, superseded_by,
+                fts_rowid
+            ) VALUES (
+                ?, 'memory', ?,
+                ?, ?,
+                ?, '', COALESCE(?, '{}'),
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?,
+                ?
+            )
+            "#,
+            params![
+                record.id,
+                namespace,
+                record.layer.to_string(),
+                record.memory_type.to_string(),
+                record.content,
+                metadata_json,
+                record.occurred_at.map(|dt| datetime_to_f64(&dt)),
+                datetime_to_f64(&record.created_at),
+                datetime_to_f64(&record.created_at),
+                record.last_consolidated.map(|dt| datetime_to_f64(&dt)),
+                record.working_strength,
+                record.core_strength,
+                record.importance,
+                record.consolidation_count,
+                record.pinned as i32,
+                record.source,
+                superseded_by_opt,
+                next_fts_rowid,
+            ],
+        )?;
+
         tx.commit()?;
         Ok(())
     }
