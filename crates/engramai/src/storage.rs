@@ -323,6 +323,9 @@ impl Storage {
         // v0.4 unified substrate: nodes_fts + triggers (T07)
         Self::migrate_unified_fts(&conn)?;
 
+        // v0.4 unified substrate: node_embeddings multi-model (T08)
+        Self::migrate_unified_node_embeddings(&conn)?;
+
         Ok(Self { conn })
     }
 
@@ -514,7 +517,44 @@ impl Storage {
         Ok(())
     }
 
-    /// v0.4 unified substrate (T07): create the `nodes_fts` FTS5 virtual table
+    /// v0.4 unified substrate (T08): create the `node_embeddings` multi-model
+    /// extension table per design.md §3.4.
+    ///
+    /// **Role**: 99% of retrieval reads the inlined `nodes.embedding`
+    /// (single model, no JOIN). This table serves the multi-model
+    /// power-user case currently provided by `memory_embeddings` — and
+    /// extends it to *any* node kind (entity / topic / insight / …),
+    /// which legacy `memory_embeddings` could not.
+    ///
+    /// **Schema**:
+    /// - PK `(node_id, model)` — one row per (node × model) pair.
+    /// - `ON DELETE CASCADE` from `nodes(id)` — drop a node and all its
+    ///   alternate-model embeddings vanish too.
+    /// - `idx_node_embeddings_model` — supports "find all nodes embedded
+    ///   under model X" scans during backfill / model migration.
+    ///
+    /// **Additive only** — does not touch existing `memory_embeddings`.
+    /// Phase B backfill (T20) populates this table from `memory_embeddings`.
+    /// Idempotent (GUARD-ss.3) via `CREATE … IF NOT EXISTS`.
+    ///
+    /// T05 (`migrate_unified_nodes`) must run first because of the FK.
+    /// Call site in `Storage::open` enforces this.
+    fn migrate_unified_node_embeddings(conn: &Connection) -> SqlResult<()> {
+        conn.execute_batch(r#"
+            CREATE TABLE IF NOT EXISTS node_embeddings (
+                node_id     TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                model       TEXT NOT NULL,
+                embedding   BLOB NOT NULL,
+                dimensions  INTEGER NOT NULL,
+                created_at  REAL NOT NULL,
+                PRIMARY KEY (node_id, model)
+            );
+            CREATE INDEX IF NOT EXISTS idx_node_embeddings_model
+                ON node_embeddings(model);
+        "#)?;
+        Ok(())
+    }
+
     /// and its three sync triggers per design.md §3.3.
     ///
     /// **Mode**: contentless FTS5 (`content=''`). The canonical text lives in
@@ -6541,5 +6581,126 @@ mod tests {
             )
             .ok();
         assert_eq!(fts_exists.as_deref(), Some("nodes_fts"));
+    }
+
+    // ---------------------------------------------------------------------
+    // v0.4 unified substrate — T08: node_embeddings multi-model extension
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_t08_fresh_db_creates_node_embeddings_table_and_index() {
+        let storage = test_storage();
+
+        // Table exists with the expected columns / PK.
+        let cols: Vec<(String, String, i32)> = storage
+            .conn
+            .prepare("PRAGMA table_info(node_embeddings)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i32>(5)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        // (name, type, pk-index) — PK is composite (node_id, model).
+        let by_name: std::collections::HashMap<_, _> =
+            cols.iter().map(|(n, t, pk)| (n.clone(), (t.clone(), *pk))).collect();
+        for (col, expected_type) in &[
+            ("node_id", "TEXT"),
+            ("model", "TEXT"),
+            ("embedding", "BLOB"),
+            ("dimensions", "INTEGER"),
+            ("created_at", "REAL"),
+        ] {
+            let (ty, _) = by_name.get(*col).unwrap_or_else(|| panic!("missing column {col}"));
+            assert_eq!(ty.to_uppercase(), expected_type.to_uppercase(), "column {col} type");
+        }
+        // Composite PK on (node_id, model): both have non-zero pk index.
+        assert!(by_name.get("node_id").unwrap().1 > 0, "node_id should be PK component");
+        assert!(by_name.get("model").unwrap().1 > 0, "model should be PK component");
+
+        // Index on model column exists.
+        let idx: Option<String> = storage
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master \
+                 WHERE type='index' AND name='idx_node_embeddings_model'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(idx.as_deref(), Some("idx_node_embeddings_model"));
+    }
+
+    #[test]
+    fn test_t08_fk_cascade_delete_drops_embeddings() {
+        let storage = test_storage();
+        // Need foreign keys ON for the cascade test.
+        storage.conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+
+        let _ = insert_minimal_node(&storage.conn, "n1", "irrelevant", "");
+
+        // Insert two embeddings under different models for the same node.
+        for model in &["text-embedding-3-small", "voyage-code-2"] {
+            storage.conn.execute(
+                "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["n1", model, vec![0u8; 16], 4i64, 0.0_f64],
+            ).expect("insert embedding");
+        }
+
+        let before: i64 = storage.conn.query_row(
+            "SELECT COUNT(*) FROM node_embeddings WHERE node_id='n1'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(before, 2);
+
+        // Delete the node → CASCADE removes both embeddings.
+        storage.conn.execute("DELETE FROM nodes WHERE id='n1'", []).unwrap();
+
+        let after: i64 = storage.conn.query_row(
+            "SELECT COUNT(*) FROM node_embeddings WHERE node_id='n1'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(after, 0, "ON DELETE CASCADE should drop embeddings");
+    }
+
+    #[test]
+    fn test_t08_pk_prevents_duplicate_node_model_pair() {
+        let storage = test_storage();
+        let _ = insert_minimal_node(&storage.conn, "n1", "x", "");
+
+        storage.conn.execute(
+            "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
+             VALUES ('n1', 'model-a', ?1, 4, 0.0)",
+            params![vec![0u8; 16]],
+        ).unwrap();
+
+        let dup = storage.conn.execute(
+            "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
+             VALUES ('n1', 'model-a', ?1, 4, 1.0)",
+            params![vec![1u8; 16]],
+        );
+        assert!(dup.is_err(), "duplicate (node_id, model) must be rejected by PK");
+
+        // But a different model under the same node is fine.
+        storage.conn.execute(
+            "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
+             VALUES ('n1', 'model-b', ?1, 4, 2.0)",
+            params![vec![2u8; 16]],
+        ).expect("different model under same node should work");
+    }
+
+    #[test]
+    fn test_t08_idempotent_migration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("t08-idempotent.db");
+
+        { let _ = Storage::new(&path).expect("first open"); }
+        let s2 = Storage::new(&path).expect("re-open is idempotent");
+
+        let tbl: Option<String> = s2.conn.query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='node_embeddings'",
+            [], |r| r.get(0)).ok();
+        assert_eq!(tbl.as_deref(), Some("node_embeddings"));
     }
 }
