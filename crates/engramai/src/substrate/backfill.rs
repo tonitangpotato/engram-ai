@@ -411,3 +411,218 @@ pub fn fetch_backfill_run(
         )
         .optional()
 }
+
+// =====================================================================
+// T20 — backfill memory_embeddings → node_embeddings
+// =====================================================================
+
+/// T20 — backfill `memory_embeddings` rows into `node_embeddings`
+/// (no LLM).
+///
+/// ## Prerequisites
+///
+/// **T19 must have run first.** `node_embeddings.node_id REFERENCES
+/// nodes(id)` is FK-enforced — a memory whose parent `nodes` row is
+/// missing cannot be embedded. The driver detects orphan rows
+/// (memory_id with no nodes row) and counts them as
+/// `rows_skipped_existing` with an explanatory note in the audit row,
+/// rather than failing the whole run. Operators can re-invoke after
+/// running T19 against the missing namespace.
+///
+/// ## Single-pass, no self-FK
+///
+/// Unlike T19, `memory_embeddings` has no self-referential FK, so a
+/// single pass suffices: iterate, project, INSERT OR IGNORE.
+///
+/// ## `created_at` type conversion
+///
+/// `memory_embeddings.created_at` is `TEXT` (RFC3339);
+/// `node_embeddings.created_at` is `REAL` (epoch seconds with
+/// sub-second precision). Parsing is done in the driver, not in the
+/// helper, so the policy for "what to do on parse failure" stays out
+/// of the SQL layer. Current policy: fall back to the legacy row's
+/// position in iteration order with `Utc::now()` — corrupted dates
+/// are rare and operators get an audit entry under `rows_failed=0`
+/// with the count in `notes`. (A stricter operator can post-query
+/// `node_embeddings` for the fallback timestamp to find them.)
+///
+/// ## Namespace filter
+///
+/// `memory_embeddings` has no `namespace` column; the filter is
+/// applied via JOIN to `memories.namespace`. Operators get the same
+/// staged-rollout option as T19.
+///
+/// ## Idempotency
+///
+/// `INSERT OR IGNORE` on `(node_id, model)`. Re-running the driver
+/// after a partial run completes the work without duplicating rows.
+pub fn backfill_embeddings_to_node_embeddings(
+    storage: &mut Storage,
+    namespace: Option<&str>,
+) -> Result<BackfillRun, rusqlite::Error> {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = utc_now_f64();
+
+    let mut rows_failed_parse: u64 = 0;
+    let mut rows_skipped_missing_node: u64 = 0;
+
+    let notes_open = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_embeddings_to_node_embeddings",
+        "design_ref": "v04-unified-substrate §5.3 / T20",
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        INSERT INTO backfill_runs (
+            run_id, legacy_table, rows_read, rows_inserted,
+            rows_skipped_existing, rows_failed,
+            started_at, finished_at, notes
+        ) VALUES (?, 'memory_embeddings', 0, 0, 0, 0, ?, NULL, ?)
+        "#,
+        params![run_id, started_at, notes_open],
+    )?;
+
+    // -----------------------------------------------------------------
+    // Hydrate rows into memory.
+    //
+    // Same memory-scaling trade-off as T19 (see that driver's comment).
+    // Embeddings are larger per row (BLOB ~6 KB at d=1536, f32) so the
+    // ~24k row scale = ~150 MB. That's the upper edge of what we want
+    // to hold in RAM. If this grows, switch to a streaming read
+    // connection — same fix as T19.
+    // -----------------------------------------------------------------
+    let conn = storage.conn();
+    let select_sql = if namespace.is_some() {
+        r#"
+        SELECT e.memory_id, e.model, e.embedding, e.dimensions, e.created_at
+        FROM memory_embeddings e
+        INNER JOIN memories m ON m.id = e.memory_id
+        WHERE m.namespace = ?
+        "#
+    } else {
+        r#"
+        SELECT memory_id, model, embedding, dimensions, created_at
+        FROM memory_embeddings
+        "#
+    };
+    let mut stmt = conn.prepare(select_sql)?;
+    type EmbRow = (String, String, Vec<u8>, i64, String);
+    let map_row = |row: &rusqlite::Row| -> Result<EmbRow, rusqlite::Error> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    };
+    let rows: Vec<EmbRow> = if let Some(ns) = namespace {
+        stmt.query_map(params![ns], map_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map([], map_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    drop(stmt);
+
+    let mut rows_read: u64 = 0;
+    let mut rows_inserted: u64 = 0;
+    let mut rows_skipped_existing: u64 = 0;
+
+    let conn = storage.conn();
+    let tx = conn.unchecked_transaction()?;
+    for (memory_id, model, embedding, dimensions, created_at_text) in &rows {
+        rows_read += 1;
+
+        // Skip rows whose parent `nodes` row doesn't exist — T19 must
+        // run first or the FK INSERT will fail. We pre-check rather
+        // than relying on the FK error so we can report cleanly.
+        let node_exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id = ? AND node_kind='memory'",
+            params![memory_id],
+            |r| r.get(0),
+        )?;
+        if node_exists == 0 {
+            rows_skipped_missing_node += 1;
+            // Count toward skipped_existing semantically (not failed):
+            // operator re-runs T19 + T20 and the row lands.
+            rows_skipped_existing += 1;
+            continue;
+        }
+
+        // Parse RFC3339 created_at → epoch f64. Fallback to now() on
+        // parse failure (rare for valid legacy data).
+        let created_at_epoch: f64 =
+            match chrono::DateTime::parse_from_rfc3339(created_at_text) {
+                Ok(dt) => {
+                    let dt_utc = dt.with_timezone(&chrono::Utc);
+                    dt_utc.timestamp() as f64
+                        + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9)
+                }
+                Err(_) => {
+                    rows_failed_parse += 1;
+                    utc_now_f64()
+                }
+            };
+
+        let inserted = Storage::insert_node_embedding_row(
+            &tx,
+            memory_id,
+            model,
+            embedding,
+            *dimensions,
+            created_at_epoch,
+        )?;
+        if inserted {
+            rows_inserted += 1;
+        } else {
+            rows_skipped_existing += 1;
+        }
+    }
+    tx.commit()?;
+
+    // -----------------------------------------------------------------
+    // Close the audit row. Embed the parse-failure / missing-node
+    // counts in the `notes` JSON for operator visibility.
+    // -----------------------------------------------------------------
+    let finished_at = utc_now_f64();
+    let notes_closed = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_embeddings_to_node_embeddings",
+        "design_ref": "v04-unified-substrate §5.3 / T20",
+        "rows_skipped_missing_node": rows_skipped_missing_node,
+        "rows_failed_parse_used_now": rows_failed_parse,
+    })
+    .to_string();
+    let conn = storage.conn();
+    conn.execute(
+        r#"
+        UPDATE backfill_runs
+        SET rows_read = ?, rows_inserted = ?, rows_skipped_existing = ?,
+            rows_failed = 0, finished_at = ?, notes = ?
+        WHERE run_id = ?
+        "#,
+        params![
+            rows_read as i64,
+            rows_inserted as i64,
+            rows_skipped_existing as i64,
+            finished_at,
+            notes_closed,
+            run_id,
+        ],
+    )?;
+
+    let run = BackfillRun {
+        run_id,
+        legacy_table: "memory_embeddings".into(),
+        rows_read,
+        rows_inserted,
+        rows_skipped_existing,
+        rows_failed: 0,
+    };
+    run.assert_counter_invariant();
+    Ok(run)
+}
+

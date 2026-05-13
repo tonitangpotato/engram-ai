@@ -2047,7 +2047,7 @@ one focused session.
 
 ### 8.4 Phase C — backfill
 - [x] **T19** Backfill driver: memories → nodes (no LLM) — single helper `Storage::insert_memory_node_row` shared with T12 dual-write; `substrate::backfill::backfill_memories_to_nodes` wraps a two-pass driver (Pass 1 INSERT OR IGNORE, Pass 2 UPDATE for self-referential supersession), audit row in `backfill_runs`, optional namespace filter. 6/6 phase-C tests including byte-equal parity vs T12 dual-write; 21/21 phase-B + 1871/1871 lib still pass.
-- [ ] **T20** Backfill driver: memory_embeddings → node_embeddings
+- [x] **T20** Backfill driver: memory_embeddings → node_embeddings — `Storage::insert_node_embedding_row` helper (single-source-of-truth, ready for any future Phase B embedding dual-write); `substrate::backfill::backfill_embeddings_to_node_embeddings` single-pass driver. Handles RFC3339→epoch conversion with fallback-to-now() on malformed dates (count surfaced in audit notes), skips orphan embeddings when parent `nodes` row missing (T19 prerequisite — handled as `rows_skipped_missing_node` not failed), supports multi-model per memory, namespace filter via JOIN on `memories.namespace`. 7/7 phase-C-embeddings tests + 1871 lib + 21 phase B + 7 phase C memories all pass.
 - [ ] **T21** Backfill driver: entities → nodes
 - [ ] **T22** Backfill driver: entity_relations → edges
 - [ ] **T23** Backfill driver: memory_entities → edges

@@ -1636,6 +1636,62 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// Project a `(memory_id, model, embedding, dimensions,
+    /// created_at_rfc3339)` row from the legacy `memory_embeddings`
+    /// table into the unified `node_embeddings` table (T20 / design
+    /// §5.3).
+    ///
+    /// ## Why a helper, not duplicated SQL
+    ///
+    /// Phase B does not yet dual-write embeddings — there is only
+    /// the backfill caller (T20). The helper exists nevertheless so
+    /// that **when** Phase B grows an embedding dual-write path
+    /// (likely as part of follow-up work to keep `node_embeddings`
+    /// live), there is exactly one place that defines the legacy →
+    /// unified embedding row shape. T17-style parity tests can pin
+    /// the byte-equal invariant the moment a second caller appears.
+    ///
+    /// ## Field mapping
+    ///
+    ///   - `memory_id → node_id`: direct copy. The legacy FK to
+    ///     `memories(id)` projects 1:1 to the unified FK to
+    ///     `nodes(id)`; this means **T20 requires T19 to have run
+    ///     first** so the parent `nodes` row exists.
+    ///   - `model, embedding, dimensions`: direct copy (BLOB is
+    ///     byte-identical between tables).
+    ///   - `created_at`: RFC3339 TEXT → epoch `REAL` via
+    ///     `chrono::DateTime::parse_from_rfc3339`. If parsing fails
+    ///     (corrupt legacy data), the caller decides whether to skip
+    ///     the row or fall back to `Utc::now()`. The helper itself
+    ///     accepts a pre-converted `f64` to keep the policy choice
+    ///     out of the SQL layer.
+    ///
+    /// ## Idempotency
+    ///
+    /// `INSERT OR IGNORE` on `(node_id, model)`: re-inserting the
+    /// same pair is a no-op. The backfill driver relies on this for
+    /// re-run safety, identical to T19 semantics.
+    ///
+    /// Returns `true` iff a new row was inserted.
+    pub(crate) fn insert_node_embedding_row(
+        tx: &rusqlite::Transaction<'_>,
+        node_id: &str,
+        model: &str,
+        embedding: &[u8],
+        dimensions: i64,
+        created_at_epoch: f64,
+    ) -> Result<bool, rusqlite::Error> {
+        let rows = tx.execute(
+            r#"
+            INSERT OR IGNORE INTO node_embeddings
+                (node_id, model, embedding, dimensions, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+            params![node_id, model, embedding, dimensions, created_at_epoch],
+        )?;
+        Ok(rows > 0)
+    }
+
     /// Get a memory by ID.
     pub fn get(&self, id: &str) -> Result<Option<MemoryRecord>, rusqlite::Error> {
         fetch_memory_record(&self.conn, id)
