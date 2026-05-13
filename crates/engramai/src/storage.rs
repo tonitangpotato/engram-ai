@@ -1787,6 +1787,110 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// Project a legacy `entity_relations` row into the unified
+    /// `edges` table as a `edge_kind='structural'` row (T22 /
+    /// design §5.3).
+    ///
+    /// ## Why a separate helper from T13's `dual_write_edge_to_edges`
+    ///
+    /// T13's helper takes a `graph::edge::Edge` struct from the
+    /// resolution pipeline and hardcodes `edge_kind='assertion'`.
+    /// T22 backfills the legacy `entity_relations` table whose
+    /// rows correspond to a different ontological category
+    /// (`edge_kind='structural'` — "X has-part Y" type facts
+    /// recorded directly rather than asserted by an
+    /// utterance-resolution pipeline). The input shape is also
+    /// thinner: just (id, source_id, target_id, relation,
+    /// confidence, source, namespace, created_at, metadata).
+    ///
+    /// Same single-source-of-truth philosophy as the entity
+    /// helper: if Phase B ever grows a path that writes
+    /// legacy-shaped structural edges, it should call this helper.
+    ///
+    /// ## Field mapping (design §5.3)
+    ///
+    ///   - `entity_relations.id → edges.id` (TEXT, no conversion).
+    ///   - `source_id, target_id → edges.source_id, edges.target_id`
+    ///     (FK to `nodes(id)`).
+    ///   - `relation → edges.predicate` (literal copy).
+    ///   - `confidence → edges.confidence`.
+    ///   - `namespace, created_at`: direct copy. `recorded_at` and
+    ///     `updated_at` both fall back to `created_at` — legacy
+    ///     entity_relations has no separate fields.
+    ///   - `metadata` (legacy JSON object) + `source` (free text
+    ///     column): both merged into `edges.attributes` by the
+    ///     CALLER. This helper just takes a pre-built
+    ///     `attributes_json` string.
+    ///   - `edge_kind='structural'`, `predicate_kind='canonical'`
+    ///     are constants set here. Other schema columns
+    ///     (weight=1.0, activation=0.0, valid_from=NULL,
+    ///     resolution_method='direct', etc.) use schema defaults.
+    ///
+    /// ## FK requirements
+    ///
+    /// `edges.source_id` and `edges.target_id` both have ON DELETE
+    /// RESTRICT FKs into `nodes(id)`. The CALLER must verify the
+    /// endpoint nodes exist before invoking the helper, otherwise
+    /// SQLite returns a constraint failure and the entire tx fails.
+    /// T22's driver checks via `EXISTS` and skips dangling endpoints
+    /// (counted in audit notes for recovery).
+    ///
+    /// ## Idempotency
+    ///
+    /// `INSERT OR IGNORE` on `edges(id)`. Re-running yields
+    /// `Ok(false)` on already-projected rows. Pass 2 merge
+    /// semantics for attributes are driver-side, not helper-side.
+    ///
+    /// Returns `true` iff a row was newly inserted.
+    pub(crate) fn insert_structural_edge_row(
+        tx: &rusqlite::Transaction<'_>,
+        id: &str,
+        source_id: &str,
+        target_id: &str,
+        predicate: &str,
+        attributes_json: &str,
+        confidence: f64,
+        namespace: &str,
+        created_at: f64,
+    ) -> Result<bool, rusqlite::Error> {
+        let rows = tx.execute(
+            r#"
+            INSERT OR IGNORE INTO edges (
+                id,
+                source_id, target_id, target_literal,
+                edge_kind, predicate_kind, predicate,
+                summary, attributes,
+                confidence,
+                recorded_at,
+                resolution_method,
+                namespace, created_at, updated_at
+            ) VALUES (
+                ?,
+                ?, ?, NULL,
+                'structural', 'canonical', ?,
+                '', ?,
+                ?,
+                ?,
+                'direct',
+                ?, ?, ?
+            )
+            "#,
+            params![
+                id,
+                source_id,
+                target_id,
+                predicate,
+                attributes_json,
+                confidence,
+                created_at,
+                namespace,
+                created_at,
+                created_at,
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
     /// Get a memory by ID.
     pub fn get(&self, id: &str) -> Result<Option<MemoryRecord>, rusqlite::Error> {
         fetch_memory_record(&self.conn, id)

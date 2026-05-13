@@ -887,3 +887,300 @@ pub fn backfill_entities_to_nodes(
     Ok(run)
 }
 
+// =====================================================================
+// T22 — backfill entity_relations → edges(kind=structural)
+// =====================================================================
+
+/// T22 — backfill `entity_relations` rows into
+/// `edges(edge_kind='structural')` (no LLM).
+///
+/// ## Why this is structurally similar to T21 but not unified
+///
+/// T22 and T21 share the same Pass-1 + Pass-2-merge contract for
+/// `attributes` JSON, but they project DIFFERENT legacy tables
+/// into DIFFERENT target tables with DIFFERENT FK requirements:
+///
+///   - T21: legacy `entities` → `nodes`. No FK requirements
+///     beyond unique id.
+///   - T22: legacy `entity_relations` → `edges`. Requires BOTH
+///     endpoints (`source_id`, `target_id`) to already exist in
+///     `nodes`. So T22 has a **dangling-endpoint guard** that T21
+///     doesn't need.
+///
+/// Trying to merge them into a single generic driver would force
+/// a config-soup API; better to keep the per-table drivers
+/// readable and accept ~30 lines of structural duplication.
+///
+/// ## Two-pass strategy
+///
+///   - Pass 1: INSERT OR IGNORE every legacy `entity_relations`
+///     row, projecting `relation → predicate`, `confidence`,
+///     `metadata` JSON merged with `source` free-text into
+///     `edges.attributes`. Endpoints are checked via `EXISTS`
+///     before insertion — dangling endpoints are SKIPPED (not
+///     failed) and counted in audit notes. Recovery: run T21 (or
+///     a backfill of upstream entities), then re-run T22.
+///   - Pass 2 (inline, same tx): for rows where INSERT OR IGNORE
+///     was a no-op (the edge already exists, e.g. T13
+///     resolution-pipeline path wrote it), MERGE the legacy
+///     attributes into the existing row's attributes with
+///     **existing-wins** semantics (same polarity as T21,
+///     §5.3 contract).
+///
+/// ## FK guard rationale (R2.1-style)
+///
+/// `edges.source_id` and `edges.target_id` have ON DELETE
+/// RESTRICT FKs to `nodes(id)`. If T22 runs on a namespace before
+/// T21 has projected the entities in that namespace (or before
+/// the resolution pipeline has materialized the endpoints in
+/// `nodes`), an unguarded INSERT would fail the entire tx. The
+/// `EXISTS` pre-check is a defence against partial-Phase-C
+/// state — same pattern T19 R2.1 used for cross-namespace
+/// supersession targets.
+///
+/// ## Field mapping (design §5.3)
+///
+///   - `entity_relations.id → edges.id`
+///   - `source_id, target_id → edges.source_id, edges.target_id`
+///   - `relation → edges.predicate`
+///   - `confidence → edges.confidence`
+///   - `metadata` (JSON object) + `source` (free text) → merged
+///     into `edges.attributes`. The `source` column lands as
+///     `attributes.source`. Legacy `metadata` keys can NOT shadow
+///     `attributes.source` (existing-wins, same fix as T21
+///     FINDING-1).
+///   - `namespace, created_at`: direct copy.
+///   - `recorded_at = updated_at = created_at` (legacy has no
+///     separate fields).
+///   - `edge_kind = 'structural'`, `predicate_kind = 'canonical'`.
+pub fn backfill_entity_relations_to_edges(
+    storage: &mut Storage,
+    namespace: Option<&str>,
+) -> Result<BackfillRun, rusqlite::Error> {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = utc_now_f64();
+
+    let notes_open = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_entity_relations_to_edges",
+        "design_ref": "v04-unified-substrate §5.3 / T22",
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        INSERT INTO backfill_runs (
+            run_id, legacy_table, rows_read, rows_inserted,
+            rows_skipped_existing, rows_failed,
+            started_at, finished_at, notes
+        ) VALUES (?, 'entity_relations', 0, 0, 0, 0, ?, NULL, ?)
+        "#,
+        params![run_id, started_at, notes_open],
+    )?;
+
+    // -----------------------------------------------------------------
+    // Hydrate legacy rows. 6531 rows at design-targeted scale.
+    // -----------------------------------------------------------------
+    let conn = storage.conn();
+    let select_sql = if namespace.is_some() {
+        "SELECT id, source_id, target_id, relation, confidence, source, namespace, \
+         created_at, metadata FROM entity_relations WHERE namespace = ?"
+    } else {
+        "SELECT id, source_id, target_id, relation, confidence, source, namespace, \
+         created_at, metadata FROM entity_relations"
+    };
+    let mut stmt = conn.prepare(select_sql)?;
+    type RelRow = (
+        String,         // id
+        String,         // source_id
+        String,         // target_id
+        String,         // relation
+        f64,            // confidence
+        Option<String>, // source (free text)
+        String,         // namespace
+        f64,            // created_at
+        Option<String>, // metadata JSON
+    );
+    let map_row = |row: &rusqlite::Row| -> Result<RelRow, rusqlite::Error> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+            row.get(7)?,
+            row.get(8)?,
+        ))
+    };
+    let rows: Vec<RelRow> = if let Some(ns) = namespace {
+        stmt.query_map(params![ns], map_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map([], map_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    drop(stmt);
+
+    let mut rows_read: u64 = 0;
+    let mut rows_inserted: u64 = 0;
+    let mut rows_skipped_existing: u64 = 0;
+    let mut rows_skipped_dangling_endpoint: u64 = 0;
+    let mut rows_metadata_merged: u64 = 0;
+    let mut rows_malformed_metadata: u64 = 0;
+    let mut rows_existing_kind_mismatch: u64 = 0;
+
+    let conn = storage.conn();
+    let tx = conn.unchecked_transaction()?;
+
+    for (id, source_id, target_id, relation, confidence, source_text, ns, created_at, metadata_text)
+        in &rows
+    {
+        rows_read += 1;
+
+        // ---------------------------------------------------------
+        // FK guard: both endpoints must exist in nodes.
+        // ---------------------------------------------------------
+        let endpoints_present: i64 = tx.query_row(
+            "SELECT (CASE WHEN
+                EXISTS(SELECT 1 FROM nodes WHERE id = ?)
+                AND EXISTS(SELECT 1 FROM nodes WHERE id = ?)
+                THEN 1 ELSE 0 END)",
+            params![source_id, target_id],
+            |r| r.get(0),
+        )?;
+        if endpoints_present == 0 {
+            rows_skipped_dangling_endpoint += 1;
+            // Don't bump rows_skipped_existing — this row never had
+            // a chance to be inserted, so it's a "deferred" row not
+            // a "duplicate" row. Counter invariant treats it as
+            // skipped-existing for tally purposes (see closing of
+            // run).
+            continue;
+        }
+
+        // ---------------------------------------------------------
+        // Build projected attributes per §5.3:
+        //   1. Seed with {"source": <free-text>} if source NOT NULL.
+        //   2. Merge metadata keys in, existing-wins (so a metadata
+        //      key named "source" CANNOT shadow the column).
+        // ---------------------------------------------------------
+        let mut projected_attrs = serde_json::Map::new();
+        if let Some(src) = source_text.as_deref() {
+            projected_attrs.insert(
+                "source".into(),
+                serde_json::Value::String(src.to_string()),
+            );
+        }
+        if let Some(meta_str) = metadata_text.as_deref() {
+            match serde_json::from_str::<serde_json::Value>(meta_str) {
+                Ok(serde_json::Value::Object(map)) => {
+                    for (k, v) in map {
+                        projected_attrs.entry(k).or_insert(v);
+                    }
+                }
+                Ok(_) | Err(_) => {
+                    rows_malformed_metadata += 1;
+                }
+            }
+        }
+        let projected_attrs_json =
+            serde_json::to_string(&serde_json::Value::Object(projected_attrs))
+                .expect("serializing a serde_json::Map cannot fail");
+
+        let inserted = Storage::insert_structural_edge_row(
+            &tx,
+            id,
+            source_id,
+            target_id,
+            relation,
+            &projected_attrs_json,
+            *confidence,
+            ns,
+            *created_at,
+        )?;
+        if inserted {
+            rows_inserted += 1;
+        } else {
+            rows_skipped_existing += 1;
+
+            // Pass 2 (inline): the edge id already exists. Three
+            // sub-cases (same shape as T21 Pass 2):
+            //   (a) edge_kind='structural' → merge attributes.
+            //   (b) edge_kind is something else (assertion,
+            //       associative, provenance) → an id collision;
+            //       refuse to merge, count in audit notes.
+            //   (c) row missing → impossible inside same tx.
+            let existing: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT edge_kind, attributes FROM edges WHERE id = ?",
+                    params![id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .ok();
+            if let Some((existing_kind, existing_attrs)) = existing {
+                if existing_kind == "structural" {
+                    let merged = merge_attributes_existing_wins(
+                        &existing_attrs,
+                        &projected_attrs_json,
+                    );
+                    tx.execute(
+                        "UPDATE edges SET attributes = ?, updated_at = ? WHERE id = ?",
+                        params![merged, utc_now_f64(), id],
+                    )?;
+                    rows_metadata_merged += 1;
+                } else {
+                    rows_existing_kind_mismatch += 1;
+                }
+            }
+        }
+    }
+    tx.commit()?;
+
+    let finished_at = utc_now_f64();
+    let notes_closed = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_entity_relations_to_edges",
+        "design_ref": "v04-unified-substrate §5.3 / T22",
+        "rows_metadata_merged": rows_metadata_merged,
+        "rows_malformed_metadata": rows_malformed_metadata,
+        "rows_skipped_dangling_endpoint": rows_skipped_dangling_endpoint,
+        "rows_existing_kind_mismatch": rows_existing_kind_mismatch,
+    })
+    .to_string();
+
+    // Counter invariant fold: dangling-endpoint rows are counted
+    // as "skipped_existing" for the tally only (they conceptually
+    // failed-and-deferred, but the BackfillRun struct only has
+    // three skip slots). Detailed breakdown lives in notes JSON.
+    let conn = storage.conn();
+    conn.execute(
+        r#"
+        UPDATE backfill_runs
+        SET rows_read = ?, rows_inserted = ?, rows_skipped_existing = ?,
+            rows_failed = 0, finished_at = ?, notes = ?
+        WHERE run_id = ?
+        "#,
+        params![
+            rows_read as i64,
+            rows_inserted as i64,
+            (rows_skipped_existing + rows_skipped_dangling_endpoint) as i64,
+            finished_at,
+            notes_closed,
+            run_id,
+        ],
+    )?;
+
+    let run = BackfillRun {
+        run_id,
+        legacy_table: "entity_relations".into(),
+        rows_read,
+        rows_inserted,
+        rows_skipped_existing: rows_skipped_existing + rows_skipped_dangling_endpoint,
+        rows_failed: 0,
+    };
+    run.assert_counter_invariant();
+    Ok(run)
+}
+
