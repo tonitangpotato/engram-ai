@@ -1,11 +1,16 @@
 ---
 id: ISS-115
-title: "Phase B dual-DELETE gap — hard_delete_cascade only deletes legacy tables, not unified nodes/edges"
-status: open
+title: Phase B dual-DELETE gap — hard_delete_cascade only deletes legacy tables, not unified nodes/edges
+status: done
 priority: P1
 severity: degradation
-labels: [v04-unified-substrate, phase-b, dual-write, root-fix-pending]
+labels:
+- v04-unified-substrate
+- phase-b
+- dual-write
+- root-fix-pending
 created: 2026-05-13
+resolved: 2026-05-13
 ---
 
 # Phase B dual-DELETE gap
@@ -120,3 +125,84 @@ but tracked here.
   ones)
 - design.md §5.4 T29 (Phase D read-switch — discovers the gap)
 - Commit `ac1c9f0` + T29.3 commit (this surfaces the issue)
+
+---
+
+## Resolution (2026-05-13)
+
+Fixed in single commit covering `Storage::hard_delete_cascade` and
+`Storage::delete_all_embeddings`. Both methods now run in a single
+SQLite transaction and clear the matching unified rows symmetrically
+with the legacy rows.
+
+### What changed
+
+- `hard_delete_cascade` (`&self` → `&mut self`): single tx wraps both
+  the legacy cascade (5 tables + memories_fts + memories) and the
+  unified cascade in this order:
+    1. `node_embeddings WHERE node_id = ?`            (T20 mirror)
+    2. `edges` WHERE edge_kind='associative' AND
+       (source_id=? OR target_id=?)                   (T14/T24 mirror)
+    3. `edges` WHERE source_id=? AND
+       ((edge_kind='provenance' AND predicate='mentions') OR
+        (edge_kind='structural' AND
+            predicate IN ('subject_of','object_of'))) (T23 mirror)
+    4. `edges` WHERE edge_kind='provenance' AND
+       predicate='derived_from' AND
+       (source_id=? OR target_id=?)                   (T16/T25 mirror)
+    5. `nodes WHERE id = ?`                           (T12/T19 mirror)
+  
+  Order matters: `edges.source_id`/`target_id` are
+  `REFERENCES nodes(id) ON DELETE RESTRICT`, so we must clear all
+  edges that touch `id` before the parent nodes row. `nodes_fts` is
+  cleaned automatically by the `nodes_fts_ad` trigger.
+
+- `delete_all_embeddings` (was 1 DELETE in autocommit): now wraps both
+  `memory_embeddings` and `node_embeddings` DELETEs in one
+  transaction. Matches `store_embedding`'s T29.3 dual-write
+  semantics.
+
+### Tests added (`storage::tests`)
+
+- `iss115_hard_delete_cascade_clears_legacy_and_unified` — end-to-end
+  with full legacy + unified row set; asserts both sides empty after
+  one call and that both legacy and unified `get_embedding` readers
+  return `None`.
+- `iss115_hard_delete_cascade_does_not_touch_unrelated_edges` —
+  scoping guard; an edge between two other memories survives the
+  delete.
+- `iss115_delete_all_embeddings_dualizes_and_leaves_nodes_intact` —
+  both embedding tables empty for the memory; parent `memories` /
+  `nodes` rows + non-embedding edges survive.
+- `iss115_hard_delete_cascade_is_idempotent` — second call on the
+  same id and a call on a never-seen id both succeed without raising.
+
+### Out of scope (separate issues)
+
+- **dual-WRITE gaps**: `link_memory_entity` (5 prod call sites in
+  `memory.rs`) writes only to `memory_entities`, not to `edges`.
+  `upsert_entity_relation` similarly writes only to
+  `entity_relations`. Live entity writes via these APIs leave the
+  unified `edges` table empty until T21/T22 backfill runs. This is a
+  pre-existing Phase B writer asymmetry; Phase D entity read-switch
+  (T29.5+) will need either:
+    - a live dual-WRITE path on these helpers, or
+    - a documented rebuild-then-switch ordering where backfill is
+      mandatory before the read flag flips for entities.
+
+  Filing a separate issue if T29.5 hits it; not blocking ISS-115
+  closure since dual-DELETE for `memory_entities` correctly clears
+  any edges that *do* exist (from backfill or future dual-write).
+
+### Verification
+
+- 1902/1902 lib pass (+4 vs pre-fix baseline)
+- 21/21 v04_phase_b_dual_write
+- 42/42 v04_phase_c_verifier
+- 7×backfill drivers all green
+- 36/36 lifecycle (heavy `hard_delete_cascade` users — merge/dedup
+  paths) unchanged
+
+ISS-115 ordering goal met: dual-DELETE landed before T29.4 Hebbian
+read-switch, so the asymmetry doesn't compound across additional
+read paths.

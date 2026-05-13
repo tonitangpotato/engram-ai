@@ -3253,23 +3253,107 @@ impl Storage {
         Ok(())
     }
 
-    /// Hard delete with full cascade across all related tables.
-    pub fn hard_delete_cascade(&self, id: &str) -> Result<(), rusqlite::Error> {
-        // Delete from all related tables first
-        self.conn.execute("DELETE FROM memory_embeddings WHERE memory_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM access_log WHERE memory_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM hebbian_links WHERE source_id = ?1 OR target_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM memory_entities WHERE memory_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM synthesis_provenance WHERE source_id = ?1 OR insight_id = ?1", params![id])?;
-        // FTS cleanup
-        let rowid: Result<i64, _> = self.conn.query_row(
-            "SELECT rowid FROM memories WHERE id = ?", params![id], |row| row.get(0),
+    /// Hard delete a memory and every dependent row across both the
+    /// legacy schema and the v0.4 unified substrate.
+    ///
+    /// # What this deletes
+    ///
+    /// Legacy tables (table-of-record before Phase D):
+    /// - `memory_embeddings WHERE memory_id = ?`
+    /// - `access_log       WHERE memory_id = ?` (no unified counterpart)
+    /// - `hebbian_links    WHERE source_id = ? OR target_id = ?`
+    /// - `memory_entities  WHERE memory_id = ?`
+    /// - `synthesis_provenance WHERE source_id = ? OR insight_id = ?`
+    /// - `memories_fts` (via rowid lookup)
+    /// - `memories WHERE id = ?`
+    ///
+    /// Unified substrate (closes ISS-115 — Phase B dual-WRITE writers
+    /// from T13–T16 had no symmetric dual-DELETE story, so before
+    /// this method these rows leaked into Phase D unified reads
+    /// after a hard-delete):
+    /// - `node_embeddings WHERE node_id = ?`  (T20 / T29.3 mirror)
+    /// - `edges WHERE edge_kind = 'associative' AND
+    ///        (source_id = ? OR target_id = ?)`  (T14 / T24 mirror)
+    /// - `edges WHERE source_id = ? AND
+    ///        ((edge_kind = 'provenance'  AND predicate = 'mentions') OR
+    ///         (edge_kind = 'structural' AND
+    ///            predicate IN ('subject_of', 'object_of')))`
+    ///   (T23 mirror — the three role-splits memory_entities maps to)
+    /// - `edges WHERE edge_kind = 'provenance' AND
+    ///        predicate = 'derived_from' AND
+    ///        (source_id = ? OR target_id = ?)`  (T16 / T25 mirror)
+    /// - `nodes WHERE id = ?`  (T12 / T19 mirror — also cascades
+    ///   `nodes_fts` via trigger and would cascade `node_embeddings`
+    ///   via `ON DELETE CASCADE`, but we delete explicitly above to
+    ///   keep dual-DELETE one-for-one with dual-WRITE)
+    ///
+    /// # Order matters
+    ///
+    /// `edges.source_id` / `edges.target_id` are `REFERENCES nodes(id)
+    /// ON DELETE RESTRICT`. Deleting `nodes` before clearing every
+    /// edge that touches `id` would raise a FK violation. The
+    /// sequence below clears dependents first, then the parent rows
+    /// on each side, matching the legacy ordering one-for-one.
+    ///
+    /// # Atomicity
+    ///
+    /// All statements share a single SQLite transaction. The previous
+    /// implementation ran each `execute` in autocommit mode, so a
+    /// FK violation mid-cascade could leave half-deleted state. The
+    /// transaction here also gives the rusqlite `ON DELETE RESTRICT`
+    /// checks a consistent view of the row set.
+    pub fn hard_delete_cascade(&mut self, id: &str) -> Result<(), rusqlite::Error> {
+        let tx = self.conn.transaction()?;
+
+        // --- Legacy side: clear dependents first ---
+        tx.execute("DELETE FROM memory_embeddings WHERE memory_id = ?1", params![id])?;
+        tx.execute("DELETE FROM access_log WHERE memory_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM hebbian_links WHERE source_id = ?1 OR target_id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM memory_entities WHERE memory_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM synthesis_provenance WHERE source_id = ?1 OR insight_id = ?1",
+            params![id],
+        )?;
+        // memories_fts cleanup must come before DELETE FROM memories
+        // because the rowid lookup reads `memories`.
+        let rowid: Result<i64, _> = tx.query_row(
+            "SELECT rowid FROM memories WHERE id = ?",
+            params![id],
+            |row| row.get(0),
         );
         if let Ok(rowid) = rowid {
-            let _ = self.conn.execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]);
+            let _ = tx.execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]);
         }
-        // Finally the memory itself
-        self.conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+
+        // --- Unified side: same shape, same order (clears ISS-115) ---
+        tx.execute("DELETE FROM node_embeddings WHERE node_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM edges WHERE edge_kind = 'associative' \
+             AND (source_id = ?1 OR target_id = ?1)",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM edges WHERE source_id = ?1 AND ( \
+                 (edge_kind = 'provenance' AND predicate = 'mentions') OR \
+                 (edge_kind = 'structural' AND predicate IN ('subject_of', 'object_of')) \
+             )",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM edges WHERE edge_kind = 'provenance' \
+             AND predicate = 'derived_from' \
+             AND (source_id = ?1 OR target_id = ?1)",
+            params![id],
+        )?;
+        // `nodes_fts` is contentless-FTS5 maintained by AFTER DELETE
+        // trigger `nodes_fts_ad` — no explicit row-removal needed.
+        tx.execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -3327,11 +3411,23 @@ impl Storage {
     }
     
     /// Delete all embeddings for a memory (all models).
+    ///
+    /// Mirrors `store_embedding`'s dual-write: every legacy
+    /// `memory_embeddings` row is paired with a `node_embeddings`
+    /// row keyed by the same id, so both sides must be cleared
+    /// atomically. See ISS-115 for the broader Phase B dual-DELETE
+    /// closure.
     pub fn delete_all_embeddings(&mut self, memory_id: &str) -> Result<(), rusqlite::Error> {
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "DELETE FROM memory_embeddings WHERE memory_id = ?",
             params![memory_id],
         )?;
+        tx.execute(
+            "DELETE FROM node_embeddings WHERE node_id = ?",
+            params![memory_id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
     
@@ -8374,5 +8470,280 @@ mod tests {
         // not nodes.
         let stats = unified.embedding_stats().unwrap();
         assert_eq!(stats.embedded_count, 1);
+    }
+
+    // =============================================================
+    // ISS-115 — Phase B dual-DELETE closure.
+    //
+    // Phase B (T12–T16) shipped dual-WRITE writers but no dual-DELETE.
+    // `hard_delete_cascade` and `delete_all_embeddings` now clear
+    // both legacy and unified tables atomically in one transaction.
+    // These tests pin the contract per table.
+    // =============================================================
+
+    /// Helper: inject a fully-populated unified row set for one memory
+    /// id, simulating "as if every Phase B dual-WRITE and Phase C
+    /// backfill had run." Used to test that dual-DELETE clears all of
+    /// them. Tests do not rely on any specific live dual-WRITE writer
+    /// existing for entities/hebbian/etc — they inject directly via
+    /// `conn.execute`. This decouples the dual-DELETE contract from
+    /// the (still-evolving) set of live dual-WRITE writers.
+    fn iss115_seed_unified_rows_for_memory(s: &mut Storage, id: &str) {
+        let t = now_f64();
+        // node_embeddings (T20 mirror): assume store_embedding already
+        // dual-wrote, OR inject directly. Note: the parent `nodes`
+        // row already exists from `Storage::add`'s T12 dual-write.
+        s.conn.execute(
+            "INSERT OR REPLACE INTO node_embeddings (node_id, model, embedding, dimensions, created_at) \
+             VALUES (?, 'test/model', ?, 4, ?)",
+            params![id, vec![0u8; 16], t],
+        ).unwrap();
+
+        // Inject a second memory node so we have a valid edge target.
+        s.conn.execute(
+            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+             VALUES ('peer-1', 'memory', 'default', '', ?, ?) \
+             ON CONFLICT(id) DO NOTHING",
+            params![t, t],
+        ).unwrap();
+        // Entity node for memory_entities mirror.
+        s.conn.execute(
+            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+             VALUES ('ent-1', 'entity', 'default', '', ?, ?) \
+             ON CONFLICT(id) DO NOTHING",
+            params![t, t],
+        ).unwrap();
+
+        // edges, associative (T14/T24 mirror — hebbian).
+        s.conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
+             VALUES ('e-assoc-1', ?, 'peer-1', 'associative', 'co_activated', ?, ?, ?)",
+            params![id, t, t, t],
+        ).unwrap();
+        // edges, provenance/mentions (T23 mirror — memory_entities role='mention').
+        s.conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
+             VALUES ('e-mention-1', ?, 'ent-1', 'provenance', 'mentions', ?, ?, ?)",
+            params![id, t, t, t],
+        ).unwrap();
+        // edges, structural/subject_of (T23 mirror — memory_entities role='subject').
+        s.conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
+             VALUES ('e-subj-1', ?, 'ent-1', 'structural', 'subject_of', ?, ?, ?)",
+            params![id, t, t, t],
+        ).unwrap();
+        // edges, structural/object_of (T23 mirror — memory_entities role='object').
+        s.conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
+             VALUES ('e-obj-1', ?, 'ent-1', 'structural', 'object_of', ?, ?, ?)",
+            params![id, t, t, t],
+        ).unwrap();
+        // edges, provenance/derived_from (T16/T25 mirror — synthesis_provenance).
+        // Two rows: id appears once as source (insight), once as target (source memory).
+        s.conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
+             VALUES ('e-prov-out', ?, 'peer-1', 'provenance', 'derived_from', ?, ?, ?)",
+            params![id, t, t, t],
+        ).unwrap();
+        s.conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
+             VALUES ('e-prov-in', 'peer-1', ?, 'provenance', 'derived_from', ?, ?, ?)",
+            params![id, t, t, t],
+        ).unwrap();
+    }
+
+    fn iss115_count_unified_rows_for(s: &Storage, id: &str) -> (i64, i64) {
+        let nemb: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?",
+            params![id], |r| r.get(0),
+        ).unwrap();
+        let ne: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_id = ? OR target_id = ?",
+            params![id, id], |r| r.get(0),
+        ).unwrap();
+        (nemb, ne)
+    }
+
+    fn iss115_legacy_count_for(s: &Storage, id: &str) -> i64 {
+        // Sum across all legacy tables that hard_delete_cascade clears.
+        let mut n: i64 = 0;
+        n += s.conn.query_row("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", params![id], |r| r.get(0)).unwrap_or(0);
+        n += s.conn.query_row("SELECT COUNT(*) FROM hebbian_links WHERE source_id = ? OR target_id = ?", params![id, id], |r| r.get(0)).unwrap_or(0);
+        n += s.conn.query_row("SELECT COUNT(*) FROM memory_entities WHERE memory_id = ?", params![id], |r| r.get(0)).unwrap_or(0);
+        n += s.conn.query_row("SELECT COUNT(*) FROM synthesis_provenance WHERE source_id = ? OR insight_id = ?", params![id, id], |r| r.get(0)).unwrap_or(0);
+        n += s.conn.query_row("SELECT COUNT(*) FROM memories WHERE id = ?", params![id], |r| r.get(0)).unwrap_or(0);
+        n
+    }
+
+    /// End-to-end: a memory with both legacy and unified row sets
+    /// is fully cleared on both sides by one `hard_delete_cascade`
+    /// call. Unified reads after deletion must return zero rows.
+    #[test]
+    fn iss115_hard_delete_cascade_clears_legacy_and_unified() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, unified) = t29_3_open_pair(dir.path());
+        // Seed the memory via store_embedding (covers memories + nodes +
+        // memory_embeddings + node_embeddings dual-write paths).
+        t29_3_seed_embedding(&mut s, "m1", "default", "ollama/nomic-embed-text", &vec![0.1f32, 0.2]);
+        // Inject hebbian/entity/provenance unified rows.
+        iss115_seed_unified_rows_for_memory(&mut s, "m1");
+        // Also seed legacy hebbian + memory_entities + synthesis_provenance.
+        // Seed peer-1 as a real memory (so hebbian_links FK is happy)
+        // via the same helper used for m1 — guarantees the row passes
+        // every NOT NULL constraint without manual column listing.
+        t29_3_seed_memory(&mut s, "peer-1", "default");
+        let t = now_f64();
+        s.conn.execute(
+            "INSERT INTO hebbian_links (source_id, target_id, strength, namespace, created_at) \
+             VALUES ('m1', 'peer-1', 0.5, 'default', ?)",
+            params![t],
+        ).unwrap();
+        s.conn.execute(
+            "INSERT OR IGNORE INTO entities (id, name, entity_type, namespace, created_at, updated_at) \
+             VALUES ('ent-1', 'thing', 'general', 'default', ?, ?)",
+            params![t, t],
+        ).unwrap();
+        s.conn.execute(
+            "INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, role) \
+             VALUES ('m1', 'ent-1', 'mention')",
+            params![],
+        ).unwrap();
+        s.conn.execute(
+            "INSERT INTO synthesis_provenance (id, source_id, insight_id, cluster_id, synthesis_timestamp, gate_decision, source_original_importance, confidence) \
+             VALUES ('p1', 'm1', 'peer-1', 'c1', ?, 'kept', 0.5, 1.0)",
+            params![chrono::Utc::now().to_rfc3339()],
+        ).unwrap();
+
+        // Pre-delete sanity.
+        assert!(iss115_legacy_count_for(&s, "m1") > 0, "legacy rows seeded");
+        let (nemb, ne) = iss115_count_unified_rows_for(&s, "m1");
+        assert!(nemb > 0 && ne > 0, "unified rows seeded");
+
+        // Execute the dual-DELETE cascade.
+        s.hard_delete_cascade("m1").unwrap();
+
+        // Legacy side fully cleared.
+        assert_eq!(iss115_legacy_count_for(&s, "m1"), 0,
+            "ISS-115: legacy tables must be empty after hard_delete_cascade");
+        // Unified side fully cleared.
+        let (nemb_after, ne_after) = iss115_count_unified_rows_for(&s, "m1");
+        assert_eq!(nemb_after, 0, "ISS-115: node_embeddings rows must be cleared");
+        assert_eq!(ne_after, 0, "ISS-115: edges rows touching deleted memory must be cleared");
+        // And the parent nodes row itself.
+        let n_nodes: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(n_nodes, 0, "ISS-115: parent nodes row must be deleted");
+
+        // Phase D reader parity: both legacy and unified embeddings
+        // readers must agree (empty) post-delete.
+        assert_eq!(unified.get_embedding("m1", "ollama/nomic-embed-text").unwrap(), None);
+        assert_eq!(s.get_embedding("m1", "ollama/nomic-embed-text").unwrap(), None);
+    }
+
+    /// Hard-delete preserves edges that touch *other* memories.
+    /// Pins that the WHERE clauses are scoped to the deleted id and
+    /// do not accidentally widen the blast radius.
+    #[test]
+    fn iss115_hard_delete_cascade_does_not_touch_unrelated_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, _unified) = t29_3_open_pair(dir.path());
+        t29_3_seed_embedding(&mut s, "m1", "default", "ollama/nomic-embed-text", &vec![0.1f32, 0.2]);
+        t29_3_seed_embedding(&mut s, "m2", "default", "ollama/nomic-embed-text", &vec![0.3f32, 0.4]);
+        let t = now_f64();
+        // edge between m2 and a third party — must survive deletion of m1.
+        s.conn.execute(
+            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+             VALUES ('m3', 'memory', 'default', '', ?, ?) ON CONFLICT(id) DO NOTHING",
+            params![t, t],
+        ).unwrap();
+        s.conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
+             VALUES ('e-keep', 'm2', 'm3', 'associative', 'co_activated', ?, ?, ?)",
+            params![t, t, t],
+        ).unwrap();
+
+        s.hard_delete_cascade("m1").unwrap();
+
+        let keep_count: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM edges WHERE id = 'e-keep'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(keep_count, 1, "ISS-115: unrelated edges must survive");
+        // m2 itself must survive.
+        let m2_count: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id = 'm2'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(m2_count, 1);
+    }
+
+    /// `delete_all_embeddings` must clear both legacy and unified
+    /// embedding rows for the memory, but must NOT touch the parent
+    /// `nodes` row or any non-embedding edges.
+    #[test]
+    fn iss115_delete_all_embeddings_dualizes_and_leaves_nodes_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        t29_3_seed_embedding(&mut s, "m1", "default", model, &vec![0.1f32, 0.2]);
+        // Second model — both rows must go.
+        s.store_embedding("m1", &[0.5f32, 0.6, 0.7], "openai/text-embed", 3).unwrap();
+        // Inject one edge that touches m1 — must survive (not an
+        // embedding row).
+        let t = now_f64();
+        s.conn.execute(
+            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+             VALUES ('peer-1', 'memory', 'default', '', ?, ?) ON CONFLICT(id) DO NOTHING",
+            params![t, t],
+        ).unwrap();
+        s.conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
+             VALUES ('e1', 'm1', 'peer-1', 'associative', 'co_activated', ?, ?, ?)",
+            params![t, t, t],
+        ).unwrap();
+
+        s.delete_all_embeddings("m1").unwrap();
+
+        // Both embedding tables empty for m1.
+        let n_legacy: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = 'm1'",
+            [], |r| r.get(0),
+        ).unwrap();
+        let n_unified: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM node_embeddings WHERE node_id = 'm1'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(n_legacy, 0);
+        assert_eq!(n_unified, 0);
+        // Parent rows untouched.
+        let n_memory: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        let n_node: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        let n_edge: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM edges WHERE id = 'e1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(n_memory, 1);
+        assert_eq!(n_node, 1);
+        assert_eq!(n_edge, 1, "ISS-115: non-embedding edges must survive delete_all_embeddings");
+        // Phase D reader parity confirms.
+        assert_eq!(s.get_embedding("m1", model).unwrap(), None);
+        assert_eq!(unified.get_embedding("m1", model).unwrap(), None);
+    }
+
+    /// Re-running `hard_delete_cascade` on an already-deleted id must
+    /// be a no-op (idempotent). Important for any retry / cleanup
+    /// loop that doesn't track whether the delete already succeeded.
+    #[test]
+    fn iss115_hard_delete_cascade_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, _unified) = t29_3_open_pair(dir.path());
+        t29_3_seed_embedding(&mut s, "m1", "default", "ollama/nomic-embed-text", &vec![0.1f32, 0.2]);
+        s.hard_delete_cascade("m1").unwrap();
+        // Second call should not raise.
+        s.hard_delete_cascade("m1").expect("ISS-115: hard_delete_cascade must be idempotent");
+        // And on an id that never existed.
+        s.hard_delete_cascade("ghost").expect("ISS-115: deleting a never-seen id must not raise");
     }
 }
