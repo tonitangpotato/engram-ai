@@ -490,7 +490,18 @@ row, losing provenance. The unified substrate fixes this.
 own `edges` row. `signal_source` lives in `attributes` JSON, and the
 partial unique index `idx_edges_assoc_unique` (§3.2) includes
 `json_extract(attributes, '$.signal_source')` in its key so SQLite's
-`ON CONFLICT` resolves correctly. This:
+`ON CONFLICT` resolves correctly. This design choice:
+
+**Canonical (src, tgt) ordering invariant**: associative-edge writes
+MUST canonicalize the pair via `(src, tgt) = if src < tgt then (src, tgt)
+else (tgt, src)` before INSERT, so an edge between A and B is always
+stored as `(min(A,B), max(A,B))`. Without this, `record_association`
+called from both directions would produce two unified rows for the same
+Hebbian fact (legacy hides this via a bidirectional `OR` lookup;
+unified relies on the unique index, which is direction-sensitive).
+Implementation lives in the dual-write helper, not in callers.
+
+The design choice listed above yields:
 
 1. Lets §4.6 **differential decay** apply per-signal-source without
    mixing (a hot `corecall` link decaying independently from a cold
