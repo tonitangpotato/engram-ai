@@ -494,4 +494,239 @@ mod tests {
         assert_eq!(gs.type_diversity, 3);
         assert_eq!(gs.member_count, 5);
     }
+
+    // ---------------------------------------------------------------
+    // T29.2 Phase D — synthesis_provenance read-switch contract tests
+    //
+    // Each test exercises both legacy (`Storage::new`) and unified
+    // (`Storage::with_unified_substrate(_, true)`) read paths against
+    // the same dual-written data. T16's dual-write guarantees both
+    // `synthesis_provenance` rows AND `edges WHERE
+    // edge_kind='provenance' AND predicate='derived_from'` rows exist
+    // after `record_provenance`, so two storage handles to the same
+    // DB file see equivalent records regardless of flag.
+    // ---------------------------------------------------------------
+
+    fn open_pair(dir: &std::path::Path) -> (Storage, Storage) {
+        let db_path = dir.join("t29_2.db");
+        let legacy = Storage::new(&db_path).expect("legacy storage");
+        let unified = Storage::with_unified_substrate(&db_path, true)
+            .expect("unified storage");
+        (legacy, unified)
+    }
+
+    /// Sort records by id so equality checks are order-independent.
+    fn sort_records(mut v: Vec<ProvenanceRecord>) -> Vec<ProvenanceRecord> {
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
+    #[test]
+    fn t29_2_unified_matches_legacy_get_insight_sources() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (mut legacy, unified) = open_pair(tmp.path());
+
+        // Seed memories + provenance via legacy (dual-write lands in
+        // both tables).
+        for (id, content) in [
+            ("src1", "Source 1"),
+            ("src2", "Source 2"),
+            ("ins1", "Insight 1"),
+        ] {
+            legacy.add(&make_memory(id, content, 0.5), "default").unwrap();
+        }
+        legacy.record_provenance(&make_provenance("p1", "ins1", "src1", "c1", Some(0.5))).unwrap();
+        legacy.record_provenance(&make_provenance("p2", "ins1", "src2", "c1", Some(0.6))).unwrap();
+
+        let legacy_rows = sort_records(legacy.get_insight_sources("ins1").unwrap());
+        let unified_rows = sort_records(unified.get_insight_sources("ins1").unwrap());
+
+        assert_eq!(legacy_rows.len(), 2);
+        assert_eq!(unified_rows.len(), legacy_rows.len(), "row count parity");
+        for (l, u) in legacy_rows.iter().zip(unified_rows.iter()) {
+            assert_eq!(l.id, u.id, "id mismatch");
+            assert_eq!(l.insight_id, u.insight_id, "insight_id mismatch");
+            assert_eq!(l.source_id, u.source_id, "source_id mismatch");
+            assert_eq!(l.cluster_id, u.cluster_id, "cluster_id mismatch");
+            assert_eq!(l.gate_decision, u.gate_decision, "gate_decision mismatch");
+            assert!((l.confidence - u.confidence).abs() < 1e-9, "confidence mismatch");
+            assert_eq!(
+                l.source_original_importance, u.source_original_importance,
+                "source_original_importance mismatch"
+            );
+            // synthesis_timestamp: legacy stores RFC3339, T25 re-emits
+            // verbatim → must be exact equality to the nanosecond.
+            assert_eq!(
+                l.synthesis_timestamp.to_rfc3339(),
+                u.synthesis_timestamp.to_rfc3339(),
+                "synthesis_timestamp mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn t29_2_unified_matches_legacy_get_memory_insights() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (mut legacy, unified) = open_pair(tmp.path());
+
+        for (id, content) in [
+            ("src1", "Source 1"),
+            ("ins1", "Insight 1"),
+            ("ins2", "Insight 2"),
+        ] {
+            legacy.add(&make_memory(id, content, 0.5), "default").unwrap();
+        }
+        // Two insights both derived from same source — exercises
+        // target_id keying on unified path.
+        legacy.record_provenance(&make_provenance("p1", "ins1", "src1", "c1", Some(0.5))).unwrap();
+        legacy.record_provenance(&make_provenance("p2", "ins2", "src1", "c2", Some(0.5))).unwrap();
+
+        let legacy_rows = sort_records(legacy.get_memory_insights("src1").unwrap());
+        let unified_rows = sort_records(unified.get_memory_insights("src1").unwrap());
+
+        assert_eq!(legacy_rows.len(), 2);
+        assert_eq!(unified_rows.len(), legacy_rows.len());
+        for (l, u) in legacy_rows.iter().zip(unified_rows.iter()) {
+            assert_eq!(l.id, u.id);
+            assert_eq!(l.insight_id, u.insight_id);
+            assert_eq!(l.source_id, u.source_id);
+            assert_eq!(l.cluster_id, u.cluster_id);
+        }
+    }
+
+    #[test]
+    fn t29_2_unified_matches_legacy_check_coverage() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (mut legacy, unified) = open_pair(tmp.path());
+
+        for (id, content) in [
+            ("src1", "Source 1"),
+            ("src2", "Source 2"),
+            ("src3", "Source 3"),
+            ("ins1", "Insight 1"),
+        ] {
+            legacy.add(&make_memory(id, content, 0.5), "default").unwrap();
+        }
+        // src1 + src2 covered, src3 not covered.
+        legacy.record_provenance(&make_provenance("p1", "ins1", "src1", "c1", None)).unwrap();
+        legacy.record_provenance(&make_provenance("p2", "ins1", "src2", "c1", None)).unwrap();
+
+        let members = vec![
+            "src1".to_string(),
+            "src2".to_string(),
+            "src3".to_string(),
+        ];
+
+        let legacy_cov = legacy.check_coverage(&members).unwrap();
+        let unified_cov = unified.check_coverage(&members).unwrap();
+        assert!((legacy_cov - 2.0 / 3.0).abs() < 1e-9, "legacy coverage 2/3");
+        assert!((legacy_cov - unified_cov).abs() < 1e-9, "parity");
+
+        // Empty input — both paths return 0.0 without touching DB.
+        assert_eq!(legacy.check_coverage(&[]).unwrap(), 0.0);
+        assert_eq!(unified.check_coverage(&[]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn t29_2_unified_path_ignores_other_edge_kinds() {
+        // Pin the (edge_kind='provenance', predicate='derived_from')
+        // filter: a hypothetical associative edge between the same
+        // node pair must NOT be returned by provenance readers.
+        use rusqlite::params;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (mut legacy, unified) = open_pair(tmp.path());
+
+        for (id, content) in [("src1", "Source 1"), ("ins1", "Insight 1")] {
+            legacy.add(&make_memory(id, content, 0.5), "default").unwrap();
+        }
+        legacy.record_provenance(&make_provenance("p1", "ins1", "src1", "c1", None)).unwrap();
+
+        // Inject a contrived associative edge between the same pair.
+        // Use the legacy handle's connection so it lives in the same
+        // DB file as the unified reader.
+        let now_epoch: f64 = chrono::Utc::now().timestamp() as f64;
+        legacy.connection().execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, \
+                                weight, confidence, namespace, attributes, \
+                                recorded_at, created_at, updated_at) \
+             VALUES (?1, 'ins1', 'src1', 'associative', 'co_activated', \
+                     0.5, 1.0, 'default', '{}', ?2, ?2, ?2)",
+            params!["assoc-noise-1", now_epoch],
+        ).unwrap();
+
+        // Unified reader still returns ONLY the provenance edge.
+        let unified_sources = unified.get_insight_sources("ins1").unwrap();
+        assert_eq!(unified_sources.len(), 1);
+        assert_eq!(unified_sources[0].id, "p1");
+
+        let unified_insights = unified.get_memory_insights("src1").unwrap();
+        assert_eq!(unified_insights.len(), 1);
+        assert_eq!(unified_insights[0].id, "p1");
+
+        // check_coverage on src1: associative noise is NOT counted.
+        let cov = unified.check_coverage(&["src1".to_string()]).unwrap();
+        assert!((cov - 1.0).abs() < 1e-9, "src1 covered by provenance only");
+    }
+
+    #[test]
+    fn t29_2_unified_path_empty_result_matches_legacy() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (mut legacy, unified) = open_pair(tmp.path());
+
+        legacy.add(&make_memory("orphan", "no provenance", 0.5), "default").unwrap();
+
+        // Both branches: unknown insight_id, unknown source_id.
+        assert!(legacy.get_insight_sources("nonexistent").unwrap().is_empty());
+        assert!(unified.get_insight_sources("nonexistent").unwrap().is_empty());
+        assert!(legacy.get_memory_insights("orphan").unwrap().is_empty());
+        assert!(unified.get_memory_insights("orphan").unwrap().is_empty());
+    }
+
+    #[test]
+    fn t29_2_unified_gate_scores_roundtrip() {
+        // Exercise the nested-JSON attribute reconstruction in
+        // row_to_provenance_from_edge: gate_scores must come back as
+        // Some(GateScores { … }), not as None (would mean we forgot
+        // is_object) and not as a stringly value.
+        use crate::synthesis::types::GateScores;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (mut legacy, unified) = open_pair(tmp.path());
+
+        for (id, content) in [("src1", "Source 1"), ("ins1", "Insight 1")] {
+            legacy.add(&make_memory(id, content, 0.5), "default").unwrap();
+        }
+
+        let scores = GateScores {
+            quality: 0.81,
+            type_diversity: 4,
+            estimated_cost: 0.03,
+            member_count: 7,
+        };
+        let prov = ProvenanceRecord {
+            id: "p1".to_string(),
+            insight_id: "ins1".to_string(),
+            source_id: "src1".to_string(),
+            cluster_id: "cluster_x".to_string(),
+            synthesis_timestamp: Utc::now(),
+            gate_decision: "Synthesize".to_string(),
+            gate_scores: Some(scores),
+            confidence: 0.91,
+            source_original_importance: Some(0.42),
+        };
+        legacy.record_provenance(&prov).unwrap();
+
+        let rows = unified.get_insight_sources("ins1").unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        let gs = r.gate_scores.as_ref().expect("gate_scores present on unified path");
+        assert!((gs.quality - 0.81).abs() < 1e-9);
+        assert_eq!(gs.type_diversity, 4);
+        assert!((gs.estimated_cost - 0.03).abs() < 1e-9);
+        assert_eq!(gs.member_count, 7);
+        assert_eq!(r.cluster_id, "cluster_x");
+        assert_eq!(r.source_original_importance, Some(0.42));
+    }
+
 }

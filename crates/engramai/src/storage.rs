@@ -4598,6 +4598,15 @@ impl Storage {
             .as_ref()
             .map(|s| serde_json::to_string(s).unwrap_or_default());
         let ts_unix = datetime_to_f64(&record.synthesis_timestamp);
+        // synthesis_timestamp is **also** stored verbatim (RFC3339) in
+        // attributes — `recorded_at`/`created_at` are epoch f64 columns
+        // and lose sub-second precision compared to the RFC3339 source.
+        // T25 backfill writes the same field; the Phase D
+        // `row_to_provenance_from_edge` reader prefers attributes over
+        // the epoch column. Without this field T16 dual-write rows
+        // would lose nanosecond precision on round-trip — a real bug
+        // discovered by T29.2 contract tests.
+        let ts_rfc3339 = record.synthesis_timestamp.to_rfc3339();
         // Use `json()` wrapper so embedded JSON objects don't get
         // re-encoded as quoted strings inside the parent attributes
         // blob — matches the convention used in §4.3 Hebbian SQL.
@@ -4618,10 +4627,11 @@ impl Storage {
                 'provenance', 'canonical', 'derived_from',
                 '',
                 json_object(
-                    'gate_decision', ?4,
-                    'gate_scores',   CASE WHEN ?5 IS NULL THEN NULL ELSE json(?5) END,
-                    'cluster_id',    ?6,
-                    'source_original_importance', ?7
+                    'gate_decision',       ?4,
+                    'gate_scores',         CASE WHEN ?5 IS NULL THEN NULL ELSE json(?5) END,
+                    'cluster_id',          ?6,
+                    'source_original_importance', ?7,
+                    'synthesis_timestamp', ?10
                 ),
                 1.0,
                 0.0, ?8,
@@ -4640,6 +4650,7 @@ impl Storage {
                 record.source_original_importance,
                 record.confidence,
                 ts_unix,
+                ts_rfc3339,
             ],
         )?;
 
@@ -4647,25 +4658,65 @@ impl Storage {
     }
 
     /// Get all source provenance records for a given insight.
+    ///
+    /// Phase D T29.2: reads from `synthesis_provenance` (legacy) or
+    /// `edges WHERE edge_kind='provenance' AND predicate='derived_from'`
+    /// (unified) based on `self.unified_substrate`. Both paths return
+    /// bit-identical `ProvenanceRecord`s under T16+T25 dual-write/backfill
+    /// invariants.
     pub fn get_insight_sources(&self, insight_id: &str) -> Result<Vec<ProvenanceRecord>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, insight_id, source_id, cluster_id, synthesis_timestamp, gate_decision, gate_scores, confidence, source_original_importance FROM synthesis_provenance WHERE insight_id = ?1"
-        )?;
-        let records = stmt.query_map([insight_id], |row| {
-            Self::row_to_provenance(row)
-        })?.collect::<Result<Vec<_>, _>>()?;
-        Ok(records)
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, source_id, target_id, confidence, attributes \
+                 FROM edges \
+                 WHERE edge_kind = 'provenance' \
+                   AND predicate = 'derived_from' \
+                   AND source_id = ?1"
+            )?;
+            let records = stmt.query_map([insight_id], |row| {
+                Self::row_to_provenance_from_edge(row)
+            })?.collect::<Result<Vec<_>, _>>()?;
+            Ok(records)
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, insight_id, source_id, cluster_id, synthesis_timestamp, gate_decision, gate_scores, confidence, source_original_importance FROM synthesis_provenance WHERE insight_id = ?1"
+            )?;
+            let records = stmt.query_map([insight_id], |row| {
+                Self::row_to_provenance(row)
+            })?.collect::<Result<Vec<_>, _>>()?;
+            Ok(records)
+        }
     }
 
     /// Get all insights derived from a source memory.
+    ///
+    /// Phase D T29.2: reads from `synthesis_provenance` (legacy) or
+    /// `edges WHERE edge_kind='provenance' AND predicate='derived_from'`
+    /// (unified) based on `self.unified_substrate`. T25 maps edge
+    /// direction insight → source, so the source memory is keyed by
+    /// `target_id` on the unified path (vs `source_id` in legacy).
     pub fn get_memory_insights(&self, source_id: &str) -> Result<Vec<ProvenanceRecord>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, insight_id, source_id, cluster_id, synthesis_timestamp, gate_decision, gate_scores, confidence, source_original_importance FROM synthesis_provenance WHERE source_id = ?1"
-        )?;
-        let records = stmt.query_map([source_id], |row| {
-            Self::row_to_provenance(row)
-        })?.collect::<Result<Vec<_>, _>>()?;
-        Ok(records)
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, source_id, target_id, confidence, attributes \
+                 FROM edges \
+                 WHERE edge_kind = 'provenance' \
+                   AND predicate = 'derived_from' \
+                   AND target_id = ?1"
+            )?;
+            let records = stmt.query_map([source_id], |row| {
+                Self::row_to_provenance_from_edge(row)
+            })?.collect::<Result<Vec<_>, _>>()?;
+            Ok(records)
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, insight_id, source_id, cluster_id, synthesis_timestamp, gate_decision, gate_scores, confidence, source_original_importance FROM synthesis_provenance WHERE source_id = ?1"
+            )?;
+            let records = stmt.query_map([source_id], |row| {
+                Self::row_to_provenance(row)
+            })?.collect::<Result<Vec<_>, _>>()?;
+            Ok(records)
+        }
     }
 
     /// Delete all provenance records for an insight.
@@ -4678,17 +4729,27 @@ impl Storage {
     }
 
     /// Check what percentage of member IDs appear as source_id in synthesis_provenance.
+    ///
+    /// Phase D T29.2: reads from `synthesis_provenance` (legacy) or
+    /// `edges WHERE edge_kind='provenance' AND predicate='derived_from'`
+    /// (unified) based on `self.unified_substrate`. The "source" memory
+    /// keyed by `member_ids[i]` is `target_id` on the unified path
+    /// (insight→source edge direction per T25).
     pub fn check_coverage(&self, member_ids: &[String]) -> Result<f64, Box<dyn std::error::Error>> {
         if member_ids.is_empty() {
             return Ok(0.0);
         }
+        let sql = if self.unified_substrate {
+            "SELECT COUNT(*) FROM edges \
+             WHERE edge_kind = 'provenance' \
+               AND predicate = 'derived_from' \
+               AND target_id = ?1"
+        } else {
+            "SELECT COUNT(*) FROM synthesis_provenance WHERE source_id = ?1"
+        };
         let mut covered = 0usize;
         for id in member_ids {
-            let count: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM synthesis_provenance WHERE source_id = ?1",
-                [id],
-                |row| row.get(0),
-            )?;
+            let count: i64 = self.conn.query_row(sql, [id], |row| row.get(0))?;
             if count > 0 {
                 covered += 1;
             }
@@ -4820,7 +4881,104 @@ impl Storage {
             source_original_importance: row.get(8)?,
         })
     }
-    
+
+    /// Convert a unified-substrate `edges` row into a ProvenanceRecord
+    /// (Phase D T29.2 read adapter).
+    ///
+    /// The caller is expected to SELECT five columns in this order:
+    /// `id, source_id, target_id, confidence, attributes`. The
+    /// attributes JSON is built by T25's
+    /// `backfill_synthesis_provenance_to_edges` (and by T16's Phase B
+    /// dual-write); see substrate/backfill.rs §T25 for the canonical
+    /// shape. This function is the inverse of that packing.
+    ///
+    /// Field reconstruction:
+    /// - `id`              ← edges.id
+    /// - `insight_id`      ← edges.source_id (T25 maps insight→source as edge direction)
+    /// - `source_id`       ← edges.target_id
+    /// - `confidence`      ← edges.confidence
+    /// - `cluster_id`              ← attributes["cluster_id"]
+    /// - `synthesis_timestamp`     ← attributes["synthesis_timestamp"] (RFC3339)
+    /// - `gate_decision`           ← attributes["gate_decision"]
+    /// - `gate_scores`             ← attributes["gate_scores"] (nested JSON; None if absent or malformed)
+    /// - `source_original_importance` ← attributes["source_original_importance"]
+    ///
+    /// Tolerance policy:
+    /// - missing/malformed `synthesis_timestamp` → `Utc::now()`
+    ///   (bug-for-bug compat with `row_to_provenance`'s
+    ///   `parse_from_rfc3339(...).unwrap_or_else(|_| Utc::now())`).
+    ///   Historical note: T16 dual-write rows written before this
+    ///   field was added land here — they have a precise
+    ///   `recorded_at` epoch column but no attribute. Future work
+    ///   may fall back to the column; for now we accept the lossy
+    ///   path because (a) Phase E will retire the legacy table
+    ///   anyway and (b) all *new* T16 writes populate the field.
+    /// - missing `gate_scores` or string-typed (T25 malformed-
+    ///   passthrough shape) → `None`. Same lossy semantics as the
+    ///   legacy reader's `.ok()` over `serde_json::from_str`.
+    /// - missing required strings (`gate_decision`, `cluster_id`) →
+    ///   empty string. This is **more lenient than the legacy
+    ///   reader**, which would propagate a rusqlite NULL-conversion
+    ///   error via `?`. Deliberate: under the T16+T25 contract these
+    ///   are always populated, so the divergence only manifests on
+    ///   externally-corrupted attributes JSON — surfacing the row
+    ///   with empty strings keeps consumers (provenance chain
+    ///   walkers) running rather than poisoning the whole batch.
+    fn row_to_provenance_from_edge(
+        row: &rusqlite::Row,
+    ) -> Result<ProvenanceRecord, rusqlite::Error> {
+        let id: String = row.get(0)?;
+        let insight_id: String = row.get(1)?;
+        let source_id: String = row.get(2)?;
+        let confidence: f64 = row.get(3)?;
+        let attrs_str: String = row.get(4)?;
+
+        let attrs: serde_json::Value =
+            serde_json::from_str(&attrs_str).unwrap_or(serde_json::Value::Null);
+
+        let get_str = |key: &str| -> String {
+            attrs
+                .get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        let cluster_id = get_str("cluster_id");
+        let gate_decision = get_str("gate_decision");
+
+        let ts_str = get_str("synthesis_timestamp");
+        let synthesis_timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+
+        // gate_scores is a nested JSON object when well-formed (T25
+        // unpacks the legacy TEXT into a sub-object). If it's a
+        // string-shaped value here it means legacy was malformed and
+        // T25 preserved the raw text — surface None, matching the
+        // legacy reader's `.ok()` lossy-parse semantics.
+        let gate_scores: Option<GateScores> = match attrs.get("gate_scores") {
+            Some(v) if v.is_object() => serde_json::from_value(v.clone()).ok(),
+            _ => None,
+        };
+
+        let source_original_importance = attrs
+            .get("source_original_importance")
+            .and_then(|v| v.as_f64());
+
+        Ok(ProvenanceRecord {
+            id,
+            insight_id,
+            source_id,
+            cluster_id,
+            synthesis_timestamp,
+            gate_decision,
+            gate_scores,
+            confidence,
+            source_original_importance,
+        })
+    }
+
     /// Get entity names associated with a memory.
     ///
     /// Joins through `memory_entities` → `entities` to return entity name strings.
