@@ -48,6 +48,7 @@
 
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::storage::{row_to_record_impl, Storage};
@@ -1184,3 +1185,400 @@ pub fn backfill_entity_relations_to_edges(
     Ok(run)
 }
 
+
+// =====================================================================
+// T23 — backfill memory_entities → edges
+// =====================================================================
+//
+// Source table: `memory_entities(memory_id, entity_id, role)` —
+// link table mirroring which entities are mentioned by which memories.
+// No own `created_at` or `namespace` columns; both are derived from
+// the parent memory via JOIN.
+//
+// Target rows live in `edges` and split by `role` per design §3.3:
+//   * `role = 'mention'` (default, ~all production rows)
+//   * `role = ''`        (treat as 'mention')
+//   * `role = 'triple'`  (triple-extraction provenance — treat as
+//                         'mention' but record the raw role in
+//                         `edges.attributes.legacy_role` for audit)
+//   * unknown / other    (treat as 'mention', same audit field)
+//        → `edge_kind='provenance', predicate='mentions'`
+//   * `role = 'subject'` → `edge_kind='structural', predicate='subject_of'`
+//   * `role = 'object'`  → `edge_kind='structural', predicate='object_of'`
+//
+// **Note (design §3.3 vs §5.3 prose inconsistency)**: §5.3 line 1140
+// summary text says "memory_entities → edges (kind=provenance)" without
+// the role split. §3.3 (lines 320, 338) is the normative canonical
+// kind/predicate table and splits by role. This driver follows §3.3.
+// The §5.3 prose should be tightened in a follow-up commit.
+//
+// Idempotency: deterministic edge `id` = `uuid_from_hash(sha256(
+//   "memory_entities|" || memory_id || "|" || entity_id || "|" ||
+//   role || "|" || edge_kind || "|" || predicate
+// ))`. The legacy row's natural key is `(memory_id, entity_id, role)`
+// per the table PK — but we include `edge_kind` and `predicate` in the
+// hash too, so a future schema change that re-derives the predicate
+// produces a DIFFERENT id (forcing visible insert/replace rather than
+// silent stale-row reuse). See design §5.3 lines 1170-1182.
+//
+// FK guard: edges.source_id and edges.target_id both reference
+// `nodes.id`. Rows whose endpoints aren't in `nodes` yet (T19 hasn't
+// run for the memory's namespace, T21 hasn't run for the entity's
+// namespace) are SKIPPED — counted in `rows_skipped_dangling_endpoint`
+// and surfaced in audit `notes`. Recovery: run T19+T21 first, then
+// re-run T23. Same self-recovering pattern as T20/T22.
+
+/// Derive a deterministic UUID by hashing canonical row identity per
+/// design §5.3 lines 1170-1182.
+///
+/// `hash_input` is the caller-built tuple string:
+///   `"memory_entities|<memory_id>|<entity_id>|<role>|<edge_kind>|<predicate>"`
+/// (pipe-delimited; no escaping needed because none of these fields
+/// can legitimately contain `'|'` — `memory_id`/`entity_id` are UUIDs,
+/// `role` is from a small known vocabulary, `edge_kind`/`predicate`
+/// are enum-like strings).
+///
+/// SHA-256 → take first 16 bytes → format as UUID. We don't set the
+/// version/variant bits because we never need to compare against a
+/// random v4 UUID semantically; deterministic-from-hash IDs live in
+/// their own namespace by construction.
+fn uuid_from_hash(hash_input: &str) -> String {
+    let digest = Sha256::digest(hash_input.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    Uuid::from_bytes(bytes).to_string()
+}
+
+/// Map a legacy `memory_entities.role` to a canonical
+/// `(edge_kind, predicate)` per design §3.3. Returns
+/// `(edge_kind, predicate, normalized: bool)` where `normalized=true`
+/// signals that the raw role was not the canonical 'mention'/'subject'/
+/// 'object' set and was folded onto `provenance/mentions` — the driver
+/// records the raw role in attributes for audit traceability.
+fn role_to_kind_predicate(role: &str) -> (&'static str, &'static str, bool) {
+    match role {
+        "mention" | "" => ("provenance", "mentions", false),
+        "subject" => ("structural", "subject_of", false),
+        "object" => ("structural", "object_of", false),
+        // 'triple' and any other free-form roles fold onto the
+        // canonical mention kind, with the raw role preserved in
+        // edges.attributes.legacy_role.
+        _ => ("provenance", "mentions", true),
+    }
+}
+
+/// T23 — backfill `memory_entities` rows into the unified `edges`
+/// table, split by role per design §3.3 (mention → provenance,
+/// subject/object → structural).
+///
+/// Restartable per the Phase C contract: deterministic `edges.id` +
+/// `INSERT OR IGNORE` means a re-run inserts zero new rows.
+///
+/// Namespace filter: if `namespace` is `Some(ns)`, only `memory_entities`
+/// rows whose **parent memory's** namespace matches `ns` are processed
+/// — the link table has no own namespace column. Recovery from a
+/// partial run is the same as T22's: re-run with the same filter,
+/// rows_skipped_existing should equal the prior run's rows_inserted.
+///
+/// Endpoint FK safety: the driver pre-checks that both `memory_id` and
+/// `entity_id` exist as `nodes` rows before each insert. Missing
+/// endpoints are counted in `rows_skipped_dangling_endpoint` and
+/// surfaced in audit `notes` JSON. This matches T22's behaviour for
+/// cross-namespace consistency.
+pub fn backfill_memory_entities_to_edges(
+    storage: &mut Storage,
+    namespace: Option<&str>,
+) -> Result<BackfillRun, rusqlite::Error> {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = utc_now_f64();
+
+    let notes_open = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_memory_entities_to_edges",
+        "design_ref": "v04-unified-substrate §3.3 + §5.3 / T23",
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        INSERT INTO backfill_runs (
+            run_id, legacy_table, rows_read, rows_inserted,
+            rows_skipped_existing, rows_failed,
+            started_at, finished_at, notes
+        ) VALUES (?, 'memory_entities', 0, 0, 0, 0, ?, NULL, ?)
+        "#,
+        params![run_id, started_at, notes_open],
+    )?;
+
+    // -----------------------------------------------------------------
+    // Hydrate legacy rows. ~9237 rows at design-targeted scale.
+    //
+    // Pull the parent memory's namespace and created_at via JOIN so
+    // each link row has the namespace/timestamp it needs without a
+    // second round-trip. Filter by parent namespace if requested.
+    // -----------------------------------------------------------------
+    let conn = storage.conn();
+    let select_sql = if namespace.is_some() {
+        "SELECT me.memory_id, me.entity_id, me.role, m.namespace, m.created_at \
+         FROM memory_entities me \
+         INNER JOIN memories m ON m.id = me.memory_id \
+         WHERE m.namespace = ?"
+    } else {
+        "SELECT me.memory_id, me.entity_id, me.role, m.namespace, m.created_at \
+         FROM memory_entities me \
+         INNER JOIN memories m ON m.id = me.memory_id"
+    };
+    let mut stmt = conn.prepare(select_sql)?;
+    type MeRow = (
+        String, // memory_id
+        String, // entity_id
+        String, // role
+        String, // parent namespace
+        f64,    // parent created_at
+    );
+    let map_row = |row: &rusqlite::Row| -> Result<MeRow, rusqlite::Error> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    };
+    let rows: Vec<MeRow> = if let Some(ns) = namespace {
+        stmt.query_map(params![ns], map_row)?
+            .collect::<Result<_, _>>()?
+    } else {
+        stmt.query_map([], map_row)?.collect::<Result<_, _>>()?
+    };
+
+    let rows_read: u64 = rows.len() as u64;
+
+    // -----------------------------------------------------------------
+    // Single-pass insert (no self-referential FKs to resolve), inside
+    // one transaction. Per-row decisions:
+    //   * derive (edge_kind, predicate, role_normalized) from role
+    //   * compute deterministic edge id
+    //   * FK pre-check both endpoints — skip if either missing
+    //   * call appropriate insert helper
+    //   * count inserted / skipped-existing / skipped-dangling /
+    //     skipped-mismatched-kind buckets
+    //
+    // `rows_skipped_mismatched_kind` covers the rare case where an
+    // edges row with our deterministic id already exists but has a
+    // different `edge_kind`/`predicate` than what we'd derive now.
+    // This shouldn't happen under design contract — the id hash
+    // includes both — but we surface it in audit notes so a future
+    // bug is visible rather than silent.
+    // -----------------------------------------------------------------
+    let mut rows_inserted: u64 = 0;
+    let mut rows_skipped_existing: u64 = 0;
+    let mut rows_skipped_dangling_endpoint: u64 = 0;
+    let mut rows_skipped_mismatched_kind: u64 = 0;
+    let mut rows_normalized_legacy_role: u64 = 0;
+    let mut unknown_role_samples: Vec<String> = Vec::new();
+    let mut unknown_role_samples_truncated: bool = false;
+    let mut unknown_role_distinct: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let unknown_role_sample_cap: usize = 10;
+
+    let tx = storage.conn().unchecked_transaction()?;
+
+    for (memory_id, entity_id, role, namespace, created_at) in rows {
+        let (edge_kind, predicate, normalized) = role_to_kind_predicate(&role);
+
+        if normalized {
+            rows_normalized_legacy_role += 1;
+            if unknown_role_distinct.insert(role.clone()) {
+                // New distinct value seen. Either capture or note
+                // truncation — never silently drop.
+                if unknown_role_samples.len() < unknown_role_sample_cap {
+                    unknown_role_samples.push(role.clone());
+                } else {
+                    unknown_role_samples_truncated = true;
+                }
+            }
+        }
+
+        // Deterministic id per design §5.3 lines 1170-1182. Include
+        // edge_kind and predicate in the hash so future schema bumps
+        // that re-derive the predicate produce a different id.
+        let hash_input = format!(
+            "memory_entities|{}|{}|{}|{}|{}",
+            memory_id, entity_id, role, edge_kind, predicate
+        );
+        let id = uuid_from_hash(&hash_input);
+
+        // FK pre-check: both endpoints must exist as nodes.
+        let endpoints_ok: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM nodes WHERE id = ?) AND \
+                 EXISTS(SELECT 1 FROM nodes WHERE id = ?)",
+                params![memory_id, entity_id],
+                |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
+            )
+            .map(|n| n != 0)?;
+
+        if !endpoints_ok {
+            rows_skipped_dangling_endpoint += 1;
+            continue;
+        }
+
+        // attributes JSON: record the raw role iff it deviated from
+        // the canonical vocabulary (so re-runs of an unchanged DB are
+        // byte-identical, but audit traceability is preserved for
+        // 'triple' and any future free-form roles).
+        //
+        // `normalized` is already `true` for 'triple' and any other
+        // unknown role per `role_to_kind_predicate`; we use it as the
+        // single source of truth for "this role is non-canonical".
+        let attributes_json = if normalized {
+            json!({ "legacy_role": role }).to_string()
+        } else {
+            "{}".to_string()
+        };
+
+        // Pre-check whether a row with our id already exists AND
+        // whether its kind matches. If a stale id collision points
+        // at a different kind, count it in
+        // rows_skipped_mismatched_kind rather than silently skipping.
+        let existing_kind: Option<(String, String)> = tx
+            .query_row(
+                "SELECT edge_kind, predicate FROM edges WHERE id = ?",
+                params![id],
+                |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+
+        let inserted = match edge_kind {
+            "structural" => Storage::insert_structural_edge_row(
+                &tx,
+                &id,
+                &memory_id,
+                &entity_id,
+                predicate,
+                &attributes_json,
+                1.0,
+                &namespace,
+                created_at,
+            )?,
+            "provenance" => Storage::insert_provenance_edge_row(
+                &tx,
+                &id,
+                &memory_id,
+                &entity_id,
+                predicate,
+                &attributes_json,
+                1.0,
+                &namespace,
+                created_at,
+            )?,
+            _ => unreachable!(
+                "role_to_kind_predicate only emits 'structural' or 'provenance'"
+            ),
+        };
+
+        if inserted {
+            rows_inserted += 1;
+        } else if let Some((ek, pp)) = existing_kind {
+            if ek != edge_kind || pp != predicate {
+                rows_skipped_mismatched_kind += 1;
+            } else {
+                rows_skipped_existing += 1;
+            }
+        } else {
+            // Existing row vanished between SELECT and INSERT
+            // (impossible under our tx isolation). Defensively count
+            // as skipped-existing.
+            rows_skipped_existing += 1;
+        }
+    }
+
+    tx.commit()?;
+
+    let finished_at = utc_now_f64();
+    let notes_closed = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_memory_entities_to_edges",
+        "design_ref": "v04-unified-substrate §3.3 + §5.3 / T23",
+        "rows_skipped_dangling_endpoint": rows_skipped_dangling_endpoint,
+        "rows_skipped_mismatched_kind": rows_skipped_mismatched_kind,
+        "rows_normalized_legacy_role": rows_normalized_legacy_role,
+        "unknown_role_samples": unknown_role_samples,
+        "unknown_role_samples_truncated": unknown_role_samples_truncated,
+        "unknown_role_distinct_count": unknown_role_distinct.len(),
+    })
+    .to_string();
+
+    // We collapse all three skip buckets into the single
+    // `rows_skipped_existing` column so the counter invariant
+    // (rows_read = inserted + skipped + failed) holds. Detailed
+    // breakdown lives in notes JSON, same convention as T22.
+    let conn = storage.conn();
+    conn.execute(
+        r#"
+        UPDATE backfill_runs
+        SET rows_read = ?, rows_inserted = ?, rows_skipped_existing = ?,
+            rows_failed = 0, finished_at = ?, notes = ?
+        WHERE run_id = ?
+        "#,
+        params![
+            rows_read as i64,
+            rows_inserted as i64,
+            (rows_skipped_existing + rows_skipped_dangling_endpoint + rows_skipped_mismatched_kind)
+                as i64,
+            finished_at,
+            notes_closed,
+            run_id,
+        ],
+    )?;
+
+    let run = BackfillRun {
+        run_id,
+        legacy_table: "memory_entities".into(),
+        rows_read,
+        rows_inserted,
+        rows_skipped_existing: rows_skipped_existing
+            + rows_skipped_dangling_endpoint
+            + rows_skipped_mismatched_kind,
+        rows_failed: 0,
+    };
+    run.assert_counter_invariant();
+    Ok(run)
+}
+
+#[cfg(test)]
+mod t23_helpers_tests {
+    use super::*;
+
+    #[test]
+    fn role_to_kind_predicate_canonical_roles() {
+        assert_eq!(role_to_kind_predicate("mention"), ("provenance", "mentions", false));
+        assert_eq!(role_to_kind_predicate(""), ("provenance", "mentions", false));
+        assert_eq!(role_to_kind_predicate("subject"), ("structural", "subject_of", false));
+        assert_eq!(role_to_kind_predicate("object"), ("structural", "object_of", false));
+    }
+
+    #[test]
+    fn role_to_kind_predicate_unknown_normalized() {
+        let (k, p, n) = role_to_kind_predicate("triple");
+        assert_eq!((k, p), ("provenance", "mentions"));
+        assert!(n, "triple must signal normalization for audit");
+
+        let (k, p, n) = role_to_kind_predicate("custom_role_x");
+        assert_eq!((k, p), ("provenance", "mentions"));
+        assert!(n);
+    }
+
+    #[test]
+    fn uuid_from_hash_is_deterministic() {
+        let a = uuid_from_hash("memory_entities|m1|e1|mention|provenance|mentions");
+        let b = uuid_from_hash("memory_entities|m1|e1|mention|provenance|mentions");
+        assert_eq!(a, b);
+        // ...and different inputs yield different IDs:
+        let c = uuid_from_hash("memory_entities|m1|e2|mention|provenance|mentions");
+        assert_ne!(a, c);
+        // Parses as a valid UUID:
+        assert!(Uuid::parse_str(&a).is_ok());
+    }
+}

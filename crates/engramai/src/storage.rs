@@ -1891,6 +1891,95 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// T23 — Phase C backfill helper: project a `memory_entities` row
+    /// (or any other memory→entity mention-style fact) into the unified
+    /// `edges` table as `edge_kind='provenance'`.
+    ///
+    /// Field mapping (per v04-unified-substrate design.md §3.3 + §5.3):
+    ///   * `id`             — caller-computed deterministic UUID
+    ///                        (sha256 over the legacy row's natural key,
+    ///                        formatted as UUID per §5.3 lines 1170-1182).
+    ///   * `source_id`      — memory node id (TEXT, must already exist
+    ///                        in `nodes` — caller checks FK).
+    ///   * `target_id`      — entity node id (TEXT, must already exist).
+    ///   * `predicate`      — `'mentions'` for canonical mention rows.
+    ///                        Caller normalizes legacy `role` text into
+    ///                        a predicate string (see T23 driver).
+    ///   * `attributes_json` — caller-built JSON object. Empty object
+    ///                         `"{}"` is fine; the driver records
+    ///                         the raw legacy `role` here when it
+    ///                         deviates from the canonical value
+    ///                         (e.g. `'triple'`) for audit traceability.
+    ///   * `confidence`     — provenance edges are not probabilistic
+    ///                        in v0.3; pass `1.0` (caller does this).
+    ///   * `namespace`      — partition the edge belongs to (derived
+    ///                        from the parent memory by the driver,
+    ///                        since `memory_entities` has no own
+    ///                        namespace column).
+    ///   * `created_at`     — derived from the parent memory's
+    ///                        `created_at` for the same reason.
+    ///
+    /// Idempotency: `INSERT OR IGNORE` keyed on `id` only. The
+    /// deterministic UUID derivation (see design §5.3) makes
+    /// repeating the same backfill a no-op. Note that `provenance`
+    /// edges are NOT covered by a partial UNIQUE index on
+    /// `(source_id, target_id, edge_kind, predicate)` — by design
+    /// (§5.3 lines 1185-1195), they're allowed to accumulate when
+    /// emitted by non-backfill writers with fresh random UUIDs.
+    /// Idempotency relies entirely on the deterministic-id contract
+    /// at the backfill boundary.
+    ///
+    /// Returns `true` iff a new row was actually inserted (PK was
+    /// novel); `false` iff the row already existed.
+    pub(crate) fn insert_provenance_edge_row(
+        tx: &rusqlite::Transaction<'_>,
+        id: &str,
+        source_id: &str,
+        target_id: &str,
+        predicate: &str,
+        attributes_json: &str,
+        confidence: f64,
+        namespace: &str,
+        created_at: f64,
+    ) -> Result<bool, rusqlite::Error> {
+        let rows = tx.execute(
+            r#"
+            INSERT OR IGNORE INTO edges (
+                id,
+                source_id, target_id, target_literal,
+                edge_kind, predicate_kind, predicate,
+                summary, attributes,
+                confidence,
+                recorded_at,
+                resolution_method,
+                namespace, created_at, updated_at
+            ) VALUES (
+                ?,
+                ?, ?, NULL,
+                'provenance', 'canonical', ?,
+                '', ?,
+                ?,
+                ?,
+                'direct',
+                ?, ?, ?
+            )
+            "#,
+            params![
+                id,
+                source_id,
+                target_id,
+                predicate,
+                attributes_json,
+                confidence,
+                created_at,
+                namespace,
+                created_at,
+                created_at,
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
     /// Get a memory by ID.
     pub fn get(&self, id: &str) -> Result<Option<MemoryRecord>, rusqlite::Error> {
         fetch_memory_record(&self.conn, id)
