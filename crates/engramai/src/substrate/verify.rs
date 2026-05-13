@@ -133,6 +133,17 @@ pub struct DriverCounts {
     /// True when the count check passes given the driver's
     /// merge semantics.
     pub ok: bool,
+    /// True if the namespace filter was applied to the legacy-side
+    /// count. False when the driver was asked to filter by namespace
+    /// but the legacy table has no `namespace` column (memory_entities,
+    /// memory_embeddings, synthesis_provenance — see
+    /// `DriverSpec::legacy_has_namespace`). In that case `legacy_rows`
+    /// is a GLOBAL count rather than a namespace-scoped one, and the
+    /// `delta` is only meaningful when `opts.namespace` is `None`.
+    ///
+    /// Always `true` when `opts.namespace` is `None` (no filter
+    /// requested means filter trivially "applied").
+    pub legacy_ns_filter_applied: bool,
 }
 
 /// FK closure violation (invariant I5).
@@ -298,6 +309,22 @@ pub fn verify_phase_c_parity(
 /// would itself be a violation of I3 — that's the point). Each
 /// re-run also appends a new audit row to `backfill_runs`. The
 /// audit table is append-only by design; this is not a leak.
+///
+/// **Audit-row growth.** Every call with `check_idempotency=true`
+/// appends 7 rows to `backfill_runs` (one per driver). Operators
+/// running I3 in CI on every merge should expect linear growth in
+/// this table over time. The verifier itself stays correct (I2 only
+/// flags rows where `rows_read != sum`; idempotency re-runs trivially
+/// satisfy `rows_read == 0 + rows_read + 0`), but the table size
+/// climbs.
+///
+/// **I2 ordering.** The I2 audit consistency check runs BEFORE the
+/// I3 re-run in this function, so the `audit_violations` field in
+/// the returned report reflects state PRE-rerun. The 7 new audit
+/// rows from I3 are visible only on the next call to this entry
+/// point (or any call to the read-only variant). The new rows are
+/// guaranteed I2-clean by construction, so this ordering does not
+/// hide real violations.
 ///
 /// When `check_idempotency = false` this entry point is exactly
 /// equivalent to [`verify_phase_c_parity`].
@@ -492,7 +519,23 @@ fn driver_count(
     let legacy_rows = count_table(conn, spec.legacy_table, ns, spec.legacy_has_namespace)?;
     let unified_rows = count_unified(conn, &spec.fingerprint, ns)?;
     let delta = legacy_rows as i64 - unified_rows as i64;
-    let ok = if spec.merge_semantics {
+    // `count_table` silently ignores `ns` when the legacy table has
+    // no namespace column. Surface that in the report so an operator
+    // who passed a namespace filter knows the legacy side is a
+    // global count, not a scoped one.
+    let legacy_ns_filter_applied = ns.is_none() || spec.legacy_has_namespace;
+    // When the filter was NOT applied to the legacy side but WAS
+    // applied to the unified side, raw `delta` is meaningless
+    // (legacy is global, unified is scoped). Hold `ok` true only
+    // when the filter is consistent across both sides OR no filter
+    // was requested.
+    let ok = if !legacy_ns_filter_applied {
+        // Asymmetric filter: caller asked for ns scoping but legacy
+        // side can't honor it. Don't fail the check on this row —
+        // it would force every ns-scoped CI run to fail for these
+        // three drivers. Surface the asymmetry via the flag instead.
+        true
+    } else if spec.merge_semantics {
         delta >= 0
     } else {
         delta == 0
@@ -505,6 +548,7 @@ fn driver_count(
         merge_semantics: spec.merge_semantics,
         delta,
         ok,
+        legacy_ns_filter_applied,
     })
 }
 

@@ -687,3 +687,78 @@ fn t27_i3_missing_unified_row_triggers_reinsert() {
     assert_eq!(hit.rows_inserted_on_rerun, 1, "exactly one row re-inserted");
     assert!(!report.ok);
 }
+
+#[test]
+fn t27_ns_filter_flag_set_when_legacy_lacks_namespace_column() {
+    // FINDING-4 regression: when the verifier is asked to filter by
+    // namespace but a legacy table has no `namespace` column
+    // (memory_entities, memory_embeddings, synthesis_provenance), the
+    // legacy-side count is GLOBAL not scoped. The report must surface
+    // this via `legacy_ns_filter_applied=false` rather than silently
+    // computing a meaningless delta.
+    //
+    // Setup: empty DB, request ns="default" filter, inspect the three
+    // affected drivers' flags.
+    let tmp = tempdir().unwrap();
+    let storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    let opts = VerifyOpts {
+        namespace: Some("default".into()),
+        spot_check_sample_size: 0, // disable I4 for focus
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+
+    for legacy_table in ["memory_embeddings", "memory_entities", "synthesis_provenance"] {
+        let row = report
+            .counts
+            .iter()
+            .find(|c| c.legacy_table == legacy_table)
+            .expect("driver row present");
+        assert!(
+            !row.legacy_ns_filter_applied,
+            "{legacy_table} must report ns filter NOT applied: {row:#?}"
+        );
+        // ok must be true (we don't fail the check on this asymmetry)
+        assert!(
+            row.ok,
+            "{legacy_table} with asymmetric ns filter must NOT fail: {row:#?}"
+        );
+    }
+
+    // Sanity: ns-aware drivers DO have the flag set.
+    for legacy_table in ["memories", "entities", "entity_relations", "hebbian_links"] {
+        let row = report
+            .counts
+            .iter()
+            .find(|c| c.legacy_table == legacy_table)
+            .expect("driver row present");
+        assert!(
+            row.legacy_ns_filter_applied,
+            "{legacy_table} must report ns filter applied: {row:#?}"
+        );
+    }
+}
+
+#[test]
+fn t27_ns_filter_flag_default_true_when_no_filter_requested() {
+    // When no namespace filter is requested, every driver row should
+    // report `legacy_ns_filter_applied=true` (trivially: filter
+    // requested = none, filter applied = none, the two match).
+    let tmp = tempdir().unwrap();
+    let storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 0,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+
+    for row in &report.counts {
+        assert!(
+            row.legacy_ns_filter_applied,
+            "no ns filter requested → flag must be true for {}: {:#?}",
+            row.legacy_table, row
+        );
+    }
+}
