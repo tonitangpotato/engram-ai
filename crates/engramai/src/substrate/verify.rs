@@ -861,7 +861,7 @@ fn check_content_spot_check(
     spot_check_node_embeddings(conn, ns, opts, &mut out)?;
     spot_check_entities(conn, ns, opts, &mut out)?;
     spot_check_synthesis_provenance(conn, ns, opts, &mut out)?;
-    // Merge-semantics existence-only checks (ISS-113 slice 3).
+    // Merge-semantics existence-only checks (ISS-113).
     spot_check_entity_relations(conn, ns, opts, &mut out)?;
     spot_check_memory_entities(conn, ns, opts, &mut out)?;
     spot_check_hebbian_links(conn, ns, opts, &mut out)?;
