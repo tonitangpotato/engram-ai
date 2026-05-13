@@ -436,3 +436,169 @@ fn t27_audit_in_progress_row_not_flagged() {
     );
     assert!(report.ok);
 }
+
+// ─────────────────────────────────────────────────────────────────
+// I4 — Content spot-check
+// ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn t27_i4_sample_size_zero_disables_check() {
+    // sample_size=0 must skip the check entirely, even when there
+    // would be visible divergence. Lets CI dial it down for fast
+    // smoke runs.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_only(&mut storage, &sample_record("mem-a"), "default");
+    // Don't backfill — legacy has a row, unified doesn't.
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 0,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    assert!(report.content_mismatches.is_empty());
+    // I1 will still mark counts non-ok, but that's a different
+    // invariant. This test pins ONLY the I4 behavior.
+}
+
+#[test]
+fn t27_i4_post_backfill_no_mismatches() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_only(&mut storage, &sample_record("mem-a"), "default");
+    seed_legacy_only(&mut storage, &sample_record("mem-b"), "default");
+    seed_legacy_only(&mut storage, &sample_record("mem-c"), "default");
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    let report = verify_phase_c_parity(&storage, &VerifyOpts::default()).unwrap();
+    assert!(
+        report.content_mismatches.is_empty(),
+        "clean backfill must not produce content mismatches: {:#?}",
+        report.content_mismatches
+    );
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_i4_content_drift_flagged() {
+    // Seed, backfill, then mutate the unified content out from
+    // under the verifier. Critical-field drift MUST be flagged
+    // with field='content' and both sides recorded.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_only(&mut storage, &sample_record("mem-a"), "default");
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    storage
+        .conn()
+        .execute(
+            "UPDATE nodes SET content = 'CORRUPTED' WHERE id = ?",
+            params!["mem-a"],
+        )
+        .unwrap();
+
+    // Sample size 5 so we definitely pick the lone row.
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    let content_hit = report
+        .content_mismatches
+        .iter()
+        .find(|m| m.field == "content")
+        .expect("content drift must be reported");
+    assert_eq!(content_hit.row_id, "mem-a");
+    assert!(content_hit.legacy.contains("content of mem-a"));
+    assert!(content_hit.unified.contains("CORRUPTED"));
+    assert!(!report.ok);
+}
+
+#[test]
+fn t27_i4_attribute_key_order_not_flagged() {
+    // Attribute JSON written in different key order MUST NOT trip
+    // I4 — only value drift is a parity failure. This pins the
+    // JSON-parsed-comparison semantics.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let rec = sample_record("mem-a");
+    seed_legacy_only(&mut storage, &rec, "default");
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    // Re-write both sides with semantically-identical but textually-
+    // different JSON. `serde_json` happens to write objects in
+    // insertion order, so we go via raw SQL to guarantee a different
+    // textual representation.
+    storage
+        .conn()
+        .execute(
+            r#"UPDATE memories SET metadata = '{"tag":"t27","extra":"x"}' WHERE id = ?"#,
+            params!["mem-a"],
+        )
+        .unwrap();
+    storage
+        .conn()
+        .execute(
+            r#"UPDATE nodes SET attributes = '{"extra":"x","tag":"t27"}' WHERE id = ?"#,
+            params!["mem-a"],
+        )
+        .unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
+    let report = verify_phase_c_parity(&storage, &opts).unwrap();
+    assert!(
+        report.content_mismatches.is_empty(),
+        "key-order-only difference must NOT be flagged: {:#?}",
+        report.content_mismatches
+    );
+}
+
+#[test]
+fn t27_i4_sampling_is_deterministic() {
+    // Two runs with the same seed against the same DB MUST select
+    // the same row set. We can't observe the sample directly via
+    // the public API, but we CAN make divergence in one row and
+    // assert that a fixed seed either always hits it or always
+    // misses it — never alternates between runs.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    // 20 rows so sample_size=1 has a meaningful selection space.
+    for i in 0..20 {
+        seed_legacy_only(&mut storage, &sample_record(&format!("mem-{i:02}")), "default");
+    }
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    // Corrupt EVERY row's unified content so any sampled row will
+    // produce exactly one ContentMismatch. Then run twice with the
+    // same seed and assert the mismatch set is identical.
+    storage
+        .conn()
+        .execute("UPDATE nodes SET content = 'CORRUPTED' WHERE node_kind = 'memory'", [])
+        .unwrap();
+
+    let opts = VerifyOpts {
+        spot_check_sample_size: 3,
+        spot_check_seed: 42,
+        ..VerifyOpts::default()
+    };
+    let r1 = verify_phase_c_parity(&storage, &opts).unwrap();
+    let r2 = verify_phase_c_parity(&storage, &opts).unwrap();
+
+    let ids1: Vec<&String> = r1
+        .content_mismatches
+        .iter()
+        .filter(|m| m.field == "content")
+        .map(|m| &m.row_id)
+        .collect();
+    let ids2: Vec<&String> = r2
+        .content_mismatches
+        .iter()
+        .filter(|m| m.field == "content")
+        .map(|m| &m.row_id)
+        .collect();
+    assert_eq!(ids1.len(), 3, "sample of 3 should yield 3 content hits");
+    assert_eq!(ids1, ids2, "same seed must produce identical sample");
+}

@@ -64,7 +64,7 @@
 //! - `.gid/features/v04-unified-substrate/design.md` §5.3 + §8.4 T27
 //! - `substrate::backfill` — the 7 drivers this module verifies.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::storage::Storage;
@@ -171,6 +171,31 @@ pub struct AuditViolation {
     pub computed_sum: u64,
 }
 
+/// Content spot-check mismatch (invariant I4).
+///
+/// Surfaced when a legacy row's projection into the unified table
+/// disagrees on a critical field. "Critical" means: id, namespace,
+/// layer / memory_type / kind discriminators, content, key
+/// timestamps, and the attribute JSON parsed value-by-value. Counter
+/// fields on merge-semantics drivers (weight, coactivation_count,
+/// etc.) are intentionally excluded because they SUM across legacy
+/// rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContentMismatch {
+    /// Source table the sample was drawn from.
+    pub legacy_table: String,
+    /// Offending row id (legacy and unified ids match by design
+    /// for the drivers I4 currently covers; recorded once).
+    pub row_id: String,
+    /// Which field disagreed. Free-form so the message can name
+    /// nested JSON paths like `"attributes.tag"`.
+    pub field: String,
+    /// Legacy side value, stringified.
+    pub legacy: String,
+    /// Unified side value, stringified.
+    pub unified: String,
+}
+
 /// Full verification report.
 #[derive(Debug, Clone, Serialize)]
 pub struct VerificationReport {
@@ -178,6 +203,9 @@ pub struct VerificationReport {
     pub counts: Vec<DriverCounts>,
     /// I2 audit row inconsistencies. Empty == clean.
     pub audit_violations: Vec<AuditViolation>,
+    /// I4 content spot-check mismatches. Empty == clean (or check
+    /// disabled by `spot_check_sample_size == 0`).
+    pub content_mismatches: Vec<ContentMismatch>,
     /// I5 FK closure violations. Empty == clean.
     pub fk_violations: Vec<FkViolation>,
     /// True iff every invariant the run was asked to check passed.
@@ -192,8 +220,9 @@ impl VerificationReport {
     pub fn recompute_ok(&mut self) {
         let counts_ok = self.counts.iter().all(|c| c.ok);
         let audit_ok = self.audit_violations.is_empty();
+        let content_ok = self.content_mismatches.is_empty();
         let fks_ok = self.fk_violations.is_empty();
-        self.ok = counts_ok && audit_ok && fks_ok;
+        self.ok = counts_ok && audit_ok && content_ok && fks_ok;
     }
 }
 
@@ -211,11 +240,13 @@ pub fn verify_phase_c_parity(
 
     let counts = check_count_parity(conn, ns)?;
     let audit_violations = check_audit_consistency(conn)?;
+    let content_mismatches = check_content_spot_check(conn, ns, opts)?;
     let fk_violations = check_fk_closure(conn)?;
 
     let mut report = VerificationReport {
         counts,
         audit_violations,
+        content_mismatches,
         fk_violations,
         ok: false,
     };
@@ -671,3 +702,238 @@ fn check_audit_consistency(conn: &Connection) -> rusqlite::Result<Vec<AuditViola
     Ok(out)
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// I4 — Content spot-check (deterministic sampling)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Drive I4 across every driver that has a spot-check implementation.
+///
+/// Current coverage: T19 memories→nodes only. Other drivers land in
+/// follow-up commits; the dispatch shape makes it easy to add them
+/// one at a time without touching the report assembly.
+///
+/// `opts.spot_check_sample_size == 0` disables the check entirely
+/// (returns empty Vec without touching the DB), letting CI dial it
+/// down for fast smoke runs.
+fn check_content_spot_check(
+    conn: &Connection,
+    ns: Option<&str>,
+    opts: &VerifyOpts,
+) -> rusqlite::Result<Vec<ContentMismatch>> {
+    if opts.spot_check_sample_size == 0 {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    spot_check_memories(conn, ns, opts, &mut out)?;
+    // T20/T21/T25 pass-through and T22/T23/T24 merge-semantics
+    // checks land in subsequent commits.
+    Ok(out)
+}
+
+/// Deterministically sample N legacy ids from `table`, optionally
+/// restricted to `namespace`. Uses `StdRng::seed_from_u64(seed)` so
+/// two runs with the same (DB, seed, namespace) MUST select the
+/// same row set.
+///
+/// Strategy: fetch all eligible ids, then shuffle with the seeded
+/// PRNG and take the first N. The all-ids fetch is fine for the
+/// current scale (hundreds of thousands of rows fits in memory and
+/// the alternative — `ORDER BY RANDOM()` — is non-deterministic).
+/// If verifier becomes a hot path on multi-million-row tables, this
+/// helper switches to a reservoir sample without changing callers.
+fn sample_legacy_ids(
+    conn: &Connection,
+    table: &str,
+    ns: Option<&str>,
+    sample_size: usize,
+    seed: u64,
+) -> rusqlite::Result<Vec<String>> {
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+
+    let sql = match ns {
+        Some(_) => format!("SELECT id FROM {} WHERE namespace = ?", table),
+        None => format!("SELECT id FROM {}", table),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = match ns {
+        Some(n) => stmt
+            .query_map(rusqlite::params![n], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        None => stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
+
+    let mut ids = rows;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    ids.shuffle(&mut rng);
+    ids.truncate(sample_size);
+    Ok(ids)
+}
+
+/// I4 for T19 memories→nodes. For each sampled legacy id, fetch
+/// both sides and compare critical fields. The attribute blob is
+/// parsed JSON-to-JSON (NOT byte-equal) because writers may serialize
+/// keys in different orders and that's not a parity failure.
+fn spot_check_memories(
+    conn: &Connection,
+    ns: Option<&str>,
+    opts: &VerifyOpts,
+    out: &mut Vec<ContentMismatch>,
+) -> rusqlite::Result<()> {
+    let ids = sample_legacy_ids(
+        conn,
+        "memories",
+        ns,
+        opts.spot_check_sample_size,
+        opts.spot_check_seed,
+    )?;
+
+    for id in ids {
+        // Both sides projected onto the same field set. Selecting
+        // separately keeps the JOIN simple and the LHS/RHS clearly
+        // attributable when a mismatch fires.
+        let legacy: Option<MemoryRow> = conn
+            .query_row(
+                "SELECT id, namespace, layer, memory_type, content,
+                        occurred_at, created_at,
+                        working_strength, core_strength, importance,
+                        consolidation_count, pinned, source,
+                        COALESCE(metadata, '{}')
+                 FROM memories WHERE id = ?",
+                rusqlite::params![id],
+                MemoryRow::from_row,
+            )
+            .optional()?;
+        let unified: Option<MemoryRow> = conn
+            .query_row(
+                "SELECT id, namespace, layer, memory_type, content,
+                        occurred_at, created_at,
+                        working_strength, core_strength, importance,
+                        consolidation_count, pinned, source,
+                        COALESCE(attributes, '{}')
+                 FROM nodes WHERE id = ? AND node_kind = 'memory'",
+                rusqlite::params![id],
+                MemoryRow::from_row,
+            )
+            .optional()?;
+
+        match (legacy, unified) {
+            (None, _) => {
+                // Sampled id no longer exists on the legacy side.
+                // Shouldn't happen because sample_legacy_ids just
+                // selected it, but be defensive against a parallel
+                // writer.
+                out.push(ContentMismatch {
+                    legacy_table: "memories".into(),
+                    row_id: id,
+                    field: "existence".into(),
+                    legacy: "missing".into(),
+                    unified: "n/a".into(),
+                });
+            }
+            (Some(_), None) => {
+                // Legacy row not yet backfilled. I1 catches this on
+                // count, but I4 surfaces it on a per-row basis with
+                // the offending id named.
+                out.push(ContentMismatch {
+                    legacy_table: "memories".into(),
+                    row_id: id,
+                    field: "existence".into(),
+                    legacy: "present".into(),
+                    unified: "missing".into(),
+                });
+            }
+            (Some(l), Some(u)) => compare_memory_rows(&l, &u, out),
+        }
+    }
+    Ok(())
+}
+
+/// Projection of a memory row shared by the legacy and unified
+/// SELECTs. Identical schema by construction — the SELECTs above
+/// alias compatible columns.
+struct MemoryRow {
+    id: String,
+    namespace: String,
+    layer: String,
+    memory_type: String,
+    content: String,
+    occurred_at: Option<f64>,
+    created_at: f64,
+    working_strength: f64,
+    core_strength: f64,
+    importance: f64,
+    consolidation_count: i64,
+    pinned: i64,
+    source: String,
+    attributes_json: String,
+}
+
+impl MemoryRow {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(MemoryRow {
+            id: row.get(0)?,
+            namespace: row.get(1)?,
+            layer: row.get(2)?,
+            memory_type: row.get(3)?,
+            content: row.get(4)?,
+            occurred_at: row.get(5)?,
+            created_at: row.get(6)?,
+            working_strength: row.get(7)?,
+            core_strength: row.get(8)?,
+            importance: row.get(9)?,
+            consolidation_count: row.get(10)?,
+            pinned: row.get(11)?,
+            source: row.get(12)?,
+            attributes_json: row.get(13)?,
+        })
+    }
+}
+
+fn compare_memory_rows(l: &MemoryRow, u: &MemoryRow, out: &mut Vec<ContentMismatch>) {
+    let id = &l.id;
+    macro_rules! cmp {
+        ($field:ident) => {
+            if l.$field != u.$field {
+                out.push(ContentMismatch {
+                    legacy_table: "memories".into(),
+                    row_id: id.clone(),
+                    field: stringify!($field).into(),
+                    legacy: format!("{:?}", l.$field),
+                    unified: format!("{:?}", u.$field),
+                });
+            }
+        };
+    }
+    cmp!(namespace);
+    cmp!(layer);
+    cmp!(memory_type);
+    cmp!(content);
+    cmp!(occurred_at);
+    cmp!(created_at);
+    cmp!(working_strength);
+    cmp!(core_strength);
+    cmp!(importance);
+    cmp!(consolidation_count);
+    cmp!(pinned);
+    cmp!(source);
+
+    // Attributes round-trip: parse both sides as JSON and compare
+    // values. Tolerates key-order differences (legitimate) but
+    // catches value drift (real bug).
+    let l_attr: serde_json::Value = serde_json::from_str(&l.attributes_json)
+        .unwrap_or_else(|_| serde_json::Value::String(l.attributes_json.clone()));
+    let u_attr: serde_json::Value = serde_json::from_str(&u.attributes_json)
+        .unwrap_or_else(|_| serde_json::Value::String(u.attributes_json.clone()));
+    if l_attr != u_attr {
+        out.push(ContentMismatch {
+            legacy_table: "memories".into(),
+            row_id: id.clone(),
+            field: "attributes".into(),
+            legacy: l_attr.to_string(),
+            unified: u_attr.to_string(),
+        });
+    }
+}
