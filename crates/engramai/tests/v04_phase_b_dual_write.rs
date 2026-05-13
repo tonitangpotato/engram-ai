@@ -1777,3 +1777,327 @@ fn t17_phase_b_parity_invariants_across_namespaces() {
     t17_assert_parity_invariants_for_namespace(&storage, "alpha");
     t17_assert_parity_invariants_for_namespace(&storage, "beta");
 }
+
+
+// ============================================================================
+// T18 — Read isolation: dual-write does not affect any retrieval path.
+//
+// Hypothesis to falsify:
+//   "Some production retrieval API in engramai silently reads from the
+//    unified `nodes`/`edges` tables, so adding dual-write rows there
+//    could change what user-facing recall returns."
+//
+// Static evidence (verified at commit time of design.md T18):
+//   - `grep -rn 'FROM nodes\|JOIN nodes' crates/engramai/src/` → 0 hits
+//   - `grep -rn 'FROM edges\|JOIN edges'  crates/engramai/src/` → 0 hits
+//   - `grep -rn 'nodes_fts' crates/engramai/src/`              → 0 hits
+//   - All production FTS reads target the legacy `memories_fts` virtual
+//     table; retrieval/* walks memories + hebbian_links + graph_entities
+//     + graph_edges (legacy graph tables, not the unified `edges` table).
+//
+// Static grep can miss: triggers, transitive joins via views, hidden
+// reads through dyn-dispatched callbacks. This runtime test is the
+// hostile backstop — it nukes the unified tables and reasserts that
+// every public Storage retrieval API still returns byte-identical
+// results.
+//
+// Test mechanism:
+//   1. Bootstrap Storage + ingest a workload that exercises the
+//      Storage-facing Phase B writers: T12 (Storage::add), T14
+//      (Storage::record_association), T16 (Storage::store_raw +
+//      record_provenance). T13 (entities) and T15 (topics) go through
+//      a separate SqliteGraphStore API and are covered by their own
+//      tests + T17 parity invariants; here we only need *enough* rows
+//      in unified tables for step 3 to be a non-trivial mutation.
+//   2. Snapshot results from every public retrieval API on Storage.
+//   3. Hostile mutation: DELETE FROM nodes; DELETE FROM edges. Leaves
+//      every legacy table (memories, hebbian_links, etc.) untouched.
+//   4. Re-snapshot the same retrieval APIs.
+//   5. Assert each snapshot is byte-identical pre vs post.
+//
+// If any retrieval API silently reads from `nodes` or `edges`, step 4
+// observes empty/different results and the test fails with a localized
+// assertion. Pass = read isolation invariant holds.
+// ============================================================================
+
+/// Snapshot of every public Storage retrieval API. Compared byte-for-byte
+/// (via Debug + PartialEq) to detect divergence after the hostile mutation.
+#[derive(Debug, PartialEq)]
+struct T18RetrievalSnapshot {
+    search_fts_global: Vec<String>,
+    search_fts_ns_default: Vec<String>,
+    search_fts_ns_alpha: Vec<String>,
+    search_by_type_global: Vec<String>,
+    search_by_type_ns_default: Vec<String>,
+    fetch_recent_global: Vec<String>,
+    fetch_recent_ns_default: Vec<String>,
+    fetch_recent_ns_alpha: Vec<String>,
+    all_in_ns_default: Vec<String>,
+    all_in_ns_alpha: Vec<String>,
+    get_by_ids: Vec<String>,
+    hebbian_neighbors_probe: Vec<String>,
+    hebbian_weighted_probe: Vec<(String, f64)>,
+}
+
+fn t18_capture_snapshot(storage: &Storage, ids_to_probe: &[&str]) -> T18RetrievalSnapshot {
+    let mut search_fts_global = storage
+        .search_fts("memory", 50)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    search_fts_global.sort();
+
+    let mut search_fts_ns_default = storage
+        .search_fts_ns("memory", 50, Some("default"))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    search_fts_ns_default.sort();
+
+    let mut search_fts_ns_alpha = storage
+        .search_fts_ns("memory", 50, Some("alpha"))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    search_fts_ns_alpha.sort();
+
+    let mut search_by_type_global = storage
+        .search_by_type(MemoryType::Episodic)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    search_by_type_global.sort();
+
+    let mut search_by_type_ns_default = storage
+        .search_by_type_ns(MemoryType::Episodic, Some("default"), 50)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    search_by_type_ns_default.sort();
+
+    let mut fetch_recent_global = storage
+        .fetch_recent(50, Some("*"))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    fetch_recent_global.sort();
+
+    let mut fetch_recent_ns_default = storage
+        .fetch_recent(50, Some("default"))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    fetch_recent_ns_default.sort();
+
+    let mut fetch_recent_ns_alpha = storage
+        .fetch_recent(50, Some("alpha"))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    fetch_recent_ns_alpha.sort();
+
+    let mut all_in_ns_default = storage
+        .all_in_namespace(Some("default"))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    all_in_ns_default.sort();
+
+    let mut all_in_ns_alpha = storage
+        .all_in_namespace(Some("alpha"))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    all_in_ns_alpha.sort();
+
+    let mut get_by_ids = storage
+        .get_by_ids(ids_to_probe)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    get_by_ids.sort();
+
+    let probe = ids_to_probe.first().copied().unwrap_or("t18-a");
+    let mut hebbian_neighbors_probe = storage.get_hebbian_neighbors(probe).unwrap();
+    hebbian_neighbors_probe.sort();
+
+    let mut hebbian_weighted_probe = storage.get_hebbian_links_weighted(probe).unwrap();
+    hebbian_weighted_probe.sort_by(|a, b| a.0.cmp(&b.0));
+
+    T18RetrievalSnapshot {
+        search_fts_global,
+        search_fts_ns_default,
+        search_fts_ns_alpha,
+        search_by_type_global,
+        search_by_type_ns_default,
+        fetch_recent_global,
+        fetch_recent_ns_default,
+        fetch_recent_ns_alpha,
+        all_in_ns_default,
+        all_in_ns_alpha,
+        get_by_ids,
+        hebbian_neighbors_probe,
+        hebbian_weighted_probe,
+    }
+}
+
+/// Seed Storage-facing Phase B writers. T13/T15 (entity/topic) use a
+/// separate graph-store API that requires its own Connection — those
+/// dual-writes are covered by T17 parity invariants. For T18 we just
+/// need enough rows in `nodes`/`edges` that wiping them is non-trivial.
+fn t18_seed_workload(storage: &mut Storage) -> Vec<String> {
+    use engramai::synthesis::types::ProvenanceRecord;
+
+    let now = Utc.with_ymd_and_hms(2026, 5, 13, 9, 0, 0).unwrap();
+
+    // T12: regular memories across two namespaces. Content uses the
+    // word "memory" so FTS finds them all in step 2's snapshot probes.
+    let mut a = sample_record("t18-a");
+    a.created_at = now;
+    a.content = "memory alpha about pickles and pizza".into();
+    let mut b = sample_record("t18-b");
+    b.created_at = now;
+    b.content = "memory beta about cabbage and pickles".into();
+    let mut c = sample_record("t18-c");
+    c.created_at = now;
+    c.content = "memory gamma about pizza and bread".into();
+    storage.add(&a, "default").unwrap();
+    storage.add(&b, "default").unwrap();
+    storage.add(&c, "alpha").unwrap();
+
+    // T14: Hebbian co-activation — dual-writes one row to edges
+    // (edge_kind='associative', signal_source='entity').
+    storage
+        .record_association(
+            "t18-a",
+            "t18-b",
+            0.5,
+            "entity",
+            r#"{"entity_overlap":0.4}"#,
+            "default",
+        )
+        .unwrap();
+
+    // T16: synthesis insight via store_raw + provenance.
+    // store_raw dual-writes to nodes(node_kind='insight');
+    // record_provenance dual-writes to edges(edge_kind='provenance').
+    storage
+        .store_raw(
+            "t18-insight",
+            "synthesized insight about food memories",
+            "factual",
+            0.85,
+            Some(r#"{"is_synthesis":true,"source_count":2}"#),
+        )
+        .expect("store_raw insight");
+
+    let prov = ProvenanceRecord {
+        id: "t18-prov-1".into(),
+        insight_id: "t18-insight".into(),
+        source_id: "t18-a".into(),
+        cluster_id: "t18-cluster".into(),
+        synthesis_timestamp: now,
+        gate_decision: "accept".into(),
+        gate_scores: None,
+        confidence: 0.7,
+        source_original_importance: Some(0.6),
+    };
+    storage.record_provenance(&prov).expect("record_provenance");
+
+    vec![
+        "t18-a".to_string(),
+        "t18-b".to_string(),
+        "t18-c".to_string(),
+        "t18-insight".to_string(),
+    ]
+}
+
+#[test]
+fn t18_read_isolation_unaffected_by_unified_table_mutation() {
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t18.db").to_str().unwrap()).unwrap();
+
+    // Step 1: seed workload — dual-writes populate both legacy + unified.
+    let seeded_ids = t18_seed_workload(&mut storage);
+    let probe_ids: Vec<&str> = seeded_ids.iter().map(|s| s.as_str()).collect();
+
+    // Step 2: snapshot every public retrieval API.
+    let before = t18_capture_snapshot(&storage, &probe_ids);
+
+    // Sanity: workload actually produced something. If these are empty
+    // the test is degenerate and the byte-equality below is vacuous.
+    assert!(
+        !before.search_fts_global.is_empty(),
+        "T18 sanity: workload produced no FTS-searchable memories — test is degenerate"
+    );
+    assert!(
+        !before.fetch_recent_global.is_empty(),
+        "T18 sanity: workload produced no recent memories — test is degenerate"
+    );
+
+    // Step 2.5: confirm unified tables ARE populated pre-mutation —
+    // else the wipe in step 3 is a no-op and proves nothing.
+    {
+        let conn = storage.conn();
+        let nodes_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
+            .unwrap();
+        let edges_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            nodes_count > 0,
+            "T18 sanity: nodes empty after seed — Phase B dual-write not firing?"
+        );
+        assert!(
+            edges_count > 0,
+            "T18 sanity: edges empty after seed — Phase B dual-write not firing?"
+        );
+    }
+
+    // Step 3: HOSTILE mutation — wipe the unified tables. Any retrieval
+    // path that silently reads from them returns empty/different rows now.
+    {
+        let conn = storage.connection_mut();
+        conn.execute("DELETE FROM edges", []).unwrap();
+        conn.execute("DELETE FROM nodes", []).unwrap();
+        // nodes_fts is a virtual table mirroring nodes — nuke too in
+        // case some future retrieval path queries it.
+        let _ = conn.execute("DELETE FROM nodes_fts", []);
+    }
+
+    // Step 4: confirm mutation took effect.
+    {
+        let conn = storage.conn();
+        let nodes_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
+            .unwrap();
+        let edges_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(nodes_count, 0, "T18 step 3: nodes wipe didn't take");
+        assert_eq!(edges_count, 0, "T18 step 3: edges wipe didn't take");
+    }
+
+    // Step 5: re-snapshot and assert byte-identical.
+    let after = t18_capture_snapshot(&storage, &probe_ids);
+
+    assert_eq!(
+        before, after,
+        "T18 FAIL: retrieval results changed after wiping unified nodes/edges. \
+         This means some Storage retrieval API is reading from the unified \
+         substrate BEFORE Phase C cutover — that violates the dual-write \
+         contract (legacy is the sole read source through Phase B)."
+    );
+}
