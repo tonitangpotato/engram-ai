@@ -602,3 +602,88 @@ fn t27_i4_sampling_is_deterministic() {
     assert_eq!(ids1.len(), 3, "sample of 3 should yield 3 content hits");
     assert_eq!(ids1, ids2, "same seed must produce identical sample");
 }
+
+// ─────────────────────────────────────────────────────────────────
+// I3 — Idempotency (gated, costly)
+// ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn t27_i3_off_by_default() {
+    // Default VerifyOpts has check_idempotency=false. Even on a DB
+    // where I3 would fire if it ran, the default entry point must
+    // not invoke it.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_only(&mut storage, &sample_record("mem-a"), "default");
+    // NOTE: we deliberately do NOT call backfill — the legacy row
+    // is missing from the unified side. If I3 ran, a re-run would
+    // insert it. With the flag off, the report should NOT contain
+    // an idempotency violation.
+
+    let opts = VerifyOpts {
+        check_idempotency: false,
+        ..VerifyOpts::default()
+    };
+    let report =
+        engramai::substrate::verify::verify_phase_c_parity_mut(&mut storage, &opts).unwrap();
+    assert!(
+        report.idempotency_violations.is_empty(),
+        "I3 must be off by default even via the _mut entry point"
+    );
+}
+
+#[test]
+fn t27_i3_clean_backfill_has_no_violations() {
+    // After a real T19, re-running every driver inserts zero rows.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_only(&mut storage, &sample_record("mem-a"), "default");
+    seed_legacy_only(&mut storage, &sample_record("mem-b"), "default");
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    let opts = VerifyOpts {
+        check_idempotency: true,
+        ..VerifyOpts::default()
+    };
+    let report =
+        engramai::substrate::verify::verify_phase_c_parity_mut(&mut storage, &opts).unwrap();
+    assert!(
+        report.idempotency_violations.is_empty(),
+        "clean backfill must idempotently re-run with zero inserts: {:#?}",
+        report.idempotency_violations
+    );
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_i3_missing_unified_row_triggers_reinsert() {
+    // Seed, backfill, DELETE a nodes row out from under the verifier,
+    // turn I3 on. The re-run inserts the missing row back; that's
+    // an I3 violation because the contract is "re-run is a no-op
+    // on a backfilled DB".
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_only(&mut storage, &sample_record("mem-a"), "default");
+    seed_legacy_only(&mut storage, &sample_record("mem-b"), "default");
+    backfill_memories_to_nodes(&mut storage, None).unwrap();
+
+    storage
+        .conn()
+        .execute("DELETE FROM nodes WHERE id = ?", params!["mem-a"])
+        .unwrap();
+
+    let opts = VerifyOpts {
+        check_idempotency: true,
+        spot_check_sample_size: 0, // disable I4 to keep this test focused
+        ..VerifyOpts::default()
+    };
+    let report =
+        engramai::substrate::verify::verify_phase_c_parity_mut(&mut storage, &opts).unwrap();
+    let hit = report
+        .idempotency_violations
+        .iter()
+        .find(|v| v.legacy_table == "memories")
+        .expect("memories driver must report idempotency violation");
+    assert_eq!(hit.rows_inserted_on_rerun, 1, "exactly one row re-inserted");
+    assert!(!report.ok);
+}

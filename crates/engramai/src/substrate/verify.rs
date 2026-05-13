@@ -196,6 +196,28 @@ pub struct ContentMismatch {
     pub unified: String,
 }
 
+/// Idempotency violation (invariant I3).
+///
+/// Surfaced when a re-run of a Phase C driver against an
+/// already-backfilled DB inserts more than zero new rows. The
+/// driver's `BackfillRun::rows_inserted` is the canonical measure;
+/// `rows_skipped_existing` should equal `rows_read` on a clean
+/// re-run.
+///
+/// Gated behind [`VerifyOpts::check_idempotency`] because it
+/// actually re-executes the drivers. Requires `&mut Storage` and
+/// the dedicated [`verify_phase_c_parity_mut`] entry point.
+#[derive(Debug, Clone, Serialize)]
+pub struct IdempotencyViolation {
+    /// Source table whose driver misbehaved.
+    pub legacy_table: String,
+    /// `rows_inserted` from the re-run. Should be 0.
+    pub rows_inserted_on_rerun: u64,
+    /// `rows_read` from the re-run. Reported for triage so an
+    /// operator can see how big the run was.
+    pub rows_read_on_rerun: u64,
+}
+
 /// Full verification report.
 #[derive(Debug, Clone, Serialize)]
 pub struct VerificationReport {
@@ -203,6 +225,12 @@ pub struct VerificationReport {
     pub counts: Vec<DriverCounts>,
     /// I2 audit row inconsistencies. Empty == clean.
     pub audit_violations: Vec<AuditViolation>,
+    /// I3 idempotency violations. Empty == clean. Always empty
+    /// when invoked via [`verify_phase_c_parity`] (the read-only
+    /// entry point) because I3 needs `&mut Storage`; populated only
+    /// by [`verify_phase_c_parity_mut`] when
+    /// [`VerifyOpts::check_idempotency`] is true.
+    pub idempotency_violations: Vec<IdempotencyViolation>,
     /// I4 content spot-check mismatches. Empty == clean (or check
     /// disabled by `spot_check_sample_size == 0`).
     pub content_mismatches: Vec<ContentMismatch>,
@@ -221,16 +249,21 @@ impl VerificationReport {
         let counts_ok = self.counts.iter().all(|c| c.ok);
         let audit_ok = self.audit_violations.is_empty();
         let content_ok = self.content_mismatches.is_empty();
+        let idempotency_ok = self.idempotency_violations.is_empty();
         let fks_ok = self.fk_violations.is_empty();
-        self.ok = counts_ok && audit_ok && content_ok && fks_ok;
+        self.ok = counts_ok && audit_ok && content_ok && idempotency_ok && fks_ok;
     }
 }
 
-/// Run every enabled invariant check and return a structured report.
+/// Run every read-only invariant check and return a structured
+/// report. Read-only against substrate tables (no mutations).
 ///
-/// Read-only against the substrate tables (unless
-/// [`VerifyOpts::check_idempotency`] is set, which intentionally
-/// re-runs the drivers).
+/// **Does NOT run I3 (idempotency)** even when
+/// [`VerifyOpts::check_idempotency`] is true — I3 needs `&mut
+/// Storage` and is reachable only via
+/// [`verify_phase_c_parity_mut`]. The flag is honored by the `_mut`
+/// variant; here it's a no-op so a tooling caller can pass the
+/// same `VerifyOpts` to either entry point.
 pub fn verify_phase_c_parity(
     storage: &Storage,
     opts: &VerifyOpts,
@@ -246,11 +279,40 @@ pub fn verify_phase_c_parity(
     let mut report = VerificationReport {
         counts,
         audit_violations,
+        idempotency_violations: Vec::new(),
         content_mismatches,
         fk_violations,
         ok: false,
     };
     report.recompute_ok();
+    Ok(report)
+}
+
+/// Same as [`verify_phase_c_parity`] but ALSO runs I3 (idempotency)
+/// when [`VerifyOpts::check_idempotency`] is true. Takes `&mut
+/// Storage` because the re-run requires it.
+///
+/// **Cost.** Re-executes every Phase C driver. On a freshly
+/// backfilled DB the work is bounded by `rows_read` SELECTs +
+/// zero INSERTs; on a stale DB it could insert real rows (which
+/// would itself be a violation of I3 — that's the point). Each
+/// re-run also appends a new audit row to `backfill_runs`. The
+/// audit table is append-only by design; this is not a leak.
+///
+/// When `check_idempotency = false` this entry point is exactly
+/// equivalent to [`verify_phase_c_parity`].
+pub fn verify_phase_c_parity_mut(
+    storage: &mut Storage,
+    opts: &VerifyOpts,
+) -> rusqlite::Result<VerificationReport> {
+    // Run all read-only invariants first against a `&` borrow.
+    let mut report = verify_phase_c_parity(storage, opts)?;
+
+    if opts.check_idempotency {
+        let idempotency_violations = check_idempotency(storage, opts.namespace.as_deref())?;
+        report.idempotency_violations = idempotency_violations;
+        report.recompute_ok();
+    }
     Ok(report)
 }
 
@@ -936,4 +998,59 @@ fn compare_memory_rows(l: &MemoryRow, u: &MemoryRow, out: &mut Vec<ContentMismat
             unified: u_attr.to_string(),
         });
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I3 — Idempotency (gated, costly)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Re-execute every Phase C driver and report any whose re-run
+/// inserts more than zero new rows.
+///
+/// The contract for a Phase C driver is "running it twice against
+/// the same DB is equivalent to running it once" — the second run
+/// must observe every legacy row as already-projected and skip it
+/// (`rows_skipped_existing == rows_read`, `rows_inserted == 0`).
+/// This function is the durable proof of that contract.
+///
+/// Driver order matches the design.md sec 8.4 ordering: nodes
+/// before edges, because edges depend on nodes via FK and a missing
+/// node would make an edge driver insert net-new rows on the second
+/// pass (which would be flagged here as the I3 violation it is).
+fn check_idempotency(
+    storage: &mut crate::storage::Storage,
+    ns: Option<&str>,
+) -> rusqlite::Result<Vec<IdempotencyViolation>> {
+    use crate::substrate::backfill::{
+        backfill_embeddings_to_node_embeddings, backfill_entities_to_nodes,
+        backfill_entity_relations_to_edges, backfill_hebbian_links_to_edges,
+        backfill_memories_to_nodes, backfill_memory_entities_to_edges,
+        backfill_synthesis_provenance_to_edges,
+    };
+
+    let mut violations = Vec::new();
+    type DriverFn =
+        fn(&mut crate::storage::Storage, Option<&str>) -> rusqlite::Result<crate::substrate::backfill::BackfillRun>;
+    let drivers: Vec<(&'static str, DriverFn)> = vec![
+        ("memories", backfill_memories_to_nodes),
+        ("memory_embeddings", backfill_embeddings_to_node_embeddings),
+        ("entities", backfill_entities_to_nodes),
+        ("entity_relations", backfill_entity_relations_to_edges),
+        ("memory_entities", backfill_memory_entities_to_edges),
+        ("hebbian_links", backfill_hebbian_links_to_edges),
+        ("synthesis_provenance", backfill_synthesis_provenance_to_edges),
+    ];
+
+    for (legacy_table, driver) in drivers {
+        let run = driver(storage, ns)?;
+        if run.rows_inserted > 0 {
+            violations.push(IdempotencyViolation {
+                legacy_table: legacy_table.to_string(),
+                rows_inserted_on_rerun: run.rows_inserted,
+                rows_read_on_rerun: run.rows_read,
+            });
+        }
+    }
+
+    Ok(violations)
 }
