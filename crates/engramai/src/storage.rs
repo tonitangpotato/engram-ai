@@ -317,6 +317,9 @@ impl Storage {
         // v0.4 unified substrate: nodes table (T05)
         Self::migrate_unified_nodes(&conn)?;
 
+        // v0.4 unified substrate: edges table (T06)
+        Self::migrate_unified_edges(&conn)?;
+
         Ok(Self { conn })
     }
 
@@ -412,6 +415,98 @@ impl Storage {
                 next_value INTEGER NOT NULL DEFAULT 1
             );
             INSERT OR IGNORE INTO fts_rowid_counter (singleton, next_value) VALUES (0, 1);
+        "#)?;
+        Ok(())
+    }
+
+    /// v0.4 unified substrate (T06): create the `edges` table and its indexes
+    /// per design.md §3.2.
+    ///
+    /// **Additive only** — does not touch `entity_relations`, `hebbian_links`,
+    /// or any existing table. Idempotent (GUARD-ss.3) via `CREATE TABLE IF NOT
+    /// EXISTS` + `CREATE INDEX IF NOT EXISTS`.
+    ///
+    /// Foreign keys reference `nodes(id)` and self-reference (`supersedes`,
+    /// `invalidated_by`) — so T05 (`migrate_unified_nodes`) must run first.
+    /// The call site in `Storage::open` already enforces this order.
+    ///
+    /// Schema version is **not** bumped here — T09 lands that after the full
+    /// T05–T08 set is in place.
+    fn migrate_unified_edges(conn: &Connection) -> SqlResult<()> {
+        conn.execute_batch(r#"
+            CREATE TABLE IF NOT EXISTS edges (
+                -- identity
+                id                  TEXT PRIMARY KEY,
+
+                -- endpoints
+                source_id           TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
+                target_id           TEXT REFERENCES nodes(id) ON DELETE RESTRICT,
+                target_literal      TEXT,        -- JSON; NULL iff target_id IS NOT NULL
+
+                -- typing: two-level discriminator (§3.2)
+                edge_kind           TEXT NOT NULL,
+                predicate_kind      TEXT NOT NULL DEFAULT 'canonical',
+                predicate           TEXT NOT NULL,
+
+                -- payload
+                summary             TEXT NOT NULL DEFAULT '',
+                attributes          TEXT NOT NULL DEFAULT '{}',
+                weight              REAL NOT NULL DEFAULT 1.0,
+                activation          REAL NOT NULL DEFAULT 0.0,
+                confidence          REAL NOT NULL DEFAULT 0.5,
+
+                -- temporal (bi-temporal)
+                valid_from          REAL,
+                valid_to            REAL,
+                recorded_at         REAL NOT NULL,
+
+                -- supersession / retirement
+                invalidated_at      REAL,
+                invalidated_by      TEXT REFERENCES edges(id),
+                supersedes          TEXT REFERENCES edges(id),
+
+                agent_affect        TEXT,
+
+                -- provenance
+                source_run_id       TEXT,        -- string UUID; references pipeline_runs.id
+                source_memory_id    TEXT REFERENCES nodes(id),
+                resolution_method   TEXT NOT NULL DEFAULT 'direct',
+
+                namespace           TEXT NOT NULL DEFAULT 'default',
+                created_at          REAL NOT NULL,
+                updated_at          REAL NOT NULL,
+
+                CHECK (confidence BETWEEN 0.0 AND 1.0),
+                CHECK (weight     >= 0.0),
+                CHECK (
+                    (target_id IS NOT NULL AND target_literal IS NULL) OR
+                    (target_id IS NULL     AND target_literal IS NOT NULL)
+                )
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_edges_source
+                ON edges(source_id, edge_kind);
+            CREATE INDEX IF NOT EXISTS idx_edges_target
+                ON edges(target_id, edge_kind) WHERE target_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_edges_kind_pred
+                ON edges(edge_kind, predicate, namespace);
+            CREATE INDEX IF NOT EXISTS idx_edges_namespace
+                ON edges(namespace);
+            CREATE INDEX IF NOT EXISTS idx_edges_temporal
+                ON edges(valid_from, valid_to) WHERE valid_from IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_edges_live
+                ON edges(edge_kind, predicate) WHERE invalidated_at IS NULL;
+
+            -- Partial UNIQUE indexes enforce upsert semantics per design §3.2:
+            -- associative co-activation accumulates weight (one row per
+            -- src/tgt/predicate); containment is set membership. Structural
+            -- edges may legitimately duplicate across runs and are NOT unique.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_assoc_unique
+                ON edges(source_id, target_id, edge_kind, predicate)
+                WHERE edge_kind = 'associative';
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_containment_unique
+                ON edges(source_id, target_id, edge_kind, predicate)
+                WHERE edge_kind = 'containment';
         "#)?;
         Ok(())
     }
@@ -6125,5 +6220,91 @@ mod tests {
             )
             .expect("counter singleton row exists");
         assert_eq!(next_value, 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // v0.4 unified substrate — T06: edges table + indexes
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_t06_fresh_db_creates_unified_edges_table() {
+        let storage = test_storage();
+        let exists: Option<String> = storage
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='edges'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(exists.as_deref(), Some("edges"));
+    }
+
+    #[test]
+    fn test_t06_idempotent_migration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("t06-idempotent.db");
+
+        // First open creates the schema.
+        {
+            let s1 = Storage::new(&path).expect("first open");
+            let exists: Option<String> = s1
+                .conn
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='edges'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            assert_eq!(exists.as_deref(), Some("edges"));
+        }
+
+        // Re-open: migration must be a no-op (no duplicate index errors).
+        let s2 = Storage::new(&path).expect("re-open should be idempotent");
+        let exists: Option<String> = s2
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='edges'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(exists.as_deref(), Some("edges"));
+    }
+
+    #[test]
+    fn test_t06_edges_indexes_and_partial_uniques_created() {
+        // Indexes (incl. partial UNIQUE indexes for associative+containment
+        // upsert semantics per design §3.2) must exist after migration.
+        let storage = test_storage();
+        let mut stmt = storage
+            .conn
+            .prepare(
+                "SELECT name FROM sqlite_master \
+                 WHERE type='index' AND tbl_name='edges' ORDER BY name",
+            )
+            .expect("prepare index list");
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query indexes")
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Spot-check the design-mandated indexes are present.
+        for expected in &[
+            "idx_edges_source",
+            "idx_edges_target",
+            "idx_edges_kind_pred",
+            "idx_edges_namespace",
+            "idx_edges_temporal",
+            "idx_edges_live",
+            "idx_edges_assoc_unique",
+            "idx_edges_containment_unique",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "missing index {expected}: have {names:?}"
+            );
+        }
     }
 }
