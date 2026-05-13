@@ -991,3 +991,364 @@ fn t15_upsert_topic_containment_empty_members_is_noop() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  T16 — Synthesis dual-write: insights → nodes(node_kind='insight'),
+//  provenance edges → edges(edge_kind='provenance', predicate='derived_from')
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Scope per design §4.5 + §8.10 T16:
+//
+//   * `Storage::store_raw` is the synthesis-only ingest path (caller =
+//     `synthesis/engine.rs::store_insight_atomically`, hardcoded
+//     `source='synthesis'`). T16 makes every `store_raw` row also land
+//     in `nodes` with `node_kind='insight'` (NOT 'memory'). This is
+//     symmetric with T15's EntityKind::Topic → node_kind='topic'
+//     refinement: `abstract_l5` retrieval and insight-specific filters
+//     need a typed kind, not a generic 'memory' with a magic
+//     attributes flag.
+//
+//   * `Storage::record_provenance` writes the legacy
+//     `synthesis_provenance` row AND a unified `edges` row of
+//     `edge_kind='provenance'`, `predicate='derived_from'`,
+//     `source_id=insight_id`, `target_id=source_memory_id`. Attributes
+//     embed gate_decision, gate_scores (as nested JSON via `json()`,
+//     not quoted string), cluster_id, source_original_importance.
+//
+//   * No partial unique index on provenance (design §3.2 only
+//     uniquifies associative + containment). Retry semantics: each
+//     provenance row carries a fresh `id` from caller, so re-running
+//     synthesis with the same cluster appends new rows — matches
+//     legacy table behavior. T17 row-count parity test will assert
+//     legacy_count == unified_count per (insight_id, source_id) pair.
+
+use engramai::synthesis::types::{GateScores, ProvenanceRecord};
+
+/// Seed two memory rows + one synthesized insight via `store_raw`.
+/// Returns (source_a, source_b, insight_id).
+fn seed_two_sources_and_insight(storage: &mut Storage) -> (String, String, String) {
+    let (a, b) = seed_two_memories(storage);
+    let insight_id = "t16-insight".to_string();
+    storage
+        .store_raw(
+            &insight_id,
+            "synthesized fact about pickles and cabbage",
+            "factual",
+            0.85,
+            Some(r#"{"is_synthesis":true,"source_count":2}"#),
+        )
+        .expect("store_raw for insight");
+    (a, b, insight_id)
+}
+
+#[test]
+fn t16_store_raw_dual_writes_with_node_kind_insight() {
+    // §4.5 contract: `Storage::store_raw` is synthesis-only — every row
+    // must land in `nodes` with `node_kind='insight'`, never 'memory'.
+    let dir = tempdir().unwrap();
+    let storage = Storage::new(dir.path().join("t16a.db").to_str().unwrap()).unwrap();
+    let insight_id = "t16a-insight";
+    storage
+        .store_raw(insight_id, "an insight about ferments", "factual", 0.7, None)
+        .expect("store_raw");
+
+    let (node_kind, memory_type, source, content, importance): (
+        String,
+        String,
+        String,
+        String,
+        f64,
+    ) = storage
+        .conn()
+        .query_row(
+            "SELECT node_kind, memory_type, source, content, importance \
+             FROM nodes WHERE id = ?1",
+            params![insight_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .expect("nodes row for insight");
+
+    assert_eq!(node_kind, "insight", "store_raw must dual-write node_kind='insight'");
+    assert_eq!(memory_type, "factual");
+    assert_eq!(source, "synthesis");
+    assert_eq!(content, "an insight about ferments");
+    assert!((importance - 0.7).abs() < 1e-9);
+
+    // Legacy memories row also exists (additive contract — T17 will
+    // verify byte-equality, not asserted here).
+    let legacy_count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE id = ?1",
+            params![insight_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy_count, 1, "legacy memories row also present");
+}
+
+#[test]
+fn t16_record_provenance_dual_writes_to_edges() {
+    // §4.5 contract: provenance row in synthesis_provenance AND
+    // equivalent row in edges with edge_kind='provenance',
+    // predicate='derived_from', direction insight → source.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t16b.db").to_str().unwrap()).unwrap();
+    let (a, _b, insight_id) = seed_two_sources_and_insight(&mut storage);
+
+    let now = Utc.with_ymd_and_hms(2026, 5, 13, 12, 0, 0).unwrap();
+    let prov = ProvenanceRecord {
+        id: "prov-1".into(),
+        insight_id: insight_id.clone(),
+        source_id: a.clone(),
+        cluster_id: "cluster-xyz".into(),
+        synthesis_timestamp: now,
+        gate_decision: "passed_quality".into(),
+        gate_scores: Some(GateScores {
+            quality: 0.87,
+            type_diversity: 2,
+            estimated_cost: 0.012,
+            member_count: 5,
+        }),
+        confidence: 0.91,
+        source_original_importance: Some(0.6),
+    };
+    storage.record_provenance(&prov).expect("record_provenance");
+
+    // Legacy row present.
+    let legacy_count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM synthesis_provenance WHERE id = ?1",
+            params!["prov-1"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy_count, 1);
+
+    // Unified edge present with correct shape.
+    let (src, tgt, ek, pk, pred, conf, weight, ns): (
+        String, String, String, String, String, f64, f64, String,
+    ) = storage
+        .conn()
+        .query_row(
+            "SELECT source_id, target_id, edge_kind, predicate_kind, predicate, \
+                    confidence, weight, namespace FROM edges WHERE id = ?1",
+            params!["prov-1"],
+            |r| Ok((
+                r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
+                r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?,
+            )),
+        )
+        .expect("unified edges row");
+
+    assert_eq!(src, insight_id, "source = insight (derives from)");
+    assert_eq!(tgt, a, "target = source memory");
+    assert_eq!(ek, "provenance");
+    assert_eq!(pk, "canonical");
+    assert_eq!(pred, "derived_from");
+    assert!((conf - 0.91).abs() < 1e-9, "confidence column = record.confidence");
+    assert!((weight - 1.0).abs() < 1e-9, "provenance weight = 1.0 (presence, not strength)");
+    assert_eq!(ns, "default");
+}
+
+#[test]
+fn t16_provenance_edge_attributes_embed_gate_metadata_as_nested_json() {
+    // §4.5: attributes JSON must embed gate_decision, gate_scores
+    // (as nested JSON, NOT a quoted string), cluster_id,
+    // source_original_importance. The `json()` wrapper around
+    // gate_scores is the load-bearing detail — without it,
+    // json_extract on the stored attributes returns a doubly-escaped
+    // string, not a parseable object.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t16c.db").to_str().unwrap()).unwrap();
+    let (a, _b, insight_id) = seed_two_sources_and_insight(&mut storage);
+
+    let prov = ProvenanceRecord {
+        id: "prov-2".into(),
+        insight_id: insight_id.clone(),
+        source_id: a.clone(),
+        cluster_id: "cluster-abc".into(),
+        synthesis_timestamp: Utc::now(),
+        gate_decision: "needs_review".into(),
+        gate_scores: Some(GateScores {
+            quality: 0.5,
+            type_diversity: 3,
+            estimated_cost: 0.025,
+            member_count: 7,
+        }),
+        confidence: 0.6,
+        source_original_importance: Some(0.4),
+    };
+    storage.record_provenance(&prov).expect("record_provenance");
+
+    // gate_decision is a plain string — extract returns it directly.
+    let gate_decision: String = storage
+        .conn()
+        .query_row(
+            "SELECT json_extract(attributes, '$.gate_decision') FROM edges WHERE id = ?1",
+            params!["prov-2"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(gate_decision, "needs_review");
+
+    // cluster_id likewise.
+    let cluster_id: String = storage
+        .conn()
+        .query_row(
+            "SELECT json_extract(attributes, '$.cluster_id') FROM edges WHERE id = ?1",
+            params!["prov-2"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cluster_id, "cluster-abc");
+
+    // gate_scores is a nested object — extracting a sub-key proves it's
+    // structured JSON, not a quoted blob string.
+    let quality: f64 = storage
+        .conn()
+        .query_row(
+            "SELECT json_extract(attributes, '$.gate_scores.quality') FROM edges WHERE id = ?1",
+            params!["prov-2"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((quality - 0.5).abs() < 1e-9, "gate_scores.quality decodes as f64, not string");
+
+    let member_count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT json_extract(attributes, '$.gate_scores.member_count') FROM edges WHERE id = ?1",
+            params!["prov-2"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(member_count, 7);
+
+    // source_original_importance roundtrips as nullable f64.
+    let soi: f64 = storage
+        .conn()
+        .query_row(
+            "SELECT json_extract(attributes, '$.source_original_importance') FROM edges WHERE id = ?1",
+            params!["prov-2"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((soi - 0.4).abs() < 1e-9);
+}
+
+#[test]
+fn t16_provenance_null_gate_scores_roundtrips_as_null() {
+    // Defensive: GateScores is Option<_>. When None, the JSON value
+    // should be JSON null, not "null" string and not absent — so
+    // downstream code can rely on `json_type(...) = 'null'`.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t16d.db").to_str().unwrap()).unwrap();
+    let (a, _b, insight_id) = seed_two_sources_and_insight(&mut storage);
+
+    let prov = ProvenanceRecord {
+        id: "prov-3".into(),
+        insight_id: insight_id.clone(),
+        source_id: a.clone(),
+        cluster_id: "cluster-null".into(),
+        synthesis_timestamp: Utc::now(),
+        gate_decision: "no_gate".into(),
+        gate_scores: None,
+        confidence: 0.5,
+        source_original_importance: None,
+    };
+    storage.record_provenance(&prov).expect("record_provenance");
+
+    let gate_scores_type: String = storage
+        .conn()
+        .query_row(
+            "SELECT json_type(attributes, '$.gate_scores') FROM edges WHERE id = ?1",
+            params!["prov-3"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(gate_scores_type, "null", "missing gate_scores stored as JSON null");
+
+    let soi_type: String = storage
+        .conn()
+        .query_row(
+            "SELECT json_type(attributes, '$.source_original_importance') FROM edges WHERE id = ?1",
+            params!["prov-3"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(soi_type, "null");
+}
+
+#[test]
+fn t16_full_synthesis_flow_atomic_dual_write() {
+    // End-to-end: insight + 2 provenance records under one outer
+    // transaction (mirrors `synthesis/engine.rs::store_insight_atomically`).
+    // All four legacy rows AND four unified rows must commit atomically.
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t16e.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    storage.begin_transaction().expect("begin tx");
+    let insight_id = "t16e-insight";
+    storage
+        .store_raw(insight_id, "two-fact synthesis", "factual", 0.8, None)
+        .expect("store_raw in tx");
+    for (i, sid) in [&a, &b].iter().enumerate() {
+        let prov = ProvenanceRecord {
+            id: format!("prov-{i}"),
+            insight_id: insight_id.into(),
+            source_id: (*sid).clone(),
+            cluster_id: "c1".into(),
+            synthesis_timestamp: Utc::now(),
+            gate_decision: "ok".into(),
+            gate_scores: None,
+            confidence: 0.7,
+            source_original_importance: Some(0.5),
+        };
+        storage.record_provenance(&prov).expect("record_provenance in tx");
+    }
+    storage.commit_transaction().expect("commit tx");
+
+    // Insight node landed.
+    let (kind,): (String,) = storage
+        .conn()
+        .query_row(
+            "SELECT node_kind FROM nodes WHERE id = ?1",
+            params![insight_id],
+            |r| Ok((r.get(0)?,)),
+        )
+        .unwrap();
+    assert_eq!(kind, "insight");
+
+    // Two provenance edges.
+    let edge_count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM edges \
+             WHERE edge_kind = 'provenance' AND source_id = ?1",
+            params![insight_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(edge_count, 2, "one provenance edge per source");
+
+    // Targets match.
+    let mut targets: Vec<String> = storage
+        .conn()
+        .prepare(
+            "SELECT target_id FROM edges \
+             WHERE edge_kind = 'provenance' AND source_id = ?1 \
+             ORDER BY target_id",
+        )
+        .unwrap()
+        .query_map(params![insight_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    targets.sort();
+    let mut expected = vec![a, b];
+    expected.sort();
+    assert_eq!(targets, expected);
+}

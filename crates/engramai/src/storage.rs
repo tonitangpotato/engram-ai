@@ -3932,6 +3932,77 @@ impl Storage {
                 record.source_original_importance,
             ],
         )?;
+
+        // T16 — Phase B dual-write: provenance also lands in unified
+        // `edges` as `edge_kind='provenance'`, `predicate='derived_from'`
+        // (design §4.5). Direction: insight → source memory (the insight
+        // is *derived from* the source).
+        //
+        // No partial unique index for provenance (design §3.2: only
+        // associative + containment are uniquified). Each provenance
+        // record gets a fresh `id` from the caller, so re-running a
+        // retried synthesis creates additional rows — that matches the
+        // legacy table's append-only behavior. T17 row-count parity test
+        // will assert legacy-row-count == unified-row-count for
+        // edge_kind='provenance'.
+        //
+        // Attributes JSON embeds gate_decision, gate_scores, cluster_id
+        // per design §4.5 SQL. Pre-serialize gate_scores so the
+        // `json_object` builder gets a string we can attach verbatim
+        // (json_object embeds strings as JSON-encoded strings; the
+        // gate_scores TEXT is already valid JSON, so we use json() to
+        // unwrap it into the parent object instead of nesting as a
+        // quoted string).
+        let gate_scores_json: Option<String> = record
+            .gate_scores
+            .as_ref()
+            .map(|s| serde_json::to_string(s).unwrap_or_default());
+        let ts_unix = datetime_to_f64(&record.synthesis_timestamp);
+        // Use `json()` wrapper so embedded JSON objects don't get
+        // re-encoded as quoted strings inside the parent attributes
+        // blob — matches the convention used in §4.3 Hebbian SQL.
+        self.conn.execute(
+            r#"
+            INSERT INTO edges (
+                id,
+                source_id, target_id,
+                edge_kind, predicate_kind, predicate,
+                summary, attributes, weight,
+                activation, confidence,
+                recorded_at,
+                namespace,
+                created_at, updated_at
+            ) VALUES (
+                ?1,
+                ?2, ?3,
+                'provenance', 'canonical', 'derived_from',
+                '',
+                json_object(
+                    'gate_decision', ?4,
+                    'gate_scores',   CASE WHEN ?5 IS NULL THEN NULL ELSE json(?5) END,
+                    'cluster_id',    ?6,
+                    'source_original_importance', ?7
+                ),
+                1.0,
+                0.0, ?8,
+                ?9,
+                'default',
+                ?9, ?9
+            )
+            "#,
+            params![
+                record.id,
+                record.insight_id,
+                record.source_id,
+                record.gate_decision,
+                gate_scores_json,
+                record.cluster_id,
+                record.source_original_importance,
+                record.confidence,
+                ts_unix,
+            ],
+        )?;
+
         Ok(())
     }
 
@@ -4033,6 +4104,57 @@ impl Storage {
             "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
             params![rowid, tokenized],
         )?;
+
+        // T16 — Phase B dual-write: synthesis insights also land in
+        // `nodes` as `node_kind='insight'` (design §4.5). `store_raw`
+        // is currently the ONLY caller (synthesis engine via
+        // `store_insight_atomically`), and the legacy `memories.source`
+        // column is hardcoded to `'synthesis'` — that hardcoding is
+        // exactly why we can hardcode `node_kind='insight'` here too.
+        //
+        // If a future caller appears that uses `store_raw` for a
+        // non-synthesis flow, the right fix is a new public ingest
+        // entry point (per design §4.1 F4), not branching here.
+        //
+        // Statement-only INSERT (no inner transaction): when called
+        // inside `store_insight_atomically`'s `begin_transaction`,
+        // this statement joins the active tx so insight + provenance
+        // commit atomically. Standalone calls land in their own
+        // autocommit tx; `INSERT OR IGNORE` keeps that path
+        // idempotent against retry.
+        let next_fts_rowid: i64 = self.conn.query_row(
+            "UPDATE fts_rowid_counter
+             SET next_value = next_value + 1
+             WHERE singleton = 0
+             RETURNING next_value - 1",
+            [],
+            |r| r.get(0),
+        )?;
+        self.conn.execute(
+            r#"
+            INSERT OR IGNORE INTO nodes (
+                id, node_kind, namespace,
+                layer, memory_type,
+                content, summary, attributes,
+                occurred_at, created_at, updated_at, last_consolidated,
+                working_strength, core_strength, importance,
+                consolidation_count, pinned,
+                source, superseded_by,
+                fts_rowid
+            ) VALUES (
+                ?1, 'insight', 'default',
+                'core', ?2,
+                ?3, '', COALESCE(?4, '{}'),
+                NULL, ?5, ?5, NULL,
+                0.5, 0.5, ?6,
+                0, 0,
+                'synthesis', NULL,
+                ?7
+            )
+            "#,
+            params![id, memory_type, content, metadata, now, importance, next_fts_rowid],
+        )?;
+
         Ok(())
     }
 
