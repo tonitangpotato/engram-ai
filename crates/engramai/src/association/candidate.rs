@@ -106,6 +106,7 @@ mod tests {
             memory_type: MemoryType::Factual,
             layer: MemoryLayer::Working,
             created_at,
+            occurred_at: None,
             access_times: vec![created_at],
             working_strength: 1.0,
             core_strength: 0.0,

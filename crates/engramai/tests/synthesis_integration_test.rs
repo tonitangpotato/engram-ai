@@ -170,6 +170,7 @@ fn test_is_insight_helper() {
         memory_type: MemoryType::Factual,
         importance: 0.5,
         created_at: Utc::now(),
+        occurred_at: None,
         access_times: vec![],
         working_strength: 1.0,
         core_strength: 0.0,

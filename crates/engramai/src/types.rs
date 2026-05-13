@@ -169,8 +169,19 @@ pub struct MemoryRecord {
     /// Current layer
     pub layer: MemoryLayer,
     
-    /// Creation timestamp
+    /// Creation timestamp — wall-clock time when this row entered the DB.
+    /// **Drives lifecycle/decay** (Ebbinghaus age, recency scoring).
+    /// Always `Utc::now()` at insert time. Never overridden by callers.
     pub created_at: DateTime<Utc>,
+    /// Optional event time — when the underlying event/fact actually occurred.
+    /// **Drives temporal grounding & temporal queries** (e.g. "what happened
+    /// last Tuesday"). `None` means "we don't know"; readers fall back to
+    /// `created_at`. Set explicitly by callers via `StorageMeta.occurred_at`
+    /// when ingesting historical content (gold conversations, replays).
+    ///
+    /// See ISS-103 for why this is split out from `created_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<DateTime<Utc>>,
     /// All access timestamps (for ACT-R base-level activation)
     pub access_times: Vec<DateTime<Utc>>,
     
@@ -215,6 +226,23 @@ impl MemoryRecord {
     /// Age in days since creation.
     pub fn age_days(&self) -> f64 {
         self.age_hours() / 24.0
+    }
+
+    /// Event time for temporal grounding/queries.
+    ///
+    /// Returns `occurred_at` if set, otherwise falls back to `created_at`.
+    /// Use this — NOT `created_at` directly — for any code that asks
+    /// "when did the event in this memory happen?":
+    ///   - Temporal range filtering ("memories about last Tuesday")
+    ///   - Reference anchor for natural-language relative time parsing
+    ///   - User-facing date display
+    ///
+    /// Use `created_at` directly only for lifecycle concerns (decay, recency
+    /// scoring of how long the memory has been in the DB).
+    ///
+    /// See ISS-103.
+    pub fn event_time(&self) -> DateTime<Utc> {
+        self.occurred_at.unwrap_or(self.created_at)
     }
 }
 

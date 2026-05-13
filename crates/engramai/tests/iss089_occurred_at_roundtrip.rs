@@ -1,14 +1,13 @@
-//! ISS-089 e2e: `store_raw` Path A and Path B both transmit
-//! `meta.occurred_at` to the persisted record's `created_at`.
+//! ISS-089 / ISS-103 e2e: `store_raw` Path A and Path B both transmit
+//! `meta.occurred_at` to the persisted record's `occurred_at` field
+//! (NOT `created_at` — see ISS-103).
 //!
-//! This is the regression test guarding the bug ISS-087's first
-//! implementation missed: the `--occurred-at` flag worked from
-//! the user's POV, but only because the CLI bypassed `store_raw`
-//! entirely via `add_with_emotion_at` → `add_raw`. After ISS-089
-//! `store_raw` itself honors the override, AND graph substrate
-//! (extractor-produced facts) is still produced. Both invariants
-//! must hold simultaneously for the v0.3 pipeline to be valid
-//! under replay/backfill.
+//! Original ISS-089 contract was "caller's occurred_at lands on
+//! `created_at`" — that overload was the RUN-0017 mass-soft-delete
+//! bug. ISS-103 separates them: `created_at` is wall-clock ingest
+//! (drives decay), `occurred_at` is event time (drives temporal
+//! grounding). These tests now verify the new contract end-to-end
+//! through both store_raw paths.
 
 use chrono::TimeZone;
 use engramai::dimensions::Importance;
@@ -94,10 +93,17 @@ fn iss089_path_b_no_extractor_honors_occurred_at() {
         .expect("get ok")
         .expect("record exists");
 
+    // ISS-103: occurred_at lands on the dedicated field; created_at
+    // stays wall-clock at insert time.
     assert_eq!(
+        record.occurred_at,
+        Some(backfill_time),
+        "Path B: record.occurred_at must equal caller's occurred_at, got {:?}",
+        record.occurred_at,
+    );
+    assert_ne!(
         record.created_at, backfill_time,
-        "Path B: created_at must equal caller's occurred_at, got {:?} (expected {:?})",
-        record.created_at, backfill_time
+        "Path B: created_at must NOT equal occurred_at (ISS-103 split)",
     );
 }
 
@@ -143,10 +149,18 @@ fn iss089_path_a_extracted_facts_inherit_occurred_at() {
             StoreOutcome::Merged { id, .. } => id.clone(),
         };
         let rec = mem.get(&id).expect("get ok").expect("record exists");
+        // ISS-103: extracted facts inherit caller's occurred_at on
+        // the dedicated field, not created_at.
         assert_eq!(
+            rec.occurred_at,
+            Some(backfill_time),
+            "Path A: fact {} occurred_at must equal caller's event time",
+            id,
+        );
+        assert_ne!(
             rec.created_at, backfill_time,
-            "Path A: fact {} created_at must equal occurred_at",
-            id
+            "Path A: fact {} created_at must NOT equal occurred_at (ISS-103 split)",
+            id,
         );
         checked += 1;
     }
@@ -192,9 +206,16 @@ fn iss089_path_a_no_facts_fallback_honors_occurred_at() {
 
     let record = mem.get(&id).expect("get ok").expect("record exists");
 
+    // ISS-103: even the no-facts fallback path honors the
+    // occurred_at / created_at split.
     assert_eq!(
+        record.occurred_at,
+        Some(backfill_time),
+        "Path A no_facts fallback: occurred_at must equal caller's event time",
+    );
+    assert_ne!(
         record.created_at, backfill_time,
-        "Path A no_facts fallback: created_at must equal occurred_at"
+        "Path A no_facts fallback: created_at must NOT equal occurred_at (ISS-103 split)",
     );
 }
 

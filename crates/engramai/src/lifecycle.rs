@@ -414,6 +414,121 @@ mod tests {
     }
 
     #[test]
+    fn test_iss103_occurred_at_does_not_trigger_decay_on_historical_ingest() {
+        // ISS-103 regression: ingesting a memory with `occurred_at` set
+        // years in the past must NOT cause Ebbinghaus decay to mass
+        // soft-delete it. The whole point of splitting `occurred_at`
+        // out of `created_at` is so that lifecycle/decay sees the
+        // wall-clock ingest time (~now), while temporal grounding sees
+        // the event time.
+        //
+        // Pre-fix: ISS-087 stomped `created_at` with `occurred_at`,
+        // making `effective_strength = e^(-3yr/stability) ≈ 0`.
+        // `check_decay_and_flag` then soft-deleted ~all rows after a
+        // single `sleep_cycle`.
+        //
+        // Post-fix: `created_at` is wall-clock now → `effective_strength`
+        // is fresh → memory survives decay.
+        use chrono::TimeZone;
+        let mut mem = test_memory();
+        let three_years_ago = chrono::Utc
+            .with_ymd_and_hms(2023, 5, 8, 12, 0, 0)
+            .unwrap();
+
+        // Use store_raw to set occurred_at — the same path cogmembench /
+        // LoCoMo replay uses.
+        let meta = crate::store_api::StorageMeta {
+            occurred_at: Some(three_years_ago),
+            ..crate::store_api::StorageMeta::default()
+        };
+        let outcome = mem
+            .store_raw(
+                "On 2023-05-08 we discussed the migration plan",
+                meta,
+            )
+            .unwrap();
+        let outcomes = match outcome {
+            crate::store_api::RawStoreOutcome::Stored(v) => v,
+            other => panic!("expected Stored, got {:?}", other),
+        };
+        assert!(!outcomes.is_empty(), "ISS-103: expected at least one stored row");
+        let id: String = outcomes[0].id().to_string();
+
+        // Verify the split: created_at = ~now, occurred_at = 2023-05-08.
+        let record = crate::storage::fetch_memory_record(
+            mem.storage().conn(),
+            &id,
+        )
+        .unwrap()
+        .expect("memory not found");
+        let now = chrono::Utc::now();
+        let created_age_secs = (now - record.created_at).num_seconds().abs();
+        assert!(
+            created_age_secs < 60,
+            "ISS-103: created_at must be wall-clock now, got {} (delta = {}s)",
+            record.created_at,
+            created_age_secs,
+        );
+        assert_eq!(
+            record.occurred_at,
+            Some(three_years_ago),
+            "ISS-103: occurred_at must round-trip the caller-supplied event time",
+        );
+
+        // Run a sleep_cycle. Pre-fix, this would soft-delete the row
+        // because effective_strength ≈ 0 (3-year-old apparent age).
+        let report = mem.sleep_cycle(1.0, None).unwrap();
+        assert!(report.consolidation_ok);
+
+        // Memory must still be live — not soft-deleted by decay.
+        let live = mem.storage().all().unwrap();
+        assert!(
+            live.iter().any(|r| r.id == id),
+            "ISS-103: historical-ingest memory was incorrectly soft-deleted by decay (regression)",
+        );
+    }
+
+    #[test]
+    fn test_iss103_event_time_helper() {
+        // ISS-103: `event_time()` returns occurred_at when set, falls
+        // back to created_at otherwise. This is the canonical helper
+        // for any code that asks "when did the event happen?".
+        use chrono::TimeZone;
+        let now = chrono::Utc::now();
+        let event = chrono::Utc
+            .with_ymd_and_hms(2023, 5, 8, 12, 0, 0)
+            .unwrap();
+
+        let with_event = crate::types::MemoryRecord {
+            id: "x".to_string(),
+            content: String::new(),
+            memory_type: MemoryType::Factual,
+            layer: crate::types::MemoryLayer::Working,
+            created_at: now,
+            occurred_at: Some(event),
+            access_times: vec![now],
+            working_strength: 1.0,
+            core_strength: 0.0,
+            importance: 0.5,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: String::new(),
+            contradicts: None,
+            contradicted_by: None,
+            superseded_by: None,
+            metadata: None,
+        };
+        assert_eq!(with_event.event_time(), event);
+
+        let without_event = crate::types::MemoryRecord {
+            occurred_at: None,
+            ..with_event.clone()
+        };
+        assert_eq!(without_event.event_time(), now);
+    }
+
+    #[test]
     fn test_enhanced_sleep_cycle_phases() {
         let mut mem = test_memory();
         mem.add("sleep cycle phase test", MemoryType::Factual, Some(0.5), None, None).unwrap();

@@ -285,6 +285,27 @@ impl Storage {
             Err(e) => return Err(e),
         }
 
+        // ISS-103: split occurred_at out of created_at.
+        //
+        // `created_at` is wall-clock ingest time (drives Ebbinghaus decay).
+        // `occurred_at` is the event/fact's logical time (drives temporal
+        // grounding & temporal-range queries). Nullable: `None` means
+        // "we don't know when this happened" — readers fall back to
+        // `created_at`.
+        //
+        // Pre-ISS-103 rows: `occurred_at` defaults to NULL. They retain
+        // ISS-087 behaviour where `created_at` was being overloaded with
+        // event time; new ingests after this migration write the two
+        // columns independently.
+        match conn.execute(
+            "ALTER TABLE memories ADD COLUMN occurred_at REAL DEFAULT NULL",
+            [],
+        ) {
+            Ok(_) => {},
+            Err(e) if e.to_string().contains("duplicate column name") => {},
+            Err(e) => return Err(e),
+        }
+
         // v0.3 graph layer schema (additive; never touches v0.2 tables).
         // Maps GraphError back to rusqlite::Error to keep this constructor's
         // return type stable.
@@ -988,8 +1009,9 @@ impl Storage {
                 id, content, memory_type, layer, created_at,
                 working_strength, core_strength, importance, pinned,
                 consolidation_count, last_consolidated, source,
-                contradicts, contradicted_by, metadata, namespace
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                contradicts, contradicted_by, metadata, namespace,
+                occurred_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             params![
                 record.id,
@@ -1008,6 +1030,7 @@ impl Storage {
                 record.contradicted_by.as_ref().unwrap_or(&String::new()),
                 metadata_json,
                 namespace,
+                record.occurred_at.map(|dt| datetime_to_f64(&dt)),
             ],
         )?;
         
@@ -4898,6 +4921,18 @@ fn row_to_record_impl(
     let created_at = f64_to_datetime(created_at_f64);
     let last_consolidated = last_consolidated_f64.map(f64_to_datetime);
 
+    // ISS-103: occurred_at is optional and only present in DBs migrated past
+    // the v0.3.x split. `row.get` for a missing column returns
+    // `InvalidColumnName` which we treat as "column not present yet" → None.
+    // For columns that ARE present but contain SQL NULL, `Option<f64>` reads
+    // as `Ok(None)`.
+    let occurred_at = match row.get::<_, Option<f64>>("occurred_at") {
+        Ok(Some(ts)) => Some(f64_to_datetime(ts)),
+        Ok(None) => None,
+        Err(rusqlite::Error::InvalidColumnName(_)) => None,
+        Err(e) => return Err(e),
+    };
+
     let contradicts_str: String = row.get("contradicts")?;
     let contradicted_by_str: String = row.get("contradicted_by")?;
     let superseded_by_str: String = row.get("superseded_by").unwrap_or_default();
@@ -4910,6 +4945,7 @@ fn row_to_record_impl(
         memory_type,
         layer,
         created_at,
+        occurred_at,
         access_times,
         working_strength: row.get("working_strength")?,
         core_strength: row.get("core_strength")?,
@@ -4953,6 +4989,7 @@ mod tests {
             memory_type: MemoryType::Factual,
             layer: MemoryLayer::Working,
             created_at,
+            occurred_at: None,
             access_times: vec![created_at],
             working_strength: 1.0,
             core_strength: 0.0,
@@ -5449,6 +5486,7 @@ mod tests {
             memory_type: MemoryType::Factual,
             layer: MemoryLayer::Working,
             created_at: Utc::now(),
+            occurred_at: None,
             access_times: vec![Utc::now()],
             working_strength: 1.0,
             core_strength: 0.0,

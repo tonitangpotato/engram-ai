@@ -373,6 +373,11 @@ fn to_engramai_record(rec: &MemoryRecord) -> Result<EngramaiMemoryRecord, String
         memory_type,
         layer: MemoryLayer::Archive,
         created_at,
+        // ISS-103: migration carries the v0.2 created_at as wall-clock
+        // ingest time; we don't have a separate event time to thread.
+        // Leave occurred_at None so temporal queries fall back to
+        // created_at (the historical behaviour for migrated rows).
+        occurred_at: None,
         access_times: vec![created_at],
         working_strength: 0.5,
         core_strength: 0.5,

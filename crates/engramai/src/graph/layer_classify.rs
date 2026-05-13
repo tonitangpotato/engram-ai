@@ -46,6 +46,7 @@ mod tests {
             memory_type: MemoryType::Factual,
             layer: MemoryLayer::Working, // arbitrary — classify_layer ignores it
             created_at: Utc::now(),
+            occurred_at: None,
             access_times: vec![],
             working_strength,
             core_strength,

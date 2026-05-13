@@ -20,6 +20,7 @@ fn make_record(id: &str, content: &str, importance: f64) -> MemoryRecord {
         memory_type: MemoryType::Factual,
         layer: MemoryLayer::Working,
         created_at: chrono::Utc::now(),
+        occurred_at: None,
         access_times: vec![chrono::Utc::now()],
         working_strength: 1.0,
         core_strength: 0.0,

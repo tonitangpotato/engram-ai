@@ -291,6 +291,7 @@ mod tests {
             memory_type,
             layer: MemoryLayer::Working,
             created_at: Utc::now(),
+            occurred_at: None,
             access_times: vec![Utc::now()],
             working_strength: working,
             core_strength: core,

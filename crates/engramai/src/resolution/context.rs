@@ -277,6 +277,7 @@ mod tests {
             memory_type: MemoryType::Episodic,
             layer: MemoryLayer::Working,
             created_at: Utc::now(),
+            occurred_at: None,
             access_times: Vec::new(),
             working_strength: 1.0,
             core_strength: 0.0,

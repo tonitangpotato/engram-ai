@@ -2460,17 +2460,27 @@ impl Memory {
 
         // Step 3: No duplicate found — create new memory record
         //
-        // ISS-087: when the caller (via StorageMeta.occurred_at /
-        // EnrichedMemory.occurred_at) supplies a logical event time,
-        // honor it for `created_at`. Otherwise, use wall-clock now
-        // — the historical, backward-compatible default.
-        let created_at = occurred_at.unwrap_or_else(Utc::now);
+        // ISS-103 root fix: split `created_at` (DB ingest wall-clock,
+        // drives Ebbinghaus decay) from `occurred_at` (event time,
+        // drives temporal grounding). Pre-fix, ISS-087 stomped
+        // `created_at` with the caller's `occurred_at`, which made
+        // historical-content ingests (e.g. LoCoMo gold conversations
+        // from 2023) auto-soft-delete within hours of ingest because
+        // `now - created_at` looked like 3 years of decay.
+        //
+        // After ISS-103: `created_at` is ALWAYS wall-clock now;
+        // `occurred_at` is the optional caller-supplied logical event
+        // time. Readers that want event time call
+        // `record.event_time()` (falls back to created_at when
+        // occurred_at is None).
+        let created_at = Utc::now();
         let record = MemoryRecord {
             id: id.clone(),
             content: content.to_string(),
             memory_type,
             layer: MemoryLayer::Working,
             created_at,
+            occurred_at,
             access_times: vec![created_at],
             working_strength: 1.0,
             core_strength: 0.0,
@@ -3239,9 +3249,11 @@ impl Memory {
 
         em.user_metadata = meta.user_metadata.clone();
 
-        // ISS-089: thread caller's logical event time through Path B.
-        // Same reasoning as Path A — replay/backfill scenarios need
-        // `created_at` to reflect the original event time, not wall-clock.
+        // ISS-089/103: thread caller's logical event time through Path B.
+        // Replay/backfill scenarios (LoCoMo gold conversations,
+        // historical imports) need to record *when the event happened*
+        // separately from *when we ingested it*. Goes onto
+        // `record.occurred_at`; `created_at` stays wall-clock.
         if let Some(t) = meta.occurred_at {
             em = em.with_occurred_at(t);
         }
@@ -4247,11 +4259,18 @@ impl Memory {
     ) -> f64 {
         match time_range {
             Some(range) => {
-                if record.created_at >= range.start && record.created_at <= range.end {
+                // ISS-103: temporal-range queries score by *event* time
+                // (`occurred_at`), not DB-ingest wall-clock. Without this,
+                // historical content (e.g. a 2023 LoCoMo conversation
+                // ingested in 2026) would never match a query about 2023
+                // because `created_at` is now wall-clock. Falls back to
+                // `created_at` when `occurred_at` is None.
+                let event_time = record.event_time();
+                if event_time >= range.start && event_time <= range.end {
                     // Within range: score by proximity to center of range
                     let range_duration = (range.end - range.start).num_seconds() as f64;
                     let range_center = range.start + (range.end - range.start) / 2;
-                    let distance = (record.created_at - range_center).num_seconds().abs() as f64;
+                    let distance = (event_time - range_center).num_seconds().abs() as f64;
                     let half_range = range_duration / 2.0;
                     if half_range > 0.0 {
                         // 1.0 at center, 0.5 at edges
@@ -4265,7 +4284,9 @@ impl Memory {
             }
             None => {
                 // No temporal query: gentle recency signal (complement ACT-R)
-                // Recent memories get slight boost, but not enough to dominate
+                // ISS-103: recency uses *wall-clock* age (`created_at`) — this
+                // measures "how long has this been in the DB", a proper
+                // freshness signal independent of historical content time.
                 let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
                 // Sigmoid centered at 72 hours (3 days), scale 48
                 let recency = 1.0 / (1.0 + (age_hours - 72.0).exp() / 48.0_f64.exp());
@@ -6705,10 +6726,44 @@ impl Memory {
         (crate::store_api::MemoryId, crate::resolution::ResolutionStats),
         Box<dyn std::error::Error>,
     > {
+        self.ingest_with_stats_at(content, None)
+    }
+
+    /// Ingest variant that lets the caller supply an event time
+    /// (`occurred_at`) distinct from wall-clock ingest time
+    /// (`created_at`).
+    ///
+    /// This is the path benchmarks/replay drivers must use when
+    /// replaying historical conversations (e.g. LoCoMo) — without it
+    /// the ingest path hardcodes `StorageMeta::default()` and the
+    /// caller has no way to anchor episodes to their real-world
+    /// dates. That hardcoding was the Layer-2 half of ISS-103: the
+    /// store_raw split between created_at (wall-clock, drives decay)
+    /// and occurred_at (event time, drives temporal grounding) is
+    /// useless if no public ingest API exposes it.
+    ///
+    /// `occurred_at = None` is exactly equivalent to
+    /// [`Memory::ingest_with_stats`] — the field is purely additive
+    /// (ISS-087).
+    ///
+    /// All error semantics match `ingest_with_stats`.
+    pub fn ingest_with_stats_at(
+        &mut self,
+        content: &str,
+        occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<
+        (crate::store_api::MemoryId, crate::resolution::ResolutionStats),
+        Box<dyn std::error::Error>,
+    > {
         use crate::store_api::{RawStoreOutcome, StorageMeta};
 
+        let meta = StorageMeta {
+            occurred_at,
+            ..StorageMeta::default()
+        };
+
         let outcome = self
-            .store_raw(content, StorageMeta::default())
+            .store_raw(content, meta)
             .map_err(|e| -> Box<dyn std::error::Error> { format!("{e}").into() })?;
 
         match outcome {
@@ -6716,24 +6771,19 @@ impl Memory {
                 let id = outcomes
                     .first()
                     .ok_or_else(|| -> Box<dyn std::error::Error> {
-                        "ingest_with_stats: store_raw returned Stored([]) — invariant violated".into()
+                        "ingest_with_stats_at: store_raw returned Stored([]) — invariant violated".into()
                     })?
                     .id()
                     .clone();
-                // Admission-time stats: populated from the legacy
-                // extractor output count when available. Pipeline
-                // counters land in the trace row asynchronously per
-                // the contract above; benchmarks that need them must
-                // drain.
                 let stats = crate::resolution::ResolutionStats::default();
                 Ok((id, stats))
             }
             RawStoreOutcome::Skipped { reason, .. } => Err(format!(
-                "ingest_with_stats: store_raw returned Skipped({reason:?})"
+                "ingest_with_stats_at: store_raw returned Skipped({reason:?})"
             )
             .into()),
             RawStoreOutcome::Quarantined { reason, .. } => Err(format!(
-                "ingest_with_stats: store_raw returned Quarantined({reason:?})"
+                "ingest_with_stats_at: store_raw returned Quarantined({reason:?})"
             )
             .into()),
         }
@@ -7258,6 +7308,7 @@ mod confidence_tests {
                 memory_type: MemoryType::Factual,
                 layer: MemoryLayer::Working,
                 created_at: Utc::now(),
+                occurred_at: None,
                 access_times: vec![Utc::now()],
                 working_strength: 1.0,
                 core_strength: 0.0,
@@ -7314,6 +7365,7 @@ mod confidence_tests {
                 memory_type: MemoryType::Factual,
                 layer: MemoryLayer::Working,
                 created_at: Utc::now(),
+                occurred_at: None,
                 access_times: vec![Utc::now()],
                 working_strength: 1.0,
                 core_strength: 0.0,
@@ -7368,6 +7420,7 @@ mod confidence_tests {
                 memory_type: MemoryType::Factual,
                 layer: MemoryLayer::Working,
                 created_at: Utc::now(),
+                occurred_at: None,
                 access_times: vec![Utc::now()],
                 working_strength: 1.0,
                 core_strength: 0.0,
@@ -7420,6 +7473,7 @@ mod confidence_tests {
                 memory_type: MemoryType::Factual,
                 layer: MemoryLayer::Working,
                 created_at: Utc::now(),
+                occurred_at: None,
                 access_times: vec![Utc::now()],
                 working_strength: 1.0,
                 core_strength: 0.0,
@@ -7473,6 +7527,7 @@ mod confidence_tests {
                 memory_type: MemoryType::Factual,
                 layer: MemoryLayer::Working,
                 created_at: Utc::now(),
+                occurred_at: None,
                 access_times: vec![Utc::now()],
                 working_strength: 1.0,
                 core_strength: 0.0,
@@ -7525,6 +7580,7 @@ mod confidence_tests {
             memory_type: MemoryType::Factual,
             layer: crate::types::MemoryLayer::Working,
             created_at,
+            occurred_at: None,
             access_times: vec![created_at],
             working_strength: 1.0,
             core_strength: 0.0,

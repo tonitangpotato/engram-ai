@@ -251,6 +251,7 @@ mod tests {
             memory_type: MemoryType::Factual,
             layer: MemoryLayer::Core,
             created_at: Utc::now() - Duration::days(days_ago),
+            occurred_at: None,
             access_times: vec![Utc::now() - Duration::days(days_ago)],
             working_strength: 0.0,
             core_strength,

@@ -333,6 +333,7 @@ mod tests {
             memory_type,
             layer: MemoryLayer::Core,
             created_at: Utc::now(),
+            occurred_at: None,
             access_times: vec![Utc::now()],
             working_strength: 0.5,
             core_strength: 0.5,

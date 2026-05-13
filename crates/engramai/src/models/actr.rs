@@ -143,6 +143,7 @@ mod tests {
             consolidation_count: 0,
             last_consolidated: None,
             created_at: access_time,
+            occurred_at: None,
             source: String::new(),
             contradicts: None,
             contradicted_by: None,

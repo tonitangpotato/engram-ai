@@ -45,6 +45,7 @@ fn fixture_memory(id: &str) -> MemoryRecord {
         memory_type: MemoryType::Episodic,
         layer: MemoryLayer::Working,
         created_at: Utc.with_ymd_and_hms(2026, 4, 26, 12, 0, 0).unwrap(),
+        occurred_at: None,
         access_times: Vec::new(),
         working_strength: 1.0,
         core_strength: 0.0,

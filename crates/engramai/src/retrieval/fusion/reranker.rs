@@ -253,6 +253,7 @@ mod tests {
             memory_type: MemoryType::Factual,
             layer: MemoryLayer::Working,
             created_at: chrono::Utc::now(),
+            occurred_at: None,
             access_times: vec![],
             working_strength: 0.0,
             core_strength: 0.0,
