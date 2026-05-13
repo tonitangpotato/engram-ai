@@ -1692,6 +1692,101 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// Project a legacy `entities` row into the unified `nodes` table
+    /// as a `node_kind='entity'` row (T21 / design §5.3).
+    ///
+    /// ## Why a helper, not duplicated SQL
+    ///
+    /// Phase B already dual-writes resolution-pipeline `Entity` rows
+    /// via `graph::store::dual_write_entity_to_nodes`, but that
+    /// callsite operates on the richer in-memory `Entity` struct
+    /// (with affect, embedding, history). The legacy `entities`
+    /// table is a thinner schema (just id, name, entity_type,
+    /// namespace, metadata, created_at, updated_at) so backfill
+    /// cannot share T13's helper — different input shape, different
+    /// defaults, different field set.
+    ///
+    /// This helper is therefore distinct from `dual_write_entity_to_nodes`
+    /// by design. The contract they share is the **output**:
+    /// `nodes(node_kind='entity')` rows produced by either path are
+    /// retrievable through the same Phase D read paths. The helper
+    /// owns the legacy → unified projection; if Phase B ever grows
+    /// a path that writes legacy-shaped entity rows (rather than
+    /// resolution-pipeline ones), it should call this helper.
+    ///
+    /// ## Field mapping (design §5.3)
+    ///
+    ///   - `id`: direct copy (TEXT PK in both tables).
+    ///   - `name → content`: the human-visible label.
+    ///   - `entity_type`: stored in `attributes` JSON under the
+    ///     `"entity_type"` key. This matches the design contract
+    ///     ("entities.entity_type → nodes.attributes.entity_type")
+    ///     and avoids carrying a denormalized column that only
+    ///     `node_kind='entity'` rows would use.
+    ///   - `metadata`: caller-supplied merged JSON (the helper does
+    ///     not parse `entities.metadata` itself — the driver
+    ///     handles the merge-with-existing logic for case-2 rows).
+    ///   - `namespace, created_at, updated_at`: direct copy.
+    ///   - `summary, embedding, history, affect, etc.`: schema
+    ///     defaults (empty/zero). T13-shaped fields like
+    ///     `agent_affect`, `arousal`, `somatic_fingerprint` are
+    ///     pipeline-only — legacy entities never had them.
+    ///   - `fts_rowid`: claim next monotonic value (same scheme as
+    ///     T19/T20).
+    ///
+    /// ## Idempotency
+    ///
+    /// `INSERT OR IGNORE` on `nodes(id)`. Re-running the backfill is
+    /// a no-op for already-projected entities, returning
+    /// `Ok(false)`. For "row existed already" cases, the driver
+    /// handles the **merge** logic separately (Pass 2).
+    ///
+    /// Returns `true` iff a row was newly inserted.
+    pub(crate) fn insert_entity_node_row(
+        tx: &rusqlite::Transaction<'_>,
+        id: &str,
+        name: &str,
+        attributes_json: &str,
+        namespace: &str,
+        created_at: f64,
+        updated_at: f64,
+    ) -> Result<bool, rusqlite::Error> {
+        let next_fts_rowid: i64 = tx.query_row(
+            "UPDATE fts_rowid_counter
+             SET next_value = next_value + 1
+             WHERE singleton = 0
+             RETURNING next_value - 1",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let rows = tx.execute(
+            r#"
+            INSERT OR IGNORE INTO nodes (
+                id, node_kind, namespace,
+                content, summary, attributes,
+                created_at, updated_at,
+                fts_rowid
+            ) VALUES (
+                ?, 'entity', ?,
+                ?, '', ?,
+                ?, ?,
+                ?
+            )
+            "#,
+            params![
+                id,
+                namespace,
+                name,
+                attributes_json,
+                created_at,
+                updated_at,
+                next_fts_rowid,
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
     /// Get a memory by ID.
     pub fn get(&self, id: &str) -> Result<Option<MemoryRecord>, rusqlite::Error> {
         fetch_memory_record(&self.conn, id)

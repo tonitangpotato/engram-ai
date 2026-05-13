@@ -626,3 +626,264 @@ pub fn backfill_embeddings_to_node_embeddings(
     Ok(run)
 }
 
+// =====================================================================
+// T21 — backfill entities → nodes(kind=entity)
+// =====================================================================
+
+/// Merge two `attributes` JSON objects, preserving values in the
+/// LEFT (existing) operand on key collision. Used by T21 Pass 2 to
+/// fold legacy entity metadata into a `nodes` row that was already
+/// dual-written by the T13 resolution pipeline path — the T13 row
+/// is canonical, the legacy projection only adds keys T13 didn't
+/// know about.
+fn merge_attributes_existing_wins(
+    existing: &str,
+    new_keys: &str,
+) -> String {
+    let mut existing_val: serde_json::Value = match serde_json::from_str(existing) {
+        Ok(serde_json::Value::Object(m)) => serde_json::Value::Object(m),
+        _ => return existing.to_string(),
+    };
+    let new_val: serde_json::Value = match serde_json::from_str(new_keys) {
+        Ok(serde_json::Value::Object(m)) => serde_json::Value::Object(m),
+        _ => return existing.to_string(),
+    };
+    if let (serde_json::Value::Object(ref mut ex), serde_json::Value::Object(nw)) =
+        (&mut existing_val, new_val)
+    {
+        for (k, v) in nw {
+            ex.entry(k).or_insert(v);
+        }
+    }
+    serde_json::to_string(&existing_val).unwrap_or_else(|_| existing.to_string())
+}
+
+/// T21 — backfill `entities` rows into `nodes(node_kind='entity')`
+/// (no LLM).
+///
+/// ## Two-pass with a different rationale than T19
+///
+/// T19's two-pass was about a self-referential FK
+/// (`memories.superseded_by`). T21's two-pass is about **the
+/// metadata-merge contract** (design §5.3): if a `nodes` row
+/// already exists for an entity id (e.g. because the T13 resolution
+/// pipeline wrote it during normal operation), the legacy
+/// `entities.metadata` keys must be **merged** into the existing
+/// `nodes.attributes`, with existing keys winning on collision.
+///
+///   - Pass 1: INSERT OR IGNORE every legacy entity. New rows land
+///     with `attributes = {"entity_type": "...", ...legacy_metadata}`.
+///   - Pass 2: For rows that were SKIPPED in Pass 1 (case 2: T13
+///     row already there), MERGE the legacy attributes into the
+///     existing row's `attributes` column. Existing values win.
+///
+/// Pass 2 has to be in Rust (not pure SQL) because JSON merging
+/// with collision policy isn't expressible as a single SQLite
+/// statement without `JSON_PATCH`, which has overwrite semantics
+/// (last-write-wins, opposite of what we need).
+///
+/// ## Field mapping (design §5.3)
+///
+///   - `entities.id → nodes.id`
+///   - `entities.name → nodes.content`
+///   - `entities.entity_type` → `nodes.attributes.entity_type`
+///   - `entities.metadata` (parsed as JSON) → merged into
+///     `nodes.attributes` with "existing wins" policy
+///   - `namespace`, `created_at`, `updated_at`: direct copy
+pub fn backfill_entities_to_nodes(
+    storage: &mut Storage,
+    namespace: Option<&str>,
+) -> Result<BackfillRun, rusqlite::Error> {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = utc_now_f64();
+
+    let notes_open = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_entities_to_nodes",
+        "design_ref": "v04-unified-substrate §5.3 / T21",
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        INSERT INTO backfill_runs (
+            run_id, legacy_table, rows_read, rows_inserted,
+            rows_skipped_existing, rows_failed,
+            started_at, finished_at, notes
+        ) VALUES (?, 'entities', 0, 0, 0, 0, ?, NULL, ?)
+        "#,
+        params![run_id, started_at, notes_open],
+    )?;
+
+    let conn = storage.conn();
+    let select_sql = if namespace.is_some() {
+        "SELECT id, name, entity_type, namespace, metadata, created_at, updated_at \
+         FROM entities WHERE namespace = ?"
+    } else {
+        "SELECT id, name, entity_type, namespace, metadata, created_at, updated_at \
+         FROM entities"
+    };
+    let mut stmt = conn.prepare(select_sql)?;
+    type EntRow = (String, String, String, String, Option<String>, f64, f64);
+    let map_row = |row: &rusqlite::Row| -> Result<EntRow, rusqlite::Error> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+        ))
+    };
+    let rows: Vec<EntRow> = if let Some(ns) = namespace {
+        stmt.query_map(params![ns], map_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map([], map_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    drop(stmt);
+
+    let mut rows_read: u64 = 0;
+    let mut rows_inserted: u64 = 0;
+    let mut rows_skipped_existing: u64 = 0;
+    let mut rows_metadata_merged: u64 = 0;
+    let mut rows_malformed_metadata: u64 = 0;
+    let mut rows_kind_mismatch: u64 = 0;
+
+    let conn = storage.conn();
+    let tx = conn.unchecked_transaction()?;
+
+    for (id, name, entity_type, ns, metadata_text, created_at, updated_at) in &rows {
+        rows_read += 1;
+
+        // Build the projected `attributes` JSON per design §5.3:
+        //   1. Seed with `{"entity_type": <column>}` — this is the
+        //      contract-mandated key carrying the legacy column.
+        //   2. Merge `entities.metadata` keys in, but **existing-wins**:
+        //      if metadata contains `entity_type`, the column value
+        //      MUST win (the legacy column is the source of truth for
+        //      the type; metadata is a side-channel attribute bag).
+        //
+        // This is the same `merge_attributes_existing_wins` polarity
+        // used by Pass 2 below — both passes share the same contract
+        // ("existing keys win on collision"), just at different
+        // layers. Pass 1's "existing" = the column-derived
+        // entity_type key. Pass 2's "existing" = whatever an earlier
+        // T13 dual-write already wrote.
+        let mut projected_attrs = serde_json::Map::new();
+        projected_attrs.insert(
+            "entity_type".into(),
+            serde_json::Value::String(entity_type.clone()),
+        );
+        if let Some(meta_str) = metadata_text.as_deref() {
+            match serde_json::from_str::<serde_json::Value>(meta_str) {
+                Ok(serde_json::Value::Object(map)) => {
+                    for (k, v) in map {
+                        // entry().or_insert() = existing-wins.
+                        // If `entity_type` is in metadata, the
+                        // column-seeded value already there wins
+                        // and the metadata value is dropped.
+                        projected_attrs.entry(k).or_insert(v);
+                    }
+                }
+                Ok(_) | Err(_) => {
+                    rows_malformed_metadata += 1;
+                }
+            }
+        }
+        let projected_attrs_json =
+            serde_json::to_string(&serde_json::Value::Object(projected_attrs))
+                .expect("serializing a serde_json::Map cannot fail");
+
+        let inserted = Storage::insert_entity_node_row(
+            &tx,
+            id,
+            name,
+            &projected_attrs_json,
+            ns,
+            *created_at,
+            *updated_at,
+        )?;
+        if inserted {
+            rows_inserted += 1;
+        } else {
+            rows_skipped_existing += 1;
+
+            // Pass 2 (inline): the row already exists in nodes. We
+            // ONLY merge attributes if the existing row is also
+            // node_kind='entity'. If somehow this id resolves to a
+            // topic / memory / insight (extremely unlikely given
+            // separate id generation paths, but defence-in-depth),
+            // skip the merge — the legacy projection has no business
+            // mutating a non-entity node's attributes.
+            let existing: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT node_kind, attributes FROM nodes WHERE id = ?",
+                    params![id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .ok();
+            if let Some((existing_kind, existing_attrs)) = existing {
+                if existing_kind == "entity" {
+                    let merged = merge_attributes_existing_wins(
+                        &existing_attrs,
+                        &projected_attrs_json,
+                    );
+                    tx.execute(
+                        "UPDATE nodes SET attributes = ?, updated_at = ? WHERE id = ?",
+                        params![merged, utc_now_f64(), id],
+                    )?;
+                    rows_metadata_merged += 1;
+                } else {
+                    // Foreign node_kind already owns this id; leave
+                    // it untouched. Surface in audit notes so the
+                    // operator can investigate if non-zero.
+                    rows_kind_mismatch += 1;
+                }
+            }
+        }
+    }
+    tx.commit()?;
+
+    let finished_at = utc_now_f64();
+    let notes_closed = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_entities_to_nodes",
+        "design_ref": "v04-unified-substrate §5.3 / T21",
+        "rows_metadata_merged": rows_metadata_merged,
+        "rows_malformed_metadata": rows_malformed_metadata,
+        "rows_kind_mismatch": rows_kind_mismatch,
+    })
+    .to_string();
+    let conn = storage.conn();
+    conn.execute(
+        r#"
+        UPDATE backfill_runs
+        SET rows_read = ?, rows_inserted = ?, rows_skipped_existing = ?,
+            rows_failed = 0, finished_at = ?, notes = ?
+        WHERE run_id = ?
+        "#,
+        params![
+            rows_read as i64,
+            rows_inserted as i64,
+            rows_skipped_existing as i64,
+            finished_at,
+            notes_closed,
+            run_id,
+        ],
+    )?;
+
+    let run = BackfillRun {
+        run_id,
+        legacy_table: "entities".into(),
+        rows_read,
+        rows_inserted,
+        rows_skipped_existing,
+        rows_failed: 0,
+    };
+    run.assert_counter_invariant();
+    Ok(run)
+}
+
