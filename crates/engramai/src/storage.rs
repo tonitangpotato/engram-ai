@@ -326,6 +326,12 @@ impl Storage {
         // v0.4 unified substrate: node_embeddings multi-model (T08)
         Self::migrate_unified_node_embeddings(&conn)?;
 
+        // v0.4 unified substrate: bump schema_version (T09).
+        // Runs last so a partial Phase A migration leaves the version
+        // unchanged — re-opening then re-attempts the missing migrations
+        // (all are idempotent per GUARD-ss.3).
+        Self::bump_schema_version_v04_additive(&conn)?;
+
         Ok(Self { conn })
     }
 
@@ -555,6 +561,37 @@ impl Storage {
         Ok(())
     }
 
+    /// v0.4 unified substrate (T09): bump `engram_meta.schema_version` to
+    /// `0.4-additive` once Phase A migrations (T05/T06/T07/T08) have all
+    /// run successfully.
+    ///
+    /// **Why a string, not an int**: legacy v0.3 used `'1'` (integer-as-
+    /// text). v0.4 introduces phased migration (`0.4-additive`,
+    /// `0.4-dual-write`, `0.4-unified`) and the version string carries
+    /// phase semantics. Tooling that needs ordering can split on `-`.
+    ///
+    /// **Why INSERT OR REPLACE, not UPDATE**: the row may be absent on a
+    /// brand-new DB where the legacy seed `INSERT OR IGNORE … '1'` and
+    /// this bump are both first-time writes — order doesn't matter and
+    /// both end states are correct (`0.4-additive` wins because we run
+    /// after the seed).
+    ///
+    /// **Idempotent** (GUARD-ss.3): re-opening a v0.4 DB just rewrites
+    /// the same value. Safe to run on every open.
+    ///
+    /// Call site: **last** step in `Storage::open` so a partial Phase A
+    /// (e.g. T07 trigger creation fails after T05/T06 succeed) leaves
+    /// the version string unchanged, and the next `open()` retries the
+    /// missing pieces.
+    fn bump_schema_version_v04_additive(conn: &Connection) -> SqlResult<()> {
+        conn.execute(
+            "INSERT OR REPLACE INTO engram_meta (key, value) VALUES ('schema_version', '0.4-additive')",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// v0.4 unified substrate (T07): create the `nodes_fts` FTS5 virtual table
     /// and its three sync triggers per design.md §3.3.
     ///
     /// **Mode**: contentless FTS5 (`content=''`). The canonical text lives in
@@ -6702,5 +6739,69 @@ mod tests {
             "SELECT name FROM sqlite_master WHERE type='table' AND name='node_embeddings'",
             [], |r| r.get(0)).ok();
         assert_eq!(tbl.as_deref(), Some("node_embeddings"));
+    }
+
+    // ---------------------------------------------------------------------
+    // v0.4 unified substrate — T09: schema_version bump to 0.4-additive
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_t09_fresh_db_has_v04_additive_schema_version() {
+        let storage = test_storage();
+        let v: String = storage.conn.query_row(
+            "SELECT value FROM engram_meta WHERE key = 'schema_version'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "0.4-additive");
+    }
+
+    #[test]
+    fn test_t09_legacy_db_upgrades_to_v04_additive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+
+        // Simulate a pre-v04 DB: open with the storage layer (which seeds
+        // schema_version='1' via INSERT OR IGNORE), then manually stomp
+        // the value back to '1' to simulate a DB last touched before T09.
+        // (We can't trivially get an old engramai binary; this models the
+        // same row state that a true legacy DB would present.)
+        {
+            let s = Storage::new(&path).unwrap();
+            s.conn.execute(
+                "INSERT OR REPLACE INTO engram_meta VALUES ('schema_version', '1')",
+                [],
+            ).unwrap();
+            let v: String = s.conn.query_row(
+                "SELECT value FROM engram_meta WHERE key='schema_version'",
+                [], |r| r.get(0)).unwrap();
+            assert_eq!(v, "1", "setup: legacy version forced");
+        }
+
+        // Re-open: T09 should rewrite schema_version to 0.4-additive.
+        let s2 = Storage::new(&path).unwrap();
+        let v: String = s2.conn.query_row(
+            "SELECT value FROM engram_meta WHERE key='schema_version'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "0.4-additive");
+    }
+
+    #[test]
+    fn test_t09_idempotent_on_repeated_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("idem.db");
+
+        for _ in 0..3 {
+            let s = Storage::new(&path).unwrap();
+            let v: String = s.conn.query_row(
+                "SELECT value FROM engram_meta WHERE key='schema_version'",
+                [], |r| r.get(0)).unwrap();
+            assert_eq!(v, "0.4-additive");
+        }
+
+        // Exactly one row for schema_version (no accumulation).
+        let s = Storage::new(&path).unwrap();
+        let n: i64 = s.conn.query_row(
+            "SELECT COUNT(*) FROM engram_meta WHERE key='schema_version'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 }
