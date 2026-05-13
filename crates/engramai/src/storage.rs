@@ -530,15 +530,51 @@ impl Storage {
 
             -- Partial UNIQUE indexes enforce upsert semantics per design §3.2:
             -- associative co-activation accumulates weight (one row per
-            -- src/tgt/predicate); containment is set membership. Structural
-            -- edges may legitimately duplicate across runs and are NOT unique.
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_assoc_unique
-                ON edges(source_id, target_id, edge_kind, predicate)
-                WHERE edge_kind = 'associative';
+            -- src/tgt/predicate/signal_source); containment is set
+            -- membership. Structural edges may legitimately duplicate
+            -- across runs and are NOT unique.
+            --
+            -- signal_source is part of the associative-edge identity
+            -- (design §4.3): each distinct signal_source between the
+            -- same (src, tgt) pair gets its own row, so §4.6
+            -- differential decay can apply per-signal-source. SQLite
+            -- supports json_extract in expression-indexed unique
+            -- constraints and resolves ON CONFLICT against them.
             CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_containment_unique
                 ON edges(source_id, target_id, edge_kind, predicate)
                 WHERE edge_kind = 'containment';
         "#)?;
+
+        // T14 migration: associative-edge unique index was originally
+        // 4 columns (src, tgt, kind, predicate). Design §4.3 amendment
+        // extends it to 5 columns by adding json_extract(attributes,
+        // '$.signal_source'). Pre-T14 DBs have the old index; CREATE
+        // IF NOT EXISTS won't replace it. Detect via sqlite_master and
+        // DROP + RECREATE if the old shape is present.
+        //
+        // GUARD-ss.3 idempotency: this check is cheap and re-running
+        // on an already-migrated DB is a no-op (the new shape is
+        // detected and we skip the drop).
+        let needs_assoc_index_migration: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master \
+                 WHERE type='index' AND name='idx_edges_assoc_unique' \
+                   AND sql NOT LIKE '%signal_source%'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if needs_assoc_index_migration {
+            conn.execute_batch("DROP INDEX idx_edges_assoc_unique;")?;
+        }
+        conn.execute_batch(
+            r#"
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_assoc_unique
+                ON edges(source_id, target_id, edge_kind, predicate,
+                         json_extract(attributes, '$.signal_source'))
+                WHERE edge_kind = 'associative';
+            "#,
+        )?;
         Ok(())
     }
 
@@ -4129,8 +4165,19 @@ impl Storage {
     /// If not: inserts a new link.
     ///
     /// Returns `Ok(true)` if a new link was created, `Ok(false)` if an existing link was updated.
+    ///
+    /// T14 — Phase B dual-write: every legacy `hebbian_links` write is
+    /// mirrored to unified `edges(edge_kind='associative', predicate='co_activated')`
+    /// inside the same transaction. Per design.md §4.3 the unified UPSERT
+    /// uses `signal_source`-keyed identity and sum-accumulating weight,
+    /// which differs from the legacy max semantics. T17 parity tests
+    /// assert existence of corresponding unified rows, not numeric
+    /// weight/count parity (intentional divergence).
+    ///
+    /// Signature: `&mut self` (was `&self` pre-T14). The cascade impact is
+    /// documented in §8.10 T14.
     pub fn record_association(
-        &self,
+        &mut self,
         source_id: &str,
         target_id: &str,
         strength: f64,
@@ -4138,57 +4185,85 @@ impl Storage {
         signal_detail: &str,
         namespace: &str,
     ) -> Result<bool, rusqlite::Error> {
-        // Check for existing link (either direction)
-        let existing: Option<(String, String, f64)> = self.conn
-            .query_row(
-                "SELECT source_id, target_id, strength FROM hebbian_links \
-                 WHERE (source_id = ?1 AND target_id = ?2) OR (source_id = ?2 AND target_id = ?1) \
-                 LIMIT 1",
-                params![source_id, target_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
-        
-        match existing {
-            Some((existing_src, existing_tgt, existing_strength)) => {
-                // Update if new strength is higher
-                let new_strength = existing_strength.max(strength);
-                if strength > existing_strength {
-                    // New link is stronger — update strength and signal_source
-                    self.conn.execute(
-                        "UPDATE hebbian_links SET strength = ?1, signal_source = ?2, signal_detail = ?3 \
-                         WHERE source_id = ?4 AND target_id = ?5",
-                        params![new_strength, signal_source, signal_detail, existing_src, existing_tgt],
-                    )?;
-                } else {
-                    // Just update strength (keep existing signal_source)
-                    self.conn.execute(
-                        "UPDATE hebbian_links SET strength = ?1 \
-                         WHERE source_id = ?2 AND target_id = ?3",
-                        params![new_strength, existing_src, existing_tgt],
-                    )?;
+        let tx = self.conn.transaction()?;
+        let result = {
+            // Check for existing link (either direction)
+            let existing: Option<(String, String, f64)> = tx
+                .query_row(
+                    "SELECT source_id, target_id, strength FROM hebbian_links \
+                     WHERE (source_id = ?1 AND target_id = ?2) OR (source_id = ?2 AND target_id = ?1) \
+                     LIMIT 1",
+                    params![source_id, target_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+
+            let is_new = match existing {
+                Some((existing_src, existing_tgt, existing_strength)) => {
+                    // Update if new strength is higher
+                    let new_strength = existing_strength.max(strength);
+                    if strength > existing_strength {
+                        // New link is stronger — update strength and signal_source
+                        tx.execute(
+                            "UPDATE hebbian_links SET strength = ?1, signal_source = ?2, signal_detail = ?3 \
+                             WHERE source_id = ?4 AND target_id = ?5",
+                            params![new_strength, signal_source, signal_detail, existing_src, existing_tgt],
+                        )?;
+                    } else {
+                        // Just update strength (keep existing signal_source)
+                        tx.execute(
+                            "UPDATE hebbian_links SET strength = ?1 \
+                             WHERE source_id = ?2 AND target_id = ?3",
+                            params![new_strength, existing_src, existing_tgt],
+                        )?;
+                    }
+                    false
                 }
-                Ok(false)
-            }
-            None => {
-                // Create new link
-                self.conn.execute(
-                    "INSERT INTO hebbian_links (source_id, target_id, strength, coactivation_count, \
-                     created_at, signal_source, signal_detail, namespace) \
-                     VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)",
-                    params![
-                        source_id,
-                        target_id,
-                        strength,
-                        now_f64(),
-                        signal_source,
-                        signal_detail,
-                        namespace,
-                    ],
-                )?;
-                Ok(true)
-            }
-        }
+                None => {
+                    // Create new link
+                    tx.execute(
+                        "INSERT INTO hebbian_links (source_id, target_id, strength, coactivation_count, \
+                         created_at, signal_source, signal_detail, namespace) \
+                         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)",
+                        params![
+                            source_id,
+                            target_id,
+                            strength,
+                            now_f64(),
+                            signal_source,
+                            signal_detail,
+                            namespace,
+                        ],
+                    )?;
+                    true
+                }
+            };
+
+            // T14 dual-write: mirror the Hebbian event into unified
+            // `edges` per §4.3. signal_source is part of row identity,
+            // weight sum-accumulates, (src, tgt) canonicalized in the
+            // helper. We pass `strength` as the delta_weight — for
+            // LinkFormer's constant `initial_strength`, each call adds
+            // a fresh delta to the unified row (legacy keeps max).
+            crate::graph::store::dual_write_hebbian_to_edges(
+                &tx,
+                source_id,
+                target_id,
+                signal_source,
+                signal_detail,
+                strength,
+                namespace,
+            )
+            .map_err(|e| match e {
+                crate::graph::GraphError::Sqlite(s) => s,
+                other => rusqlite::Error::ToSqlConversionFailure(Box::new(other)),
+            })?;
+
+            Ok::<bool, rusqlite::Error>(is_new)
+        };
+        let is_new = result?;
+        tx.commit()?;
+        Ok(is_new)
     }
     
     /// Get memory IDs created since a given timestamp.

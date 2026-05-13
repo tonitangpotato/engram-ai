@@ -1075,6 +1075,121 @@ fn dual_write_edge_to_edges(
     Ok(())
 }
 
+/// T14 — Phase B dual-write helper: project a Hebbian co-activation
+/// event into the unified `edges` table as
+/// `edge_kind='associative', predicate='co_activated'` on the SAME
+/// transaction used by the legacy `hebbian_links` write.
+///
+/// Per design.md §4.3:
+///   * Each distinct `signal_source` between the same `(src, tgt)` pair
+///     gets its own row — `signal_source` is part of the row identity
+///     via the partial unique index `idx_edges_assoc_unique` (§3.2)
+///     which includes `json_extract(attributes, '$.signal_source')`.
+///   * Pair is canonicalized to `(min(src, tgt), max(src, tgt))` so that
+///     calls in either direction collapse to the same row.
+///   * `weight` and `coactivation_count` sum-accumulate on conflict —
+///     this is the Hebbian frequency-weighted semantics legacy
+///     approximated with `+0.1` cap.
+///
+/// Intentional divergence from legacy is captured in §4.3's comparison
+/// table and §8.10 T17 — parity tests assert existence of
+/// `(src, tgt, signal_source)` rows, not numeric weight/count parity.
+///
+/// Arguments:
+///   * `src`, `tgt` — memory IDs (canonicalization happens internally).
+///   * `signal_source` — `"corecall"`, `"multi"`, `"entity"`, `"temporal"`,
+///     `"signal"`, etc. — drives §4.6 differential decay.
+///   * `signal_detail` — caller-supplied JSON string (e.g.
+///     `r#"{"entity_overlap":0.4}"#`) or `"{}"`.
+///   * `delta_weight` — increment to add to existing weight; the first
+///     write also seeds `weight = delta_weight`.
+///   * `namespace` — partition the edge belongs to.
+pub(crate) fn dual_write_hebbian_to_edges(
+    tx: &Transaction<'_>,
+    src: &str,
+    tgt: &str,
+    signal_source: &str,
+    signal_detail: &str,
+    delta_weight: f64,
+    namespace: &str,
+) -> Result<(), GraphError> {
+    // Canonicalize (src, tgt) so that A→B and B→A collapse to one row.
+    let (lo, hi) = if src < tgt { (src, tgt) } else { (tgt, src) };
+
+    // Mint a fresh UUID for the INSERT path. On conflict the id from the
+    // existing row is preserved (we never UPDATE id).
+    let id = Uuid::new_v4().to_string();
+    let now = dt_to_unix(Utc::now());
+
+    // Build the attributes JSON. We embed signal_source/signal_detail/
+    // coactivation_count so the ON CONFLICT json_patch can increment
+    // coactivation_count in place. temporal_forward/backward are 0 for
+    // now — T14 callers don't carry temporal direction yet; future
+    // tickets (e.g. a temporal-Hebbian extension) can wire them.
+    let attributes_json = serde_json::json!({
+        "signal_source": signal_source,
+        "signal_detail": signal_detail,
+        "coactivation_count": 1,
+        "temporal_forward": 0,
+        "temporal_backward": 0,
+        "direction": "undirected",
+    })
+    .to_string();
+
+    tx.execute(
+        r#"
+        INSERT INTO edges (
+            id,
+            source_id, target_id,
+            edge_kind, predicate_kind, predicate,
+            summary, attributes, weight,
+            activation, confidence,
+            recorded_at,
+            namespace,
+            created_at, updated_at
+        ) VALUES (
+            ?1,
+            ?2, ?3,
+            'associative', 'canonical', 'co_activated',
+            '', ?4, ?5,
+            0.0, 1.0,
+            ?6,
+            ?7,
+            ?6, ?6
+        )
+        -- ON CONFLICT target = `idx_edges_assoc_unique` (partial unique index
+        -- over edge_kind='associative' rows). SQLite requires the partial
+        -- index's WHERE predicate to be repeated here, otherwise the parser
+        -- reports "ON CONFLICT clause does not match any PRIMARY KEY or
+        -- UNIQUE constraint". See design §4.3 invariant table.
+        ON CONFLICT (source_id, target_id, edge_kind, predicate,
+                     json_extract(attributes, '$.signal_source'))
+        WHERE edge_kind = 'associative'
+        DO UPDATE SET
+            weight        = edges.weight + excluded.weight,
+            recorded_at   = excluded.recorded_at,
+            updated_at    = excluded.recorded_at,
+            attributes    = json_patch(
+                edges.attributes,
+                json_object(
+                    'coactivation_count',
+                        COALESCE(json_extract(edges.attributes, '$.coactivation_count'), 0) + 1
+                )
+            )
+        "#,
+        rusqlite::params![
+            id,
+            lo,
+            hi,
+            attributes_json,
+            delta_weight,
+            now,
+            namespace,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Encode `EntityKind` as the TEXT column value. Uses serde_json so that
 /// `Other("foo")` and the canonical variants both round-trip exactly the
 /// way they do over the wire (single source of truth: the serde derive on

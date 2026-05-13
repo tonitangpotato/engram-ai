@@ -2582,7 +2582,7 @@ impl Memory {
                 &self.config.association,
             ) {
                 Ok(candidates) if !candidates.is_empty() => {
-                    let former = crate::association::LinkFormer::new(&self.storage);
+                    let mut former = crate::association::LinkFormer::new(&mut self.storage);
                     match former.discover_associations(
                         &id,
                         candidates,

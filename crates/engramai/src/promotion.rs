@@ -267,7 +267,7 @@ mod tests {
         }
     }
 
-    fn add_hebbian_link(storage: &Storage, src: &str, tgt: &str, strength: f64) {
+    fn add_hebbian_link(storage: &mut Storage, src: &str, tgt: &str, strength: f64) {
         storage
             .record_association(src, tgt, strength, "test", "{}", "default")
             .unwrap();
@@ -307,10 +307,10 @@ mod tests {
         }
 
         // Create Hebbian links between them
-        add_hebbian_link(&storage, "m1", "m2", 0.5);
-        add_hebbian_link(&storage, "m2", "m3", 0.6);
-        add_hebbian_link(&storage, "m3", "m4", 0.4);
-        add_hebbian_link(&storage, "m1", "m4", 0.35);
+        add_hebbian_link(&mut storage, "m1", "m2", 0.5);
+        add_hebbian_link(&mut storage, "m2", "m3", 0.6);
+        add_hebbian_link(&mut storage, "m3", "m4", 0.4);
+        add_hebbian_link(&mut storage, "m1", "m4", 0.35);
 
         let candidates = detect_promotable_clusters(&storage, &config).unwrap();
         assert_eq!(candidates.len(), 1, "Should find 1 cluster");
@@ -347,9 +347,9 @@ mod tests {
             storage.add(r, "default").unwrap();
         }
 
-        add_hebbian_link(&storage, "m1", "m2", 0.5);
-        add_hebbian_link(&storage, "m2", "m3", 0.6);
-        add_hebbian_link(&storage, "m1", "m3", 0.4);
+        add_hebbian_link(&mut storage, "m1", "m2", 0.5);
+        add_hebbian_link(&mut storage, "m2", "m3", 0.6);
+        add_hebbian_link(&mut storage, "m1", "m3", 0.4);
 
         // First detection should find 1 candidate
         let candidates = detect_promotable_clusters(&storage, &config).unwrap();

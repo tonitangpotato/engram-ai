@@ -19,11 +19,11 @@ struct ProtoLink {
 
 /// Orchestrates link formation for a newly stored memory.
 pub struct LinkFormer<'a> {
-    storage: &'a Storage,
+    storage: &'a mut Storage,
 }
 
 impl<'a> LinkFormer<'a> {
-    pub fn new(storage: &'a Storage) -> Self {
+    pub fn new(storage: &'a mut Storage) -> Self {
         Self { storage }
     }
 
@@ -40,7 +40,7 @@ impl<'a> LinkFormer<'a> {
     /// Returns the number of newly created links.
     #[allow(clippy::too_many_arguments)]
     pub fn discover_associations(
-        &self,
+        &mut self,
         new_memory_id: &str,
         candidates: Vec<String>,
         new_entities: &[String],
@@ -215,8 +215,8 @@ mod tests {
 
     #[test]
     fn test_discover_no_candidates() {
-        let storage = test_storage();
-        let former = LinkFormer::new(&storage);
+        let mut storage = test_storage();
+        let mut former = LinkFormer::new(&mut storage);
         let config = AssociationConfig::default();
 
         let created = former
@@ -248,7 +248,7 @@ mod tests {
         let new_record = make_record("new_mem", "a new memory", now);
         storage.add(&new_record, "default").unwrap();
 
-        let former = LinkFormer::new(&storage);
+        let mut former = LinkFormer::new(&mut storage);
         let mut config = AssociationConfig::default();
         config.link_threshold = 0.4;
 
@@ -288,7 +288,7 @@ mod tests {
         // New memory's entities include "cat" — overlap with cand1
         let new_entities = vec!["cat".to_string(), "dog".to_string()];
 
-        let former = LinkFormer::new(&storage);
+        let mut former = LinkFormer::new(&mut storage);
         let mut config = AssociationConfig::default();
         // Lower threshold to make it easier to create links
         // temporal_proximity at same time = 1.0, w_temporal = 0.2 → contributes 0.2
@@ -348,7 +348,7 @@ mod tests {
         let new_entities = vec!["animal".to_string()];
         let candidates: Vec<String> = (0..10).map(|i| format!("cand{}", i)).collect();
 
-        let former = LinkFormer::new(&storage);
+        let mut former = LinkFormer::new(&mut storage);
         let mut config = AssociationConfig::default();
         config.link_threshold = 0.1; // low threshold so all pass
         config.max_links_per_memory = 3; // but only keep top 3
@@ -399,7 +399,7 @@ mod tests {
 
         let new_entities = vec!["cat".to_string()];
 
-        let former = LinkFormer::new(&storage);
+        let mut former = LinkFormer::new(&mut storage);
         let mut config = AssociationConfig::default();
         config.link_threshold = 0.1;
 

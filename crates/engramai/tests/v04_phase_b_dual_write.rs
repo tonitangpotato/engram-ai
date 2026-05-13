@@ -370,3 +370,278 @@ fn t13_insert_edge_dual_writes_to_unified_edges() {
         "source_memory_id should be NULL until Phase C backfill"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T14 — Hebbian dual-write: `Storage::record_association` writes to both
+// `hebbian_links` (legacy) and `edges` (unified, edge_kind='associative').
+//
+// Acceptance per design.md §4.3 + §8.10 T14:
+//
+//   * Every record_association call produces 1 hebbian_links row +
+//     1 edges row in the same transaction.
+//   * Repeated calls with the same (src, tgt, signal_source) collapse
+//     to one edges row with accumulating weight and incrementing
+//     coactivation_count.
+//   * Different signal_source between the same pair gets its own row
+//     (signal_source is part of the identity via the partial unique
+//     index `idx_edges_assoc_unique`).
+//   * (src, tgt) is canonicalized — calling B→A after A→B updates the
+//     same row, not a new one.
+//   * Legacy hebbian_links remains the system of record for now;
+//     dual-write is additive (§5.2 Phase B contract).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Seed two memory rows so dual-write's FK constraint to `nodes(id)` is
+/// satisfied. Returns their ids.
+fn seed_two_memories(storage: &mut Storage) -> (String, String) {
+    let now = Utc.with_ymd_and_hms(2026, 5, 13, 8, 0, 0).unwrap();
+    let mut rec_a = sample_record("t14-a");
+    rec_a.created_at = now;
+    rec_a.content = "alpha memory about pickles".into();
+    let mut rec_b = sample_record("t14-b");
+    rec_b.created_at = now;
+    rec_b.content = "beta memory about cabbage".into();
+    storage.add(&rec_a, "default").unwrap();
+    storage.add(&rec_b, "default").unwrap();
+    ("t14-a".to_string(), "t14-b".to_string())
+}
+
+#[test]
+fn t14_record_association_dual_writes_to_edges() {
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t14a.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    storage
+        .record_association(&a, &b, 0.5, "entity", r#"{"entity_overlap":0.4}"#, "default")
+        .unwrap();
+
+    let conn = storage.conn();
+
+    // Legacy row exists.
+    let legacy_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM hebbian_links \
+             WHERE (source_id = ?1 AND target_id = ?2) \
+                OR (source_id = ?2 AND target_id = ?1)",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy_count, 1, "hebbian_links must have one row");
+
+    // Unified edges row exists with expected typing + payload.
+    let (edge_kind, predicate, weight, sig_source, sig_detail, coact): (
+        String, String, f64, String, String, i64,
+    ) = conn
+        .query_row(
+            "SELECT edge_kind, predicate, weight, \
+                    json_extract(attributes, '$.signal_source'), \
+                    json_extract(attributes, '$.signal_detail'), \
+                    json_extract(attributes, '$.coactivation_count') \
+             FROM edges \
+             WHERE (source_id = ?1 AND target_id = ?2) \
+                OR (source_id = ?2 AND target_id = ?1)",
+            params![a, b],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .unwrap();
+
+    assert_eq!(edge_kind, "associative", "edge_kind must be 'associative'");
+    assert_eq!(predicate, "co_activated", "predicate must be 'co_activated'");
+    assert!((weight - 0.5).abs() < 1e-9, "first-write weight = delta_weight");
+    assert_eq!(sig_source, "entity", "signal_source round-trips");
+    assert_eq!(
+        sig_detail, r#"{"entity_overlap":0.4}"#,
+        "signal_detail round-trips verbatim"
+    );
+    assert_eq!(coact, 1, "first write seeds coactivation_count = 1");
+}
+
+#[test]
+fn t14_record_association_accumulates_on_same_signal_source() {
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t14b.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    // Three writes, same (src, tgt, signal_source) — must collapse to
+    // one row with summed weight and incremented coactivation_count.
+    storage
+        .record_association(&a, &b, 0.3, "entity", "{}", "default")
+        .unwrap();
+    storage
+        .record_association(&a, &b, 0.2, "entity", "{}", "default")
+        .unwrap();
+    storage
+        .record_association(&a, &b, 0.1, "entity", "{}", "default")
+        .unwrap();
+
+    let conn = storage.conn();
+
+    let row_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(row_count, 1, "same signal_source must collapse to one row");
+
+    let (weight, coact): (f64, i64) = conn
+        .query_row(
+            "SELECT weight, \
+                    json_extract(attributes, '$.coactivation_count') \
+             FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+
+    assert!(
+        (weight - 0.6).abs() < 1e-9,
+        "weight must sum-accumulate: 0.3+0.2+0.1 = 0.6, got {weight}"
+    );
+    assert_eq!(
+        coact, 3,
+        "coactivation_count increments by 1 per write (1 + 1 + 1 = 3)"
+    );
+}
+
+#[test]
+fn t14_distinct_signal_source_creates_separate_row() {
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t14c.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    // Same (src, tgt), different signal_source → 2 rows.
+    storage
+        .record_association(&a, &b, 0.5, "entity", "{}", "default")
+        .unwrap();
+    storage
+        .record_association(&a, &b, 0.4, "temporal", "{}", "default")
+        .unwrap();
+
+    let row_count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        row_count, 2,
+        "distinct signal_source must produce 2 rows (identity includes signal_source)"
+    );
+
+    // Each signal_source has its own weight.
+    let entity_w: f64 = storage
+        .conn()
+        .query_row(
+            "SELECT weight FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND json_extract(attributes, '$.signal_source') = 'entity' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let temporal_w: f64 = storage
+        .conn()
+        .query_row(
+            "SELECT weight FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND json_extract(attributes, '$.signal_source') = 'temporal' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!((entity_w - 0.5).abs() < 1e-9, "entity weight unaffected by temporal write");
+    assert!((temporal_w - 0.4).abs() < 1e-9, "temporal weight unaffected by entity write");
+}
+
+#[test]
+fn t14_reverse_direction_collapses_to_same_row() {
+    let dir = tempdir().unwrap();
+    let mut storage = Storage::new(dir.path().join("t14d.db").to_str().unwrap()).unwrap();
+    let (a, b) = seed_two_memories(&mut storage);
+
+    // Write A→B then B→A with same signal_source — canonical (min, max)
+    // ordering inside the helper must collapse these to one row.
+    storage
+        .record_association(&a, &b, 0.4, "entity", "{}", "default")
+        .unwrap();
+    storage
+        .record_association(&b, &a, 0.3, "entity", "{}", "default")
+        .unwrap();
+
+    let row_count: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        row_count, 1,
+        "reverse-direction call must collapse to one row (canonical src<tgt ordering)"
+    );
+
+    let (weight, coact): (f64, i64) = storage
+        .conn()
+        .query_row(
+            "SELECT weight, \
+                    json_extract(attributes, '$.coactivation_count') \
+             FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+
+    assert!(
+        (weight - 0.7).abs() < 1e-9,
+        "weight sums across both directions: 0.4 + 0.3 = 0.7, got {weight}"
+    );
+    assert_eq!(coact, 2, "coactivation_count counts both directional writes");
+
+    // The stored row uses canonical (min, max) ordering — verify.
+    let (stored_src, stored_tgt): (String, String) = storage
+        .conn()
+        .query_row(
+            "SELECT source_id, target_id FROM edges \
+             WHERE edge_kind = 'associative' \
+               AND ((source_id = ?1 AND target_id = ?2) \
+                 OR (source_id = ?2 AND target_id = ?1))",
+            params![a, b],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let (expected_lo, expected_hi) = if a < b { (&a, &b) } else { (&b, &a) };
+    assert_eq!(
+        &stored_src, expected_lo,
+        "source_id must be lexicographic min of pair"
+    );
+    assert_eq!(
+        &stored_tgt, expected_hi,
+        "target_id must be lexicographic max of pair"
+    );
+}
