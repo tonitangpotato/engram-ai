@@ -1461,7 +1461,22 @@ impl Storage {
         //   - working_strength, core_strength, importance, pinned,
         //     consolidation_count, source: direct copy
         //   - attributes: reuse the same metadata JSON
-        //   - superseded_by: '' → NULL (design §5.3 mapping)
+        //   - superseded_by: ALWAYS NULL on the add path. The `add()`
+        //     call is the insertion of a fresh memory — it cannot
+        //     already be superseded by another row that doesn't exist
+        //     yet. The supersession relation is established later via
+        //     `supersede()` / `supersede_bulk()` (UPDATE paths), which
+        //     dual-update both `memories.superseded_by` and
+        //     `nodes.superseded_by`. Sourcing it from any
+        //     `MemoryRecord` field here would be wrong on two levels:
+        //     (a) `MemoryRecord.superseded_by` is read-back state from
+        //     prior UPDATEs, not input state for INSERT; (b)
+        //     `MemoryRecord.contradicted_by` is a different column
+        //     entirely (informational, never used as a retrieval
+        //     filter). The bug this comment exists to prevent: an
+        //     earlier draft of T12 wrote `record.contradicted_by`
+        //     into `nodes.superseded_by`, which would have silently
+        //     changed retrieval behavior on Phase D cutover.
         //   - fts_rowid: claim next value from fts_rowid_counter
         //
         // Idempotency: `INSERT OR IGNORE` so re-running add() with
@@ -1474,11 +1489,6 @@ impl Storage {
             [],
             |r| r.get(0),
         )?;
-
-        let superseded_by_opt: Option<&str> = record
-            .contradicted_by
-            .as_deref()
-            .filter(|s| !s.is_empty());
 
         tx.execute(
             r#"
@@ -1519,7 +1529,7 @@ impl Storage {
                 record.consolidation_count,
                 record.pinned as i32,
                 record.source,
-                superseded_by_opt,
+                None::<&str>,
                 next_fts_rowid,
             ],
         )?;
@@ -2144,10 +2154,37 @@ impl Storage {
             });
         }
 
-        self.conn.execute(
+        // Phase B dual-write: keep `memories.superseded_by` and
+        // `nodes.superseded_by` in lock-step inside a single
+        // transaction so retrieval, which currently reads `memories`
+        // but will switch to `nodes` at Phase D cutover, never sees
+        // a half-updated supersession.
+        //
+        // `nodes.superseded_by` is `TEXT REFERENCES nodes(id) ON
+        // DELETE SET NULL`, so we store `new_id` directly (no `''`
+        // sentinel — the legacy `''` convention is `memories`-only).
+        // The `INSERT OR IGNORE` policy in `Storage::add` already
+        // guaranteed `nodes(new_id)` exists, so the FK will resolve;
+        // if for some reason it doesn't, the UPDATE silently no-ops
+        // on `nodes` (zero rows match) — that's a corrupted-state
+        // signal we want to surface, so we assert at least one row
+        // was updated on the `memories` side.
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(SupersessionError::Db)?;
+        tx.execute(
             "UPDATE memories SET superseded_by = ? WHERE id = ?",
             params![new_id, old_id],
-        ).map_err(SupersessionError::Db)?;
+        )
+        .map_err(SupersessionError::Db)?;
+        tx.execute(
+            "UPDATE nodes SET superseded_by = ?, updated_at = ? \
+             WHERE id = ? AND node_kind = 'memory'",
+            params![new_id, datetime_to_f64(&chrono::Utc::now()), old_id],
+        )
+        .map_err(SupersessionError::Db)?;
+        tx.commit().map_err(SupersessionError::Db)?;
         Ok(())
     }
 
@@ -2196,10 +2233,20 @@ impl Storage {
         // All validated — execute in a savepoint
         self.conn.execute("SAVEPOINT supersede_bulk", []).map_err(SupersessionError::Db)?;
         let result = (|| {
+            // Phase B dual-write: every (old_id → new_id) pair updates
+            // both `memories.superseded_by` and `nodes.superseded_by`
+            // inside the same savepoint, so partial failure rolls back
+            // both legacy and unified state atomically.
+            let now = datetime_to_f64(&chrono::Utc::now());
             for &old_id in old_ids {
                 self.conn.execute(
                     "UPDATE memories SET superseded_by = ? WHERE id = ?",
                     params![new_id, old_id],
+                ).map_err(SupersessionError::Db)?;
+                self.conn.execute(
+                    "UPDATE nodes SET superseded_by = ?, updated_at = ? \
+                     WHERE id = ? AND node_kind = 'memory'",
+                    params![new_id, now, old_id],
                 ).map_err(SupersessionError::Db)?;
             }
             Ok::<usize, SupersessionError>(old_ids.len())
@@ -2226,10 +2273,26 @@ impl Storage {
             return Err(SupersessionError::NotFound(id.to_string()));
         }
 
-        self.conn.execute(
+        // Phase B dual-write: clear supersession on both
+        // `memories.superseded_by` (sentinel `''` per legacy
+        // convention) and `nodes.superseded_by` (`NULL` per design
+        // §5.3 / `REFERENCES nodes(id) ON DELETE SET NULL`).
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(SupersessionError::Db)?;
+        tx.execute(
             "UPDATE memories SET superseded_by = '' WHERE id = ?",
             params![id],
-        ).map_err(SupersessionError::Db)?;
+        )
+        .map_err(SupersessionError::Db)?;
+        tx.execute(
+            "UPDATE nodes SET superseded_by = NULL, updated_at = ? \
+             WHERE id = ? AND node_kind = 'memory'",
+            params![datetime_to_f64(&chrono::Utc::now()), id],
+        )
+        .map_err(SupersessionError::Db)?;
+        tx.commit().map_err(SupersessionError::Db)?;
         Ok(())
     }
 

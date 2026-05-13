@@ -180,6 +180,220 @@ fn t12_add_memory_dual_writes_to_nodes() {
     assert_eq!(fts_rows, 1, "nodes_fts got a duplicate row after failed second add");
 }
 
+// ---------------------------------------------------------------------------
+// T12 regression — superseded_by source-field correctness
+// ---------------------------------------------------------------------------
+//
+// `MemoryRecord` carries TWO distinct optional columns:
+//
+//   - `superseded_by`   — "this row was replaced by X". Every retrieval
+//                         query gates on it (`WHERE superseded_by IS
+//                         NULL OR superseded_by = ''`).
+//   - `contradicted_by` — "X contradicts this row". Informational only,
+//                         never used as a filter.
+//
+// The investigation that produced this test surfaced TWO bugs:
+//
+//   Bug A: T12's dual-write sourced `nodes.superseded_by` from
+//          `record.contradicted_by`. Silently wrong — invisible until
+//          Phase D read cutover.
+//   Bug B: `Storage::add()` never persists `record.superseded_by` to
+//          the legacy `memories` table at all (the INSERT statement
+//          simply doesn't bind that column). The supersession
+//          relation is established post-add via UPDATE paths
+//          (`supersede`, `supersede_bulk`, `unsupersede`).
+//
+// Root fix: the add path treats `superseded_by` as ALWAYS NULL on
+// both tables (it's a fresh-insert; nothing can have replaced it
+// yet). The three UPDATE paths dual-update both `memories` and
+// `nodes` transactionally, so retrieval — which reads `memories`
+// today but switches to `nodes` at Phase D cutover — never sees a
+// half-updated supersession.
+//
+// This test pins all three behaviors:
+//   1. `add()` writes NULL into `nodes.superseded_by`, even when the
+//      `MemoryRecord` (incorrectly) carries values in those fields.
+//   2. `supersede()` mirrors the supersession into BOTH tables.
+//   3. `unsupersede()` clears BOTH tables (memories: `''`, nodes: NULL).
+#[test]
+fn t12_dual_write_superseded_by_root_fix() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // Seed three memories in the same namespace. We'll supersede
+    // `subject` by `supersedor`. `contradictor` exists only to populate
+    // `record.contradicted_by` on `subject`, to prove the add path
+    // ignores it (Bug A regression).
+    let supersedor = {
+        let mut r = sample_record("mem-supersedor");
+        r.content = "newer version of the claim".into();
+        r
+    };
+    let contradictor = {
+        let mut r = sample_record("mem-contradictor");
+        r.content = "a fact that conflicts but does not replace".into();
+        r
+    };
+    storage.add(&supersedor, "default").unwrap();
+    storage.add(&contradictor, "default").unwrap();
+
+    // Subject deliberately sets BOTH MemoryRecord fields to different
+    // non-null values. The add path MUST ignore both — supersession
+    // is an UPDATE-time concern, not an INSERT-time concern.
+    let mut subject = sample_record("mem-subject");
+    subject.superseded_by = Some("mem-supersedor".into());
+    subject.contradicted_by = Some("mem-contradictor".into());
+    storage.add(&subject, "default").unwrap();
+
+    // -----------------------------------------------------------------
+    // Phase 1: add path writes NULL on both tables
+    // -----------------------------------------------------------------
+    let conn = storage.conn();
+    let nodes_sup_after_add: Option<String> = conn
+        .query_row(
+            "SELECT superseded_by FROM nodes WHERE id = ?",
+            params!["mem-subject"],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        nodes_sup_after_add, None,
+        "Bug A regression: nodes.superseded_by must be NULL after add() — \
+         the add path must NOT source from record.contradicted_by or \
+         record.superseded_by (supersession is an UPDATE-time concern)"
+    );
+
+    let memories_sup_after_add: Option<String> = conn
+        .query_row(
+            "SELECT superseded_by FROM memories WHERE id = ?",
+            params!["mem-subject"],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        memories_sup_after_add.as_deref(),
+        Some(""),
+        "memories.superseded_by must be '' (schema default) after add() — \
+         the add path never persists record.superseded_by"
+    );
+
+    // -----------------------------------------------------------------
+    // Phase 2: supersede() dual-updates both tables
+    // -----------------------------------------------------------------
+    storage
+        .supersede("mem-subject", "mem-supersedor")
+        .expect("supersede");
+
+    let conn = storage.conn();
+    let memories_sup_after_supersede: Option<String> = conn
+        .query_row(
+            "SELECT superseded_by FROM memories WHERE id = ?",
+            params!["mem-subject"],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        memories_sup_after_supersede.as_deref(),
+        Some("mem-supersedor"),
+        "supersede() must update memories.superseded_by to new_id"
+    );
+
+    let nodes_sup_after_supersede: Option<String> = conn
+        .query_row(
+            "SELECT superseded_by FROM nodes WHERE id = ?",
+            params!["mem-subject"],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        nodes_sup_after_supersede.as_deref(),
+        Some("mem-supersedor"),
+        "supersede() must dual-update nodes.superseded_by — otherwise \
+         Phase D read cutover would lose all supersession state"
+    );
+
+    // -----------------------------------------------------------------
+    // Phase 3: unsupersede() clears both tables (memories='', nodes=NULL)
+    // -----------------------------------------------------------------
+    storage.unsupersede("mem-subject").expect("unsupersede");
+
+    let conn = storage.conn();
+    let memories_sup_after_clear: Option<String> = conn
+        .query_row(
+            "SELECT superseded_by FROM memories WHERE id = ?",
+            params!["mem-subject"],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        memories_sup_after_clear.as_deref(),
+        Some(""),
+        "unsupersede() must clear memories.superseded_by to '' (legacy sentinel)"
+    );
+
+    let nodes_sup_after_clear: Option<String> = conn
+        .query_row(
+            "SELECT superseded_by FROM nodes WHERE id = ?",
+            params!["mem-subject"],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        nodes_sup_after_clear, None,
+        "unsupersede() must clear nodes.superseded_by to NULL (design §5.3 — \
+         REFERENCES nodes(id) ON DELETE SET NULL; '' is memories-only sentinel)"
+    );
+}
+
+#[test]
+fn t12_supersede_bulk_dual_writes_to_nodes() {
+    // Pin the bulk path: every (old_id → new_id) pair must mirror into
+    // `nodes.superseded_by` inside the savepoint. Bulk shares the bug
+    // surface of single supersede.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    let new_target = sample_record("mem-bulk-new");
+    let old_a = sample_record("mem-bulk-old-a");
+    let old_b = sample_record("mem-bulk-old-b");
+    storage.add(&new_target, "default").unwrap();
+    storage.add(&old_a, "default").unwrap();
+    storage.add(&old_b, "default").unwrap();
+
+    let n = storage
+        .supersede_bulk(&["mem-bulk-old-a", "mem-bulk-old-b"], "mem-bulk-new")
+        .expect("supersede_bulk");
+    assert_eq!(n, 2);
+
+    let conn = storage.conn();
+    for old_id in ["mem-bulk-old-a", "mem-bulk-old-b"] {
+        let mem_sup: Option<String> = conn
+            .query_row(
+                "SELECT superseded_by FROM memories WHERE id = ?",
+                params![old_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap();
+        assert_eq!(
+            mem_sup.as_deref(),
+            Some("mem-bulk-new"),
+            "bulk: memories.superseded_by for {old_id} must be 'mem-bulk-new'"
+        );
+        let node_sup: Option<String> = conn
+            .query_row(
+                "SELECT superseded_by FROM nodes WHERE id = ?",
+                params![old_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap();
+        assert_eq!(
+            node_sup.as_deref(),
+            Some("mem-bulk-new"),
+            "bulk: nodes.superseded_by for {old_id} must be dual-updated to 'mem-bulk-new'"
+        );
+    }
+}
+
 // ===========================================================================
 // T13 — ResolutionPipeline entity + edge dual-write
 // ===========================================================================
