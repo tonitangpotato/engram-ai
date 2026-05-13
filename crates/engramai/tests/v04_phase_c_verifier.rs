@@ -209,3 +209,141 @@ fn t27_namespace_filter_isolates_counts() {
     assert!(mem.ok);
     assert!(report.ok);
 }
+
+#[test]
+fn t27_report_covers_all_seven_drivers() {
+    // The report MUST list every Phase C driver, even on an empty DB.
+    // Missing drivers would let a regression slip through unnoticed —
+    // anyone reading the report assumes "no row = no problem", so
+    // absent rows must mean absent drivers, not silent skips.
+    let tmp = tempdir().unwrap();
+    let storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    let report = verify_phase_c_parity(&storage, &VerifyOpts::default()).unwrap();
+
+    let expected: &[(&str, &str, bool)] = &[
+        // (legacy_table, unified_table, merge_semantics)
+        ("memories", "nodes", false),                // T19
+        ("memory_embeddings", "node_embeddings", false), // T20
+        ("entities", "nodes", false),                // T21
+        ("entity_relations", "edges", true),         // T22
+        ("memory_entities", "edges", true),          // T23
+        ("hebbian_links", "edges", true),            // T24
+        ("synthesis_provenance", "edges", false),    // T25
+    ];
+
+    assert_eq!(
+        report.counts.len(),
+        expected.len(),
+        "expected {} driver rows, got {}: {:#?}",
+        expected.len(),
+        report.counts.len(),
+        report.counts,
+    );
+    for (legacy, unified, merge) in expected {
+        let row = report
+            .counts
+            .iter()
+            .find(|c| c.legacy_table == *legacy)
+            .unwrap_or_else(|| panic!("driver row for legacy={legacy} missing"));
+        assert_eq!(row.unified_table, *unified, "unified table for {legacy}");
+        assert_eq!(
+            row.merge_semantics, *merge,
+            "merge_semantics flag for {legacy}"
+        );
+        assert_eq!(row.legacy_rows, 0, "{legacy} legacy count on empty DB");
+        assert_eq!(row.unified_rows, 0, "{legacy} unified count on empty DB");
+        assert!(row.ok, "{legacy} row.ok on empty DB");
+    }
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_hebbian_driver_counts_match_after_backfill() {
+    // Positive test for the edges-driver fingerprint
+    // (edge_kind='associative', predicate='co_activated').
+    // Two distinct (a,b) pairs → two unified edges → I1 delta zero.
+    use engramai::substrate::backfill::backfill_hebbian_links_to_edges;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // Seed two memories so the hebbian endpoints have valid nodes
+    // post-T19.
+    storage.add(&sample_record("mem-x"), "default").unwrap();
+    storage.add(&sample_record("mem-y"), "default").unwrap();
+    storage.add(&sample_record("mem-z"), "default").unwrap();
+
+    // Seed two distinct hebbian links at the legacy layer.
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO hebbian_links
+               (source_id, target_id, strength, coactivation_count,
+                temporal_forward, temporal_backward, direction,
+                created_at, namespace, signal_source, signal_detail)
+               VALUES
+               ('mem-x', 'mem-y', 0.5, 1, 1, 0, 'forward', 0.0, 'default', 'recall', NULL),
+               ('mem-y', 'mem-z', 0.5, 1, 1, 0, 'forward', 0.0, 'default', 'recall', NULL)"#,
+            [],
+        )
+        .unwrap();
+
+    backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
+
+    let report = heb_report(&storage);
+    assert_eq!(report.legacy_rows, 2);
+    assert_eq!(report.unified_rows, 2);
+    assert_eq!(report.delta, 0);
+    assert!(report.merge_semantics, "hebbian driver has merge semantics");
+    assert!(report.ok);
+}
+
+#[test]
+fn t27_hebbian_driver_merge_semantics_allows_unified_less_than_legacy() {
+    // Two legacy rows on the SAME canonical pair (forward + reverse)
+    // collapse into ONE unified edge. A naive equality check would
+    // mark this delta=1 as a failure; merge_semantics says delta>=0
+    // is fine.
+    use engramai::substrate::backfill::backfill_hebbian_links_to_edges;
+
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    storage.add(&sample_record("mem-x"), "default").unwrap();
+    storage.add(&sample_record("mem-y"), "default").unwrap();
+
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO hebbian_links
+               (source_id, target_id, strength, coactivation_count,
+                temporal_forward, temporal_backward, direction,
+                created_at, namespace, signal_source, signal_detail)
+               VALUES
+               ('mem-x', 'mem-y', 0.5, 1, 1, 0, 'forward', 0.0, 'default', 'recall', NULL),
+               ('mem-y', 'mem-x', 0.5, 1, 0, 1, 'backward', 1.0, 'default', 'recall', NULL)"#,
+            [],
+        )
+        .unwrap();
+
+    backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
+
+    let report = heb_report(&storage);
+    assert_eq!(report.legacy_rows, 2, "2 legacy direction rows");
+    assert_eq!(report.unified_rows, 1, "merged into 1 canonical edge");
+    assert_eq!(report.delta, 1);
+    assert!(
+        report.ok,
+        "merge_semantics drivers MUST treat positive delta as ok"
+    );
+}
+
+/// Helper: extract just the hebbian driver row.
+fn heb_report(storage: &Storage) -> engramai::substrate::verify::DriverCounts {
+    verify_phase_c_parity(storage, &VerifyOpts::default())
+        .unwrap()
+        .counts
+        .into_iter()
+        .find(|c| c.legacy_table == "hebbian_links")
+        .expect("hebbian driver row")
+}

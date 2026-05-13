@@ -199,73 +199,326 @@ pub fn verify_phase_c_parity(
 // I1 — Count parity per driver
 // ─────────────────────────────────────────────────────────────────────
 
+/// Internal fingerprint identifying which unified rows "belong to" a
+/// given Phase C driver.
+///
+/// The unified `edges` table is shared by four drivers (T22/T23/T24/
+/// T25) and the discriminator `edge_kind` alone is not enough to
+/// separate them — T23 and T25 both emit `edge_kind='provenance'`
+/// rows, T22 and T23 both emit `edge_kind='structural'` rows. The
+/// **distinguishing fingerprint** is the pair
+/// `(edge_kind, predicate ∈ {...})` because the writer side commits
+/// to a fixed predicate vocabulary per driver:
+///
+/// - T22 entity_relations → structural / arbitrary canonical predicates
+///   from `entity_relations.relation_type` (NOT in the closed sets
+///   below).
+/// - T23 memory_entities  → provenance/`mentions` + structural/
+///   `subject_of`,`object_of`.
+/// - T24 hebbian_links    → associative/`co_activated`.
+/// - T25 synthesis_prov.  → provenance/`derived_from`.
+///
+/// `T22` is the residual: structural rows whose predicate is NOT one
+/// of T23's two structural predicates. We encode that as
+/// `Fingerprint::EdgeKindMinusPredicates`.
+#[derive(Debug, Clone)]
+enum Fingerprint {
+    /// `nodes` row where `node_kind = value`.
+    NodeKind { value: &'static str },
+    /// Plain table `COUNT(*)`. Used for `node_embeddings` (T20) which
+    /// has no kind discriminator.
+    PlainTable,
+    /// `edges` row where `edge_kind = kind AND predicate IN (...)`.
+    EdgeKindPredicateIn {
+        kind: &'static str,
+        predicates: &'static [&'static str],
+    },
+    /// `edges` row where `edge_kind = kind` and the predicate is NOT
+    /// in the excluded set. T22's residual identity.
+    EdgeKindMinusPredicates {
+        kind: &'static str,
+        exclude: &'static [&'static str],
+    },
+    /// Union of two fingerprints, counted with deduplication on
+    /// `edges.id`. T23 spans two `(edge_kind, predicate)` buckets.
+    Union(Box<Fingerprint>, Box<Fingerprint>),
+}
+
+struct DriverSpec {
+    legacy_table: &'static str,
+    unified_table: &'static str,
+    fingerprint: Fingerprint,
+    merge_semantics: bool,
+    legacy_has_namespace: bool,
+}
+
+fn driver_specs() -> Vec<DriverSpec> {
+    vec![
+        // T19 memories → nodes(node_kind='memory'). Pass-through.
+        DriverSpec {
+            legacy_table: "memories",
+            unified_table: "nodes",
+            fingerprint: Fingerprint::NodeKind { value: "memory" },
+            merge_semantics: false,
+            legacy_has_namespace: true,
+        },
+        // T20 memory_embeddings → node_embeddings. Pass-through, no
+        // kind column on the unified side. NOTE: node_embeddings has
+        // no `namespace` column either; the namespace filter is
+        // applied to the legacy side, but the unified side counts
+        // all rows (acceptable because per-namespace embedding
+        // backfill is rare and the counter is informational here —
+        // future iterations may JOIN node_embeddings to nodes for
+        // per-namespace verification).
+        DriverSpec {
+            legacy_table: "memory_embeddings",
+            unified_table: "node_embeddings",
+            fingerprint: Fingerprint::PlainTable,
+            merge_semantics: false,
+            legacy_has_namespace: false,
+        },
+        // T21 entities → nodes(node_kind='entity'). Pass-through.
+        DriverSpec {
+            legacy_table: "entities",
+            unified_table: "nodes",
+            fingerprint: Fingerprint::NodeKind { value: "entity" },
+            merge_semantics: false,
+            legacy_has_namespace: true,
+        },
+        // T22 entity_relations → edges(edge_kind='structural',
+        // predicate ∉ T23's structural set). MERGE semantics
+        // (canonical-pair collapse + relation-type-aware dedupe).
+        DriverSpec {
+            legacy_table: "entity_relations",
+            unified_table: "edges",
+            fingerprint: Fingerprint::EdgeKindMinusPredicates {
+                kind: "structural",
+                exclude: &["subject_of", "object_of"],
+            },
+            merge_semantics: true,
+            legacy_has_namespace: true,
+        },
+        // T23 memory_entities → edges(provenance/'mentions' +
+        // structural/'subject_of','object_of'). MERGE semantics
+        // (role-collapse). memory_entities has NO namespace column;
+        // it inherits via JOIN on memories(memory_id) at backfill
+        // time, so the namespace filter is ignored on the legacy side
+        // (same caveat as synthesis_provenance below).
+        DriverSpec {
+            legacy_table: "memory_entities",
+            unified_table: "edges",
+            fingerprint: Fingerprint::Union(
+                Box::new(Fingerprint::EdgeKindPredicateIn {
+                    kind: "provenance",
+                    predicates: &["mentions"],
+                }),
+                Box::new(Fingerprint::EdgeKindPredicateIn {
+                    kind: "structural",
+                    predicates: &["subject_of", "object_of"],
+                }),
+            ),
+            merge_semantics: true,
+            legacy_has_namespace: false,
+        },
+        // T24 hebbian_links → edges(associative/'co_activated').
+        // MERGE semantics (canonical-pair direction collapse).
+        DriverSpec {
+            legacy_table: "hebbian_links",
+            unified_table: "edges",
+            fingerprint: Fingerprint::EdgeKindPredicateIn {
+                kind: "associative",
+                predicates: &["co_activated"],
+            },
+            merge_semantics: true,
+            legacy_has_namespace: true,
+        },
+        // T25 synthesis_provenance → edges(provenance/'derived_from').
+        // Pass-through (append-only, no merge).
+        DriverSpec {
+            legacy_table: "synthesis_provenance",
+            unified_table: "edges",
+            fingerprint: Fingerprint::EdgeKindPredicateIn {
+                kind: "provenance",
+                predicates: &["derived_from"],
+            },
+            merge_semantics: false,
+            // synthesis_provenance has no `namespace` column; it
+            // inherits via JOIN on memories(insight_id) at backfill
+            // time. Counting on the legacy side ignores the filter
+            // for this driver.
+            legacy_has_namespace: false,
+        },
+    ]
+}
+
 fn check_count_parity(
     conn: &Connection,
     ns: Option<&str>,
 ) -> rusqlite::Result<Vec<DriverCounts>> {
-    let mut out = Vec::with_capacity(7);
-
-    // T19: memories → nodes(node_kind='memory'). Pass-through, no
-    // merge — `delta` must be zero.
-    out.push(driver_count(
-        conn,
-        ns,
-        "memories",
-        "nodes",
-        "node_kind",
-        "memory",
-        false,
-    )?);
-
+    let specs = driver_specs();
+    let mut out = Vec::with_capacity(specs.len());
+    for spec in specs {
+        out.push(driver_count(conn, ns, &spec)?);
+    }
     Ok(out)
 }
 
-/// Generic count-parity row. `kind_column` selects the discriminator
-/// column on the unified side (`node_kind` for nodes, `edge_kind` for
-/// edges); `kind_value` is the discriminator value to match.
 fn driver_count(
     conn: &Connection,
     ns: Option<&str>,
-    legacy_table: &str,
-    unified_table: &str,
-    kind_column: &str,
-    kind_value: &str,
-    merge_semantics: bool,
+    spec: &DriverSpec,
 ) -> rusqlite::Result<DriverCounts> {
-    let legacy_rows = count_table(conn, legacy_table, ns, /*has_namespace=*/ true)?;
-    let unified_sql = match ns {
-        Some(_) => format!(
-            "SELECT COUNT(*) FROM {} WHERE {} = ? AND namespace = ?",
-            unified_table, kind_column
-        ),
-        None => format!(
-            "SELECT COUNT(*) FROM {} WHERE {} = ?",
-            unified_table, kind_column
-        ),
-    };
-    let unified_rows: u64 = match ns {
-        Some(n) => conn.query_row(&unified_sql, rusqlite::params![kind_value, n], |r| {
-            r.get::<_, i64>(0)
-        })? as u64,
-        None => conn.query_row(&unified_sql, rusqlite::params![kind_value], |r| {
-            r.get::<_, i64>(0)
-        })? as u64,
-    };
+    let legacy_rows = count_table(conn, spec.legacy_table, ns, spec.legacy_has_namespace)?;
+    let unified_rows = count_unified(conn, &spec.fingerprint, ns)?;
     let delta = legacy_rows as i64 - unified_rows as i64;
-    let ok = if merge_semantics {
+    let ok = if spec.merge_semantics {
         delta >= 0
     } else {
         delta == 0
     };
     Ok(DriverCounts {
-        legacy_table: legacy_table.to_string(),
-        unified_table: unified_table.to_string(),
+        legacy_table: spec.legacy_table.to_string(),
+        unified_table: spec.unified_table.to_string(),
         legacy_rows,
         unified_rows,
-        merge_semantics,
+        merge_semantics: spec.merge_semantics,
         delta,
         ok,
     })
+}
+
+/// Count unified rows matching the driver's fingerprint, restricted
+/// to `namespace` when applicable. `node_embeddings` (PlainTable) is
+/// not namespace-filtered because it has no namespace column; that
+/// limitation is documented on `DriverSpec::legacy_has_namespace`
+/// above.
+fn count_unified(
+    conn: &Connection,
+    fp: &Fingerprint,
+    ns: Option<&str>,
+) -> rusqlite::Result<u64> {
+    match fp {
+        Fingerprint::NodeKind { value } => {
+            let (sql, has_ns_param) = match ns {
+                Some(_) => (
+                    "SELECT COUNT(*) FROM nodes WHERE node_kind = ? AND namespace = ?",
+                    true,
+                ),
+                None => ("SELECT COUNT(*) FROM nodes WHERE node_kind = ?", false),
+            };
+            let n: i64 = if has_ns_param {
+                conn.query_row(sql, rusqlite::params![value, ns.unwrap()], |r| r.get(0))?
+            } else {
+                conn.query_row(sql, rusqlite::params![value], |r| r.get(0))?
+            };
+            Ok(n as u64)
+        }
+        Fingerprint::PlainTable => {
+            // node_embeddings has no namespace column → ignore filter.
+            let n: i64 =
+                conn.query_row("SELECT COUNT(*) FROM node_embeddings", [], |r| r.get(0))?;
+            Ok(n as u64)
+        }
+        Fingerprint::EdgeKindPredicateIn { kind, predicates } => {
+            count_edges_predicate_in(conn, kind, predicates, /*negate=*/ false, ns)
+        }
+        Fingerprint::EdgeKindMinusPredicates { kind, exclude } => {
+            count_edges_predicate_in(conn, kind, exclude, /*negate=*/ true, ns)
+        }
+        Fingerprint::Union(a, b) => {
+            // edges.id is the PK, so DISTINCT counts dedupe correctly
+            // across two overlapping buckets. In practice the buckets
+            // don't overlap (T23 emits one row per (memory, entity,
+            // role) and never reuses the same id for two roles), but
+            // the DISTINCT keeps the bound honest if a future writer
+            // ever does.
+            let union_sql = build_union_sql(a, b, ns.is_some());
+            let n: i64 = match ns {
+                Some(n) => conn.query_row(&union_sql, rusqlite::params![n], |r| r.get(0))?,
+                None => conn.query_row(&union_sql, [], |r| r.get(0))?,
+            };
+            Ok(n as u64)
+        }
+    }
+}
+
+fn count_edges_predicate_in(
+    conn: &Connection,
+    kind: &str,
+    predicates: &[&str],
+    negate: bool,
+    ns: Option<&str>,
+) -> rusqlite::Result<u64> {
+    let placeholders = vec!["?"; predicates.len()].join(",");
+    let predicate_clause = if predicates.is_empty() {
+        // `negate=true` with empty list = unconstrained; `negate=false`
+        // with empty list = impossible. Treat as a soft no-op rather
+        // than crashing.
+        if negate {
+            "".to_string()
+        } else {
+            "AND 1 = 0".to_string()
+        }
+    } else if negate {
+        format!("AND predicate NOT IN ({placeholders})")
+    } else {
+        format!("AND predicate IN ({placeholders})")
+    };
+    let ns_clause = if ns.is_some() {
+        " AND namespace = ?"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT COUNT(*) FROM edges WHERE edge_kind = ? {predicate_clause}{ns_clause}"
+    );
+    let ns_owned = ns.map(|s| s.to_string());
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 + predicates.len());
+    params.push(&kind);
+    for p in predicates {
+        params.push(p);
+    }
+    if let Some(ref n) = ns_owned {
+        params.push(n);
+    }
+    let n: i64 = conn.query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| {
+        r.get(0)
+    })?;
+    Ok(n as u64)
+}
+
+/// Build a SELECT COUNT(DISTINCT id) for a Union fingerprint. Only
+/// supports `EdgeKindPredicateIn` leaves — `Union` of `Union` or of
+/// minus-predicate variants is not used by any current driver and is
+/// rejected with a hard panic to surface the missing case during
+/// development.
+fn build_union_sql(a: &Fingerprint, b: &Fingerprint, with_ns: bool) -> String {
+    fn leaf_clause(fp: &Fingerprint) -> String {
+        match fp {
+            Fingerprint::EdgeKindPredicateIn { kind, predicates } => {
+                let placeholders: String = predicates
+                    .iter()
+                    .map(|p| format!("'{}'", p.replace('\'', "''")))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "(edge_kind = '{}' AND predicate IN ({}))",
+                    kind.replace('\'', "''"),
+                    placeholders
+                )
+            }
+            other => panic!(
+                "Fingerprint::Union only supports EdgeKindPredicateIn leaves; got {other:?}"
+            ),
+        }
+    }
+    let ns_clause = if with_ns { " AND namespace = ?" } else { "" };
+    format!(
+        "SELECT COUNT(DISTINCT id) FROM edges WHERE ({} OR {}){}",
+        leaf_clause(a),
+        leaf_clause(b),
+        ns_clause
+    )
 }
 
 /// Count rows in a table, optionally filtered by namespace column.
