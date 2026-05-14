@@ -34,6 +34,28 @@ Engram has multiple post-write background processes already designed and partial
 - LLM-driven meta-cognition loops (that's `meta-cognition` feature, separate)
 - Touching retrieval-time code (autopilot is strictly post-write background)
 
+## 2.5 Substrate Invariants (must hold on v0.4 unified substrate)
+
+Updated 2026-05-14 (T04) to align with `.gid/features/v04-unified-substrate/`. Autopilot does **not** mutate storage directly — it only invokes existing consolidation operations (synthesis, KC, decay, lifecycle). Therefore the substrate guarantees of v0.4 apply transitively to autopilot. Specifically:
+
+- **I-A1 — Dual-write transit.** Every mutator autopilot triggers (Hebbian co-activation, entity link, topic upsert, supersession, decay-soft-delete) goes through a writer path that already dual-writes to `nodes` / `edges` under v0.4 Phase B (ISS-119–126 closed 2026-05-14). Autopilot inherits this without special-case code; if a new consolidation primitive is added that does **not** dual-write, it must not be invoked from autopilot until its Phase B writer audit is closed.
+
+- **I-A2 — No raw SQL writes.** Autopilot code in `engramai/src/autopilot/*` must not contain `INSERT`, `UPDATE`, or `DELETE` statements. All mutations go through `Storage` public methods, which in turn go through the writer queue (`v04-unified-substrate/design.md §6`). This invariant is grep-checkable.
+
+- **I-A3 — Idempotent on the unified substrate.** Running an autopilot cycle twice on a DB at rest must produce zero net new `nodes` / `edges` rows (modulo wallclock timestamp updates on `updated_at` columns). This is the substrate-level expression of G3.
+
+- **I-A4 — Namespace-respecting.** Every autopilot stage operates within a single namespace per invocation, except Hebbian cross-NS coactivation (which is the only legitimate cross-namespace edge writer, per `v04-unified-substrate/requirements.md` GOAL-1.5).
+
+- **I-A5 — Read-switch transparent.** Autopilot reads via the same `Storage` public API as the rest of the system; whether the read path is under `unified_substrate=true` or `=false` (default through Phase D) is irrelevant to autopilot logic. Tests must pass under both flag positions.
+
+- **I-A6 — Backfill compatible.** A Phase C backfill (T19–T26a) running concurrently with autopilot must not cause double-write conflicts on the unified side. The driver invariants (idempotent SQL-set drivers + the resumable T26a triple driver) guarantee `INSERT OR IGNORE` semantics; autopilot's writers via `Storage::add` etc. interleave safely.
+
+- **I-A7 — Counter accounting on background mutations.** Autopilot-triggered Hebbian writes count against the per-driver audit row when invoked during a backfill window (i.e. they show up in `backfill_runs.notes` if instrumented). For pure-online cycles outside any backfill, no `backfill_runs` row is emitted — that table is migration-bookkeeping only.
+
+- **I-A8 — Writer-queue priority lanes.** Autopilot mutations enqueue at `LOW` priority per `v04-unified-substrate/design.md §6.3`. User-facing writes (`Memory::add`) at `NORMAL` or `HIGH` always preempt; this is what makes autopilot "invisible" (G1) at write-load steady-state.
+
+If any future autopilot stage violates these eight invariants, it should be specified in a separate design and not lumped under this doc.
+
 ## 3. Goals
 
 - **G1**: Engram-embedded agents get hebbian/entity/insight enrichment **without explicit scheduling code in the host**.
@@ -234,6 +256,7 @@ This design is "good enough to implement" when:
 - [ ] Lock contention mitigation has a concrete batch-size number (measured, not guessed)
 - [ ] potato approves the trigger model (time + writes) vs alternatives (purely write-based, purely time-based, adaptive)
 - [ ] ISS-NNN filed for each missing dependency with explicit blocks/depends_on edges to autopilot
+- [ ] §2.5 substrate invariants I-A1 through I-A8 verified — each stage mapped to the v0.4 writer path it transits, no raw SQL in `autopilot/*`, namespace-scoping honored, writer-queue priority `LOW` used for all enqueues. (Added 2026-05-14 by T04 of `v04-unified-substrate`.)
 
 ## 9. What This Does NOT Specify (Deliberately)
 

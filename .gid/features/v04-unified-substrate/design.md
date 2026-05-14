@@ -2078,8 +2078,8 @@ one focused session.
 ### 8.1 Setup
 - [x] **T01** This doc reviewed and approved — 5 review rounds (r1 pre-expansion → r5 spot-check) completed 2026-05-12, all Critical findings applied via commits 3-9 (`reviews/design-r1.md` through `design-r5.md`)
 - [x] **T02** Resolve §7 open questions (potato decisions) — closed Round 3 2026-05-12 via first-principles cognitive-substrate framing; see §7 and `reviews/design-r1.md` Round 3
-- [ ] **T03** Write requirements doc `v04-unified-substrate/requirements.md` (GOAL-1.1 ... GOAL-N) — derives from §3, §4
-- [ ] **T04** Update `consolidation-autopilot-DRAFT.md` §2 invariants to reference unified substrate
+- [x] **T03** Write requirements doc `v04-unified-substrate/requirements.md` (GOAL-1.1 ... GOAL-N) — derives from §3, §4. **Shipped 2026-05-14** as a single ~250-line file covering 6 categories (schema / writer behaviors / backfill / read-switch / writer queue / cross-cutting GUARDs) + per-phase acceptance + out-of-scope list. Deliberately compact — outside-engineer-readable in 10 minutes rather than a multi-feature split (GOAL count came in at 33, below the 15-per-doc heuristic threshold that would force a split).
+- [x] **T04** Update `consolidation-autopilot-DRAFT.md` §2 invariants to reference unified substrate — **shipped 2026-05-14**: added new §2.5 with 8 substrate invariants (I-A1 dual-write transit, I-A2 no raw SQL, I-A3 idempotent, I-A4 namespace-respecting, I-A5 read-switch transparent, I-A6 backfill compatible, I-A7 counter accounting, I-A8 writer-queue priority lanes) and a new acceptance bullet referencing them. Autopilot inherits Phase B dual-write guarantees transitively — no autopilot-specific dual-write code needed.
 
 ### 8.2 Phase A — schema additive
 - [x] **T05** Storage migration: add `nodes` table + indexes (storage.rs) — b7b9290
@@ -2142,7 +2142,7 @@ Plus three earlier shim-key fixes (ISS-119 `contradicts`/`contradicted_by` round
 
 ### 8.5 Phase D — switch reads
 - [x] **T28** `MemoryConfig::unified_substrate` flag wired through — commit `7ee3898`. New `pub unified_substrate: bool` field on `MemoryConfig` with `#[serde(default)]`; default `false` so existing deployments stay on legacy reads until the Phase D parity gate (`verify_phase_c_parity` + LoCoMo J-score ≥ legacy baseline of 42.1% per RUN-0018) is cleared in production. All four presets (`chatbot`, `task_agent`, `personal_assistant`, `researcher`) inherit `false` via `..Default::default()`. Four pinned tests guard the contract: (1) `test_unified_substrate_default_off` — default must remain false; (2) `test_unified_substrate_off_in_all_presets` — no preset may silently flip the flag; (3) `test_unified_substrate_serde_roundtrip` — explicit `true` survives ser/de unchanged; (4) `test_unified_substrate_absent_key_defaults_false` — configs written before T28 (which lack the `unified_substrate` key entirely) must deserialize cleanly into `false`, exercising the `#[serde(default)]` attribute against accidental future removal. Writes are unaffected — Phase B (T13–T18) dual-writes continue to keep both sides in sync. T29 will read the flag in retrieval adapters one read path at a time per §5.4 "one plan at a time" rule. Lib test count 1877 → 1881 (+4).
-- [ ] **T29** Retrieval adapters: read from nodes/edges when flag on. **Split into sub-tasks per §5.4 one-plan-at-a-time rule.**
+- [x] **T29** Retrieval adapters: read from nodes/edges when flag on. **Split into sub-tasks per §5.4 one-plan-at-a-time rule.** All sub-tasks T29.1–T29.6 shipped 2026-05-13/14; T29.7 deferred to Phase F prep (rationale documented inline below). Parent task tickable because every read-switch contract is in place behind the `unified_substrate` flag.
   - [x] **T29.1** subscriptions read-switch — `e34b6b8`
   - [x] **T29.2** synthesis_provenance read-switch — `251bb03` (+ plumbing `ac1c9f0`)
   - [x] **T29.3** embeddings read-switch + dual-write writer — `1ad0827`
