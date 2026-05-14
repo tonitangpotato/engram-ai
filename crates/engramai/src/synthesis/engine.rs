@@ -61,6 +61,11 @@ impl DefaultSynthesisEngine {
         self.llm_provider
     }
 
+    /// Get a reference to the LLM provider (for callers making LLM calls outside the engine).
+    pub fn llm_provider(&self) -> Option<&dyn SynthesisLlmProvider> {
+        self.llm_provider.as_deref()
+    }
+
     /// Check whether a cluster has changed enough to warrant re-synthesis.
     fn should_resynthesize(
         cluster: &MemoryCluster,
