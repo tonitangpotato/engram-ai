@@ -1,9 +1,10 @@
 ---
 title: Phase B dual-write loses EntityKind variant for entity→nodes; blocks T29.5 entity-reader switch
-status: open
+status: fixed
 priority: P1
 severity: degradation
 filed_by: rustclaw (overnight session 2026-05-14)
+fixed_by: de6f675
 relates_to:
   - v04-unified-substrate
   - T29.5
