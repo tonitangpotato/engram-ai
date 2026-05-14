@@ -3608,12 +3608,33 @@ impl Storage {
     }
 
     /// Soft delete: set deleted_at timestamp.
-    pub fn soft_delete(&self, id: &str) -> Result<(), rusqlite::Error> {
-        let now = chrono::Utc::now().to_rfc3339();
-        self.conn.execute(
+    ///
+    /// **ISS-121:** dual-writes `deleted_at` to both `memories` (legacy)
+    /// and `nodes` (unified) inside a single transaction so liveness
+    /// filters (`WHERE deleted_at IS NULL`) stay in lock-step across
+    /// substrates. `memories.deleted_at` is TEXT (RFC3339); `nodes.deleted_at`
+    /// is REAL (epoch seconds with sub-second precision). Both encode
+    /// the same instant taken once at the top of the call.
+    pub fn soft_delete(&mut self, id: &str) -> Result<(), rusqlite::Error> {
+        let now = chrono::Utc::now();
+        let now_rfc = now.to_rfc3339();
+        let now_epoch = datetime_to_f64(&now);
+
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "UPDATE memories SET deleted_at = ?1 WHERE id = ?2",
-            params![now, id],
+            params![now_rfc, id],
         )?;
+        // ISS-121: dual-write to nodes. Predicate `node_kind = 'memory'`
+        // is defensive — `id` is unique across nodes anyway, but the
+        // predicate documents intent and matches the supersession
+        // dual-write pattern at storage.rs:3122.
+        tx.execute(
+            "UPDATE nodes SET deleted_at = ?1, updated_at = ?1 \
+             WHERE id = ?2 AND node_kind = 'memory'",
+            params![now_epoch, id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 

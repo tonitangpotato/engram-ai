@@ -113,17 +113,23 @@ T20 already dual-writes `memory_embeddings → node_embeddings`. Read side still
 - **Fix option B:** widen `nodes.node_kind` enum to carry full variant (Person, Concept, Event, Topic, …). Cleanest but schema churn + impacts every code path that filters by `node_kind`.
 - **Recommendation:** A.
 
-### Gap #3 — `nodes_fts` parity not validated
+### Gap #3 — `soft_delete` is single-table (not dual-write)
+- **Filing:** ISS-121 (filed) — `soft_delete` updates `memories.deleted_at` only; `nodes.deleted_at` stays NULL forever.
+- **Severity:** P1 (every liveness-filter reader diverges the moment any soft-delete happens).
+- **Fix:** wrap soft_delete in a transaction, dual-update; backfill driver for existing soft-deleted rows.
+- **Recommendation:** ship before any liveness-filtered reader (count_memories_in_namespace, count_soft_deleted, etc.) flips to unified.
+
+### Gap #4 — `nodes_fts` parity not validated
 - **Action:** before flipping any FTS reader, run a parity smoke: ingest 50 memories with diverse text (CJK + ASCII), MATCH the same query against both `memories_fts` and `nodes_fts`, assert id sets match. T17 row-count parity test covers row count but not FTS5 token alignment.
 
-### Gap #4 — many aux tables not yet projected
+### Gap #5 — many aux tables not yet projected
 - `pending_memories`, `promotion_*`, `*_quarantine`, `backfill_runs`, `cluster_*` — these are control-plane tables, not subjects of the unified-substrate plan. Defer; readers stay on legacy.
 
 ## Recommended Phase D sequencing (revised post-audit)
 
-1. **Land ISS-119 + ISS-120 dual-write patches** (Gap #1 + #2). 1-2 days of focused work.
+1. **Land ISS-119 + ISS-120 + ISS-121 dual-write patches** (Gap #1 + #2 + #3). 1-2 days of focused work.
 2. **T29.5 entity readers** — once ISS-120 lands, the entity-side readers are mechanical.
-3. **T29.6 trivial-safe readers** — `count_*`, `get_namespace`, `list_namespaces`, `get_*_ids` (the ✅ rows above). Can ship as a single sub-task, ~6 readers, ~30 min each.
+3. **T29.6 trivial-safe readers** — `count_*`, `get_namespace`, `list_namespaces`, `get_*_ids` (the ✅ rows above). Can ship as a single sub-task, ~6 readers, ~30 min each. **NOTE:** even the trivial-safe count/list readers depend on ISS-121 (soft_delete dual-write) — without it, liveness filters diverge on any DB that has soft-deletes.
 4. **T29.7 hot retrieval readers** — once ISS-119 lands + new decoder helper exists, ship `search_fts`/`fetch_recent`/`fetch_memory_record`/`search_by_type` together. Each gets a parity test (legacy result set vs unified result set on the same DB).
 5. **T29.8 embedding readers** — switch the ✅ ones to `node_embeddings`. T20 dual-write already in place.
 6. **T30 probe set** — once T29.5/.6/.7 land.

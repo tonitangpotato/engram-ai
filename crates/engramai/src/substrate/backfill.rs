@@ -2428,3 +2428,161 @@ pub fn backfill_synthesis_provenance_to_edges(
     run.assert_counter_invariant();
     Ok(run)
 }
+
+/// ISS-121 patch — backfill `memories.deleted_at` (RFC3339 TEXT) into
+/// `nodes.deleted_at` (epoch REAL) for rows that were soft-deleted
+/// before the dual-write fix shipped.
+///
+/// Read-only on `memories`. Write-only on `nodes` (UPDATE, no INSERT).
+/// Idempotent: subsequent runs over the same dataset are no-ops because
+/// the WHERE clause filters `nodes.deleted_at IS NULL`.
+///
+/// Strategy:
+/// 1. Open the audit row up front so a crashed run is detectable.
+/// 2. Stream `memories WHERE deleted_at IS NOT NULL`.
+/// 3. For each, parse the RFC3339 timestamp to epoch and UPDATE the
+///    matching `nodes` row (predicate: `id = ? AND node_kind = 'memory'
+///    AND deleted_at IS NULL`). The `IS NULL` filter is what makes the
+///    driver idempotent.
+/// 4. Skip rows whose nodes counterpart doesn't exist (dangling) or
+///    whose RFC3339 parse fails (corrupt). Count them separately so
+///    the audit invariant `rows_read == rows_inserted + rows_skipped`
+///    still holds.
+///
+/// Design ref: `.gid/features/v04-unified-substrate/PHASE-D-READER-AUDIT.md`
+/// Gap #3, ISS-121.
+pub fn backfill_soft_delete_into_nodes(
+    storage: &mut Storage,
+    namespace: Option<&str>,
+) -> Result<BackfillRun, rusqlite::Error> {
+    let run_id = Uuid::new_v4().to_string();
+    let started_at = utc_now_f64();
+
+    let notes = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_soft_delete_into_nodes",
+        "design_ref": "ISS-121 / PHASE-D-READER-AUDIT.md Gap #3",
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        INSERT INTO backfill_runs (
+            run_id, legacy_table, rows_read, rows_inserted,
+            rows_skipped_existing, rows_failed,
+            started_at, finished_at, notes
+        ) VALUES (?, 'memories.deleted_at', 0, 0, 0, 0, ?, NULL, ?)
+        "#,
+        params![run_id, started_at, notes],
+    )?;
+
+    let mut rows_read: u64 = 0;
+    let mut rows_inserted: u64 = 0;
+    let mut rows_skipped_existing: u64 = 0;
+    let mut rows_skipped_dangling: u64 = 0;
+    let mut rows_failed: u64 = 0;
+
+    let tx = storage.conn().unchecked_transaction()?;
+
+    {
+        let mut stmt = match namespace {
+            Some(_) => tx.prepare(
+                "SELECT id, deleted_at FROM memories \
+                 WHERE deleted_at IS NOT NULL AND namespace = ?",
+            )?,
+            None => tx.prepare(
+                "SELECT id, deleted_at FROM memories \
+                 WHERE deleted_at IS NOT NULL",
+            )?,
+        };
+
+        let mut rows = match namespace {
+            Some(ns) => stmt.query(params![ns])?,
+            None => stmt.query([])?,
+        };
+
+        while let Some(row) = rows.next()? {
+            rows_read += 1;
+            let id: String = row.get(0)?;
+            let rfc: String = row.get(1)?;
+
+            let parsed = match chrono::DateTime::parse_from_rfc3339(&rfc) {
+                Ok(dt) => dt.with_timezone(&chrono::Utc),
+                Err(_) => {
+                    rows_failed += 1;
+                    continue;
+                }
+            };
+            // Match the f64 encoding used by datetime_to_f64 in storage.rs.
+            let epoch = parsed.timestamp() as f64
+                + (parsed.timestamp_subsec_nanos() as f64) / 1e9;
+
+            let updated = tx.execute(
+                "UPDATE nodes SET deleted_at = ?1, updated_at = ?1 \
+                 WHERE id = ?2 AND node_kind = 'memory' AND deleted_at IS NULL",
+                params![epoch, id],
+            )?;
+            if updated == 1 {
+                rows_inserted += 1;
+            } else {
+                // updated == 0 means either (a) no matching node row
+                // (dangling — node never written; pre-T12 ingest) or
+                // (b) already set (idempotent re-run). Distinguish:
+                let exists: bool = tx.query_row(
+                    "SELECT 1 FROM nodes WHERE id = ? AND node_kind = 'memory'",
+                    params![id],
+                    |_| Ok(()),
+                ).is_ok();
+                if exists {
+                    rows_skipped_existing += 1;
+                } else {
+                    rows_skipped_dangling += 1;
+                }
+            }
+        }
+    }
+
+    tx.commit()?;
+
+    let finished_at = utc_now_f64();
+    let notes_closed = json!({
+        "namespace_filter": namespace,
+        "driver": "backfill_soft_delete_into_nodes",
+        "design_ref": "ISS-121",
+        "rows_skipped_dangling_endpoint": rows_skipped_dangling,
+    })
+    .to_string();
+
+    storage.conn().execute(
+        r#"
+        UPDATE backfill_runs SET
+            rows_read = ?,
+            rows_inserted = ?,
+            rows_skipped_existing = ?,
+            rows_failed = ?,
+            finished_at = ?,
+            notes = ?
+        WHERE run_id = ?
+        "#,
+        params![
+            rows_read as i64,
+            rows_inserted as i64,
+            (rows_skipped_existing + rows_skipped_dangling) as i64,
+            rows_failed as i64,
+            finished_at,
+            notes_closed,
+            run_id,
+        ],
+    )?;
+
+    let run = BackfillRun {
+        run_id,
+        legacy_table: "memories.deleted_at".to_string(),
+        rows_read,
+        rows_inserted,
+        rows_skipped_existing: rows_skipped_existing + rows_skipped_dangling,
+        rows_failed,
+    };
+    run.assert_counter_invariant();
+    Ok(run)
+}
