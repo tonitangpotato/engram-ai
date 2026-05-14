@@ -13,7 +13,7 @@ relates_to:
 - ISS-122
 - ISS-123
 fixed_by:
-- _pending_commit_sha_
+- 80d17a4
 ---
 
 ## Problem
