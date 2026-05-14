@@ -1990,6 +1990,145 @@ impl Storage {
         Ok(rows > 0)
     }
 
+    /// Mirror an UPDATE on the legacy `memories` table onto the
+    /// corresponding `nodes` row (ISS-124, Phase B dual-write for
+    /// the UPDATE family).
+    ///
+    /// **Caller contract**: must be invoked inside the same
+    /// transaction that ran the legacy `UPDATE memories ...` so the
+    /// two writes are atomic. If the `nodes` row does not exist
+    /// (e.g. legacy row from before T26c backfill), the UPDATE is a
+    /// silent no-op (zero rows affected) — backfill is responsible
+    /// for closing that gap. No FK guard needed.
+    ///
+    /// **Field mapping** mirrors `insert_memory_node_row`:
+    ///   - Scalar columns copied 1:1
+    ///   - `metadata` / `contradicts` / `contradicted_by` merged into
+    ///     `attributes` via `merge_legacy_memory_attributes` so
+    ///     `_legacy_contradicts` / `_legacy_contradicted_by` shim
+    ///     keys round-trip back through the unified read path
+    ///     (ISS-119 contract).
+    ///   - `updated_at` stamped to wall-clock NOW so the unified
+    ///     read can detect freshness divergence vs the legacy
+    ///     `updated_at` column.
+    ///
+    /// **FTS index**: the `nodes_fts_au` trigger on
+    /// `UPDATE OF content, summary ON nodes` keeps `nodes_fts` in
+    /// sync automatically — no manual FTS refresh needed for the
+    /// nodes side.
+    pub(crate) fn update_memory_node_row(
+        conn: &Connection,
+        record: &MemoryRecord,
+        metadata_json: Option<&str>,
+    ) -> Result<usize, rusqlite::Error> {
+        let merged_attributes = merge_legacy_memory_attributes(
+            metadata_json,
+            record.contradicts.as_deref(),
+            record.contradicted_by.as_deref(),
+        );
+        // nodes.attributes is NOT NULL DEFAULT '{}'. UPDATE doesn't
+        // fall back to DEFAULT, so coalesce None → '{}' here.
+        let attrs_for_update = merged_attributes.unwrap_or_else(|| "{}".to_string());
+        let now = now_f64();
+
+        conn.execute(
+            r#"
+            UPDATE nodes SET
+                content = ?, memory_type = ?, layer = ?,
+                working_strength = ?, core_strength = ?, importance = ?,
+                pinned = ?, consolidation_count = ?, last_consolidated = ?,
+                source = ?, attributes = ?, updated_at = ?
+            WHERE id = ? AND node_kind = 'memory'
+            "#,
+            params![
+                record.content,
+                record.memory_type.to_string(),
+                record.layer.to_string(),
+                record.working_strength,
+                record.core_strength,
+                record.importance,
+                record.pinned as i32,
+                record.consolidation_count,
+                record.last_consolidated.map(|dt| datetime_to_f64(&dt)),
+                record.source,
+                attrs_for_update,
+                now,
+                record.id,
+            ],
+        )
+    }
+
+    /// Lightweight mirror for partial UPDATEs on `memories` that
+    /// only change `content` / `metadata` (ISS-124, used by
+    /// `update_content`). Distinct from `update_memory_node_row`
+    /// because we don't have a full `MemoryRecord` here — only the
+    /// id, new content, and an optional metadata JSON.
+    ///
+    /// Important: `contradicts` / `contradicted_by` are **not**
+    /// touched. `update_content` only changes `(content, metadata)`
+    /// on the legacy side, so we mirror exactly those two onto
+    /// `nodes` (`content` column + `attributes` JSON replacement).
+    /// If the caller's new metadata JSON omits the `_legacy_*`
+    /// shim keys but legacy column values still hold them, we
+    /// preserve the keys by reading the current `nodes.attributes`
+    /// and merging. This keeps ISS-119 invariants intact under
+    /// content-only updates.
+    pub(crate) fn update_memory_node_content(
+        conn: &Connection,
+        id: &str,
+        new_content: &str,
+        new_metadata_json: Option<&str>,
+    ) -> Result<usize, rusqlite::Error> {
+        // Read existing _legacy_* shim keys so we don't drop them
+        // when metadata is replaced wholesale (ISS-119 preserve
+        // contract under update_content).
+        let existing_legacy: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT
+                    json_extract(attributes, '$._legacy_contradicts'),
+                    json_extract(attributes, '$._legacy_contradicted_by')
+                 FROM nodes WHERE id = ?1 AND node_kind = 'memory'",
+                params![id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .ok();
+
+        let (carry_contradicts, carry_contradicted_by) = existing_legacy.unwrap_or((None, None));
+        let merged_attributes = merge_legacy_memory_attributes(
+            new_metadata_json,
+            carry_contradicts.as_deref(),
+            carry_contradicted_by.as_deref(),
+        );
+        // nodes.attributes is NOT NULL DEFAULT '{}'. UPDATE doesn't
+        // fall back to DEFAULT, so coalesce None → '{}'.
+        let attrs_for_update = merged_attributes.unwrap_or_else(|| "{}".to_string());
+        let now = now_f64();
+
+        conn.execute(
+            r#"
+            UPDATE nodes SET
+                content = ?, attributes = ?, updated_at = ?
+            WHERE id = ? AND node_kind = 'memory'
+            "#,
+            params![new_content, attrs_for_update, now, id],
+        )
+    }
+
+    /// Mirror a single-column `importance` UPDATE onto `nodes`
+    /// (ISS-124, used by `update_importance` on the synthesis path).
+    pub(crate) fn update_memory_node_importance(
+        conn: &Connection,
+        id: &str,
+        importance: f64,
+    ) -> Result<usize, rusqlite::Error> {
+        let now = now_f64();
+        conn.execute(
+            "UPDATE nodes SET importance = ?, updated_at = ?
+             WHERE id = ? AND node_kind = 'memory'",
+            params![importance, now, id],
+        )
+    }
+
     /// Project a `(memory_id, model, embedding, dimensions,
     /// created_at_rfc3339)` row from the legacy `memory_embeddings`
     /// table into the unified `node_embeddings` table (T20 / design
@@ -2529,6 +2668,11 @@ impl Storage {
                 record.id,
             ],
         )?;
+
+        // ISS-124: dual-write to nodes. Silent no-op if nodes row
+        // missing (pre-T26c backfill state). Trigger nodes_fts_au
+        // refreshes nodes_fts on UPDATE OF content automatically.
+        Self::update_memory_node_row(&self.conn, record, metadata_json.as_deref())?;
         
         // Update FTS with CJK tokenization (with malformed recovery)
         match self.conn.execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]) {
@@ -2639,6 +2783,10 @@ impl Storage {
             "UPDATE memories SET content = ?, metadata = ? WHERE id = ?",
             params![new_content, metadata_json, id],
         )?;
+
+        // ISS-124: dual-write content + metadata to nodes (preserves
+        // ISS-119 _legacy_* shim keys via update_memory_node_content).
+        Self::update_memory_node_content(&self.conn, id, new_content, metadata_json.as_deref())?;
         
         // Update FTS index manually (no triggers, need CJK tokenization)
         let _ = self.conn.execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]);
@@ -6227,11 +6375,33 @@ impl Storage {
 
     /// Update the importance of a memory.
     pub fn update_importance(&self, memory_id: &str, importance: f64) -> Result<(), Box<dyn std::error::Error>> {
-        self.conn.execute(
-            "UPDATE memories SET importance = ?1 WHERE id = ?2",
-            params![importance, memory_id],
-        )?;
-        Ok(())
+        // ISS-124: dual-write to nodes. Wrap both UPDATEs in a
+        // transaction so the two substrates can't diverge on partial
+        // failure. update_importance is called from the synthesis
+        // auto-bump path (commit 1555a26) which doesn't already hold
+        // a tx — autocommit-aware so re-entry from a parent tx is safe.
+        let needs_tx = self.conn.is_autocommit();
+        if needs_tx {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        }
+
+        let result: Result<(), Box<dyn std::error::Error>> = (|| {
+            self.conn.execute(
+                "UPDATE memories SET importance = ?1 WHERE id = ?2",
+                params![importance, memory_id],
+            )?;
+            Self::update_memory_node_importance(&self.conn, memory_id, importance)?;
+            Ok(())
+        })();
+
+        if needs_tx {
+            match &result {
+                Ok(_) => self.conn.execute_batch("COMMIT")?,
+                Err(_) => { let _ = self.conn.execute_batch("ROLLBACK"); }
+            }
+        }
+
+        result
     }
 
     /// Insert a raw memory record. Used by synthesis engine to store insights.
