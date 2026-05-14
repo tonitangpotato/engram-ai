@@ -91,6 +91,87 @@ fn datetime_to_f64(dt: &DateTime<Utc>) -> f64 {
     dt.timestamp() as f64 + dt.timestamp_subsec_nanos() as f64 / 1_000_000_000.0
 }
 
+/// T29.5 read-switch helper: decode an `EntityRecord.entity_type`
+/// and a cleaned `metadata` JSON-string out of a `nodes` row's
+/// `attributes` blob + `node_kind` column.
+///
+/// Decode chain (matches the union of all dual-write paths that
+/// project entities into `nodes`):
+///
+/// 1. `attributes._legacy_kind` — written by T13 / graph-store
+///    entity writes (`merge_legacy_entity_kind`). It is a
+///    serde-encoded `EntityKind`: canonical variants serialize to a
+///    JSON string (e.g. `"person"`), `Other(s)` serializes to an
+///    object (`{"other": "<s>"}`). When present, this wins because
+///    it preserves the `Other(_)` distinction the flat
+///    `entity_type` column cannot.
+/// 2. `attributes.entity_type` — written by T21 backfill and
+///    `upsert_entity` dual-write. A flat lowercase string copied
+///    straight from the legacy `entities.entity_type` column.
+/// 3. `node_kind` column — last-resort fallback when neither
+///    attribute is present (shouldn't happen for any row produced by
+///    a sanctioned writer, but cheaper than failing).
+///
+/// `metadata` is the `attributes` JSON object with both reserved
+/// keys (`_legacy_kind`, `entity_type`) stripped. If the cleaned
+/// object is empty we return `None` to match the legacy
+/// `entities.metadata` NULL semantics.
+///
+/// Inputs that fail to parse as a JSON object fall back to
+/// `(node_kind, None)`. This is defensive: every production writer
+/// stores an object, but a corrupted row shouldn't poison the
+/// reader.
+fn decode_entity_type_and_metadata(
+    attributes_json: &str,
+    node_kind: &str,
+) -> (String, Option<String>) {
+    let parsed: serde_json::Value = match serde_json::from_str(attributes_json) {
+        Ok(v) => v,
+        Err(_) => return (node_kind.to_string(), None),
+    };
+    let mut map = match parsed {
+        serde_json::Value::Object(m) => m,
+        _ => return (node_kind.to_string(), None),
+    };
+
+    // 1. _legacy_kind (T13 / graph-store path) — wins because it
+    //    preserves Other(_) distinction.
+    let legacy_kind = map.remove("_legacy_kind").and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s),
+        // Object form: {"other":"<s>"}. We only care about the
+        // canonical-vs-other discriminator, so inspect the JSON form.
+        serde_json::Value::Object(ref obj) => {
+            obj.get("other").and_then(|x| x.as_str()).map(|s| s.to_string())
+        }
+        _ => None,
+    });
+
+    // 2. entity_type (T21 / upsert_entity path) — flat string.
+    let typed_attr = map.remove("entity_type").and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    });
+
+    let entity_type = legacy_kind
+        .or(typed_attr)
+        .unwrap_or_else(|| node_kind.to_string());
+
+    let metadata = if map.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(map).to_string())
+    };
+
+    (entity_type, metadata)
+}
+
+/// Merge two JSON-object strings with "existing keys win" semantics.
+///
+/// Used by ISS-122 `upsert_entity` dual-write on the conflict-update
+/// branch: when a `nodes` row already exists for an entity id (e.g.
+/// because T13 wrote it earlier from `graph_entities`), the legacy
+/// projection should only add keys that the existing row doesn't
+/// already have. This locks with T21 Pass-2 backfill semantics
 /// Merge two JSON-object strings with "existing keys win" semantics.
 ///
 /// Used by ISS-122 `upsert_entity` dual-write on the conflict-update
@@ -4952,7 +5033,24 @@ impl Storage {
     }
     
     /// Get a single entity by ID.
+    ///
+    /// **T29.5 (Phase D read-switch)**: when `unified_substrate` is on,
+    /// reads from `nodes WHERE node_kind IN ('entity','topic')` using
+    /// the field-mapping shims established by ISS-119/120/122:
+    ///
+    /// * `name`        ← `nodes.content`
+    /// * `entity_type` ← `_legacy_kind` (T13/upsert_entity dual-write)
+    ///                   OR `attributes.entity_type` (T21 backfill)
+    ///                   OR derived from `node_kind` (fallback)
+    /// * `metadata`    ← `nodes.attributes` minus the reserved keys
+    ///                   `_legacy_kind` and `entity_type`. Returns
+    ///                   `None` when the cleaned object is empty
+    ///                   (matches legacy NULL semantics).
+    /// * timestamps    ← `nodes.created_at` / `nodes.updated_at`
     pub fn get_entity(&self, id: &str) -> Result<Option<EntityRecord>, rusqlite::Error> {
+        if self.unified_substrate {
+            return self.get_entity_unified(id);
+        }
         self.conn
             .query_row(
                 "SELECT id, name, entity_type, namespace, metadata, created_at, updated_at \
@@ -4967,6 +5065,44 @@ impl Storage {
                         metadata: row.get(4)?,
                         created_at: row.get(5)?,
                         updated_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    /// T29.5 unified-substrate path for `get_entity`. Reads
+    /// `nodes WHERE id=? AND node_kind IN ('entity','topic')` and
+    /// reconstructs `EntityRecord` via the ISS-120 / T21 field-mapping
+    /// shims. See `get_entity` doc for the projection contract.
+    fn get_entity_unified(
+        &self,
+        id: &str,
+    ) -> Result<Option<EntityRecord>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                "SELECT id, content, namespace, attributes, node_kind, created_at, updated_at \
+                 FROM nodes WHERE id = ?1 AND node_kind IN ('entity', 'topic')",
+                params![id],
+                |row| {
+                    let id_str: String = row.get(0)?;
+                    let name: String = row.get(1)?;
+                    let namespace: String = row.get(2)?;
+                    let attributes: String = row.get(3)?;
+                    let node_kind: String = row.get(4)?;
+                    let created_at: f64 = row.get(5)?;
+                    let updated_at: f64 = row.get(6)?;
+
+                    let (entity_type, metadata) =
+                        decode_entity_type_and_metadata(&attributes, &node_kind);
+                    Ok(EntityRecord {
+                        id: id_str,
+                        name,
+                        entity_type,
+                        namespace,
+                        metadata,
+                        created_at,
+                        updated_at,
                     })
                 },
             )

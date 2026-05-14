@@ -2140,6 +2140,9 @@ one focused session.
     - part-5 `get_cross_namespace_neighbors` — `ec7fa2c`
     - part-6 `get_all_cross_links` — `2971fa3`
   - [ ] **T29.5** entity / triple readers — enumerate then ship
+    - part-1 `get_entity` (entity reader, single-row) — _next commit_ + decode helper + 4 contract tests (decode chain: `_legacy_kind` → `attributes.entity_type` → `node_kind` fallback)
+    - part-2 `list_entities*` / `count_entities` — TODO
+    - part-3 triple readers (`get_triples_*`, `list_triples_*`) — TODO
   - [ ] **T29.6** FTS readers (`memories_fts` → `nodes_fts`)
   - [ ] **T29.7** remaining `SELECT FROM memories` reads in retrieval / consolidation paths
 - [ ] **T30** Manual probe set: 50 queries on production DB, labeled
