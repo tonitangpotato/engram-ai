@@ -4,6 +4,7 @@
 **Author**: claude (rustclaw session 2026-05-12)
 **Supersedes**: `v03-wireup/design.md` (G1–G6 are rewritten here to target unified schema directly, not via intermediate v0.3 schema)
 **Prerequisite read**: `v03-wireup/design.md`, `consolidation-autopilot-DRAFT.md`, `engramai/src/storage.rs`, `engramai/src/retrieval/api.rs`
+**2026-05-14 scope split**: sections §4.11–§4.15 (cognitive function specs) and §8.9–§8.13 (their tasks T45–T59) were moved to a new feature `v05-cognitive-substrate/` — see the stub at §4.11 below. All cross-references in this doc to `§4.11`–`§4.15` now point to **v0.5's** §2.1–§2.5; the substrate primitives those sections use (new `node_kind`s, `edge_kind`s, `WriteOp` variants) stayed in v0.4 §3 and §6 because they ARE the substrate.
 
 ---
 
@@ -19,11 +20,12 @@ This document specifies the terminal schema: **`nodes` + `edges` +
 Every cognitive function becomes an operation on this substrate —
 not just the obvious ones (memory recall, entity resolution, Hebbian,
 KC, supersession, decay, synthesis) but also the ones currently
-scattered across ad-hoc storage: **interoception/anomaly (§4.11),
-empathy bus (§4.12), working memory (§4.13), metacognition (§4.14),
-dimensional signature (§4.15)**, and the **v0.2 KC** code mass
-(§4.16, 21 modules, 656KB, zero production callers — slated for
-retirement after Phase D).
+scattered across ad-hoc storage: **interoception/anomaly, empathy
+bus, working memory, metacognition, dimensional signature** (full
+design specs for those moved to `v05-cognitive-substrate/` on
+2026-05-14 — see §4.11 stub for rationale), and the **v0.2 KC**
+code mass (§4.16, 21 modules, 656KB, zero production callers —
+slated for retirement after Phase D).
 
 The v0.3 schema (`graph_entities` + `graph_edges`) is **already 90% of
 the terminal shape** — this is not a rewrite, it's a generalization +
@@ -739,271 +741,13 @@ pointing at the corresponding episode node. Episode nodes themselves
 are created during Phase C from the distinct set of legacy episode_id
 values. Phase F (T41) drops the `episode_id` columns.
 
-### 4.11 Interoception + somatic markers (currently `interoceptive/`, `anomaly.rs`, `confidence.rs`)
+### 4.11 – 4.15 → moved to `v05-cognitive-substrate/design.md`
 
-**Today (verified 2026-05-12)**:
-- `interoceptive/` hub consolidates 5 monitoring subsystems: anomaly detection, empathy accumulator, behavior feedback, confidence calibration, drive alignment. Each emits an `InteroceptiveSignal` (signal layer), aggregated into `InteroceptiveState` (state layer), feeding `RegulationAction` recommendations (action layer).
-- `anomaly.rs` maintains per-metric sliding-window baselines.
-- `confidence.rs` is two-dimensional: content reliability × meta-confidence.
-- Signals today live **in memory only** — they vanish on process restart. No persistence.
-- Damasio's somatic-marker hypothesis is the cited model: emotional/embodied signals bias decision-making before deliberation.
+The cognitive-function specs for interoception + somatic markers (§4.11), empathy bus (§4.12), working memory (§4.13), metacognition (§4.14), and dimensional signature (§4.15) have been split into the **v0.5 Cognitive Substrate** feature on 2026-05-14. Rationale: those sections describe functions *built on top of* the v0.4 unified substrate, not the substrate itself. Conflating "does the substrate work" (v0.4) with "what does it enable" (v0.5) stretched v0.4 to 68 tasks and blurred when "done" means done.
 
-**Unified** (per §3 substrate):
+See `.gid/features/v05-cognitive-substrate/design.md` §2 for the design specs (preserved verbatim from this file's prior §4.11–§4.15 modulo subsection renumbering), and `requirements.md` in the same directory for the formal GOAL/GUARD set.
 
-A signal is a transient event. A *somatic marker* is the persistent association between a situation pattern and the affective state it evoked. Only the latter belongs in the substrate — signals stay ephemeral.
-
-- **Domain state as node**: each interoceptive *domain* (`coding`, `trading`, `general`, etc.) is a `nodes` row of `node_kind='interoceptive_domain'`. Attributes carry running statistics (rolling valence, anomaly z-score, confidence calibration, alignment score) updated on every signal — small fixed-shape JSON, not a growing log.
-
-- **Somatic-marker as node**: when a signal pattern recurs (e.g. "topic X repeatedly accompanies negative valence + high anomaly"), the hub promotes it to a `nodes` row of `node_kind='somatic_marker'`. Attributes: `{ pattern_signature, evoked_affect, sample_count, last_seen }`.
-
-- **Marker → situation edges**: somatic markers connect to the memory/entity nodes that triggered them via `evoked_by` edges (`edge_kind='associative', predicate='evoked_by', weight=co_occurrence_strength`). This is what lets future retrieval *feel* a topic before it reasons about it.
-
-- **Two-tier signal handling — baseline ephemeral, anomaly persistent**: signals partition into a high-frequency baseline stream and a sparse anomaly stream. The baseline stream (every ingest/recall/action emits one) is **not stored** — the writer folds each signal into the domain node's rolling statistics (`baseline_mean`, `baseline_std`, `last_n_values` capped circular buffer) and discards it. The anomaly stream — signals that cross the z-score threshold or trigger a regulation action — is **persisted** as a `node_kind='anomaly_event'` row. Attributes: `{ domain, metric, raw_value, z_score, window_stats_snapshot, triggered_regulation, rationale }`. Edges: `anomaly_event → observed_in_domain` (to the domain node), `anomaly_event → triggered_by` (to the memory/action/recall that fired it). This matches biology — you don't remember every heartbeat, but you do remember the *moment* your heart raced and what caused it.
-
-- **Volume math**: baseline signal rate is ~1-10/sec across all subsystems (high), so dropping them is the only sane choice. Anomaly rate is ~10-100/day (sparse by definition), so persisting them is cheap and high-value.
-
-- **Somatic markers derive from anomaly_events, not from raw signals**: marker formation walks the anomaly_event nodes — when ≥N anomaly_events on the same domain share a pattern signature, a `somatic_marker` node is created with `derived_from` edges back to the contributing anomaly_events. This is the audit trail: every marker can be traced to the specific moments that shaped it.
-
-- **Confidence / anomaly as memory attributes**: when a signal is bound to a specific memory (write-time confidence, post-recall confidence-update), the value lands in that memory node's attributes (`confidence_at_write`, `confidence_at_recall`). Edges from the memory to the active domain node carry the signal context.
-
-- **Anomaly baseline storage**: per-domain rolling statistics live in the domain node's attributes (`baseline_mean`, `baseline_std`, `window_size`, `last_n_values` — capped circular buffer). No separate `anomaly_baselines` table.
-
-**Reader path (no schema dependency)**:
-- "What does the system feel about topic X" → traverse from memory/entity matching X → follow `evoked_by` edges to somatic markers → read evoked_affect.
-- "How is domain Y trending" → read the domain node's attributes directly.
-- "What specific events shaped this somatic marker" → walk `derived_from` edges from marker to anomaly_events.
-- "Why was the system anxious on 2026-05-08" → query `anomaly_event` nodes by date + domain, read their `triggered_by` edges to see the causal events.
-- "Should this action be regulated" → read `nodes.attributes` of `node_kind='regulation_policy'` filtered by current domain state.
-
-**Maps cleanly**: four `node_kind`s are introduced by §4.11 — `interoceptive_domain` (one row per domain, mutable rolling stats), `somatic_marker` (sparse, one row per recurring affect-pattern), `anomaly_event` (sparse, one row per threshold crossing), `regulation_policy` (rare, configuration nodes). Baseline signal-stream throughput stays unbounded by storage (it never touches disk — only mutates `interoceptive_domain.attributes`); anomaly + marker write rates are sparse enough to need no batching. Existing `interoceptive/hub.rs` becomes a queue producer; `interoceptive/regulation.rs` becomes a queue consumer reading `regulation_policy` + `interoceptive_domain` attributes.
-
----
-
-### 4.12 Empathy bus (currently `bus/`)
-
-**Today (verified 2026-05-12)**:
-- `bus/accumulator.rs` tracks per-domain valence trends, flags domains that need SOUL.md updates.
-- `bus/alignment.rs` scores how well memories align with active SOUL drives (two strategies: keyword overlap + embedding similarity).
-- `bus/feedback.rs` monitors action outcomes (success/failure rates per action type).
-- `bus/subscriptions.rs` defines cross-agent notification model (agents subscribe to namespaces).
-- `bus/mod_io.rs` reads/writes workspace files: `SOUL.md`, `HEARTBEAT.md`, `IDENTITY.md`. **This is the boundary** — files are external sinks/sources, not substrate.
-
-**Unified** (per §3 substrate):
-
-The Empathy Bus is *partly* substrate-resident and *partly* I/O. Distinguish:
-
-- **In substrate** — the *patterns* the bus learns:
-  - **Drive node** (`node_kind='drive'`): each SOUL.md drive is a node. Attributes: `{ name, weight, embedding, source: 'soul'|'derived', last_reinforced }`.
-  - **Valence accumulator state**: lives in the domain node from §4.11 (`attributes.valence_window`). Empathy accumulator is a *view* over the same domain node, not a parallel store.
-  - **Drive ↔ memory edges** (`edge_kind='associative', predicate='aligns_with', weight=alignment_score`): every memory ingested gets scored against active drives; edges with `weight > threshold` persist. This makes "which memories matter most under drive D" a one-hop traversal.
-  - **Action outcome as node** (`node_kind='action_outcome'`): each heartbeat action result is a node. Attributes: `{ action_type, success, latency_ms, notes }`. Edges: `outcome → triggered_by_drive`, `outcome → involves_memory`.
-
-- **External (I/O, not substrate)** — file-system interactions:
-  - `SOUL.md` reads → load drive set into substrate as `node_kind='drive'` rows on startup.
-  - `SOUL.md` writes (drive evolution suggestions) → produced by analyzing drive nodes + valence accumulator state; written by `bus/mod_io.rs` to the file. The act of writing is logged as a `node_kind='external_write', attributes.target_file='SOUL.md'` audit node.
-  - `HEARTBEAT.md` reads/writes → same pattern, logged as external_write audit nodes for traceability.
-
-**Writer paths through §6 queue** (canonical names — see §6.1 WriteOp enum):
-- `WriteDriveAlignment { memory_id, drive_id, weight }` — fires on every ingest, low priority, batchable. Persists alignment edges with `weight > threshold` (matches `bus/alignment.rs` scoring).
-- `WriteValenceAccumulator { domain, valence_delta, event_count_delta }` — per-domain valence trend update on the domain node from §4.11; one fire per affect-laden event (matches `bus/accumulator.rs`).
-- `WriteActionOutcome { action_type, success, latency_ms, ... }` — fires on every heartbeat action completion (matches `bus/feedback.rs`).
-- `LogExternalWrite { target_file, operation, content_hash }` — fires before `bus/mod_io.rs` touches a file; ensures every file mutation has a substrate audit trail.
-
-**Subscription model**: cross-namespace subscriptions become `nodes` of `node_kind='subscription'` with `subscriber_namespace` and `target_namespace` attributes. Notifications walk `edges` of type `notifies` from target memory to subscription nodes. No separate `subscriptions` table.
-
-**Why this works**: the bus's job is to make personality emerge from memory patterns. Patterns belong in the graph; the files are just where personality is *externalized for humans to read and edit*. The substrate captures the causal chain; the files are downstream artifacts.
-
----
-
-### 4.13 Working memory (currently `session_wm.rs`, `dimension_access.rs`)
-
-**Today (verified 2026-05-12)**:
-- `session_wm.rs` implements Miller 7±2 — a small in-memory ring buffer of "active" memory IDs the agent is currently attending to.
-- Volatile: lives only in the running process. Cleared on restart.
-- `dimension_access.rs` (237 LoC) provides fast typed accessors over the 16-field dimensional signature defined in `dimensions.rs` (see §4.15 for the full field set). It exposes 8 narrative accessors (`temporal()`, `participants()`, `relations()`, `sentiment()`, `location()`, `context()`, `causation()`, `outcome()`) plus presence checks (`has_dimensions()`, `has_any_narrative()`).
-
-**Unified** (per §3 substrate):
-
-Working memory is biologically a *transient* state — prefrontal sustained activation, not long-term storage. It does **not** require a new table, and it does **not** need to be persisted on every attention shift. Three options were considered:
-
-- **Option A (rejected)**: pure in-memory ring buffer. Lost on restart, invisible to metacognition. Cannot answer "what was I thinking when I made that wrong judgment".
-- **Option B (rejected, but tempting)**: every attention shift writes a bi-temporal `wm_active` edge close+open through the §6 queue. Gives perfect-resolution WM history. **Rejected because**: attention may shift at sub-second cadence; that write rate is real cost paid for a query ("WM at arbitrary time T") nobody actually issues. Pays for an imagined need.
-- **Option C (chosen)**: WM stays in-memory at the hot path; substrate captures WM **only at the moments WM matters** — when a metacognition feedback event evaluates the agent's behavior. At those moments, a `wm_snapshot` node is materialized and bound to the feedback event.
-
-**The in-memory tier** (unchanged from today):
-- `session_wm.rs` keeps the Miller 7±2 ring buffer in process memory. Reads + writes are O(1), no IO.
-- On process restart, WM clears. That is biologically accurate — humans wake up without prior working-memory state either.
-- **Cold-start tracking**: the ring buffer carries a `state: WmState` flag (`cold_start | warm`). On process start, `state = cold_start`. The flag flips to `warm` exactly once per session — see the next bullet for the precise trigger. All subsequent in-memory WM operations observe `warm` until process exit. This is a single byte; zero hot-path cost.
-- **Cold→warm transition timing (precise)**: the transition fires the **first time the session's metacog loop completes its first cycle after the session opens**, OR when a `wm_snapshot` from a prior session is loaded back into the ring buffer (session resume). Whichever happens first flips the flag; the flag is read-only thereafter (it never reverts to `cold_start` within a session). Rationale: a metacog cycle is the first moment the agent has *evaluated* its own attention state — before that, the ring buffer may hold attended IDs but the agent has not yet had a chance to reason about them, which matches the biological "haven't woken up yet" semantics. Implementation note recorded against T51.
-
-**The substrate tier** (new):
-- `node_kind='wm_snapshot'`: one row per snapshot. Attributes: `{ slot_count, captured_at, trigger_reason, wm_state }` — `wm_state` is the cold/warm flag at capture time, persisted so downstream analysis can distinguish "agent had genuinely empty WM" from "agent had just restarted and not yet recalled anything".
-- `edge_kind='containment', predicate='wm_contained'`: from snapshot node → each memory that was in WM at capture time. Edge order/recency carried as edge attribute (`slot_index`, `last_access_ns`).
-- `edge_kind='provenance', predicate='wm_snapshot_of'`: from feedback event (§4.14) → wm_snapshot. Makes "what was the agent thinking when this judgment was made" a one-hop traversal.
-
-**Snapshot triggers** (when WM materializes to substrate):
-- Every metacognition feedback event (§4.14) — primary trigger; the evaluator wants to know the cognitive context being evaluated.
-- Explicit introspection call (`memory.snapshot_working_memory(reason)`) — for debug tooling, regulation actions, or human queries.
-- **Not** on every attention shift. Not periodically. Snapshot is **demand-driven**.
-
-**Why this works**:
-- Hot path stays cheap: attention shifts are pure in-memory, no queue traffic.
-- The queries that motivated in-graph WM ("what was I thinking when I got this wrong") still work — because feedback events are exactly the moments those queries matter.
-- Precision trade-off is honest: "WM at arbitrary time T" returns the *nearest preceding snapshot*, not the exact instantaneous state. This matches human introspection — you can't recall WM at 14:32:17.443, you recall WM near "when I noticed the bug".
-- No bi-temporal edge churn. No 7±2 cap enforcement at queue level (cap is enforced in-memory, where it's a fixed-size ring buffer — natural).
-- Session-scoped variants work the same way: each session has its own in-memory WM; snapshots inherit the session namespace.
-
-**Dimension access**: `dimension_access.rs` migration is specified in §4.15.4 (three-tier model: scalar attributes + `describes_<field>` edges + `tagged` edges). §4.13's only relationship to `dimension_access.rs` is that the in-memory WM ring buffer holds memory IDs whose dimensions can be resolved via the §4.15.4 shim when a snapshot is taken — no separate migration path is defined here.
-
----
-
-### 4.14 Metacognition (currently `metacognition.rs`)
-
-**Today (verified 2026-05-12)**:
-- `metacognition.rs` tracks recall accuracy, synthesis quality, channel effectiveness over time via the `MetaCognitionTracker` struct.
-- Stores evaluation events (rolling window) in the `metacognition_events` SQLite table.
-- Independent of `interoceptive/` today — the interoceptive hub gets `feedback` baseline signal from `bus/feedback.rs` (heartbeat action outcomes), not from metacognition. The unified design below proposes connecting them via `evaluates` edges (see §4.11 cross-reference).
-
-**Unified** (per §3 substrate):
-
-Metacognition is *judgments about other cognitive operations*. Each judgment is an event with a target — a perfect fit for the node-edge model.
-
-- **Feedback event as node**: each evaluation is a `nodes` row of `node_kind='metacog_feedback'`. Attributes: `{ score, dimension, evaluator, rationale, timestamp }` where `dimension ∈ {recall_accuracy, synthesis_quality, channel_effectiveness, retrieval_relevance}`.
-- **Feedback → target edge**: every feedback event has an `evaluates` edge pointing to the memory/synthesis/retrieval-trace it judged.
-- **Aggregate views are derived, not stored**: "current recall accuracy" is `SELECT AVG(attributes.score) FROM nodes WHERE node_kind='feedback' AND dimension='recall_accuracy' AND created_at > now - 7d`. No materialized rollup table — if the query becomes hot, add a `node_kind='metacog_summary'` written daily by the writer.
-- **Retrieval trace as node** (already in `retrieval/`): each query execution is a `node_kind='retrieval_trace'` with attributes `{ query_text, plan_used, result_count, latency_ms }`. Feedback events evaluate these.
-
-**Writer path through §6 queue**:
-- `WriteFeedbackEvent { dimension, score, target_id, evaluator, rationale }` — medium priority, no batching constraint (these are rare).
-- `WriteWmSnapshot { feedback_event_id, slot_contents, wm_state }` — fires in the same transaction as `WriteFeedbackEvent` so the snapshot and the evaluation are atomically linked (§4.13 demand-driven trigger). `wm_state ∈ {cold_start, warm}` is captured from the in-memory ring buffer at snapshot time; a `cold_start` snapshot is a legitimate observation (the agent really had empty WM post-restart), not a data-quality bug, but downstream metacog analysis can filter on it.
-- Aggregation is **read-time** (one SQL query) unless a daily summary node is materialized; that's a separate background op.
-
-**Why this works**:
-- Metacognition becomes a first-class part of the memory graph — the system can reason about its own past evaluations the same way it reasons about facts.
-- "Show me memories the system was wrong about" is a traversal: feedback → evaluates → memory, filter `feedback.score < threshold`.
-- Closing the loop with §4.11 interoception: low metacog scores in dimension X flow into anomaly detection on domain X, triggering somatic-marker formation ("I tend to be wrong about this kind of question") — exactly the cognitive-science motivation.
-
----
-
-### 4.15 Dimensional signature (currently `dimensions.rs`, `dimension_access.rs`)
-
-**Today (verified 2026-05-12)**:
-- `crates/engramai/src/dimensions.rs` (1362 LoC) defines `Dimensions` — a typed signature attached to every memory row. 16+ fields: `core_fact: NonEmptyString`, narrative fields (`participants`, `temporal`, `location`, `context`, `causation`, `outcome`, `method`, `relations`, `sentiment`, `stance`), scalar dimensions (`valence: Valence`, `domain: Domain`, `confidence: Confidence`), and aggregate fields (`tags: BTreeSet<String>`, `type_weights: TypeWeights`).
-- `dimension_access.rs` (237 LoC) is the typed-read API over those fields — callers ask `dims.domain()` rather than parsing JSON.
-- Storage today: serialized as a JSON blob in `memories.dimensions` column. Reads load the whole blob and deserialize.
-- Used by: retrieval (filter by `domain`/`valence`/`confidence`), KC (cluster by `domain`/`tags`), metacog (track per-`dimension` accuracy in §4.14), interoception (anomaly bias per `domain` in §4.11).
-
-**Unified** (per §3 substrate): Dimensions split cleanly into **three storage tiers** based on access pattern, with no semantic loss.
-
-#### 4.15.1 Tier 1 — scalar dimensions as first-class attributes
-
-Fields with **structured types and high query frequency** become typed attributes on the memory's node row:
-
-```
-node_kind='memory', attributes = {
-  core_fact:   "<NonEmptyString text>",   -- required, denormalized from content
-  valence:     -0.7,                       -- f64 in [-1, 1]
-  domain:      "tech",                     -- enum string
-  confidence:  "verified",                 -- enum string
-  type_weights: { episodic: 0.6, ... }     -- shaped sub-object
-}
-```
-
-These four scalars (`valence`, `domain`, `confidence`, `type_weights`) drive **filter predicates** in retrieval (`WHERE attributes->>'domain' = 'tech'`) and **bucket keys** in KC clustering. They are accessed on every retrieval call. Keeping them in `attributes` means a single row read returns them; no join.
-
-`core_fact` is denormalized into `attributes` (in addition to being in `nodes.content`) because retrieval ranking sometimes needs the distilled fact *without* the full memory content — and the non-empty invariant is a node-creation-time check (§6 writer validates), preserving the `NonEmptyString` guarantee.
-
-#### 4.15.2 Tier 2 — narrative fields as `describes_<field>` edges to dimension nodes
-
-Fields with **free-text values and combinatorial reuse** (the same `location: "Caroline's house"` appears on 40 memories) become **separate nodes** with edges:
-
-```
-node_kind='memory'  ──describes_location──>  node_kind='dimension_location'
-                                            attributes = { value: "Caroline's house" }
-```
-
-The 10 narrative fields (`participants`, `temporal`, `location`, `context`, `causation`, `outcome`, `method`, `relations`, `sentiment`, `stance`) each get their own `node_kind`: `dimension_participants`, `dimension_location`, etc. (Schema §3.1 has only single-level `node_kind`; we encode field identity into the kind string rather than inventing a second discriminator.) Each unique value (e.g. `"Caroline's house"`) is a single node; every memory referencing it gets an edge with `edge_kind='containment', predicate='describes_<field>'` (e.g. `describes_location`, `describes_participants`).
-
-**Why `containment` and not `structural`**: a dimension edge is set-membership semantics — a memory either has this location/participant/etc. or it doesn't, and re-ingesting the same value MUST be a no-op (not a second edge with the same predicate). §3.2's partial UNIQUE index on `(source_id, target_id, edge_kind, predicate) WHERE edge_kind='containment'` enforces this idempotence at the SQL layer. `structural` edges are reserved for relations that may legitimately repeat across runs (e.g. parser-emitted AST edges, multiple `derived_from` provenance links with different `source_run_id`).
-
-**Why edges, not duplicated strings**:
-
-1. **Discoverability** — "find every memory at Caroline's house" becomes a 1-hop edge traversal (`SELECT m.id FROM edges WHERE target_id=$loc AND predicate='describes_location'`), not a string LIKE scan over a million JSON blobs.
-2. **Co-occurrence cheap** — "what locations co-occur with participant Caroline?" is a 2-hop graph query, exactly what the substrate is for.
-3. **Reuse without duplication** — 40 memories at Caroline's house = 40 edges + 1 node, not 40 copies of the string. Storage cost ≈ 40 × 8 bytes (edge row) + 1 × ~30 bytes (node), vs 40 × ~30 bytes today.
-4. **Resolution can merge** — the §4 ResolutionPipeline already canonicalizes entity strings; `"Caroline's house"` and `"Caroline house"` become the same dimension node via the same merge machinery.
-
-#### 4.15.3 Tier 3 — tag set as `tagged` edges
-
-`tags: BTreeSet<String>` becomes N edges (`edge_kind='containment', predicate='tagged'`) to `node_kind='tag'` nodes. Same rationale as Tier 2 — tag reuse is the whole point of tags, edges make reuse explicit. A `tagged` edge has no weight (presence/absence is the signal); the partial UNIQUE index on `(source_id, target_id, edge_kind, predicate) WHERE edge_kind='containment'` from §3.2 prevents accidental duplicates (re-ingest of the same tag is a no-op).
-
-#### 4.15.4 Compatibility with current `dimension_access.rs`
-
-The 237 LoC accessor module becomes a **thin shim** post-migration:
-
-- `dims.valence()` / `.domain()` / `.confidence()` — read directly from `nodes.attributes` (single column access, no join).
-- `dims.location()` / `.participants()` / etc. — load the edges with `predicate='describes_<field>'` for the node, return the target node's `attributes.value`. For the common single-value case (most narrative fields are 0..1), the accessor returns `Option<String>` exactly as today.
-- `dims.tags()` — load edges with `predicate='tagged'`, materialize the `BTreeSet`.
-
-Callers see the same API. The `Dimensions` struct itself can be **reconstructed** on demand for code paths that still want the flat shape (e.g. legacy serialization, debug prints) — but new code traverses the graph natively. Dual-write during Phase B (§5.2) ensures the JSON blob stays valid until callers migrate.
-
-#### 4.15.5 Why this isn't over-engineering
-
-The natural objection: "Tier 1 is already an attribute, Tier 2 is the same data with extra indirection — why pay the edge cost?" The answer is that **the indirection is what makes the substrate useful**:
-
-- A graph database whose nodes carry blob-JSON narrative fields is just SQLite with a tax. The dimensions in Tier 2 are exactly the fields that **other memories share** — turning them into edges is what lets the substrate answer "what else happened at Caroline's house?" without a full table scan. That is the v04 thesis (§2 — first-class relations).
-- The migration is cheap: backfill (§5.3) iterates `memories.dimensions` blobs, materializes nodes-and-edges on first encounter (dedup by value-hash), and rewrites read paths in `dimension_access.rs`. No data is lost; the blob can be regenerated from the graph for any rollback step.
-
-**Writer path through §6 queue**: dimensions enter as part of `WriteMemory` — a single op produces 1 memory node + up to ~15 dimension/tag edges + 0–15 new dimension nodes (most are dedup-hits to existing nodes). All in one transaction (§6.4 batched-op pattern), no torn writes.
-
-#### 4.15.6 Write amplification budget
-
-The objection raised in design review: "Tier 2 emits 5–20 `describes_*` edges per memory; Tier 3 emits an unbounded number of `tagged` edges per memory. Aggregate write rate could grow 10–30× compared to today's single-row JSON blob ingest." This is the **dimension growth risk** (R10 in §9).
-
-The math, based on production engram data (~24k memories, dimensions field present on >95%):
-
-- **Today (v0.2/v0.3 hybrid)**: `memories` row + `memory_entities` mention rows. Median ~4 mention rows per memory, P95 ~12. ~5 ingest writes per memory at P50, ~13 at P95.
-- **Unified Tier 1 only**: 1 `nodes` row per memory. Scalar dimensions (`valence`, `domain`, `confidence`, `type_weights`) live inside `nodes.attributes` — no edge cost. **1 write per memory.**
-- **Unified Tier 1 + Tier 2**: Tier 2 fields are nullable; the actual *count of present narrative fields* on a typical memory is 3–6 (from production audit: `participants` 78%, `temporal` 71%, `location` 42%, `context` 88%, `causation` 18%, `outcome` 31%, `method` 6%, `relations` 14%, `sentiment` 64%, `stance` 22%). Median ~4 `describes_*` edges per memory, P95 ~7.
-- **Unified Tier 1 + Tier 2 + Tier 3**: Tags currently average 2.3 per memory (P50 = 2, P95 = 5, max observed = 14).
-- **New dimension nodes**: most dimension values are *reused* across memories (e.g. location="Caroline's house" applies to many memories). Backfill audit on conv-26 (441 memories) showed 89% of narrative values produce **dedup hits** on an existing dimension node; only 11% create a new node. So per memory, expected new-node count is `~4 narrative × 11% = 0.4` new dim nodes, plus tag-node creation is similar.
-
-**Aggregate per-memory ingest cost (P50 / P95)**:
-
-| Component                              | P50 ops | P95 ops |
-|----------------------------------------|---------|---------|
-| Memory node (`nodes`)                  | 1       | 1       |
-| `describes_*` edges (Tier 2)           | 4       | 7       |
-| `tagged` edges (Tier 3)                | 2       | 5       |
-| New dimension nodes (Tier 2 misses)    | 0.4     | 1       |
-| New tag nodes                          | 0.3     | 1       |
-| Entity `mentions` edges (§4.2)         | 3       | 8       |
-| Entity nodes (resolution misses)       | 0.3     | 1       |
-| `belongs_to_episode` edge (§4.10, when active) | 0.7     | 1       |
-| **Total inserts per memory**           | **~12** | **~25** |
-
-vs. today's ~5 (P50) / ~13 (P95). **Write amplification ratio: ~2.4× P50, ~1.9× P95.** (`belongs_to_episode` row reflects production data: ~70% of memories ingested during an active episode session, ~100% during interactive turns; standalone ingests like background heuristics omit episode entirely.)
-
-This is real cost but not catastrophic. Three properties make it tractable:
-
-1. **All inserts batch into one transaction.** §6.2 `BATCH_MAX = 64` ops means a single ingest's 11–24 ops fit comfortably in one batch, sharing one fsync. The amortized cost per op is the same regardless of count — only the in-memory CPU work scales.
-2. **Dedup misses decline over time.** As a namespace grows, fewer narrative values are novel. Steady-state miss rate observed at 24k memories: ~5% (vs. 11% on a fresh 441-memory corpus). At 100k memories, expect ~2%.
-3. **Edge UNIQUE constraint short-circuits duplicates.** A re-ingested memory with identical Tier 2 values hits the partial UNIQUE index on `(source_id, target_id, edge_kind, predicate)` (§3.2) and turns into a no-op. Idempotent re-ingest costs ~1 ms even at full Tier 2/3 expansion.
-
-**Production projection** (modeling RustClaw + AgentVerse target load):
-
-- Peak ingest: 50 memories/sec (heartbeat + chat + heuristic background extraction).
-- Peak per-memory ops: 25 (P95).
-- Peak writer throughput required: `50 × 25 = 1250 ops/sec`.
-- §6.6 throughput ceiling: ~11000 ops/sec. **Headroom ~8.8×**. Well within budget.
-
-**Mitigations if growth exceeds projection** (none required at launch; all are tunable knobs):
-
-- **Tier 2 lazy materialization**: emit only the most-queried `describes_*` edges (e.g. `location`, `participants`, `temporal`) on ingest; defer `describes_method` / `describes_stance` to a background pass. Saves ~2 edges per memory P50.
-- **Tag node lazy creation**: emit `tagged` edges only when the tag has been used ≥ N times (i.e. promote tag → tag node only once it has reuse value). Saves all single-use tag nodes (currently ~40% of tags).
-- **Dimension node coalescing in writer**: similar to Hebbian coalescing (§6.3) — multiple ingests in the same batch referring to a new dimension value emit one node insert + N edge inserts instead of N node inserts. Already implicit in the batched-transaction shape, just needs the writer's `apply_op` to maintain a per-batch dim-node cache.
-
-The design **does not implement** these mitigations at launch — the ~8.8× headroom is sufficient. They are listed as **dial-down options** if production telemetry shows write-amplification becoming the bottleneck.
+The action-plan transplant lives in v0.5 §3 (tasks T45–T59). T60 (v0.2 KC retirement) stays under v0.4 cleanup, and T61–T68 (writer-queue infrastructure) stay parked under v0.4 §8.15 until a separate feature picks them up.
 
 ---
 
@@ -2184,78 +1928,15 @@ Plus three earlier shim-key fixes (ISS-119 `contradicts`/`contradicted_by` round
 - [ ] **T43** Close G1–G5 / ISS-* that are subsumed
 - [x] **T44** Update `consolidation-autopilot-DRAFT.md` to reference unified substrate — **duplicate of T04, shipped 2026-05-14** (§2.5 substrate invariants I-A1–I-A8). Kept as a separate tick for traceability; the two tasks ended up describing the same deliverable.
 
-### 8.9 Interoception + somatic markers (§4.11)
-- [ ] **T45** Schema: add `interoceptive_baseline` (ephemeral, derivable) and
-  node_kind `anomaly_event` (persistent) variants — verify §3.1 enum + add
-  attribute schemas (`{moving_avg, variance, sample_count}` for baseline;
-  `{trigger_node_id, observed_value, expected_value, severity}` for event).
-  Decision recorded: baseline is **Tier 1 (in-memory only)** per §4.11 push-back
-  Q1 — does NOT persist as a node. Only the `anomaly_event` persists.
-- [ ] **T46** Implement `InteroceptionService` (in-memory rolling stats by
-  dimension) — pure function, no DB writes for normal observations.
-- [ ] **T47** Wire anomaly detection: when delta > threshold → emit
-  `WriteAnomalyEvent` to writer queue (see §6.1). Backpressure-OK since
-  anomalies are rare.
-- [ ] **T48** Test: synthetic dimension stream with injected spike → exactly
-  one `anomaly_event` node written, baseline stays in-memory, restart loses
-  baseline (Tier 1 ephemeral contract) but `anomaly_event` survives.
+### 8.9 – 8.13 → moved to `v05-cognitive-substrate/design.md` §3
 
-### 8.10 Empathy bus (§4.12)
-- [ ] **T49** Refactor `bus/` to drain into single writer queue (see §6.1
-  `WriteDriveAlignment` / `WriteValenceAccumulator` / `WriteActionOutcome` / `LogExternalWrite`).
-  Schema additions: `node_kind='drive'`, `node_kind='action_outcome'`, `node_kind='external_write'`;
-  domain node from §4.11 absorbs valence accumulator state via `attributes.valence_window`.
-- [ ] **T50** Subscriber adapter: existing handlers re-register against the
-  unified bus reader path; verify no events lost during migration via
-  golden-file replay.
+Tasks **T45–T59** for the cognitive functions (interoception, empathy bus, working memory, metacognition, dimensional signature) moved to the v0.5 Cognitive Substrate feature on 2026-05-14 alongside their design specs (see §4.11–§4.15 stub above). 14 tasks total.
 
-### 8.11 Working memory (§4.13)
-- [ ] **T51** Implement in-memory `WorkingMemory` (vec of active node refs +
-  recency scores) — does NOT persist by default per §4.13 Q2 decision.
-  Includes `state: WmState` field initialized to `cold_start`; flip to
-  `warm` on the **first** of these events (per §4.13 Cold→warm transition timing):
-  (a) the session's metacog loop completes its first cycle, or (b) a prior-session
-  `wm_snapshot` is loaded back into the ring buffer. Flag is read-only thereafter
-  for the session lifetime. Captured into `wm_snapshot` payloads via T52 so
-  downstream metacog analysis can distinguish "agent had genuinely empty WM"
-  from "agent had just restarted and not yet recalled anything".
-- [ ] **T52** Metacognition-driven `wm_snapshot`: when metacog decides a WM
-  state is worth persisting, emit `WriteWmSnapshot` (compound op, see §6.4)
-  that writes a snapshot node + all `wm_member` edges atomically alongside
-  the triggering `feedback_event`.
-- [ ] **T53** Test: WM mutates 100x without persistence; metacog triggers
-  one snapshot → exactly one snapshot node + N edges in single transaction;
-  WM in-memory state still authoritative after snapshot.
+The v0.4 task ledger from this point forward contains only:
+- **§8.14** v0.2 KC retirement (T60) — cleanup, stays v0.4
+- **§8.15** Writer queue infrastructure (T61–T68) — parked / deferred to a separate feature
 
-### 8.12 Metacognition (§4.14)
-- [ ] **T54** Implement metacog evaluator: reads recent `feedback_event` +
-  `anomaly_event` nodes from substrate, produces `meta_judgment` writes
-  (e.g., "retrieval plan X underperformed on entity-heavy queries").
-- [ ] **T55** Wire metacog → `WriteMetaJudgment` + optional
-  `WriteWmSnapshot` compound (§6.4 atomicity).
-
-### 8.13 Dimensional signature (§4.15)
-- [ ] **T56** Implement Tier 1 (scalar dimensions in `nodes.attributes`):
-  extend `MemoryRecord` ingest path to compute `valence`/`domain`/
-  `confidence`/`type_weights` and persist them as JSON fields in
-  `nodes.attributes` at write time. No new table.
-- [ ] **T57** Implement Tier 2 (narrative fields as `describes_<field>`
-  edges): each unique narrative value becomes a `node_kind='dimension_<field>'`
-  node, every memory referencing it gets an `edge_kind='containment',
-  predicate='describes_<field>'` edge. Resolution-pipeline canonicalization
-  applies (§4.15.2). Routes through `WriteOp::WriteMemory` macro-op (§6.1),
-  whose `dimensions` field the writer expands inline into the same
-  transaction as the parent memory INSERT — no caller-constructed `Batch`.
-- [ ] **T58** Implement Tier 3 (`tagged` edges to `node_kind='tag'`
-  nodes): each tag is a node, each memory→tag is an `edge_kind='containment',
-  predicate='tagged'` edge. Partial UNIQUE index from §3.2
-  (`idx_edges_containment_unique`) prevents dup edges; re-ingest of the
-  same tag is a SQL no-op.
-- [ ] **T59** Rewrite `dimension_access.rs` as a thin shim over the
-  unified schema (§4.15.4): scalar accessors read `nodes.attributes`,
-  narrative accessors load edges by `predicate='describes_<field>'`,
-  tag accessor loads edges by `predicate='tagged'`. Bench: shim cost vs
-  current accessor on a 1k-memory namespace.
+---
 
 ### 8.14 v0.2 KC retirement (§4.16)
 - [ ] **T60** Confirm v0.2 KC has **zero production call sites** outside
