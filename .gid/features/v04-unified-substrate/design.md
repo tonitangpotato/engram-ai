@@ -2127,7 +2127,21 @@ one focused session.
 
 ### 8.5 Phase D — switch reads
 - [x] **T28** `MemoryConfig::unified_substrate` flag wired through — commit `7ee3898`. New `pub unified_substrate: bool` field on `MemoryConfig` with `#[serde(default)]`; default `false` so existing deployments stay on legacy reads until the Phase D parity gate (`verify_phase_c_parity` + LoCoMo J-score ≥ legacy baseline of 42.1% per RUN-0018) is cleared in production. All four presets (`chatbot`, `task_agent`, `personal_assistant`, `researcher`) inherit `false` via `..Default::default()`. Four pinned tests guard the contract: (1) `test_unified_substrate_default_off` — default must remain false; (2) `test_unified_substrate_off_in_all_presets` — no preset may silently flip the flag; (3) `test_unified_substrate_serde_roundtrip` — explicit `true` survives ser/de unchanged; (4) `test_unified_substrate_absent_key_defaults_false` — configs written before T28 (which lack the `unified_substrate` key entirely) must deserialize cleanly into `false`, exercising the `#[serde(default)]` attribute against accidental future removal. Writes are unaffected — Phase B (T13–T18) dual-writes continue to keep both sides in sync. T29 will read the flag in retrieval adapters one read path at a time per §5.4 "one plan at a time" rule. Lib test count 1877 → 1881 (+4).
-- [ ] **T29** Retrieval adapters: read from nodes/edges when flag on
+- [ ] **T29** Retrieval adapters: read from nodes/edges when flag on. **Split into sub-tasks per §5.4 one-plan-at-a-time rule.**
+  - [x] **T29.1** subscriptions read-switch — `e34b6b8`
+  - [x] **T29.2** synthesis_provenance read-switch — `251bb03` (+ plumbing `ac1c9f0`)
+  - [x] **T29.3** embeddings read-switch + dual-write writer — `1ad0827`
+  - [x] **T29.4** hebbian read-switch (7 sub-parts, 4 readers + cross-axis ISS-118 root fix):
+    - part-1 `get_hebbian_neighbors` — `6f6d49d`
+    - part-2 `get_hebbian_links_weighted` — `0f3076d`
+    - part-3 `get_hebbian_neighbors_ns` (with ISS-117 OR-match retrofit) — `b74315d`
+    - part-4 `discover_cross_links` — `485ef7b`
+    - ISS-118 ns-aware migration root fix — `5eff26b` + `8ca0c1b` docs
+    - part-5 `get_cross_namespace_neighbors` — `ec7fa2c`
+    - part-6 `get_all_cross_links` — `2971fa3`
+  - [ ] **T29.5** entity / triple readers — enumerate then ship
+  - [ ] **T29.6** FTS readers (`memories_fts` → `nodes_fts`)
+  - [ ] **T29.7** remaining `SELECT FROM memories` reads in retrieval / consolidation paths
 - [ ] **T30** Manual probe set: 50 queries on production DB, labeled
 - [ ] **T31** Parity campaign: LoCoMo + probe set, unified vs legacy
 - [ ] **T32** Flip default to on
