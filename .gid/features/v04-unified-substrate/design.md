@@ -2154,7 +2154,7 @@ Plus three earlier shim-key fixes (ISS-119 `contradicts`/`contradicted_by` round
     - ISS-118 ns-aware migration root fix — `5eff26b` + `8ca0c1b` docs
     - part-5 `get_cross_namespace_neighbors` — `ec7fa2c`
     - part-6 `get_all_cross_links` — `2971fa3`
-  - [ ] **T29.5** entity / triple readers — enumerate then ship
+  - [x] **T29.5** entity / triple readers — enumerate then ship (parts 1-4 shipped 2026-05-13/14; triples deliberately out of scope, see sub-bullet)
     - part-1 `get_entity` (entity reader, single-row) — `da3f443` decode helper (`_legacy_kind` → `attributes.entity_type` → `node_kind`) + 4 contract tests
     - part-2 `find_entities` + `count_entities` (single-table collection readers) — `01ef466` + 4 contract tests
     - part-3 `list_entities` (JOIN-with-edges reader) — `a902529` (impl piggybacked on ISS-123 fix) + `fe9235d` tests (4 contract tests: mention-count parity, ns filter, type filter, limit)
