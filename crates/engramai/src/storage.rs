@@ -4469,7 +4469,51 @@ impl Storage {
     }
     
     /// Get all cross-namespace links in the database.
+    /// Get every cross-namespace hebbian link in the database.
+    ///
+    /// Unlike `discover_cross_links` (filters by namespace pair) and
+    /// `get_cross_namespace_neighbors` (filters by memory id), this
+    /// returns the unbounded list of cross-NS pairs, ordered by
+    /// strength/weight DESC.
+    ///
+    /// **Phase D read-switch** (T29.4 part-6): unified path joins
+    /// `edges` to `nodes` for both endpoints and filters cross-NS
+    /// pairs in SQL via `n1.namespace != n2.namespace`. This is
+    /// substrate-independent and doesn't rely on the cross-NS
+    /// marker namespace (`"ns1:ns2"`) being stamped on the edge row,
+    /// matching the legacy reader's existing semantics.
     pub fn get_all_cross_links(&self) -> Result<Vec<CrossLink>, rusqlite::Error> {
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT e.source_id,
+                       e.target_id,
+                       e.weight,
+                       n1.namespace AS source_ns,
+                       n2.namespace AS target_ns,
+                       n2.content   AS target_content
+                FROM edges e
+                JOIN nodes n1 ON e.source_id = n1.id
+                JOIN nodes n2 ON e.target_id = n2.id
+                WHERE e.edge_kind = 'associative'
+                  AND e.weight > 0
+                  AND n1.namespace != n2.namespace
+                ORDER BY e.weight DESC
+                "#,
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(CrossLink {
+                    source_id: row.get(0)?,
+                    target_id: row.get(1)?,
+                    strength: row.get(2)?,
+                    source_ns: row.get(3)?,
+                    target_ns: row.get(4)?,
+                    description: row.get(5)?,
+                })
+            })?;
+            return Ok(rows.filter_map(|r| r.ok()).collect());
+        }
+
         let mut stmt = self.conn.prepare(
             r#"
             SELECT h.source_id, h.target_id, h.strength, 
