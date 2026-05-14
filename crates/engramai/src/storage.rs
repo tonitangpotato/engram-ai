@@ -4359,38 +4359,107 @@ impl Storage {
     }
     
     /// Get all cross-namespace links for a memory.
+    ///
+    /// **ISS-117 OR-match retrofit**: legacy path now uses
+    /// `(source_id = ?1 OR target_id = ?1)` and a CASE expression to
+    /// project the non-self endpoint. ISS-117 collapsed
+    /// hebbian_links to one canonical (min,max) row per pair, so
+    /// the previous single-direction `WHERE h.source_id = ?` was
+    /// silently empty when the caller passed the high-id endpoint.
+    /// Also: the JOIN now targets the projected "other" endpoint, not
+    /// blindly `h.target_id`, so it returns the correct neighbour
+    /// content regardless of which side the caller passed.
+    ///
+    /// **T29.4 (Phase D read-switch)**: when `unified_substrate` is
+    /// on, reads from `edges WHERE edge_kind='associative'` with the
+    /// same OR-match + non-self CASE shape, joining `nodes` for the
+    /// neighbour's namespace and content.
     pub fn get_cross_namespace_neighbors(
         &self,
         memory_id: &str,
     ) -> Result<Vec<CrossLink>, rusqlite::Error> {
         // Get source memory's namespace
         let source_ns = self.get_namespace(memory_id)?;
-        
+        let source_ns_str = source_ns
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT e.source_id,
+                       e.target_id,
+                       e.weight,
+                       n.namespace AS other_ns,
+                       n.content   AS other_content
+                FROM edges e
+                JOIN nodes n
+                  ON n.id = CASE WHEN e.source_id = ?1 THEN e.target_id ELSE e.source_id END
+                WHERE e.edge_kind = 'associative'
+                  AND e.weight > 0
+                  AND (e.source_id = ?1 OR e.target_id = ?1)
+                "#,
+            )?;
+            let rows = stmt.query_map(params![memory_id], |row| {
+                let target_ns: String = row.get(3)?;
+                let content: String = row.get(4)?;
+                let s: String = row.get(0)?;
+                let t: String = row.get(1)?;
+                let (other_id, _self_id) = if s == memory_id {
+                    (t, s)
+                } else {
+                    (s, t)
+                };
+                Ok(CrossLink {
+                    source_id: memory_id.to_string(),
+                    source_ns: source_ns_str.clone(),
+                    target_id: other_id,
+                    target_ns,
+                    strength: row.get(2)?,
+                    description: Some(content),
+                })
+            })?;
+            let source_ns_val = source_ns.unwrap_or_else(|| "default".to_string());
+            return Ok(rows
+                .filter_map(|r| r.ok())
+                .filter(|link| link.target_ns != source_ns_val)
+                .collect());
+        }
+
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT h.source_id, h.target_id, h.strength, m.namespace, m.content
+            SELECT h.source_id, h.target_id, h.strength,
+                   m.namespace AS other_ns,
+                   m.content   AS other_content
             FROM hebbian_links h
-            JOIN memories m ON h.target_id = m.id
-            WHERE h.source_id = ? AND h.strength > 0
+            JOIN memories m
+              ON m.id = CASE WHEN h.source_id = ?1 THEN h.target_id ELSE h.source_id END
+            WHERE (h.source_id = ?1 OR h.target_id = ?1) AND h.strength > 0
             "#,
         )?;
-        
-        let source_ns_str = source_ns.clone().unwrap_or_else(|| "default".to_string());
-        
+
         let rows = stmt.query_map(params![memory_id], |row| {
+            let s: String = row.get(0)?;
+            let t: String = row.get(1)?;
+            let strength: f64 = row.get(2)?;
             let target_ns: String = row.get(3)?;
             let content: String = row.get(4)?;
-            
+            let (other_id, _self_id) = if s == memory_id {
+                (t, s)
+            } else {
+                (s, t)
+            };
+
             Ok(CrossLink {
-                source_id: row.get(0)?,
+                source_id: memory_id.to_string(),
                 source_ns: source_ns_str.clone(),
-                target_id: row.get(1)?,
+                target_id: other_id,
                 target_ns,
-                strength: row.get(2)?,
+                strength,
                 description: Some(content),
             })
         })?;
-        
+
         // Filter to only cross-namespace links
         let source_ns_val = source_ns.unwrap_or_else(|| "default".to_string());
         Ok(rows
