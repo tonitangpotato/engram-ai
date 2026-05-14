@@ -287,7 +287,11 @@ impl Storage {
         
         // Run migrations for multi-signal Hebbian columns
         Self::migrate_hebbian_signals(&conn)?;
-        
+
+        // ISS-117: dedupe legacy double-direction hebbian_links rows
+        // into single canonical (min, max) rows. Idempotent.
+        Self::migrate_hebbian_canonical_rows(&conn)?;
+
         // Run migrations for triple extraction
         Self::migrate_triples(&conn)?;
         
@@ -1272,6 +1276,79 @@ impl Storage {
             "CREATE INDEX IF NOT EXISTS idx_hebbian_signal_source ON hebbian_links(signal_source);"
         )?;
         
+        Ok(())
+    }
+
+    /// **ISS-117**: Dedupe legacy double-direction `hebbian_links` rows
+    /// into single canonical `(min(source,target), max(source,target))`
+    /// rows.
+    ///
+    /// Before ISS-117, the formed-link path in `record_coactivation*`
+    /// inserted both `(a, b)` and `(b, a)` rows into `hebbian_links`.
+    /// Phase B dual-write (T14) canonicalised to one `edges` row per
+    /// link, so a reader switching from `hebbian_links` to
+    /// `edges` saw row-shape divergence: 2 legacy rows vs 1 unified
+    /// row. The writer-side fix in ISS-117 stops emitting reverse
+    /// rows, but existing databases still have them. This one-shot
+    /// migration collapses them.
+    ///
+    /// **Algorithm**: for every pair `(a, b)` where both `(a, b)` and
+    /// `(b, a)` exist, keep the canonical `(min, max)` row, merging
+    /// the duplicate's fields with max-semantics on `strength`,
+    /// sum on `coactivation_count`, sum on
+    /// `temporal_forward/backward`, min on `created_at`. Then DELETE
+    /// the non-canonical row.
+    ///
+    /// Idempotent: re-running on an already-canonical table is a
+    /// no-op (no pairs match the JOIN).
+    fn migrate_hebbian_canonical_rows(conn: &Connection) -> SqlResult<()> {
+        // Step 1: merge non-canonical row's metrics into canonical row.
+        // A row is "non-canonical" if source_id > target_id.
+        // For each such row, find its mirror (canonical) and merge.
+        conn.execute(
+            "UPDATE hebbian_links AS canonical \
+             SET strength = MAX(canonical.strength, ( \
+                 SELECT mirror.strength FROM hebbian_links AS mirror \
+                 WHERE mirror.source_id = canonical.target_id \
+                   AND mirror.target_id = canonical.source_id \
+             )), \
+             coactivation_count = canonical.coactivation_count + COALESCE(( \
+                 SELECT mirror.coactivation_count FROM hebbian_links AS mirror \
+                 WHERE mirror.source_id = canonical.target_id \
+                   AND mirror.target_id = canonical.source_id \
+             ), 0), \
+             temporal_forward = canonical.temporal_forward + COALESCE(( \
+                 SELECT mirror.temporal_forward FROM hebbian_links AS mirror \
+                 WHERE mirror.source_id = canonical.target_id \
+                   AND mirror.target_id = canonical.source_id \
+             ), 0), \
+             temporal_backward = canonical.temporal_backward + COALESCE(( \
+                 SELECT mirror.temporal_backward FROM hebbian_links AS mirror \
+                 WHERE mirror.source_id = canonical.target_id \
+                   AND mirror.target_id = canonical.source_id \
+             ), 0), \
+             created_at = MIN(canonical.created_at, COALESCE(( \
+                 SELECT mirror.created_at FROM hebbian_links AS mirror \
+                 WHERE mirror.source_id = canonical.target_id \
+                   AND mirror.target_id = canonical.source_id \
+             ), canonical.created_at)) \
+             WHERE canonical.source_id < canonical.target_id \
+               AND EXISTS ( \
+                   SELECT 1 FROM hebbian_links AS mirror \
+                   WHERE mirror.source_id = canonical.target_id \
+                     AND mirror.target_id = canonical.source_id \
+               )",
+            [],
+        )?;
+
+        // Step 2: delete non-canonical rows (source_id > target_id).
+        // These are the reverse-direction duplicates whose metrics
+        // were just merged into their canonical mirror.
+        conn.execute(
+            "DELETE FROM hebbian_links WHERE source_id > target_id",
+            [],
+        )?;
+
         Ok(())
     }
     
@@ -2483,16 +2560,36 @@ impl Storage {
     }
 
     /// Get Hebbian neighbors for a memory.
+    /// Get Hebbian neighbours of a memory.
+    ///
+    /// **ISS-117 (single canonical row)**: returns neighbours from
+    /// canonical `(min,max)` rows in `hebbian_links` using an OR-match
+    /// on `(source_id = ? OR target_id = ?)` so a caller passing
+    /// either endpoint of a formed link sees the other endpoint. Prior
+    /// to ISS-117, formed links were stored as two directional rows
+    /// and this method used `WHERE source_id = ?` only, which silently
+    /// hid neighbours when the caller passed the wrong endpoint for
+    /// `record_association`-formed links.
     pub fn get_hebbian_neighbors(&self, memory_id: &str) -> Result<Vec<String>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT target_id FROM hebbian_links WHERE source_id = ? AND strength > 0"
+            "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END \
+             FROM hebbian_links \
+             WHERE (source_id = ?1 OR target_id = ?1) AND strength > 0"
         )?;
-        
+
         let rows = stmt.query_map(params![memory_id], |row| row.get(0))?;
         rows.collect()
     }
 
     /// Get Hebbian neighbors with their link weights.
+    ///
+    /// **ISS-117 (single canonical row)**: returns one row per
+    /// neighbour. Prior to ISS-117, formed links produced duplicate
+    /// rows (legacy stored both directions), and callers that summed
+    /// `strength` got 2× the correct score (memory.rs recall scoring,
+    /// merge_hebbian_links transferred count). The reader SQL is
+    /// unchanged — it already used `(source=? OR target=?)` — but
+    /// the writer now stores only one canonical row, so dup is gone.
     pub fn get_hebbian_links_weighted(&self, memory_id: &str) -> Result<Vec<(String, f64)>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END, strength \
@@ -2552,16 +2649,14 @@ impl Storage {
 
             match existing {
                 Some((strength, _count)) if strength > 0.0 => {
-                    // Link already formed, strengthen it
+                    // Link already formed, strengthen it.
+                    // ISS-117: single canonical row only. No reverse
+                    // INSERT/UPDATE — readers OR-match on (id1, id2)
+                    // for direction-agnostic lookups.
                     let new_strength = (strength + 0.1).min(1.0);
                     tx.execute(
                         "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
                         params![new_strength, id1, id2],
-                    )?;
-                    // Also update reverse link
-                    tx.execute(
-                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                        params![new_strength, id2, id1],
                     )?;
                     false
                 }
@@ -2569,15 +2664,12 @@ impl Storage {
                     // Tracking phase, increment count
                     let new_count = count + 1;
                     if new_count >= threshold {
-                        // Threshold reached, form link
+                        // Threshold reached, form link.
+                        // ISS-117: update only the canonical row; no
+                        // reverse INSERT.
                         tx.execute(
                             "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
                             params![new_count, id1, id2],
-                        )?;
-                        // Create reverse link
-                        tx.execute(
-                            "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?, ?, 1.0, ?, ?)",
-                            params![id2, id1, new_count, now_f64()],
                         )?;
                         true
                     } else {
@@ -3867,16 +3959,12 @@ impl Storage {
 
             let formed = match existing {
                 Some((strength, _count)) if strength > 0.0 => {
-                    // Link already formed, strengthen it
+                    // Link already formed, strengthen it.
+                    // ISS-117: single canonical row only.
                     let new_strength = (strength + 0.1).min(1.0);
                     tx.execute(
                         "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
                         params![new_strength, id1, id2],
-                    )?;
-                    // Also update reverse link
-                    tx.execute(
-                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                        params![new_strength, id2, id1],
                     )?;
                     false
                 }
@@ -3884,15 +3972,11 @@ impl Storage {
                     // Tracking phase, increment count
                     let new_count = count + 1;
                     if new_count >= threshold {
-                        // Threshold reached, form link
+                        // Threshold reached, form link.
+                        // ISS-117: update canonical row only.
                         tx.execute(
                             "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
                             params![new_count, id1, id2],
-                        )?;
-                        // Create reverse link
-                        tx.execute(
-                            "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 1.0, ?, ?, ?)",
-                            params![id2, id1, new_count, now_f64(), namespace],
                         )?;
                         true
                     } else {
@@ -3987,16 +4071,12 @@ impl Storage {
 
             let formed = match existing {
                 Some((strength, _count)) if strength > 0.0 => {
-                    // Link already formed, strengthen it
+                    // Link already formed, strengthen it.
+                    // ISS-117: single canonical row only.
                     let new_strength = (strength + 0.1).min(1.0);
                     tx.execute(
                         "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
                         params![new_strength, id1, id2],
-                    )?;
-                    // Also update reverse link
-                    tx.execute(
-                        "UPDATE hebbian_links SET strength = ?, coactivation_count = coactivation_count + 1 WHERE source_id = ? AND target_id = ?",
-                        params![new_strength, id2, id1],
                     )?;
                     false
                 }
@@ -4004,15 +4084,11 @@ impl Storage {
                     // Tracking phase, increment count
                     let new_count = count + 1;
                     if new_count >= threshold {
-                        // Threshold reached, form link
+                        // Threshold reached, form link.
+                        // ISS-117: update canonical row only.
                         tx.execute(
                             "UPDATE hebbian_links SET strength = 1.0, coactivation_count = ? WHERE source_id = ? AND target_id = ?",
                             params![new_count, id1, id2],
-                        )?;
-                        // Create reverse link
-                        tx.execute(
-                            "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at, namespace) VALUES (?, ?, 1.0, ?, ?, ?)",
-                            params![id2, id1, new_count, now_f64(), &cross_ns],
                         )?;
                         true
                     } else {

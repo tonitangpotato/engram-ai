@@ -1,11 +1,13 @@
 ---
 id: ISS-117
 title: "T29.4 Hebbian read-switch blocked — legacy/unified parity not achievable without resolving weight & dup divergence"
-status: open
+status: done
 priority: P1
 severity: design
 labels: [v04-unified-substrate, phase-d, read-switch, t29-blocker, divergence]
 created: 2026-05-13
+resolved: 2026-05-13
+resolution: option-a-root-fix
 blocks: T29.4
 ---
 
@@ -132,3 +134,116 @@ canonical pair (Option B), and a parity test passes showing
 and unified handles to the same DB file across `record_coactivation`
 + `record_association` formed links + tracking-phase rows.
 
+
+---
+
+## Resolution (2026-05-13)
+
+**Picked Option A — root fix at the writer.** Three changes shipped
+in one commit:
+
+### Writer changes (`crates/engramai/src/storage.rs`)
+
+1. `record_coactivation` (no-NS): both branches that previously
+   wrote the reverse direction row (`source=id2 AND target=id1`)
+   now update only the canonical `(id1, id2)` row. `id1, id2` is
+   already swapped to `(min, max)` at the top of the function.
+2. `record_coactivation_ns` (namespaced): same change.
+3. `record_cross_namespace_coactivation`: same change. Cross-NS
+   canonical ordering uses `(ns1, id1) < (ns2, id2)`, unchanged.
+
+### Reader changes
+
+`get_hebbian_neighbors` updated to OR-match
+`(source_id = ?1 OR target_id = ?1)` with a CASE selecting the
+non-self endpoint. The other six hebbian readers
+(`get_hebbian_links_weighted`, `get_hebbian_neighbors_ns`,
+`top_associates`, `discover_cross_links`,
+`get_cross_namespace_neighbors`, `get_all_cross_links`) already
+OR-matched, so no SQL change for them — but they now return one
+row per pair instead of two.
+
+### Migration (`migrate_hebbian_canonical_rows`)
+
+Idempotent one-shot migration runs at `Storage::new` /
+`Storage::with_unified_substrate`. For every `(a, b)` pair where
+both `(a, b)` and `(b, a)` exist, the migration:
+
+- Merges the reverse row's metrics into the canonical `(min, max)`
+  row: `strength = max`, `coactivation_count = sum`,
+  `temporal_forward/backward = sum`, `created_at = min`.
+- Deletes the reverse row (`source_id > target_id`).
+
+Re-running on an already-canonical table is a no-op.
+
+### Side benefits
+
+Closing the writer asymmetry **incidentally fixes two pre-existing
+legacy bugs**:
+
+- `memory.rs:4412` recall scoring summed `strength` across the dup
+  pair → 2× over-score on formed Hebbian neighbours. Now correct.
+- `storage.rs:2708` `merge_hebbian_links` `transferred` count
+  doubled because the donor-touching `links` Vec contained the
+  reverse row → caller saw 2× transfer count. Now correct.
+
+### Audited prod callers
+
+Before changing writer/reader, every prod caller of
+`get_hebbian_neighbors` / `get_hebbian_links_weighted` was audited
+for direction sensitivity:
+
+- `memory.rs:1426` (GWT spreading activation) — `dedup()` after push,
+  same-id rows are adjacent in SQL output → dup-tolerant.
+- `memory.rs:4412` (recall scoring) — sums strength → dup-sensitive
+  but currently 2× over-scored. Fix removes the bug.
+- `memory.rs:5486/5495/5848/5887/5895` — public API delegations to
+  Storage methods, no scoring logic of their own.
+- `promotion.rs:131` — `HashSet` dedup → dup-tolerant.
+- `synthesis/cluster.rs:573` — `HashMap or_insert` on canonical pair
+  → dup-tolerant.
+- `storage.rs:2683` (`merge_hebbian_links`) — dup-sensitive
+  (transferred count). Fix removes the bug.
+
+No caller depends on the duplication semantics for correctness;
+every dup-sensitive site is a pre-existing bug.
+
+### Verification
+
+- 1902/1902 lib pass
+- 9/9 `iss117_canonical_hebbian` integration tests pass:
+  - `record_coactivation_forms_single_canonical_row`
+  - `record_coactivation_canonicalizes_id_order`
+  - `get_neighbors_works_in_either_direction`
+  - `get_hebbian_links_weighted_no_duplicates`
+  - `record_coactivation_ns_forms_single_canonical_row`
+  - `record_cross_namespace_coactivation_forms_single_canonical_row`
+  - `migration_collapses_double_direction_rows` (with metric
+    merge: max/sum/sum/sum/min)
+  - `migration_is_idempotent`
+  - `migration_leaves_single_direction_rows_alone`
+- 26/26 Phase B dual-write tests pass (no regression on T14/ISS-116
+  edges-mirror behavior)
+- 42/42 Phase C verifier tests pass
+- All Phase C backfill drivers + lifecycle paths green
+
+### Unblocks
+
+T29.4 (Phase D hebbian read-switch) — legacy row shape now matches
+unified row shape, so contract tests for
+`unified_substrate=true` reads against `edges WHERE
+edge_kind='associative'` can assert byte equality with legacy
+output. D2 (weight accumulation divergence: legacy `strength` caps
+at 1.0, unified `weight` accumulates without cap) remains; that's
+a design split that does not block read-switch parity as long as
+contract tests don't compare weights, only row shape & neighbour
+identity. Documented as a Phase D known divergence in §5.4
+(followup: harmonise legacy strength or accept as permanent).
+
+### WIP fate
+
+`stash@{0}` (T29.4 part-1 WIP) dropped after this resolution — the
+SQL switching pattern will be different now that legacy is
+canonical (the if/else flag-gating in the stash is still valid,
+but the legacy branch no longer needs DISTINCT or canonicalisation
+band-aids).
