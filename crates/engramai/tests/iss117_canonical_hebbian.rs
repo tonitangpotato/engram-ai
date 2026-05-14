@@ -60,6 +60,33 @@ fn seed_memory(storage: &mut Storage, id: &str) {
     storage.add(&rec, "default").expect("seed memory");
 }
 
+/// Like `seed_memory`, but stores the memory in a specified namespace.
+/// Used by ISS-118 cross-axis regression tests where we need to put
+/// endpoints into namespaces that don't agree with their id ordering.
+fn seed_memory_ns(storage: &mut Storage, id: &str, ns: &str) {
+    let rec = MemoryRecord {
+        id: id.into(),
+        content: format!("content-{id}"),
+        memory_type: MemoryType::Factual,
+        layer: MemoryLayer::Core,
+        created_at: Utc.with_ymd_and_hms(2026, 5, 13, 11, 0, 0).unwrap(),
+        occurred_at: None,
+        access_times: vec![],
+        working_strength: 0.4,
+        core_strength: 0.9,
+        importance: 0.7,
+        pinned: false,
+        consolidation_count: 0,
+        last_consolidated: None,
+        source: "iss117-test".into(),
+        contradicts: None,
+        contradicted_by: None,
+        superseded_by: None,
+        metadata: None,
+    };
+    storage.add(&rec, ns).expect("seed memory in ns");
+}
+
 /// Helper: insert a raw `hebbian_links` row directly. Used by the
 /// migration tests to simulate pre-ISS-117 legacy databases that
 /// contain double-direction rows.
@@ -424,4 +451,166 @@ fn iss117_migration_leaves_single_direction_rows_alone() {
 
     // Suppress unused-helper warning on this test path.
     let _ = insert_raw_link;
+}
+
+// ---------------------------------------------------------------
+// ISS-118 cross-axis coverage: when id-ordering disagrees with
+// (ns, id)-ordering, the migration's canonical-row rule must agree
+// with the writer's canonical-row rule. Pre-ISS-118 the migration
+// used raw `source_id > target_id` and silently DELETEd cross-NS
+// rows on every reopen whenever the lower-ns endpoint had the
+// higher id. These tests pin the ns-aware DELETE.
+// ---------------------------------------------------------------
+
+#[test]
+fn iss118_cross_ns_row_survives_reopen_when_id_order_inverts_ns_order() {
+    // Writer canonicalises by (ns, id) tuple. `ns_aaa < ns_zzz`,
+    // so writer stamps source = ("ns_aaa", "hub"), target =
+    // ("ns_zzz", "apple"). Raw id ordering is "hub" > "apple", so a
+    // raw-id migration would DELETE this row. ns-aware migration
+    // must keep it.
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("h.db");
+
+    {
+        let mut storage = Storage::new(&db_path).unwrap();
+        seed_memory_ns(&mut storage, "hub", "ns_aaa");
+        seed_memory_ns(&mut storage, "apple", "ns_zzz");
+
+        for _ in 0..3 {
+            storage
+                .record_cross_namespace_coactivation(
+                    "hub", "ns_aaa", "apple", "ns_zzz", 3,
+                )
+                .unwrap();
+        }
+
+        let n = count_links_for_pair(&storage, "hub", "apple");
+        assert_eq!(n, 1, "writer produces one canonical row");
+    }
+
+    // Reopen — Storage::new runs migrate_hebbian_canonical_rows.
+    // Pre-ISS-118 this DELETEd the row because "hub" > "apple".
+    // Post-ISS-118 the row survives because ("ns_aaa","hub") <
+    // ("ns_zzz","apple").
+    {
+        let storage = Storage::new(&db_path).unwrap();
+        let n = count_links_for_pair(&storage, "hub", "apple");
+        assert_eq!(
+            n, 1,
+            "ISS-118: cross-NS row must survive reopen when id-order \
+             inverts ns-order (pre-fix this was 0)"
+        );
+    }
+}
+
+#[test]
+fn iss118_cross_ns_row_with_multiple_neighbours_survives_reopen() {
+    // Stress: hub in lower ns has higher id than several neighbours
+    // in higher ns. All rows would have been wiped by the raw-id
+    // DELETE. Verify the whole fan survives reopen.
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("h.db");
+
+    {
+        let mut storage = Storage::new(&db_path).unwrap();
+        seed_memory_ns(&mut storage, "hub", "ns_hub");
+        seed_memory_ns(&mut storage, "a", "ns_other");
+        seed_memory_ns(&mut storage, "b", "ns_other");
+        seed_memory_ns(&mut storage, "c", "ns_other");
+
+        for neighbour in &["a", "b", "c"] {
+            for _ in 0..3 {
+                storage
+                    .record_cross_namespace_coactivation(
+                        "hub", "ns_hub", neighbour, "ns_other", 3,
+                    )
+                    .unwrap();
+            }
+        }
+
+        let before: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM hebbian_links \
+                 WHERE source_id = 'hub' OR target_id = 'hub'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 3, "writer produced one row per pair");
+    }
+
+    {
+        let storage = Storage::new(&db_path).unwrap();
+        let after: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM hebbian_links \
+                 WHERE source_id = 'hub' OR target_id = 'hub'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            after, 3,
+            "ISS-118: all cross-NS rows survive reopen (pre-fix all 3 were deleted)"
+        );
+    }
+}
+
+#[test]
+fn iss118_same_ns_with_inverted_id_order_still_canonicalises() {
+    // Within a single namespace, the (ns, id) tuple collapses to
+    // pure id comparison. Verify the migration still collapses
+    // double-direction rows correctly when both endpoints share a
+    // namespace — this is the original ISS-117 happy-path under the
+    // new SQL, must remain green.
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("h.db");
+
+    {
+        let mut storage = Storage::new(&db_path).unwrap();
+        seed_memory_ns(&mut storage, "alpha", "shared_ns");
+        seed_memory_ns(&mut storage, "beta", "shared_ns");
+    }
+
+    // Seed double-direction rows directly (simulating a pre-ISS-117 db).
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO hebbian_links \
+             (source_id, target_id, strength, coactivation_count, \
+              temporal_forward, temporal_backward, direction, \
+              created_at, namespace) \
+             VALUES ('alpha', 'beta', 0.5, 2, 1, 0, 'forward', 1000.0, 'shared_ns')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO hebbian_links \
+             (source_id, target_id, strength, coactivation_count, \
+              temporal_forward, temporal_backward, direction, \
+              created_at, namespace) \
+             VALUES ('beta', 'alpha', 0.3, 1, 0, 1, 'backward', 2000.0, 'shared_ns')",
+            [],
+        ).unwrap();
+    }
+
+    // Trigger migration.
+    let storage = Storage::new(&db_path).unwrap();
+    let n = count_links_for_pair(&storage, "alpha", "beta");
+    assert_eq!(n, 1, "same-ns double-direction collapses to one row");
+
+    let (src, tgt): (String, String) = storage
+        .connection()
+        .query_row(
+            "SELECT source_id, target_id FROM hebbian_links \
+             WHERE (source_id = 'alpha' AND target_id = 'beta') \
+                OR (source_id = 'beta'  AND target_id = 'alpha')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(src, "alpha", "canonical = min(id) under same ns");
+    assert_eq!(tgt, "beta");
 }

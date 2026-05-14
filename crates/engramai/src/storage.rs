@@ -1280,8 +1280,7 @@ impl Storage {
     }
 
     /// **ISS-117**: Dedupe legacy double-direction `hebbian_links` rows
-    /// into single canonical `(min(source,target), max(source,target))`
-    /// rows.
+    /// into single canonical rows.
     ///
     /// Before ISS-117, the formed-link path in `record_coactivation*`
     /// inserted both `(a, b)` and `(b, a)` rows into `hebbian_links`.
@@ -1292,19 +1291,52 @@ impl Storage {
     /// rows, but existing databases still have them. This one-shot
     /// migration collapses them.
     ///
+    /// **Canonical rule (ISS-118 root fix)**: a row is canonical iff
+    /// `(source.ns, source.id) < (target.ns, target.id)` under
+    /// SQLite's natural lexicographic tuple ordering. This unifies
+    /// the two writer canonicalisation rules:
+    ///
+    ///   * `record_coactivation` and `record_coactivation_ns` —
+    ///     same-namespace, canonicalise by `min(id) → source`. Since
+    ///     `ns_a == ns_b`, the tuple comparison collapses to id
+    ///     comparison.
+    ///   * `record_cross_namespace_coactivation` — canonicalises by
+    ///     `(ns, id)` tuple directly. Already matches.
+    ///
+    /// ISS-118 (b2a3b49) traces a production bug to the previous
+    /// migration logic, which used raw `source_id > target_id` to
+    /// pick the non-canonical row. For cross-NS pairs where the
+    /// lower-NS endpoint has a higher id than the cross-namespace
+    /// endpoint (e.g. `hub` in `ns_hub` vs `a` in `ns_other` — the
+    /// writer stamps `("hub","a")` because `ns_hub < ns_other`, but
+    /// `"hub" > "a"`), the previous migration silently DELETEd the
+    /// row on every reopen. The new SQL joins `memories` to resolve
+    /// each endpoint's namespace before comparing.
+    ///
     /// **Algorithm**: for every pair `(a, b)` where both `(a, b)` and
-    /// `(b, a)` exist, keep the canonical `(min, max)` row, merging
-    /// the duplicate's fields with max-semantics on `strength`,
-    /// sum on `coactivation_count`, sum on
-    /// `temporal_forward/backward`, min on `created_at`. Then DELETE
-    /// the non-canonical row.
+    /// `(b, a)` exist, keep the canonical `((ns_lo, id_lo), (ns_hi,
+    /// id_hi))` row, merging the duplicate's fields with
+    /// max-semantics on `strength`, sum on `coactivation_count`, sum
+    /// on `temporal_forward/backward`, min on `created_at`. Then
+    /// DELETE the non-canonical row.
     ///
     /// Idempotent: re-running on an already-canonical table is a
-    /// no-op (no pairs match the JOIN).
+    /// no-op (Step 1's WHERE clause filters by tuple order so it
+    /// only fires on non-canonical rows; Step 2's filter matches only
+    /// non-canonical rows by definition).
     fn migrate_hebbian_canonical_rows(conn: &Connection) -> SqlResult<()> {
         // Step 1: merge non-canonical row's metrics into canonical row.
-        // A row is "non-canonical" if source_id > target_id.
-        // For each such row, find its mirror (canonical) and merge.
+        //
+        // A row is "non-canonical" if `(source.ns, source.id) >
+        // (target.ns, target.id)`. Canonical's mirror has the same
+        // endpoints but reversed: `mirror.source_id = canonical.target_id
+        // AND mirror.target_id = canonical.source_id`.
+        //
+        // Namespace lookup is via JOIN on `memories` (the legacy
+        // canonical namespace home). If a hebbian endpoint has no
+        // matching memory row, the COALESCE falls back to '' which
+        // still produces a deterministic tuple ordering — better
+        // than treating it as NULL and silently skipping the row.
         conn.execute(
             "UPDATE hebbian_links AS canonical \
              SET strength = MAX(canonical.strength, ( \
@@ -1332,7 +1364,10 @@ impl Storage {
                  WHERE mirror.source_id = canonical.target_id \
                    AND mirror.target_id = canonical.source_id \
              ), canonical.created_at)) \
-             WHERE canonical.source_id < canonical.target_id \
+             WHERE \
+               (COALESCE((SELECT m.namespace FROM memories m WHERE m.id = canonical.source_id), ''), canonical.source_id) \
+               < \
+               (COALESCE((SELECT m.namespace FROM memories m WHERE m.id = canonical.target_id), ''), canonical.target_id) \
                AND EXISTS ( \
                    SELECT 1 FROM hebbian_links AS mirror \
                    WHERE mirror.source_id = canonical.target_id \
@@ -1341,11 +1376,20 @@ impl Storage {
             [],
         )?;
 
-        // Step 2: delete non-canonical rows (source_id > target_id).
-        // These are the reverse-direction duplicates whose metrics
-        // were just merged into their canonical mirror.
+        // Step 2: delete non-canonical rows. Same tuple-ordering rule
+        // as Step 1 — ns-aware via JOIN to memories.
+        //
+        // Pre-ISS-118 this was `DELETE WHERE source_id > target_id`,
+        // which incorrectly deleted cross-NS rows where the
+        // lower-NS endpoint had a higher id than the cross-namespace
+        // endpoint. New rule uses the same `(ns, id)` tuple
+        // comparison as the writer, so canonical-side row survives.
         conn.execute(
-            "DELETE FROM hebbian_links WHERE source_id > target_id",
+            "DELETE FROM hebbian_links \
+             WHERE \
+               (COALESCE((SELECT m.namespace FROM memories m WHERE m.id = source_id), ''), source_id) \
+               > \
+               (COALESCE((SELECT m.namespace FROM memories m WHERE m.id = target_id), ''), target_id)",
             [],
         )?;
 
