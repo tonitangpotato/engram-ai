@@ -930,6 +930,16 @@ fn dual_write_entity_to_nodes(
         _ => "entity",
     };
 
+    // ISS-120: node_kind collapses every non-Topic `EntityKind` variant
+    // into the single string `"entity"`. Stamp the full `EntityKind`
+    // (serde-encoded — handles canonical variants AND `Other(s)`)
+    // under the reserved `_legacy_kind` attributes key so the unified
+    // reader can reconstruct `EntityRecord.entity_type` exactly. We
+    // always stamp (even for Topic) so the decoder has a single,
+    // uniform code path that doesn't branch on `node_kind`.
+    let attributes_with_kind = merge_legacy_entity_kind(attributes_json, &entity.kind)?;
+    let attributes_for_sql: &str = &attributes_with_kind;
+
     tx.execute(
         r#"
         INSERT INTO nodes (
@@ -971,7 +981,7 @@ fn dual_write_entity_to_nodes(
             namespace,
             entity.canonical_name,
             entity.summary,
-            attributes_json,
+            attributes_for_sql,
             embedding_blob,
             dt_to_unix(entity.first_seen),
             dt_to_unix(entity.last_seen),
@@ -1315,6 +1325,134 @@ fn kind_to_text(kind: &EntityKind) -> Result<String, GraphError> {
 /// Decode a TEXT column back to `EntityKind`. Companion to [`kind_to_text`].
 fn text_to_kind(s: &str) -> Result<EntityKind, GraphError> {
     Ok(serde_json::from_str(s)?)
+}
+
+/// ISS-120: reserved attributes key holding the serde-encoded
+/// `EntityKind` so the unified reader can reconstruct
+/// `EntityRecord.entity_type` regardless of `node_kind` collapse.
+pub(crate) const LEGACY_KIND_KEY: &str = "_legacy_kind";
+
+/// Merge the full `EntityKind` (as a JSON value — string for canonical
+/// variants, `{"other": ...}` object for `Other(_)`) into the
+/// attributes JSON under the reserved `_legacy_kind` key.
+///
+/// Returns the merged JSON string. Input shape contract:
+///
+/// * `attributes_json` MUST parse to a JSON object — every caller in
+///   the resolution pipeline / KC builds it via
+///   `serde_json::to_string(&e.attributes)` where `e.attributes` is a
+///   `serde_json::Map`, so this is upheld by construction. We return
+///   `GraphError::Invariant` if violated (defense-in-depth — would
+///   indicate a regression upstream).
+/// * The returned string is always a JSON object with the same keys
+///   as the input plus exactly one extra (`_legacy_kind`). If
+///   `_legacy_kind` was already present (e.g. the caller is feeding
+///   a previously-merged value back in), it is overwritten — the
+///   single source of truth is the caller-supplied `&EntityKind`.
+///
+/// Always stamps (even for `EntityKind::Topic` where `node_kind='topic'`
+/// would suffice) so the reader has a single uniform decode path that
+/// doesn't branch on `node_kind`.
+pub(crate) fn merge_legacy_entity_kind(
+    attributes_json: &str,
+    kind: &EntityKind,
+) -> Result<String, GraphError> {
+    let parsed: serde_json::Value = serde_json::from_str(attributes_json)?;
+    let mut map = match parsed {
+        serde_json::Value::Object(m) => m,
+        // Defense-in-depth: every production caller serializes
+        // `Entity::attributes` (a JSON object) so this shouldn't fire.
+        // If it does, fail loud rather than silently dropping the
+        // kind stamp.
+        _ => return Err(GraphError::Invariant("entity attributes must be a JSON object")),
+    };
+    let kind_value = serde_json::to_value(kind)?;
+    map.insert(LEGACY_KIND_KEY.to_string(), kind_value);
+    Ok(serde_json::to_string(&serde_json::Value::Object(map))?)
+}
+
+/// Companion decoder for [`merge_legacy_entity_kind`].
+///
+/// Reads `nodes.attributes` JSON, extracts the `_legacy_kind` key (if
+/// present) and decodes it back to an `EntityKind`. Returns the cleaned
+/// attributes JSON (with `_legacy_kind` stripped) alongside the kind.
+///
+/// Fallback chain when `_legacy_kind` is missing or malformed:
+/// 1. If `_legacy_kind` is absent but `entity_type` is present (T21
+///    Phase C backfill stamp — flat string from the legacy `entities`
+///    table), wrap it: known canonical labels round-trip exactly;
+///    anything else becomes `EntityKind::other(s)`. The `entity_type`
+///    key is left in place (T21 contract: keep it readable for
+///    legacy consumers).
+/// 2. If both keys are absent → use the supplied `node_kind` column:
+///    `"topic"` → `EntityKind::Topic`, anything else →
+///    `EntityKind::other("entity")` (loud signal something didn't
+///    go through any writer fix).
+/// 3. If `_legacy_kind` is present but undecodable → return
+///    `GraphError::Invariant`. Better to fail loudly than silently
+///    return a wrong kind.
+///
+/// Marked `#[allow(dead_code)]` — T29.5 entity-reader switch wires this
+/// in. Landing the writer fix without the reader rewrite keeps this
+/// commit reviewable.
+#[allow(dead_code)]
+pub fn extract_legacy_entity_kind(
+    attributes_json: &str,
+    node_kind: &str,
+) -> Result<(EntityKind, String), GraphError> {
+    let mut map: serde_json::Map<String, serde_json::Value> =
+        match serde_json::from_str(attributes_json) {
+            Ok(m) => m,
+            Err(_) => {
+                // Non-object attributes — return node_kind-derived fallback
+                // and pass the input through unchanged.
+                let fallback = if node_kind == "topic" {
+                    EntityKind::Topic
+                } else {
+                    EntityKind::other("entity")
+                };
+                return Ok((fallback, attributes_json.to_string()));
+            }
+        };
+
+    let kind = match map.remove(LEGACY_KIND_KEY) {
+        Some(v) => serde_json::from_value::<EntityKind>(v)?,
+        None => {
+            // T21 backfill compatibility: if `entity_type` is present
+            // as a plain string, wrap it. We DON'T strip it — T21
+            // contract is that `entity_type` is readable on the row
+            // for legacy consumers.
+            match map.get("entity_type").and_then(|v| v.as_str()) {
+                Some(s) => wrap_legacy_entity_type(s),
+                None => {
+                    if node_kind == "topic" {
+                        EntityKind::Topic
+                    } else {
+                        EntityKind::other("entity")
+                    }
+                }
+            }
+        }
+    };
+    let cleaned = serde_json::to_string(&serde_json::Value::Object(map))?;
+    Ok((kind, cleaned))
+}
+
+/// Map a flat `entity_type` string (T21 backfill / legacy `entities`
+/// table) into the rich `EntityKind` enum. Canonical labels
+/// (`"person"`, `"organization"`, …) round-trip exactly; anything
+/// else becomes `EntityKind::other(s)` (normalized).
+fn wrap_legacy_entity_type(s: &str) -> EntityKind {
+    match s.to_lowercase().as_str() {
+        "person" => EntityKind::Person,
+        "organization" => EntityKind::Organization,
+        "place" => EntityKind::Place,
+        "concept" => EntityKind::Concept,
+        "event" => EntityKind::Event,
+        "artifact" => EntityKind::Artifact,
+        "topic" => EntityKind::Topic,
+        _ => EntityKind::other(s),
+    }
 }
 
 /// Decode a BLOB column carrying a 16-byte UUID. `None` if the SQL value
