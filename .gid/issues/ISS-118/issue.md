@@ -1,12 +1,20 @@
 ---
 title: ISS-117 migration silently deletes cross-NS hebbian rows when id-order ≠ (ns,id)-order
-status: open
+status: fixed
 severity: high
 priority: P1
 filed: 2026-05-13
 filed_in_session: T29.4-part-5
-relates_to: [ISS-117]
-blocks: [T29.4-part-5, T29.4-part-6]
+relates_to:
+- ISS-117
+blocks:
+- T29.4-part-5
+- T29.4-part-6
+fixed_at: 2026-05-13
+fixed_by: 5eff26b
+resolution:
+- Option A — ns-aware (ns
+- id) tuple comparison in migration Step 1 + Step 2
 ---
 
 ## Summary
@@ -146,3 +154,24 @@ Recommended sequencing:
   (`record_cross_namespace_coactivation`)
 - crates/engramai/tests/iss117_canonical_hebbian.rs:230
   (test that fails to exercise the bug)
+
+## Resolution (2026-05-13 commit 5eff26b)
+
+Applied Option A — ns-aware migration.
+
+- `migrate_hebbian_canonical_rows` Step 1 (UPDATE merge) and Step 2
+  (DELETE non-canonical) both use the `(COALESCE((SELECT namespace
+  FROM memories WHERE id=...), ''), id)` tuple comparison, matching
+  the writer's canonical rule.
+- Bonus fix: removed two stray `--` SQL comments inside the
+  backslash-continued SQL string that were truncating the SQL
+  ("incomplete input" rusqlite error post-fix-pre-comment-removal).
+- 3 regression tests in `tests/iss117_canonical_hebbian.rs`:
+  - `iss118_cross_ns_row_survives_reopen_when_id_order_inverts_ns_order`
+  - `iss118_cross_ns_row_with_multiple_neighbours_survives_reopen`
+  - `iss118_same_ns_with_inverted_id_order_still_canonicalises`
+
+Production audit (engram-memory.db, 43423 hebbian rows, 100% in
+`default` namespace, 0 cross-NS marker rows) confirms no production
+data lost — the bug never had a chance to fire on this DB because
+`record_cross_namespace_coactivation` was never called against it.

@@ -247,3 +247,26 @@ SQL switching pattern will be different now that legacy is
 canonical (the if/else flag-gating in the stash is still valid,
 but the legacy branch no longer needs DISTINCT or canonicalisation
 band-aids).
+
+### Follow-up (2026-05-13): cross-axis coverage gap exposed by ISS-118
+
+The 9-test ISS-117 suite that landed in 4163f36 happened to pass only
+by id choice. Every cross-NS test used pairs like `x_in_ns1`/`y_in_ns2`
+where the id ordering ("x" < "y") agrees with the namespace ordering
+("ns1" < "ns2"). Under that pair the migration's pre-ISS-118 raw-id
+DELETE coincidentally agreed with the writer's `(ns, id)` tuple
+canonical rule, hiding the bug.
+
+ISS-118 (`5eff26b`) added three regression tests that exercise the
+cross-axis case (id-order inverts ns-order). Going forward, every
+cross-NS hebbian test pair should either:
+
+1. use ids whose lex-order inverts the namespace lex-order, or
+2. exercise both directions explicitly,
+
+so that future regressions don't slip past via accidental id choice.
+
+T29.4 part-1..4 contract tests do NOT have this exposure because they
+operate on same-namespace pairs (where the tuple comparison collapses
+to id comparison), but the cross-NS readers (part-5, part-6) MUST use
+cross-axis pairs in their contract tests.
