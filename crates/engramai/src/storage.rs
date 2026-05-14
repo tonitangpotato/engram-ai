@@ -4946,12 +4946,20 @@ impl Storage {
     }
     
     /// Find entities by exact name match, optionally filtered by namespace.
+    ///
+    /// **T29.5 part-2 (Phase D read-switch)**: when `unified_substrate`
+    /// is on, reads from `nodes WHERE node_kind IN ('entity','topic')`
+    /// using the same `decode_entity_type_and_metadata` shim as
+    /// `get_entity` (T29.5 part-1).
     pub fn find_entities(
         &self,
         query: &str,
         namespace: Option<&str>,
         limit: usize,
     ) -> Result<Vec<EntityRecord>, rusqlite::Error> {
+        if self.unified_substrate {
+            return self.find_entities_unified(query, namespace, limit);
+        }
         match namespace {
             Some(ns) => {
                 let mut stmt = self.conn.prepare(
@@ -4991,7 +4999,67 @@ impl Storage {
             }
         }
     }
-    
+
+    /// T29.5 part-2 unified-substrate path for `find_entities`. Reads
+    /// `nodes WHERE content=? AND node_kind IN ('entity','topic')`
+    /// optionally narrowed by `namespace`. Uses the
+    /// `decode_entity_type_and_metadata` shim from T29.5 part-1.
+    ///
+    /// Ordering note: legacy uses no `ORDER BY` (insertion order /
+    /// rowid). The unified path matches by also omitting `ORDER BY`,
+    /// so the only ordering guarantee is the SQLite default. Callers
+    /// already treat this set as unordered.
+    fn find_entities_unified(
+        &self,
+        query: &str,
+        namespace: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<EntityRecord>, rusqlite::Error> {
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<EntityRecord> {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let ns: String = row.get(2)?;
+            let attrs: String = row.get(3)?;
+            let nk: String = row.get(4)?;
+            let created_at: f64 = row.get(5)?;
+            let updated_at: f64 = row.get(6)?;
+            let (entity_type, metadata) = decode_entity_type_and_metadata(&attrs, &nk);
+            Ok(EntityRecord {
+                id,
+                name,
+                entity_type,
+                namespace: ns,
+                metadata,
+                created_at,
+                updated_at,
+            })
+        };
+        match namespace {
+            Some(ns) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, content, namespace, attributes, node_kind, created_at, updated_at \
+                     FROM nodes \
+                     WHERE content = ?1 AND namespace = ?2 \
+                       AND node_kind IN ('entity', 'topic') \
+                     LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(params![query, ns, limit as i64], map_row)?;
+                Ok(rows.filter_map(|r| r.ok()).collect())
+            }
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, content, namespace, attributes, node_kind, created_at, updated_at \
+                     FROM nodes \
+                     WHERE content = ?1 \
+                       AND node_kind IN ('entity', 'topic') \
+                     LIMIT ?2",
+                )?;
+                let rows = stmt.query_map(params![query, limit as i64], map_row)?;
+                Ok(rows.filter_map(|r| r.ok()).collect())
+            }
+        }
+    }
+
     /// Get entity IDs associated with a memory.
     pub fn get_entity_ids_for_memory(&self, memory_id: &str) -> Result<Vec<String>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
@@ -5110,7 +5178,27 @@ impl Storage {
     }
     
     /// Count entities, optionally filtered by namespace.
+    ///
+    /// **T29.5 part-2 (Phase D read-switch)**: when `unified_substrate`
+    /// is on, counts `nodes WHERE node_kind IN ('entity','topic')`.
     pub fn count_entities(&self, namespace: Option<&str>) -> Result<usize, rusqlite::Error> {
+        if self.unified_substrate {
+            let count: i64 = match namespace {
+                Some(ns) => self.conn.query_row(
+                    "SELECT COUNT(*) FROM nodes \
+                     WHERE namespace = ?1 AND node_kind IN ('entity', 'topic')",
+                    params![ns],
+                    |row| row.get(0),
+                )?,
+                None => self.conn.query_row(
+                    "SELECT COUNT(*) FROM nodes \
+                     WHERE node_kind IN ('entity', 'topic')",
+                    [],
+                    |row| row.get(0),
+                )?,
+            };
+            return Ok(count as usize);
+        }
         match namespace {
             Some(ns) => {
                 let count: i64 = self.conn.query_row(
