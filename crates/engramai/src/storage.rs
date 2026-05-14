@@ -2559,7 +2559,6 @@ impl Storage {
         rows.collect()
     }
 
-    /// Get Hebbian neighbors for a memory.
     /// Get Hebbian neighbours of a memory.
     ///
     /// **ISS-117 (single canonical row)**: returns neighbours from
@@ -2570,7 +2569,37 @@ impl Storage {
     /// and this method used `WHERE source_id = ?` only, which silently
     /// hid neighbours when the caller passed the wrong endpoint for
     /// `record_association`-formed links.
+    ///
+    /// **T29.4 (Phase D read-switch)**: when `unified_substrate` is on,
+    /// reads from `edges WHERE edge_kind='associative'` instead of the
+    /// legacy `hebbian_links` table. The unified path is OR-match too
+    /// because Phase B `dual_write_hebbian_to_edges` canonicalises
+    /// `(min(a,b), max(a,b))` just like the legacy single-row writer
+    /// after ISS-117.
+    ///
+    /// **Semantic divergence (design §4.3 + §5.4)**: unified
+    /// accumulates `weight` from the first co-activation
+    /// (ISS-116 unconditional dual-write at delta=0.1) while legacy
+    /// `strength` stays at 0.0 until the formed-link threshold is
+    /// crossed and then jumps to 1.0. Both paths filter `> 0`, so
+    /// the unified path can surface tracking-phase neighbours
+    /// (sub-threshold co-activation) that the legacy path
+    /// silently hides. Phase D parity (§5.4) accepts this as a
+    /// one-way move to unified semantics and is validated end-to-end
+    /// by LoCoMo J-score, not byte-equal row sets.
     pub fn get_hebbian_neighbors(&self, memory_id: &str) -> Result<Vec<String>, rusqlite::Error> {
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END \
+                 FROM edges \
+                 WHERE edge_kind = 'associative' \
+                   AND (source_id = ?1 OR target_id = ?1) \
+                   AND weight > 0"
+            )?;
+            let rows = stmt.query_map(params![memory_id], |row| row.get(0))?;
+            return rows.collect();
+        }
+
         let mut stmt = self.conn.prepare(
             "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END \
              FROM hebbian_links \
