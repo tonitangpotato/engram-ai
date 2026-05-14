@@ -2141,9 +2141,9 @@ one focused session.
     - part-6 `get_all_cross_links` — `2971fa3`
   - [ ] **T29.5** entity / triple readers — enumerate then ship
     - part-1 `get_entity` (entity reader, single-row) — `da3f443` decode helper (`_legacy_kind` → `attributes.entity_type` → `node_kind`) + 4 contract tests
-    - part-2 `find_entities` + `count_entities` (single-table collection readers) — _next commit_ + 4 contract tests
-    - part-3 `list_entities` + `get_entities_for_memory` (JOIN-with-edges readers) — TODO, requires T23 edges-shaped reader
-    - part-4 triple readers (`get_triples_*`, `list_triples_*`) — TODO
+    - part-2 `find_entities` + `count_entities` (single-table collection readers) — `01ef466` + 4 contract tests
+    - part-3 `list_entities` (JOIN-with-edges reader) — `a902529` (impl piggybacked on ISS-123 fix) + _next commit_ tests (4 contract tests: mention-count parity, ns filter, type filter, limit)
+    - part-4 `get_entities_for_memory` + triple readers (`get_triples_*`, `list_triples_*`) — TODO
   - [ ] **T29.6** FTS readers (`memories_fts` → `nodes_fts`)
   - [ ] **T29.7** remaining `SELECT FROM memories` reads in retrieval / consolidation paths
 - [ ] **T30** Manual probe set: 50 queries on production DB, labeled
