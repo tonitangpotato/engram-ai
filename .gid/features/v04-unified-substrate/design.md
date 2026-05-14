@@ -2112,6 +2112,21 @@ one focused session.
   - This is strictly stronger than a bench run for the stated invariant: a bench produces a noisy aggregate score; the read-isolation test produces a categorical proof.
   - LoCoMo bench *re-runs* are deferred to Phase C (when reads actually cut over to unified — that's the moment a bench delta signals something).
 
+#### 8.3.1 Phase B writer audit (closure)
+
+The original Phase B writer set (T12–T16) only covered initial insert paths. Phase D read-switch work surfaced six additional writers that mutated legacy tables without mirroring to the unified substrate — every one became a real divergence bug under `unified_substrate=true`:
+
+- **ISS-121** `soft_delete` — `deleted_at` not stamped onto nodes — *closed by `ea00b65`*
+- **ISS-122** `upsert_entity` — entity columns not mirrored onto `nodes(node_kind='entity')` — *closed by `cb9e2e9`*
+- **ISS-123** `link_memory_entity` — memory↔entity edge not dual-written to `edges` — *closed by `a902529`*
+- **ISS-124** `update` / `update_content` / `update_importance` — memory metadata UPDATE family — *closed by `80d17a4`*
+- **ISS-125** `delete_embedding` (single-model) — `node_embeddings` orphan — *closed by `965b747`*
+- **ISS-126** `delete` (hard) — orphan `nodes` row + dangling edges — *closed by `9442478`*
+
+Plus three earlier shim-key fixes (ISS-119 `contradicts`/`contradicted_by` round-trip via `_legacy_*` attribute keys, ISS-120 `EntityKind::Other(_)` variant round-trip, ISS-115 broader Phase B dual-DELETE) that landed before the read-switch pass.
+
+**Closure assertion**: every `pub fn` on `Storage` that mutates `memories`, `entities`, `memory_entities`, `entity_relations`, `memory_embeddings`, or `hebbian_links` now has a contract test pinning that the mutation also lands on the corresponding `nodes` / `edges` / `node_embeddings` row. Read-only or maintenance methods (`record_access` on `access_log`, `decay_hebbian_links` strength-only mutation, `store_promotion_candidate` on a separate sidecar table) don't touch the memory substrate and are out of scope. The Phase B contract is now fully enforced.
+
 ### 8.4 Phase C — backfill
 - [x] **T19** Backfill driver: memories → nodes (no LLM) — single helper `Storage::insert_memory_node_row` shared with T12 dual-write; `substrate::backfill::backfill_memories_to_nodes` wraps a two-pass driver (Pass 1 INSERT OR IGNORE, Pass 2 UPDATE for self-referential supersession), audit row in `backfill_runs`, optional namespace filter. 6/6 phase-C tests including byte-equal parity vs T12 dual-write; 21/21 phase-B + 1871/1871 lib still pass.
 - [x] **T20** Backfill driver: memory_embeddings → node_embeddings — `Storage::insert_node_embedding_row` helper (single-source-of-truth, ready for any future Phase B embedding dual-write); `substrate::backfill::backfill_embeddings_to_node_embeddings` single-pass driver. Handles RFC3339→epoch conversion with fallback-to-now() on malformed dates (count surfaced in audit notes), skips orphan embeddings when parent `nodes` row missing (T19 prerequisite — handled as `rows_skipped_missing_node` not failed), supports multi-model per memory, namespace filter via JOIN on `memories.namespace`. 7/7 phase-C-embeddings tests + 1871 lib + 21 phase B + 7 phase C memories all pass.
