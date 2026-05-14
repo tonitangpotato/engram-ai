@@ -83,6 +83,10 @@ path = "examples/basic_usage.rs"
 name = "locomo_conv26_retrieval"
 path = "examples/locomo_conv26_retrieval.rs"
 
+[[example]]
+name = "t26b_triple_backfill_sample"
+path = "examples/t26b_triple_backfill_sample.rs"
+
 [lib]
 name = "engramai"
 path = "src/lib.rs"
