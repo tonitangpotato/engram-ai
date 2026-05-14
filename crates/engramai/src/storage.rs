@@ -3963,10 +3963,38 @@ impl Storage {
                 self.get_hebbian_neighbors(memory_id)
             }
             Some(ns) => {
+                if self.unified_substrate {
+                    // T29.4 part-3: unified path reads from edges
+                    // filtered by edge_kind='associative' and the
+                    // edges.namespace column. Phase B writers stamp
+                    // the canonical namespace on the edge.
+                    let mut stmt = self.conn.prepare(
+                        "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END \
+                         FROM edges \
+                         WHERE edge_kind = 'associative' \
+                           AND (source_id = ?1 OR target_id = ?1) \
+                           AND weight > 0 \
+                           AND namespace = ?2"
+                    )?;
+                    let rows = stmt.query_map(params![memory_id, ns], |row| row.get(0))?;
+                    return rows.collect();
+                }
+
+                // Legacy path. ISS-117 collapsed hebbian_links to one
+                // canonical (min,max) row per pair, so the OR-match
+                // is required here too — the namespaced variant was
+                // not fixed in ISS-117 and still used single-direction
+                // `WHERE source_id = ?`, which silently hid neighbours
+                // when the caller passed the high-id endpoint of a
+                // formed link.
                 let mut stmt = self.conn.prepare(
-                    "SELECT target_id FROM hebbian_links WHERE source_id = ? AND strength > 0 AND namespace = ?"
+                    "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END \
+                     FROM hebbian_links \
+                     WHERE (source_id = ?1 OR target_id = ?1) \
+                       AND strength > 0 \
+                       AND namespace = ?2"
                 )?;
-                
+
                 let rows = stmt.query_map(params![memory_id, ns], |row| row.get(0))?;
                 rows.collect()
             }
