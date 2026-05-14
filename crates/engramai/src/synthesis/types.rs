@@ -491,6 +491,51 @@ impl Default for IncrementalConfig {
 // §7 — Engine Report + Errors
 // ===========================================================================
 
+// ===========================================================================
+// §7 — Phased Synthesis (lock-free LLM calls)
+// ===========================================================================
+
+/// Plan for a single cluster's synthesis. Produced by synthesize_plan(),
+/// consumed by the caller to make LLM calls outside the lock, then
+/// passed to synthesize_commit() to write results.
+#[derive(Debug, Clone)]
+pub struct ClusterSynthesisPlan {
+    /// The cluster data (id, members, quality_score, etc.)
+    pub cluster_data: MemoryCluster,
+    /// Gate check result
+    pub gate_result: GateResult,
+    /// Members resolved from the memory index
+    pub members: Vec<MemoryRecord>,
+    /// Incremental state from previous run (if any)
+    pub incremental_state: Option<IncrementalState>,
+    /// Pre-built prompt for LLM call (None if gate didn't pass Synthesize)
+    pub prompt: Option<String>,
+    /// For AutoUpdate actions, the action to perform
+    pub auto_update_action: Option<AutoUpdateAction>,
+}
+
+/// Full synthesis plan: all clusters + shared state.
+#[derive(Debug, Clone)]
+pub struct SynthesisPlan {
+    /// Per-cluster plans
+    pub cluster_plans: Vec<ClusterSynthesisPlan>,
+    /// Settings used for this plan
+    pub settings: SynthesisSettings,
+    /// Budget: max LLM calls remaining
+    pub llm_calls_budget: usize,
+    /// Budget: max insights remaining
+    pub insights_budget: usize,
+}
+
+/// Result of a single LLM synthesis call (produced by caller outside lock).
+#[derive(Debug, Clone)]
+pub struct ClusterSynthesisResult {
+    /// Index into SynthesisPlan.cluster_plans
+    pub plan_index: usize,
+    /// Raw LLM response (or error message)
+    pub llm_result: Result<String, String>,
+}
+
 /// Report produced after a synthesis run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SynthesisReport {

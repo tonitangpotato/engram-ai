@@ -755,6 +755,241 @@ impl SynthesisEngine for DefaultSynthesisEngine {
     }
 }
 
+// =================================================================
+// Phased synthesis — for callers that need lock-free LLM calls
+// =================================================================
+
+impl DefaultSynthesisEngine {
+
+    /// Phase 1: Plan synthesis. Reads clusters from storage, runs gate checks,
+    /// builds prompts. NO LLM calls. Caller holds lock briefly for DB reads.
+    pub fn synthesize_plan(
+        &self,
+        storage: &mut Storage,
+        settings: &SynthesisSettings,
+    ) -> Result<SynthesisPlan, Box<dyn std::error::Error>> {
+        // Cluster discovery (same as synthesize lines 293-370)
+        let pending_count = storage.get_pending_count().unwrap_or(0);
+        let total_count = storage.count_memories().unwrap_or(0);
+        let dirty_count = storage.get_dirty_cluster_ids().map(|v| v.len()).unwrap_or(0);
+
+        let cold_ratio = settings.cluster_discovery.cold_recluster_ratio.unwrap_or(0.2);
+        let should_cold = total_count == 0
+            || (total_count > 0 && pending_count as f64 / total_count as f64 > cold_ratio);
+
+        let clusters = if should_cold {
+            log::info!("synthesis plan: cold recluster ({} pending / {} total)", pending_count, total_count);
+            let clusters = cluster::discover_clusters(
+                storage, &settings.cluster_discovery, self.embedding_model.as_deref(),
+            )?;
+            let cluster_tuples: Vec<(String, Vec<String>, Vec<f32>)> = clusters.iter()
+                .filter_map(|c| {
+                    let centroid = cluster::compute_centroid_embedding(storage, &c.members)?;
+                    Some((c.id.clone(), c.members.clone(), centroid))
+                })
+                .collect();
+            if !cluster_tuples.is_empty() {
+                let _ = storage.save_full_cluster_state(&cluster_tuples);
+            }
+            clusters
+        } else if pending_count > 0 || dirty_count > 0 {
+            log::info!("synthesis plan: warm recluster ({} pending, {} dirty)", pending_count, dirty_count);
+            let _ = cluster::recluster_dirty(storage, &settings.cluster_discovery, self.embedding_model.as_deref())?;
+            storage.get_all_cluster_data().map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
+        } else {
+            let cached = storage.get_all_cluster_data().map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+            if cached.is_empty() {
+                log::info!("synthesis plan: no cached clusters, falling back to cold recluster");
+                cluster::discover_clusters(storage, &settings.cluster_discovery, self.embedding_model.as_deref())?
+            } else {
+                cached
+            }
+        };
+
+        if clusters.is_empty() {
+            return Ok(SynthesisPlan {
+                cluster_plans: Vec::new(),
+                settings: settings.clone(),
+                llm_calls_budget: settings.max_llm_calls_per_run as usize,
+                insights_budget: settings.max_insights_per_consolidation as usize,
+            });
+        }
+
+        // Pre-load all memories
+        let all_memories = storage.all()?;
+        let memory_index: HashMap<String, MemoryRecord> = all_memories
+            .into_iter().map(|m| (m.id.clone(), m)).collect();
+
+        // Emotional modulation
+        let members_ref_map: HashMap<String, &MemoryRecord> = memory_index
+            .iter().map(|(id, m)| (id.clone(), m)).collect();
+        let clusters = cluster::apply_emotional_modulation(
+            clusters, &members_ref_map, &settings.emotional,
+        );
+
+        // Build per-cluster plans
+        let mut cluster_plans = Vec::new();
+        for cluster_data in clusters {
+            let incremental_state = storage.get_incremental_state(&cluster_data.id).ok().flatten();
+            if let Some(ref state) = incremental_state {
+                if !Self::should_resynthesize(&cluster_data, state, &settings.incremental) {
+                    continue; // skip unchanged clusters
+                }
+            }
+
+            let members: Vec<MemoryRecord> = cluster_data.members.iter()
+                .filter_map(|id| memory_index.get(id).cloned()).collect();
+
+            let covered_pct = storage.check_coverage(&cluster_data.members)?;
+            let cluster_changed = match &incremental_state {
+                Some(state) if !state.last_attempt_members.is_empty() => {
+                    let current: HashSet<&str> = cluster_data.members.iter().map(|s| s.as_str()).collect();
+                    let previous: HashSet<&str> = state.last_attempt_members.iter().map(|s| s.as_str()).collect();
+                    let intersection = current.intersection(&previous).count();
+                    let union_size = current.union(&previous).count();
+                    if union_size == 0 { true } else { (intersection as f64 / union_size as f64) < 1.0 }
+                }
+                _ => true,
+            };
+            let all_pairs_similar = Self::compute_all_pairs_similar(
+                storage, &cluster_data.members, settings.gate.duplicate_similarity,
+            );
+
+            let gate_result = gate::check_gate(
+                &cluster_data, &members, &settings.gate,
+                covered_pct, cluster_changed, all_pairs_similar,
+            );
+
+            // Persist attempt history
+            {
+                let mut updated_state = incremental_state.clone().unwrap_or_else(|| IncrementalState {
+                    last_member_snapshot: HashSet::new(),
+                    last_quality_score: cluster_data.quality_score,
+                    last_run: Utc::now(), run_count: 0,
+                    last_attempt_timestamp: Utc::now(), attempt_count: 0,
+                    last_attempt_members: HashSet::new(),
+                });
+                updated_state.last_attempt_timestamp = Utc::now();
+                updated_state.attempt_count += 1;
+                updated_state.last_attempt_members = cluster_data.members.iter().cloned().collect();
+                let _ = storage.set_incremental_state(&cluster_data.id, &updated_state);
+            }
+
+            let (prompt, auto_update_action) = match &gate_result.decision {
+                GateDecision::Synthesize { .. } => {
+                    let prompt = insight::build_prompt(
+                        &cluster_data, &members, &settings.synthesis,
+                        settings.emotional.include_emotion_in_prompt,
+                    );
+                    (Some(prompt), None)
+                }
+                GateDecision::AutoUpdate { action } => (None, Some(action.clone())),
+                _ => (None, None), // Skip/Defer
+            };
+
+            cluster_plans.push(ClusterSynthesisPlan {
+                cluster_data,
+                gate_result,
+                members,
+                incremental_state,
+                prompt,
+                auto_update_action,
+            });
+        }
+
+        Ok(SynthesisPlan {
+            cluster_plans,
+            settings: settings.clone(),
+            llm_calls_budget: settings.max_llm_calls_per_run as usize,
+            insights_budget: settings.max_insights_per_consolidation as usize,
+        })
+    }
+
+    /// Phase 3: Commit a single synthesis result to storage. Caller holds lock
+    /// briefly for the atomic DB transaction (~5ms).
+    pub fn synthesize_commit(
+        &self,
+        storage: &mut Storage,
+        plan: &ClusterSynthesisPlan,
+        raw_response: &str,
+        settings: &SynthesisSettings,
+    ) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+        let output = insight::validate_output(raw_response, &plan.cluster_data, &plan.members)
+            .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
+        let importance = insight::compute_insight_importance(&output, &plan.cluster_data, &plan.members);
+
+        let (insight_id, demoted_ids) = self.store_insight_atomically(
+            storage,
+            &plan.cluster_data,
+            &plan.members,
+            &output,
+            importance,
+            &plan.gate_result,
+            settings,
+        )?;
+
+        // Save incremental state
+        let latest_attempt = storage.get_incremental_state(&plan.cluster_data.id).ok().flatten();
+        let now = Utc::now();
+        let members_snapshot: HashSet<String> = plan.cluster_data.members.iter().cloned().collect();
+        let new_state = IncrementalState {
+            last_member_snapshot: members_snapshot.clone(),
+            last_quality_score: plan.cluster_data.quality_score,
+            last_run: now,
+            run_count: plan.incremental_state.as_ref().map(|s| s.run_count + 1).unwrap_or(1),
+            last_attempt_timestamp: latest_attempt.as_ref().map(|s| s.last_attempt_timestamp).unwrap_or(now),
+            attempt_count: latest_attempt.as_ref().map(|s| s.attempt_count).unwrap_or(1),
+            last_attempt_members: members_snapshot,
+        };
+        let _ = storage.set_incremental_state(&plan.cluster_data.id, &new_state);
+
+        Ok((insight_id, demoted_ids))
+    }
+
+    /// Phase 3 (auto-update variant): Handle AutoUpdate actions (merge duplicates).
+    /// Uses the same logic as the original synthesize() AutoUpdate path.
+    pub fn synthesize_auto_update(
+        &self,
+        storage: &mut Storage,
+        plan: &ClusterSynthesisPlan,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(ref action) = plan.auto_update_action {
+            match action {
+                AutoUpdateAction::StrengthenLinks { pairs } => {
+                    log::info!("auto-update: strengthen {} link pairs in cluster {}",
+                        pairs.len(), plan.cluster_data.id);
+                    // Strengthen links handled by standard Hebbian co-activation
+                }
+                AutoUpdateAction::MergeDuplicates { keep, demote } => {
+                    let demote_refs: Vec<&str> = demote.iter().map(|s| s.as_str()).collect();
+                    match storage.supersede_bulk(&demote_refs, keep) {
+                        Ok(count) => {
+                            log::info!("auto-update: merged {} duplicates into {} for cluster {}",
+                                count, keep, plan.cluster_data.id);
+                            for donor_id in demote {
+                                if let Err(e) = storage.merge_hebbian_links(donor_id, keep) {
+                                    log::warn!("auto-update: Hebbian merge failed {} → {}: {}", donor_id, keep, e);
+                                }
+                            }
+                            // Boost importance: max of all member importances
+                            let max_importance = plan.members.iter()
+                                .map(|m| m.importance)
+                                .fold(0.0_f64, f64::max);
+                            if let Err(e) = storage.update_importance(keep, max_importance) {
+                                log::warn!("auto-update: importance update failed for {}: {}", keep, e);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("auto-update: supersede_bulk failed for cluster {}: {}", plan.cluster_data.id, e);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Generate a short random hex ID.
 fn generate_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
