@@ -11,7 +11,7 @@ relates_to:
 - ISS-124
 - ISS-125
 fixed_by:
-- _pending_commit_sha_
+- 9442478
 ---
 
 ## Problem
