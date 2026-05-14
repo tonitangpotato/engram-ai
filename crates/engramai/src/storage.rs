@@ -91,7 +91,38 @@ fn datetime_to_f64(dt: &DateTime<Utc>) -> f64 {
     dt.timestamp() as f64 + dt.timestamp_subsec_nanos() as f64 / 1_000_000_000.0
 }
 
-/// Reserved-key prefix for system-owned shims in `nodes.attributes`
+/// Merge two JSON-object strings with "existing keys win" semantics.
+///
+/// Used by ISS-122 `upsert_entity` dual-write on the conflict-update
+/// branch: when a `nodes` row already exists for an entity id (e.g.
+/// because T13 wrote it earlier from `graph_entities`), the legacy
+/// projection should only add keys that the existing row doesn't
+/// already have. This locks with T21 Pass-2 backfill semantics
+/// (substrate/backfill.rs::merge_attributes_existing_wins).
+///
+/// If either input is not a JSON object, returns `existing`
+/// unchanged. Used on hot paths so we don't fail loud — the upstream
+/// invariant is that every dual-write writes an object.
+pub(crate) fn merge_json_objects_existing_wins(existing: &str, new_keys: &str) -> String {
+    let mut existing_val: serde_json::Value = match serde_json::from_str(existing) {
+        Ok(serde_json::Value::Object(m)) => serde_json::Value::Object(m),
+        _ => return existing.to_string(),
+    };
+    let new_val: serde_json::Value = match serde_json::from_str(new_keys) {
+        Ok(serde_json::Value::Object(m)) => serde_json::Value::Object(m),
+        _ => return existing.to_string(),
+    };
+    if let (serde_json::Value::Object(ref mut ex), serde_json::Value::Object(nw)) =
+        (&mut existing_val, new_val)
+    {
+        for (k, v) in nw {
+            ex.entry(k).or_insert(v);
+        }
+    }
+    serde_json::to_string(&existing_val).unwrap_or_else(|_| existing.to_string())
+}
+
+
 /// that carry legacy-column data that has no dedicated column in
 /// the unified schema. See ISS-119 / ISS-120.
 pub(crate) const LEGACY_CONTRADICTS_KEY:     &str = "_legacy_contradicts";
@@ -4684,6 +4715,18 @@ impl Storage {
     ///
     /// If the entity already exists (by name+type+namespace), updates
     /// `updated_at` and merges metadata (new metadata wins if provided).
+    ///
+    /// **ISS-122 (Phase B dual-write)**: in addition to the legacy
+    /// `entities` row, this path now projects the entity into the
+    /// unified `nodes` table (`node_kind='entity'`) using the same
+    /// projection T21 backfill uses
+    /// (`attributes = {"entity_type": <column>, ...metadata}`).
+    /// Both writes happen in a single transaction so the legacy and
+    /// unified rows can never diverge under a partial-failure path.
+    /// On the conflict-update branch (existing entity by id), the
+    /// nodes row's `updated_at` is bumped and `attributes` is merged
+    /// with existing-wins polarity (the entity_type key sourced from
+    /// the legacy column always wins).
     pub fn upsert_entity(
         &self,
         name: &str,
@@ -4693,7 +4736,43 @@ impl Storage {
     ) -> Result<String, rusqlite::Error> {
         let entity_id = generate_entity_id(name, entity_type, namespace);
         let now = now_f64();
-        self.conn.execute(
+
+        // Build the projected attributes for the unified row, same
+        // shape T21 backfill produces: column-seeded entity_type
+        // wins over any metadata key of the same name (existing-wins).
+        let mut projected = serde_json::Map::new();
+        projected.insert(
+            "entity_type".into(),
+            serde_json::Value::String(entity_type.to_string()),
+        );
+        if let Some(meta_str) = metadata {
+            if let Ok(serde_json::Value::Object(map)) =
+                serde_json::from_str::<serde_json::Value>(meta_str)
+            {
+                for (k, v) in map {
+                    projected.entry(k).or_insert(v);
+                }
+            }
+            // Non-object / malformed metadata is dropped from the
+            // unified projection — the legacy column keeps the
+            // original string for backward compatibility. This
+            // matches T21 backfill behaviour (rows_malformed_metadata
+            // counter).
+        }
+        let projected_attrs_json =
+            serde_json::to_string(&serde_json::Value::Object(projected))
+                .expect("serializing a serde_json::Map cannot fail");
+
+        // `unchecked_transaction` keeps the API on `&self` (the rest
+        // of the entity codepaths and Memory wrapper hold `&Storage`,
+        // not `&mut Storage`). Same pattern as `mark_superseded` /
+        // `clear_superseded`. Safe because we hold the only handle
+        // to `self.conn` for the duration of this call (no
+        // re-entrant borrow possible).
+        let tx = self.conn.unchecked_transaction()?;
+
+        // Legacy write — byte-equal to the pre-ISS-122 path.
+        tx.execute(
             r#"
             INSERT INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
@@ -4703,6 +4782,45 @@ impl Storage {
             "#,
             params![entity_id, name, entity_type, namespace, metadata, now],
         )?;
+
+        // Unified projection. INSERT OR IGNORE on the nodes side;
+        // if the row already exists, fall through to an UPDATE that
+        // merges attributes existing-wins and bumps updated_at —
+        // same semantics as T21 Pass-2 inline merge.
+        let inserted = Self::insert_entity_node_row(
+            &tx,
+            &entity_id,
+            name,
+            &projected_attrs_json,
+            namespace,
+            now,
+            now,
+        )?;
+        if !inserted {
+            // Existing nodes row — merge attributes existing-wins.
+            // Read current attributes, merge projected on top
+            // (existing keys win), write back. Same semantics as
+            // T21 Pass-2 inline merge in substrate/backfill.rs.
+            let existing_attrs: String = tx
+                .query_row(
+                    "SELECT attributes FROM nodes WHERE id = ?1 AND node_kind = 'entity'",
+                    params![entity_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or_else(|| "{}".to_string());
+            let merged = merge_json_objects_existing_wins(
+                &existing_attrs,
+                &projected_attrs_json,
+            );
+            tx.execute(
+                "UPDATE nodes SET attributes = ?1, updated_at = ?2 \
+                 WHERE id = ?3 AND node_kind = 'entity'",
+                params![merged, now, entity_id],
+            )?;
+        }
+
+        tx.commit()?;
         Ok(entity_id)
     }
     
