@@ -2619,7 +2619,30 @@ impl Storage {
     /// merge_hebbian_links transferred count). The reader SQL is
     /// unchanged — it already used `(source=? OR target=?)` — but
     /// the writer now stores only one canonical row, so dup is gone.
+    ///
+    /// **T29.4 (Phase D read-switch)**: when `unified_substrate` is on,
+    /// reads from `edges WHERE edge_kind='associative'` and returns
+    /// `weight` instead of `strength`. **Numeric divergence** between
+    /// substrates is intentional per design §4.3 (legacy `strength`
+    /// caps at 1.0, unified `weight` accumulates without cap). Phase D
+    /// callers (e.g. `memory.rs` recall scoring spreading activation)
+    /// must accept unified weight semantics. The neighbour **identity**
+    /// matches once a link is formed; the **score** does not.
     pub fn get_hebbian_links_weighted(&self, memory_id: &str) -> Result<Vec<(String, f64)>, rusqlite::Error> {
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END, weight \
+                 FROM edges \
+                 WHERE edge_kind = 'associative' \
+                   AND (source_id = ?1 OR target_id = ?1) \
+                   AND weight > 0"
+            )?;
+            let rows = stmt.query_map(params![memory_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+            })?;
+            return rows.collect();
+        }
+
         let mut stmt = self.conn.prepare(
             "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END, strength \
              FROM hebbian_links WHERE (source_id = ?1 OR target_id = ?1) AND strength > 0"
