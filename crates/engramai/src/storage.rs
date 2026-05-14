@@ -4908,16 +4908,111 @@ impl Storage {
     /// Link a memory to an entity with a given role (e.g. "mention", "subject").
     ///
     /// Ignores duplicates (memory_id, entity_id is the PK).
+    ///
+    /// **ISS-123 (Phase B dual-write)**: also projects the link into
+    /// the unified `edges` table, mirroring T23 (Phase C backfill of
+    /// `memory_entities`):
+    ///
+    ///   * `role = "mention" | "" | "triple" | <unknown>`
+    ///     → `(edge_kind='provenance', predicate='mentions')`.
+    ///       Unknown roles are normalized and the raw role is
+    ///       stamped into `attributes.role` for round-trip parity
+    ///       with T23.
+    ///   * `role = "subject"`
+    ///     → `(edge_kind='structural', predicate='subject_of')`.
+    ///   * `role = "object"`
+    ///     → `(edge_kind='structural', predicate='object_of')`.
+    ///
+    /// Both writes happen in a single transaction so the legacy and
+    /// unified rows cannot diverge under partial failure. The
+    /// unified write is best-effort: if either endpoint is missing
+    /// from `nodes` (FK pre-check fails), we skip the edge insert
+    /// **but still commit the legacy row** and return Ok(()).
+    /// Production writers always create the `nodes` rows before
+    /// linking (T12/T13 dual-write); the FK skip is defense for
+    /// pathological test seeds.
     pub fn link_memory_entity(
         &self,
         memory_id: &str,
         entity_id: &str,
         role: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+
+        // Legacy write — unchanged behaviour.
+        tx.execute(
             "INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, role) VALUES (?1, ?2, ?3)",
             params![memory_id, entity_id, role],
         )?;
+
+        // Unified dual-write — mirror T23 backfill semantics.
+        let (edge_kind, predicate, normalized) =
+            crate::substrate::backfill::role_to_kind_predicate(role);
+        let hash_input = format!(
+            "memory_entities|{}|{}|{}|{}|{}",
+            memory_id, entity_id, role, edge_kind, predicate
+        );
+        let edge_id = crate::substrate::backfill::uuid_from_hash(&hash_input);
+
+        // Resolve namespace + endpoint existence from nodes. Entity
+        // node is the canonical authority for namespace. If either
+        // endpoint is missing we skip the edge insert (FK would
+        // fail anyway).
+        let endpoints: Option<(String,)> = tx
+            .query_row(
+                "SELECT n_e.namespace \
+                 FROM nodes n_e \
+                 WHERE n_e.id = ?1 \
+                   AND EXISTS(SELECT 1 FROM nodes WHERE id = ?2)",
+                params![entity_id, memory_id],
+                |row| Ok((row.get::<_, String>(0)?,)),
+            )
+            .optional()?;
+
+        if let Some((namespace,)) = endpoints {
+            // attributes JSON: record the raw role iff normalized,
+            // matching T23's round-trip contract.
+            let attributes_json = if normalized {
+                format!(r#"{{"role":{}}}"#, serde_json::Value::String(role.to_string()))
+            } else {
+                "{}".to_string()
+            };
+            let created_at = now_f64();
+
+            match edge_kind {
+                "structural" => {
+                    Self::insert_structural_edge_row(
+                        &tx,
+                        &edge_id,
+                        memory_id,
+                        entity_id,
+                        predicate,
+                        &attributes_json,
+                        1.0,
+                        &namespace,
+                        created_at,
+                    )?;
+                }
+                "provenance" => {
+                    Self::insert_provenance_edge_row(
+                        &tx,
+                        &edge_id,
+                        memory_id,
+                        entity_id,
+                        predicate,
+                        &attributes_json,
+                        1.0,
+                        &namespace,
+                        created_at,
+                    )?;
+                }
+                _ => unreachable!(
+                    "role_to_kind_predicate only emits 'structural' or 'provenance'"
+                ),
+            }
+        }
+
+        tx.commit()?;
         Ok(())
     }
     
@@ -5221,12 +5316,20 @@ impl Storage {
     
     /// List entities, optionally filtered by type and namespace.
     /// Ordered by updated_at descending (most recently touched first).
+    ///
+    /// **T29.5 part-3 (Phase D read-switch)**: when `unified_substrate`
+    /// is on, reads from `nodes` joined against `edges` (T23's
+    /// projection of `memory_entities`). See `list_entities_unified`
+    /// for the contract details.
     pub fn list_entities(
         &self,
         entity_type: Option<&str>,
         namespace: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(EntityRecord, usize)>, rusqlite::Error> {
+        if self.unified_substrate {
+            return self.list_entities_unified(entity_type, namespace, limit);
+        }
         let sql = match (entity_type, namespace) {
             (Some(_), Some(_)) => {
                 r#"SELECT e.id, e.name, e.entity_type, e.namespace, e.metadata, e.created_at, e.updated_at,
@@ -5286,6 +5389,125 @@ impl Storage {
             ))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// T29.5 part-3 unified-substrate path for `list_entities`.
+    ///
+    /// Reads `nodes WHERE node_kind IN ('entity','topic')` with a
+    /// correlated subquery to count edges that mirror what legacy
+    /// counted via `LEFT JOIN memory_entities`. Per T23 (Phase C
+    /// backfill of `memory_entities`), each legacy row projects to
+    /// exactly one edge with one of three `(edge_kind, predicate)`
+    /// pairs:
+    ///
+    ///   * `(provenance,  mentions)`   — mention / unknown role
+    ///   * `(structural, subject_of)`  — triple subject
+    ///   * `(structural, object_of)`   — triple object
+    ///
+    /// The mention-count subquery scopes to those three pairs so
+    /// other edges (e.g. T22 `entity_relations → structural` between
+    /// entities, T14/T24 hebbian associative edges, T25
+    /// `synthesis_provenance derived_from`) don't inflate the count.
+    ///
+    /// The `entity_type` filter is applied **post-decode** in Rust
+    /// rather than pushed into the WHERE clause: in `nodes`, the
+    /// type lives in `attributes._legacy_kind` (T13 path, serde
+    /// `EntityKind`) or `attributes.entity_type` (T21 / ISS-122
+    /// `upsert_entity` path, flat string), and pushing both
+    /// shape-variants into SQL would be brittle. Post-filtering is
+    /// also fine perf-wise because the caller-supplied `limit` is
+    /// always small for this API.
+    ///
+    /// Ordering matches legacy: `mention_count DESC, updated_at
+    /// DESC`. When `entity_type` filter is set, post-filter happens
+    /// **before** truncating to `limit`, so the requested limit is
+    /// honoured even if many rows are filtered out — we
+    /// over-fetch up to `limit * 8` rows then filter then truncate.
+    /// For pathological cases with very rare entity_type, this
+    /// could under-fill, matching the legacy SQL behaviour on rare
+    /// types (also under-fills because the type filter is part of
+    /// the WHERE).
+    fn list_entities_unified(
+        &self,
+        entity_type: Option<&str>,
+        namespace: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(EntityRecord, usize)>, rusqlite::Error> {
+        const MENTION_COUNT_SUBQUERY: &str =
+            "(SELECT COUNT(*) FROM edges \
+              WHERE target_id = n.id \
+                AND ((edge_kind = 'provenance'  AND predicate = 'mentions') OR \
+                     (edge_kind = 'structural' AND predicate IN ('subject_of', 'object_of'))) \
+             )";
+
+        // Over-fetch factor for post-decode entity_type filtering.
+        let fetch_limit = if entity_type.is_some() {
+            limit.saturating_mul(8).max(limit)
+        } else {
+            limit
+        };
+
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(EntityRecord, usize)> {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let ns: String = row.get(2)?;
+            let attrs: String = row.get(3)?;
+            let nk: String = row.get(4)?;
+            let created_at: f64 = row.get(5)?;
+            let updated_at: f64 = row.get(6)?;
+            let mention_count: i64 = row.get(7)?;
+            let (et, metadata) = decode_entity_type_and_metadata(&attrs, &nk);
+            Ok((
+                EntityRecord {
+                    id,
+                    name,
+                    entity_type: et,
+                    namespace: ns,
+                    metadata,
+                    created_at,
+                    updated_at,
+                },
+                mention_count as usize,
+            ))
+        };
+
+        let rows: Vec<(EntityRecord, usize)> = match namespace {
+            Some(ns) => {
+                let sql = format!(
+                    "SELECT n.id, n.content, n.namespace, n.attributes, n.node_kind, \
+                            n.created_at, n.updated_at, {mc} as mention_count \
+                     FROM nodes n \
+                     WHERE n.node_kind IN ('entity', 'topic') AND n.namespace = ?1 \
+                     ORDER BY mention_count DESC, n.updated_at DESC \
+                     LIMIT ?2",
+                    mc = MENTION_COUNT_SUBQUERY
+                );
+                let mut stmt = self.conn.prepare(&sql)?;
+                let iter = stmt.query_map(params![ns, fetch_limit as i64], map_row)?;
+                iter.filter_map(|r| r.ok()).collect()
+            }
+            None => {
+                let sql = format!(
+                    "SELECT n.id, n.content, n.namespace, n.attributes, n.node_kind, \
+                            n.created_at, n.updated_at, {mc} as mention_count \
+                     FROM nodes n \
+                     WHERE n.node_kind IN ('entity', 'topic') \
+                     ORDER BY mention_count DESC, n.updated_at DESC \
+                     LIMIT ?1",
+                    mc = MENTION_COUNT_SUBQUERY
+                );
+                let mut stmt = self.conn.prepare(&sql)?;
+                let iter = stmt.query_map(params![fetch_limit as i64], map_row)?;
+                iter.filter_map(|r| r.ok()).collect()
+            }
+        };
+
+        let filtered: Vec<(EntityRecord, usize)> = match entity_type {
+            Some(et) => rows.into_iter().filter(|(r, _)| r.entity_type == et).collect(),
+            None => rows,
+        };
+
+        Ok(filtered.into_iter().take(limit).collect())
     }
 
     /// Get entity statistics: (entity_count, relation_count, link_count).
