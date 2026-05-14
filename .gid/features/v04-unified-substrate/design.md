@@ -2180,9 +2180,9 @@ Plus three earlier shim-key fixes (ISS-119 `contradicts`/`contradicted_by` round
 - [ ] **T41** Documentation: update README, design docs reflecting terminal state
 
 ### 8.8 Cleanup / supersession of prior plans
-- [ ] **T42** Mark `v03-wireup/design.md` as superseded by this doc
+- [x] **T42** Mark `v03-wireup/design.md` as superseded by this doc — **shipped 2026-05-14**: added supersession note at top of `v03-wireup/design.md` pointing to `v04-unified-substrate/design.md` and noting Phase A–D complete.
 - [ ] **T43** Close G1–G5 / ISS-* that are subsumed
-- [ ] **T44** Update `consolidation-autopilot-DRAFT.md` to reference unified substrate
+- [x] **T44** Update `consolidation-autopilot-DRAFT.md` to reference unified substrate — **duplicate of T04, shipped 2026-05-14** (§2.5 substrate invariants I-A1–I-A8). Kept as a separate tick for traceability; the two tasks ended up describing the same deliverable.
 
 ### 8.9 Interoception + somatic markers (§4.11)
 - [ ] **T45** Schema: add `interoceptive_baseline` (ephemeral, derivable) and

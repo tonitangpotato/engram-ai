@@ -1,9 +1,20 @@
 # v0.3 Wire-up Design
 
-**Status**: DRAFT — pending potato review
+**Status**: SUPERSEDED by `.gid/features/v04-unified-substrate/design.md` (2026-05-14)
+**Original status (2026-05-12)**: DRAFT — pending potato review
 **Author**: claude (rustclaw session 2026-05-12)
 **Scope**: Identify the remaining work to make engram's v0.3 graph engine the actual substrate, not a side-car.
 **Prerequisite read**: `consolidation-autopilot-DRAFT.md`, `engramai/src/retrieval/api.rs`, `engramai/src/resolution/pipeline.rs`
+
+---
+
+## Supersession note (added 2026-05-14 via T42 of v04-unified-substrate)
+
+G1–G6 of this document are rewritten in `v04-unified-substrate/design.md` to target the unified schema (`nodes` + `edges` + `nodes_fts` + `node_embeddings`) directly, rather than through the intermediate v0.3 schema (`graph_entities` + `graph_edges`).
+
+Phase A–D of v0.4 (schema additive → dual-write → backfill → read-switch) are complete as of 2026-05-14; see `v04-unified-substrate/design.md §8` for the task ledger.
+
+The original v0.3 wire-up plan below is preserved for historical context but should not be used to guide new implementation work. If a v0.3-era reference points here, the substantive content has moved into `v04-unified-substrate/` — refer there.
 
 ---
 
