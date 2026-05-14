@@ -16,16 +16,24 @@ edge-shaped, 1 FTS) which is a schema-sprawl artifact of "add a feature
 → add a table", not a designed substrate.
 
 This document specifies the terminal schema: **`nodes` + `edges` +
-`nodes_fts` + `node_embeddings` (multi-model extension) + audit tables**.
-Every cognitive function becomes an operation on this substrate —
-not just the obvious ones (memory recall, entity resolution, Hebbian,
-KC, supersession, decay, synthesis) but also the ones currently
-scattered across ad-hoc storage: **interoception/anomaly, empathy
-bus, working memory, metacognition, dimensional signature** (full
-design specs for those moved to `v05-cognitive-substrate/` on
-2026-05-14 — see §4.11 stub for rationale), and the **v0.2 KC**
-code mass (§4.16, 21 modules, 656KB, zero production callers —
-slated for retirement after Phase D).
+`nodes_fts` + `node_embeddings` (multi-model extension) + audit tables**,
+and the **migration of every existing storage path** (memories, entities,
+relations, hebbian, embeddings, FTS, knowledge topics, synthesis) onto
+that substrate, ending with the **removal of the 10 legacy tables**.
+
+v0.4's contract is narrow on purpose: **"substrate consolidated, legacy
+dropped, parity proven"** — a stability gate. The cognitive functions
+that this substrate *enables* (interoception/anomaly, empathy bus,
+working memory, metacognition, dimensional signature) are specified in
+the sibling feature `v05-cognitive-substrate/` and ship on top of v0.4,
+not inside it. The substrate primitives those functions consume (new
+`node_kind`s, `edge_kind`s, `WriteOp` variants) live here in v0.4 §3 and
+§6 because they ARE the substrate; the function-level wiring lives in
+v0.5.
+
+The **v0.2 KC** code mass (§4.16, 21 modules, 656KB, zero production
+callers) is also retired inside v0.4 (T60), since it's substrate
+cleanup, not cognitive work.
 
 The v0.3 schema (`graph_entities` + `graph_edges`) is **already 90% of
 the terminal shape** — this is not a rewrite, it's a generalization +
@@ -38,8 +46,10 @@ compound-op atomicity, and has a documented throughput ceiling of
 ~11k ops/sec on commodity hardware — well above projected production
 load (§6.6, §6.7). Readers never block.
 
-Execution plan: §8 has 68 atomic tasks (T01–T68) sized for single
-sub-agent execution.
+Execution plan: §8 has **24 open tasks** in v0.4 after the v0.5 split —
+T26b/c (validation), T30–T40 (cutover + legacy drop), T41/T43 (docs),
+T60 (v0.2 KC retire), T61–T68 (writer queue, parked until needed). The
+remaining 15 tasks (T45–T59) moved to v0.5 along with their design.
 
 ---
 
