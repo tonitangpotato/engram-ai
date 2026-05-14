@@ -277,13 +277,19 @@ fn render_report(
 
     push(&mut out, "## Driver counters (BackfillRun)");
     push(&mut out, "");
+    push(&mut out, "**Note**: this driver deviates from the standard `BackfillRun` semantics — `rows_inserted` surfaces the **triple count** (for audit usefulness), not the memory count. The per-memory invariant `memories_read = memories_inserted + skipped + failed` is recorded in `notes.memories_inserted` and verified by the driver itself before this report renders.");
+    push(&mut out, "");
     push(&mut out, &format!("- Memories read:           **{}**", run.rows_read));
     push(&mut out, &format!("- Triples inserted:        **{}**", run.rows_inserted));
     push(&mut out, &format!("- Memories skipped (already had triples): {}", run.rows_skipped_existing));
     push(&mut out, &format!("- Memories failed:         {}", run.rows_failed));
-    push(&mut out, &format!("- Counter invariant:       rows_read = inserted + skipped + failed → {} = {} + {} + {} {}",
-        run.rows_read, run.rows_inserted, run.rows_skipped_existing, run.rows_failed,
-        if run.rows_inserted + run.rows_skipped_existing + run.rows_failed == run.rows_read { "✅" } else { "❌" }
+    let memories_inserted = run
+        .rows_read
+        .saturating_sub(run.rows_skipped_existing)
+        .saturating_sub(run.rows_failed);
+    push(&mut out, &format!(
+        "- Memories inserted (derived): {} (= read {} − skipped {} − failed {})",
+        memories_inserted, run.rows_read, run.rows_skipped_existing, run.rows_failed
     ));
     push(&mut out, "");
 
