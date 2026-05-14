@@ -4218,6 +4218,19 @@ impl Storage {
     ///
     /// Returns all Hebbian links where source is in namespace_a and target
     /// is in namespace_b (or vice versa).
+    ///
+    /// **T29.4 (Phase D read-switch)**: when `unified_substrate` is on,
+    /// reads from `edges WHERE edge_kind='associative'` filtered by the
+    /// synthesized `"ns1:ns2"` cross-namespace marker on
+    /// `edges.namespace`. `record_cross_namespace_coactivation` stamps
+    /// this marker on dual-written edges (see storage.rs:4202). The
+    /// source/target namespace columns come from joining `nodes`
+    /// instead of `memories`; T12 dual-write unconditionally copies
+    /// every memory into `nodes`, so the join is total.
+    ///
+    /// `coactivation_count` and `direction` are pulled out of the
+    /// edges `attributes` JSON, matching the schema laid down by
+    /// `dual_write_hebbian_to_edges` in graph/store.rs.
     pub fn discover_cross_links(
         &self,
         namespace_a: &str,
@@ -4226,7 +4239,48 @@ impl Storage {
         // Find links with cross-namespace marker
         let cross_ns_1 = format!("{}:{}", namespace_a, namespace_b);
         let cross_ns_2 = format!("{}:{}", namespace_b, namespace_a);
-        
+
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                r#"
+                SELECT e.source_id,
+                       e.target_id,
+                       e.weight,
+                       COALESCE(json_extract(e.attributes, '$.coactivation_count'), 0) AS cact,
+                       COALESCE(json_extract(e.attributes, '$.direction'), 'undirected') AS direction,
+                       e.created_at,
+                       n1.namespace AS source_ns,
+                       n2.namespace AS target_ns
+                FROM edges e
+                LEFT JOIN nodes n1 ON e.source_id = n1.id
+                LEFT JOIN nodes n2 ON e.target_id = n2.id
+                WHERE e.edge_kind = 'associative'
+                  AND e.weight > 0
+                  AND (e.namespace = ?1 OR e.namespace = ?2)
+                ORDER BY e.weight DESC
+                "#,
+            )?;
+
+            let rows = stmt.query_map(params![cross_ns_1, cross_ns_2], |row| {
+                let created_at_f64: f64 = row.get(5)?;
+                let source_ns: Option<String> = row.get(6)?;
+                let target_ns: Option<String> = row.get(7)?;
+
+                Ok(HebbianLink {
+                    source_id: row.get(0)?,
+                    target_id: row.get(1)?,
+                    strength: row.get(2)?,
+                    coactivation_count: row.get(3)?,
+                    direction: row.get(4)?,
+                    created_at: f64_to_datetime(created_at_f64),
+                    source_ns,
+                    target_ns,
+                })
+            })?;
+
+            return Ok(rows.filter_map(|r| r.ok()).collect());
+        }
+
         let mut stmt = self.conn.prepare(
             r#"
             SELECT h.source_id, h.target_id, h.strength, h.coactivation_count, 
