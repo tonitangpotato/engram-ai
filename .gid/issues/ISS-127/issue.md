@@ -1,11 +1,18 @@
 ---
 title: Storage::insert_triple_entity bypasses ISS-123 dual-write — triple-derived entities not reflected in nodes/edges under unified_substrate=true
-status: open
+status: fixed
 priority: P2
 severity: degradation
-labels: [v04-unified-substrate, phase-b, dual-write, triple-extraction]
-relates_to: [ISS-123]
+labels:
+- v04-unified-substrate
+- phase-b
+- dual-write
+- triple-extraction
+relates_to:
+- ISS-123
 discovered_during: T26a
+fixed_at: 2026-05-14
+fixed_by: b98b4ca
 ---
 
 # Summary
