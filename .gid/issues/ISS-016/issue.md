@@ -1,9 +1,11 @@
 ---
-id: "ISS-016"
-title: "LLM Triple Extraction for Hebbian Link Quality"
-status: open
+id: ISS-016
+title: LLM Triple Extraction for Hebbian Link Quality
+status: fixed
 priority: P2
 created: 2026-04-26
+fixed_at: 2026-04-18
+fixed_by: '0383584'
 ---
 # ISS-016: LLM Triple Extraction for Hebbian Link Quality
 

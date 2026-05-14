@@ -1,14 +1,16 @@
 ---
 title: soft_delete does not dual-write deleted_at to nodes; Phase D liveness filters diverge
-status: open
+status: fixed
 priority: P1
 severity: degradation
 filed_by: rustclaw (overnight session 2026-05-14)
 relates_to:
-  - v04-unified-substrate
-  - T29
-  - ISS-119
-  - ISS-120
+- v04-unified-substrate
+- T29
+- ISS-119
+- ISS-120
+fixed_at: 2026-05-14
+fixed_by: ea00b65
 ---
 
 ## Symptom

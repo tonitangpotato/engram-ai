@@ -1,10 +1,11 @@
 ---
-id: "ISS-033"
-title: "Entity Embedding Column + GraphStore.search_candidates API"
-status: open
+id: ISS-033
+title: Entity Embedding Column + GraphStore.search_candidates API
+status: fixed
 priority: P2
 created: 2026-04-26
 severity: high
+fixed_at: 2026-04-26
 ---
 # ISS-033: Entity Embedding Column + GraphStore.search_candidates API
 
