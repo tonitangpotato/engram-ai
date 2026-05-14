@@ -7074,30 +7074,167 @@ impl Storage {
     
     /// Insert a triple-derived entity into entities + memory_entities tables.
     /// Uses deterministic ID from entity name hash.
+    /// Insert (or upsert) a triple-derived entity row and link it to
+    /// the originating memory.
+    ///
+    /// **Dual-write contract (ISS-127 fix):** mirrors T21 (entities →
+    /// nodes) and T23 (memory_entities → edges) backfill semantics so
+    /// that triple-derived entities are visible under
+    /// `unified_substrate=true` immediately, without waiting for an
+    /// offline backfill pass.
+    ///
+    /// **Why raw SQL instead of the `insert_entity_node_row` /
+    /// `insert_provenance_edge_row` helpers:** those helpers take
+    /// `&Transaction<'_>`. `store_triples` is sometimes called from
+    /// inside an outer transaction (the consolidate path opens one
+    /// via `begin_transaction` before invoking us) and sometimes
+    /// from autocommit context (T26a backfill driver, integration
+    /// tests). SQLite doesn't support nested `BEGIN`, so we can't
+    /// open our own `Transaction` here. We could special-case via
+    /// `is_autocommit()`, but the helper SQL is short enough that
+    /// duplicating it inline (and keeping `self.conn.execute`
+    /// throughout) is simpler. The duplicated SQL stays byte-equal
+    /// to the helpers so T27 verifier parity holds.
+    ///
+    /// Idempotency: every write is `INSERT OR IGNORE` keyed on either
+    /// the entity id (deterministic from `name_lower` hash) or the
+    /// edge deterministic id, so repeated `store_triples` calls are
+    /// safe.
     fn insert_triple_entity(&self, memory_id: &str, entity_name: &str) -> Result<(), rusqlite::Error> {
         use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
-        
+
         let name_lower = entity_name.to_lowercase();
         let mut hasher = DefaultHasher::new();
         name_lower.hash(&mut hasher);
         let entity_id = format!("triple-{:x}", hasher.finish());
-        
-        let now = datetime_to_f64(&chrono::Utc::now());
-        
-        // Upsert into entities table
+
+        let now_unix = datetime_to_f64(&chrono::Utc::now());
+
+        // 1. Legacy entities table — unchanged behaviour.
         self.conn.execute(
             "INSERT OR IGNORE INTO entities (id, name, entity_type, namespace, metadata, created_at, updated_at) \
              VALUES (?1, ?2, 'concept', 'triple', '{}', ?3, ?3)",
-            params![entity_id, name_lower, now],
+            params![entity_id, name_lower, now_unix],
         )?;
-        
-        // Link to memory
+
+        // 2. Unified nodes(node_kind='entity') — mirrors
+        //    `insert_entity_node_row` body. Claim an fts_rowid first,
+        //    then INSERT OR IGNORE the node row.
+        let attributes_json = r#"{"entity_type":"concept"}"#;
+        let next_fts_rowid: i64 = self.conn.query_row(
+            "UPDATE fts_rowid_counter \
+             SET next_value = next_value + 1 \
+             WHERE singleton = 0 \
+             RETURNING next_value - 1",
+            [],
+            |r| r.get(0),
+        )?;
+        self.conn.execute(
+            r#"
+            INSERT OR IGNORE INTO nodes (
+                id, node_kind, namespace,
+                content, summary, attributes,
+                created_at, updated_at,
+                fts_rowid
+            ) VALUES (
+                ?, 'entity', 'triple',
+                ?, '', ?,
+                ?, ?,
+                ?
+            )
+            "#,
+            params![
+                entity_id,
+                name_lower,
+                attributes_json,
+                now_unix,
+                now_unix,
+                next_fts_rowid,
+            ],
+        )?;
+
+        // 3. Legacy memory_entities link — unchanged behaviour.
         self.conn.execute(
             "INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, role) VALUES (?1, ?2, 'triple')",
             params![memory_id, entity_id],
         )?;
-        
+
+        // 4. Unified edges(kind='provenance', predicate='mentions')
+        //    — mirrors `insert_provenance_edge_row` body + the FK
+        //    guard from `link_memory_entity`. The deterministic id
+        //    matches T23's hash convention (`memory_entities|m|e|role|kind|pred`)
+        //    so a future T23 backfill rerun on legacy-only data
+        //    would produce byte-equal rows.
+        let (edge_kind, predicate, normalized) =
+            crate::substrate::backfill::role_to_kind_predicate("triple");
+        let _ = edge_kind; // 'provenance' — encoded in the INSERT below
+        let hash_input = format!(
+            "memory_entities|{}|{}|{}|{}|{}",
+            memory_id, entity_id, "triple", "provenance", predicate
+        );
+        let edge_id = crate::substrate::backfill::uuid_from_hash(&hash_input);
+
+        // FK guard: require both endpoints to have nodes rows. Under
+        // unified_substrate=true T12 dual-write guarantees the memory
+        // node; the entity node was just inserted in step 2. Legacy-
+        // only mode (memory node missing) → silent skip, same
+        // contract as `link_memory_entity`.
+        let endpoint_ns: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT n_e.namespace \
+                 FROM nodes n_e \
+                 WHERE n_e.id = ?1 \
+                   AND EXISTS(SELECT 1 FROM nodes WHERE id = ?2)",
+                params![entity_id, memory_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+
+        if let Some(edge_namespace) = endpoint_ns {
+            let edge_attributes_json = if normalized {
+                r#"{"role":"triple"}"#
+            } else {
+                "{}"
+            };
+            self.conn.execute(
+                r#"
+                INSERT OR IGNORE INTO edges (
+                    id,
+                    source_id, target_id, target_literal,
+                    edge_kind, predicate_kind, predicate,
+                    summary, attributes,
+                    confidence,
+                    recorded_at,
+                    resolution_method,
+                    namespace, created_at, updated_at
+                ) VALUES (
+                    ?,
+                    ?, ?, NULL,
+                    'provenance', 'canonical', ?,
+                    '', ?,
+                    ?,
+                    ?,
+                    'direct',
+                    ?, ?, ?
+                )
+                "#,
+                params![
+                    edge_id,
+                    memory_id,
+                    entity_id,
+                    predicate,
+                    edge_attributes_json,
+                    1.0_f64,
+                    now_unix,
+                    edge_namespace,
+                    now_unix,
+                    now_unix,
+                ],
+            )?;
+        }
+
         Ok(())
     }
     
