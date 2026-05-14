@@ -6389,7 +6389,29 @@ impl Storage {
     /// Get entity names associated with a memory.
     ///
     /// Joins through `memory_entities` → `entities` to return entity name strings.
+    ///
+    /// **T29.5 part-4 (Phase D read-switch)**: when `unified_substrate`
+    /// is on, reads `nodes` joined against `edges` (T23 projection of
+    /// `memory_entities`). The unified path also filters
+    /// `node_kind IN ('entity','topic')` for safety.
+    ///
+    /// Duplicate semantics: legacy SQL does NOT DISTINCT, so a memory
+    /// that mentions the same entity twice (e.g. as both subject and
+    /// object of a triple) returns the same name twice. The unified
+    /// path matches this exactly — each edge contributes one row.
     pub fn get_entities_for_memory(&self, memory_id: &str) -> Result<Vec<String>, rusqlite::Error> {
+        if self.unified_substrate {
+            let mut stmt = self.conn.prepare(
+                "SELECT n.content FROM nodes n \
+                 INNER JOIN edges ed ON ed.target_id = n.id \
+                 WHERE ed.source_id = ?1 \
+                   AND ((ed.edge_kind = 'provenance' AND ed.predicate = 'mentions') OR \
+                        (ed.edge_kind = 'structural' AND ed.predicate IN ('subject_of', 'object_of'))) \
+                   AND n.node_kind IN ('entity', 'topic')",
+            )?;
+            let rows = stmt.query_map(params![memory_id], |row| row.get(0))?;
+            return rows.collect();
+        }
         let mut stmt = self.conn.prepare(
             "SELECT e.name FROM entities e \
              INNER JOIN memory_entities me ON e.id = me.entity_id \
