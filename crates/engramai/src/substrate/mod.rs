@@ -37,6 +37,7 @@
 
 pub mod types;
 pub mod backfill;
+pub mod triple_backfill;
 pub mod verify;
 
 pub use types::{

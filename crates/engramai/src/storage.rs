@@ -539,6 +539,7 @@ impl Storage {
         // v0.4 Phase C (T19+): backfill_runs audit table.
         // Idempotent CREATE TABLE IF NOT EXISTS — safe on every open.
         Self::migrate_backfill_runs(&conn)?;
+        Self::migrate_triple_backfill_checkpoint(&conn)?;
 
         // v0.4 unified substrate: bump schema_version (T09).
         // Runs last so a partial Phase A migration leaves the version
@@ -568,6 +569,7 @@ impl Storage {
         Self::migrate_unified_fts(conn)?;
         Self::migrate_unified_node_embeddings(conn)?;
         Self::migrate_backfill_runs(conn)?;
+        Self::migrate_triple_backfill_checkpoint(conn)?;
         Self::bump_schema_version_v04_additive(conn)?;
         Ok(())
     }
@@ -875,6 +877,47 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS idx_backfill_runs_table_time
                 ON backfill_runs(legacy_table, started_at);
+        "#)?;
+        Ok(())
+    }
+
+    /// v0.4 T26a checkpoint table for the resumable triple-extraction
+    /// backfill driver. Separate from `backfill_runs` because the
+    /// triple driver is **iterator-state-bearing** — it needs to know
+    /// "the last memory_id we successfully extracted from" so a crashed
+    /// run can resume mid-stream. The other Phase C drivers are SQL-set
+    /// based (Pass-1 `INSERT OR IGNORE`) and re-converge trivially on
+    /// re-run; only the triple driver, which calls an external LLM
+    /// per memory, needs per-row resume granularity.
+    ///
+    /// One row per `run_id`; `status` is the state machine:
+    ///   - `in_progress` — driver is currently running or crashed mid-run
+    ///   - `completed`   — driver finished; will not be resumed
+    ///   - `aborted`     — driver hit max-retries on a memory and gave up
+    ///
+    /// `last_memory_id` is exclusive (`>` not `>=`) for resume, so a
+    /// memory that committed its triples but failed before the
+    /// checkpoint UPDATE will be re-processed and produce zero net
+    /// inserts (idempotent via `store_triples` `INSERT OR IGNORE`).
+    ///
+    /// Idempotent (GUARD-ss.3): re-opening a DB just runs `CREATE TABLE
+    /// IF NOT EXISTS`.
+    fn migrate_triple_backfill_checkpoint(conn: &Connection) -> SqlResult<()> {
+        conn.execute_batch(r#"
+            CREATE TABLE IF NOT EXISTS triple_backfill_checkpoint (
+                run_id              TEXT PRIMARY KEY,
+                last_memory_id      TEXT,
+                memories_processed  INTEGER NOT NULL DEFAULT 0,
+                triples_inserted    INTEGER NOT NULL DEFAULT 0,
+                memories_failed     INTEGER NOT NULL DEFAULT 0,
+                status              TEXT NOT NULL DEFAULT 'in_progress',
+                started_at          REAL NOT NULL,
+                updated_at          REAL NOT NULL,
+                namespace_filter    TEXT,
+                notes               TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_triple_ckpt_status
+                ON triple_backfill_checkpoint(status, started_at);
         "#)?;
         Ok(())
     }
