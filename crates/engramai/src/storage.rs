@@ -2711,6 +2711,20 @@ impl Storage {
     }
 
     /// Full-text search using FTS5.
+    ///
+    /// **T29.6 part-1 (Phase D read-switch)**: when `unified_substrate`
+    /// is on, the FTS index used is `nodes_fts` (keyed by
+    /// `nodes.fts_rowid`) instead of legacy `memories_fts` (keyed by
+    /// `memories.rowid`). The MATCHed rows still join back into the
+    /// `memories` table to assemble `MemoryRecord` — only the
+    /// inverted index changes.
+    ///
+    /// **Production caveat**: `nodes_fts` only contains the
+    /// post-T12-dual-write era of memories. Before T26c production
+    /// backfill, recall under `unified_substrate=true` is degraded
+    /// for memories that pre-date the dual-write deployment. The
+    /// flag stays opt-in until backfill closes that gap (design
+    /// §8.5).
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         // Tokenize CJK text first, then split like unicode61 for FTS alignment
         let tokenized = tokenize_cjk_boundaries(query);
@@ -2718,26 +2732,39 @@ impl Storage {
         if words.is_empty() {
             return Ok(vec![]);
         }
-        
+
         // Build OR query — each token quoted to prevent FTS5 syntax injection
         let fts_query = words.iter().map(|w| format!("\"{}\"", w)).collect::<Vec<_>>().join(" OR ");
-        
-        let mut stmt = self.conn.prepare(
+
+        let sql = if self.unified_substrate {
+            r#"
+            SELECT m.* FROM memories m
+            JOIN nodes n ON n.id = m.id
+            JOIN nodes_fts f ON n.fts_rowid = f.rowid
+            WHERE nodes_fts MATCH ?
+              AND n.node_kind = 'memory'
+              AND m.deleted_at IS NULL
+              AND (m.superseded_by IS NULL OR m.superseded_by = '')
+            ORDER BY rank LIMIT ?
+            "#
+        } else {
             r#"
             SELECT m.* FROM memories m
             JOIN memories_fts f ON m.rowid = f.rowid
             WHERE memories_fts MATCH ? AND m.deleted_at IS NULL
             AND (m.superseded_by IS NULL OR m.superseded_by = '')
             ORDER BY rank LIMIT ?
-            "#,
-        )?;
-        
+            "#
+        };
+
+        let mut stmt = self.conn.prepare(sql)?;
+
         let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
             self.row_to_record(row, access_times)
         })?;
-        
+
         rows.collect()
     }
 
@@ -3477,9 +3504,16 @@ impl Storage {
     }
     
     /// Full-text search using FTS5, filtered by namespace.
-    /// 
+    ///
     /// If namespace is None, search in "default" namespace.
     /// If namespace is Some("*"), search across all namespaces.
+    ///
+    /// **T29.6 part-2 (Phase D read-switch)**: under
+    /// `unified_substrate=true` the FTS index switches from
+    /// `memories_fts` to `nodes_fts` (keyed by `nodes.fts_rowid`).
+    /// MATCHed rows still join back into `memories` so the returned
+    /// `MemoryRecord` shape is unchanged. See `search_fts` doc for
+    /// the production-backfill caveat — same applies here.
     pub fn search_fts_ns(
         &self,
         query: &str,
@@ -3492,49 +3526,76 @@ impl Storage {
         if words.is_empty() {
             return Ok(vec![]);
         }
-        
+
         // Build OR query — each token quoted to prevent FTS5 syntax injection
         let fts_query = words.iter().map(|w| format!("\"{}\"", w)).collect::<Vec<_>>().join(" OR ");
-        
+
         let ns = namespace.unwrap_or("default");
-        
+
         if ns == "*" {
             // Search all namespaces
-            let mut stmt = self.conn.prepare(
+            let sql = if self.unified_substrate {
+                r#"
+                SELECT m.* FROM memories m
+                JOIN nodes n ON n.id = m.id
+                JOIN nodes_fts f ON n.fts_rowid = f.rowid
+                WHERE nodes_fts MATCH ?
+                  AND n.node_kind = 'memory'
+                  AND m.deleted_at IS NULL
+                  AND (m.superseded_by IS NULL OR m.superseded_by = '')
+                ORDER BY rank LIMIT ?
+                "#
+            } else {
                 r#"
                 SELECT m.* FROM memories m
                 JOIN memories_fts f ON m.rowid = f.rowid
                 WHERE memories_fts MATCH ? AND m.deleted_at IS NULL
                 AND (m.superseded_by IS NULL OR m.superseded_by = '')
                 ORDER BY rank LIMIT ?
-                "#,
-            )?;
-            
+                "#
+            };
+
+            let mut stmt = self.conn.prepare(sql)?;
+
             let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
                 self.row_to_record(row, access_times)
             })?;
-            
+
             rows.collect()
         } else {
             // Search specific namespace
-            let mut stmt = self.conn.prepare(
+            let sql = if self.unified_substrate {
+                r#"
+                SELECT m.* FROM memories m
+                JOIN nodes n ON n.id = m.id
+                JOIN nodes_fts f ON n.fts_rowid = f.rowid
+                WHERE nodes_fts MATCH ?
+                  AND n.node_kind = 'memory'
+                  AND m.namespace = ?
+                  AND m.deleted_at IS NULL
+                  AND (m.superseded_by IS NULL OR m.superseded_by = '')
+                ORDER BY rank LIMIT ?
+                "#
+            } else {
                 r#"
                 SELECT m.* FROM memories m
                 JOIN memories_fts f ON m.rowid = f.rowid
                 WHERE memories_fts MATCH ? AND m.namespace = ? AND m.deleted_at IS NULL
                 AND (m.superseded_by IS NULL OR m.superseded_by = '')
                 ORDER BY rank LIMIT ?
-                "#,
-            )?;
-            
+                "#
+            };
+
+            let mut stmt = self.conn.prepare(sql)?;
+
             let rows = stmt.query_map(params![fts_query, ns, limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
                 self.row_to_record(row, access_times)
             })?;
-            
+
             rows.collect()
         }
     }

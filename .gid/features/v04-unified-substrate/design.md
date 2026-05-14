@@ -2143,9 +2143,9 @@ one focused session.
     - part-1 `get_entity` (entity reader, single-row) — `da3f443` decode helper (`_legacy_kind` → `attributes.entity_type` → `node_kind`) + 4 contract tests
     - part-2 `find_entities` + `count_entities` (single-table collection readers) — `01ef466` + 4 contract tests
     - part-3 `list_entities` (JOIN-with-edges reader) — `a902529` (impl piggybacked on ISS-123 fix) + `fe9235d` tests (4 contract tests: mention-count parity, ns filter, type filter, limit)
-    - part-4 `get_entities_for_memory` (JOIN reader) — _next commit_ + 5 contract tests (empty, single, multi, multi-role asymmetry, ns isolation). Surfaced a real semantic divergence: legacy `memory_entities` PK collapses two roles for the same `(memory, entity)`, unified `edges` does not — pinned with a follow-up note.
+    - part-4 `get_entities_for_memory` (JOIN reader) — `2f7f3d7` + 5 contract tests (empty, single, multi, multi-role asymmetry, ns isolation). Surfaced a real semantic divergence: legacy `memory_entities` PK collapses two roles for the same `(memory, entity)`, unified `edges` does not — pinned with a follow-up note.
     - **Triple readers (`get_triples`, `has_triples`, `store_triples`) NOT in scope**: the legacy `triples` table is the raw-extraction record. Its semantic content already projects into `memory_entities → edges` (T23) and `entity_relations → edges` (T22). Whether `triples` survives Phase F is a separate design decision tracked under follow-up — keeping triple readers on legacy for now is correct.
-  - [ ] **T29.6** FTS readers (`memories_fts` → `nodes_fts`)
+  - [x] **T29.6** FTS readers (`memories_fts` → `nodes_fts`) — read-switch on `search_fts` and `search_fts_ns` via JOIN through `nodes.fts_rowid`. Returns `MemoryRecord` (joins back into `memories`) — only the inverted index used changes. 7 contract tests (parity, deleted, superseded, ns-specific, ns-star, limit, empty-query). **Caveat**: production `nodes_fts` has only the post-T12-dual-write era of memories; before T26c backfill, recall under `unified_substrate=true` is degraded for pre-dual-write rows. Flag stays opt-in (T32 gate).
   - [ ] **T29.7** remaining `SELECT FROM memories` reads in retrieval / consolidation paths
 - [ ] **T30** Manual probe set: 50 queries on production DB, labeled
 - [ ] **T31** Parity campaign: LoCoMo + probe set, unified vs legacy
