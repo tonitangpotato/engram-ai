@@ -4182,12 +4182,24 @@ impl Storage {
         Ok(result)
     }
 
+    /// Delete a single embedding (legacy + unified).
+    ///
+    /// ISS-125: dual-DELETE to match `store_embedding` / `delete_all_embeddings`.
+    /// Wraps both DELETEs in a transaction so the two substrates can't
+    /// diverge on partial failure. No FK guard — DELETE on a missing row
+    /// is a 0-rows no-op, which matches `delete_all_embeddings` semantics.
     pub fn delete_embedding(&mut self, memory_id: &str, model: &str) -> Result<(), rusqlite::Error> {
         let model = Self::normalize_model_id(model);
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "DELETE FROM memory_embeddings WHERE memory_id = ? AND model = ?",
             params![memory_id, model],
         )?;
+        tx.execute(
+            "DELETE FROM node_embeddings WHERE node_id = ? AND model = ?",
+            params![memory_id, model],
+        )?;
+        tx.commit()?;
         Ok(())
     }
     
