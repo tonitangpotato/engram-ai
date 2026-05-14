@@ -2723,6 +2723,13 @@ impl Storage {
     }
     
     /// Inner delete logic (always runs within a transaction context).
+    ///
+    /// ISS-126: dual-DELETEs onto the unified substrate. Order
+    /// matters because `edges.source_id` and `edges.target_id`
+    /// reference `nodes(id) ON DELETE RESTRICT` — edges referencing
+    /// this node must be removed BEFORE deleting the node row.
+    /// `nodes_fts_ad` trigger handles `nodes_fts` cleanup
+    /// automatically on the DELETE FROM nodes.
     fn delete_inner(&self, id: &str) -> Result<(), rusqlite::Error> {
         // Delete FTS entry (standalone table, delete by rowid)
         let rowid: Result<i64, _> = self.conn.query_row(
@@ -2737,6 +2744,29 @@ impl Storage {
             );
         }
         self.conn.execute("DELETE FROM memories WHERE id = ?", params![id])?;
+
+        // ISS-126: dual-DELETE on the unified substrate.
+        //
+        // 1. Drop edges that reference this node (FK is ON DELETE
+        //    RESTRICT, so the nodes row can't be deleted while
+        //    edges still point at it). source_memory_id is a soft
+        //    reference — we don't NULL it here because the column
+        //    is nullable and a missing parent already encodes
+        //    "memory was deleted". Same for invalidated_by /
+        //    supersedes (edge-to-edge references).
+        self.conn.execute(
+            "DELETE FROM edges WHERE source_id = ? OR target_id = ?",
+            params![id, id],
+        )?;
+
+        // 2. Drop the nodes row. nodes_fts_ad trigger removes the
+        //    FTS rowid; node_embeddings has its own FK cascade in
+        //    Phase B (handled by delete_all_embeddings / direct
+        //    cleanup elsewhere — hard delete should clear those
+        //    explicitly if any).
+        self.conn.execute("DELETE FROM node_embeddings WHERE node_id = ?", params![id])?;
+        self.conn.execute("DELETE FROM nodes WHERE id = ?", params![id])?;
+
         Ok(())
     }
     /// Update just the content and metadata of a memory.
