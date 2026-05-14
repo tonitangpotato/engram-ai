@@ -1479,6 +1479,16 @@ impl Memory {
         &mut self.storage
     }
 
+    /// Get the synthesis settings (cloned).
+    pub fn synthesis_settings(&self) -> Option<crate::synthesis::types::SynthesisSettings> {
+        self.synthesis_settings.clone()
+    }
+
+    /// Get the embedding model ID (for synthesis engine construction).
+    pub fn embedding_model_id(&self) -> Option<String> {
+        self.embedding.as_ref().map(|e| e.config().model_id())
+    }
+
     /// Access recent recalls ring buffer (for testing/inspection).
     pub fn recent_recalls(&self) -> &VecDeque<(String, std::time::Instant)> {
         &self.recent_recalls
@@ -1965,6 +1975,74 @@ impl Memory {
         self.extractor = Some(extractor);
     }
 
+    /// Take the extractor out of Memory, leaving None.
+    /// Used by MemoryManager to hold the extractor outside the Mutex so
+    /// LLM extraction calls don't hold the lock.
+    pub fn take_extractor(&mut self) -> Option<Box<dyn MemoryExtractor>> {
+        self.extractor.take()
+    }
+
+    /// Store with pre-extracted facts. Caller already ran the extractor
+    /// outside the lock — this method only does DB writes (fast).
+    ///
+    /// `extraction_result`:
+    /// - `Some(Ok(facts))` — extractor succeeded, facts may be empty (ISS-068)
+    /// - `Some(Err(msg))` — extractor failed, quarantine the content
+    /// - `None` — no extractor configured, use Path B (minimal dimensions)
+    ///
+    /// Implementation: temporarily injects a pre-computed extractor result
+    /// into `self` and delegates to `store_raw`, which handles all the
+    /// complex Path A/B logic (temporal grounding, emotion priors, etc.)
+    /// in a single place. This avoids duplicating ~200 lines of logic.
+    pub fn store_with_pre_extracted(
+        &mut self,
+        content: &str,
+        extraction_result: Option<Result<Vec<crate::extractor::ExtractedFact>, String>>,
+        meta: crate::store_api::StorageMeta,
+    ) -> Result<crate::store_api::RawStoreOutcome, crate::store_api::StoreError> {
+        // Temporarily swap in a pre-computed extractor that returns the
+        // provided result, then call store_raw which does all the real work.
+        let original_extractor = self.extractor.take();
+
+        let result = match extraction_result {
+            Some(extraction) => {
+                // Install a one-shot extractor that returns the pre-computed result
+                let precomputed = PrecomputedExtractor(std::sync::Mutex::new(Some(extraction)));
+                self.extractor = Some(Box::new(precomputed));
+                self.store_raw(content, meta)
+            }
+            None => {
+                // No extractor — store_raw will take Path B
+                self.store_raw(content, meta)
+            }
+        };
+
+        // Restore original extractor (or leave as None if it was taken)
+        self.extractor = original_extractor;
+        result
+    }
+
+}
+
+/// One-shot extractor that returns a pre-computed extraction result.
+/// Used by `store_with_pre_extracted` to inject results into `store_raw`
+/// without duplicating its complex Path A logic.
+struct PrecomputedExtractor(
+    std::sync::Mutex<Option<Result<Vec<crate::extractor::ExtractedFact>, String>>>,
+);
+
+impl MemoryExtractor for PrecomputedExtractor {
+    fn extract(
+        &self,
+        _text: &str,
+    ) -> Result<Vec<crate::extractor::ExtractedFact>, Box<dyn std::error::Error + Send + Sync>> {
+        let result = self.0.lock().unwrap().take()
+            .expect("PrecomputedExtractor::extract called more than once");
+        result.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })
+    }
+}
+
+impl Memory {
     /// Set the synthesis settings. Enables knowledge synthesis during consolidation.
     ///
     /// Synthesis is opt-in: it only runs when settings.enabled is true.
@@ -4611,7 +4689,47 @@ impl Memory {
     pub fn consolidate(&mut self, days: f64) -> Result<(), Box<dyn std::error::Error>> {
         self.consolidate_namespace(days, None)
     }
-    
+
+    /// Run consolidation DB operations only — NO synthesis, NO triple extraction.
+    /// These are pure DB operations (decay, Hebbian link decay, promotion detection).
+    /// For use by MemoryManager which handles synthesis/extraction outside the lock.
+    pub fn consolidate_db_only(
+        &mut self,
+        days: f64,
+        namespace: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        run_consolidation_cycle(&mut self.storage, days, &self.config, namespace)?;
+
+        if self.config.hebbian_enabled {
+            if self.config.association.enabled {
+                self.storage.decay_hebbian_links_differential(
+                    self.config.association.decay_corecall,
+                    self.config.association.decay_multi,
+                    self.config.association.decay_single,
+                )?;
+            } else {
+                self.storage.decay_hebbian_links(self.config.hebbian_decay)?;
+            }
+        }
+
+        if self.config.promotion.enabled {
+            match self.detect_promotion_candidates() {
+                Ok(candidates) if !candidates.is_empty() => {
+                    log::info!("Promotion: {} candidates found", candidates.len());
+                    for c in &candidates {
+                        if let Err(e) = self.storage.store_promotion_candidate(c) {
+                            log::warn!("Failed to store promotion candidate: {}", e);
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("Promotion detection failed (non-fatal): {e}"),
+            }
+        }
+
+        Ok(())
+    }
+
     /// Run a consolidation cycle for a specific namespace.
     ///
     /// # Arguments
@@ -6346,7 +6464,7 @@ impl Memory {
     ///
     /// Uses `Option::take` to move the provider into the engine. Callers must
     /// call `restore_llm_provider` after using the engine to put it back.
-    fn build_synthesis_engine(
+    pub fn build_synthesis_engine(
         &mut self,
         embedding_model: Option<String>,
     ) -> crate::synthesis::engine::DefaultSynthesisEngine {
@@ -6355,7 +6473,7 @@ impl Memory {
     }
 
     /// Restore the LLM provider after engine use (engine returns it via `into_provider()`).
-    fn restore_llm_provider(&mut self, provider: Option<Box<dyn crate::synthesis::types::SynthesisLlmProvider>>) {
+    pub fn restore_llm_provider(&mut self, provider: Option<Box<dyn crate::synthesis::types::SynthesisLlmProvider>>) {
         self.synthesis_llm_provider = provider;
     }
 
