@@ -91,6 +91,57 @@ fn datetime_to_f64(dt: &DateTime<Utc>) -> f64 {
     dt.timestamp() as f64 + dt.timestamp_subsec_nanos() as f64 / 1_000_000_000.0
 }
 
+/// Reserved-key prefix for system-owned shims in `nodes.attributes`
+/// that carry legacy-column data that has no dedicated column in
+/// the unified schema. See ISS-119 / ISS-120.
+pub(crate) const LEGACY_CONTRADICTS_KEY:     &str = "_legacy_contradicts";
+pub(crate) const LEGACY_CONTRADICTED_BY_KEY: &str = "_legacy_contradicted_by";
+
+/// Merge legacy memory columns (`contradicts`, `contradicted_by`)
+/// into the attributes JSON for the unified `nodes` projection.
+///
+/// Behaviour:
+/// - If both legacy values are `None` or empty, returns
+///   `attributes_json` unchanged (passes a pre-built string through).
+/// - Otherwise parses `attributes_json` as an object (or starts from
+///   `{}`), sets the reserved keys, and re-serializes. Non-empty,
+///   non-string `attributes_json` values fall back to `{}` — the
+///   legacy column never wrapped a non-object value anyway.
+///
+/// Returns `Option<String>` so an all-empty input maps to `None`
+/// and the SQL `COALESCE(?, '{}')` path stays bug-for-bug with the
+/// previous behaviour.
+pub(crate) fn merge_legacy_memory_attributes(
+    attributes_json: Option<&str>,
+    contradicts: Option<&str>,
+    contradicted_by: Option<&str>,
+) -> Option<String> {
+    let has_contradicts = contradicts.map(|s| !s.is_empty()).unwrap_or(false);
+    let has_contradicted_by = contradicted_by.map(|s| !s.is_empty()).unwrap_or(false);
+    if !has_contradicts && !has_contradicted_by {
+        return attributes_json.map(|s| s.to_string());
+    }
+
+    let mut map = match attributes_json {
+        Some(s) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(s)
+            .unwrap_or_default(),
+        None => serde_json::Map::new(),
+    };
+    if has_contradicts {
+        map.insert(
+            LEGACY_CONTRADICTS_KEY.to_string(),
+            serde_json::Value::String(contradicts.unwrap().to_string()),
+        );
+    }
+    if has_contradicted_by {
+        map.insert(
+            LEGACY_CONTRADICTED_BY_KEY.to_string(),
+            serde_json::Value::String(contradicted_by.unwrap().to_string()),
+        );
+    }
+    serde_json::to_string(&serde_json::Value::Object(map)).ok()
+}
+
 /// Convert a Unix float (seconds since epoch) to `DateTime<Utc>`.
 fn f64_to_datetime(ts: f64) -> DateTime<Utc> {
     let secs = ts.floor() as i64;
@@ -1747,6 +1798,30 @@ impl Storage {
         namespace: &str,
         attributes_json: Option<&str>,
     ) -> Result<bool, rusqlite::Error> {
+        // ISS-119: stamp `contradicts` / `contradicted_by` into the
+        // attributes JSON under reserved keys so the unified `nodes`
+        // table can reconstruct a full `MemoryRecord`. Both columns
+        // exist on `memories` but not on `nodes`; without this merge
+        // the unified read path silently loses
+        // `record.contradicted_by`, which is load-bearing for
+        // `confidence.rs` (lines 75 / 181) and `models/actr.rs:92`.
+        //
+        // Conventions:
+        //   - Only stamp keys when the underlying field is `Some(non-empty)`.
+        //     Empty strings or `None` are stored as no-key (keeps the
+        //     attributes JSON small and round-trips back to `None`).
+        //   - Reserved key prefix `_legacy_` documents that the key is
+        //     a system-owned shim for the legacy column; user-supplied
+        //     metadata using the same key would be shadowed, but the
+        //     prefix makes accidental collision unlikely. A formal
+        //     reserved-key gate parallel to `validate_attributes` can
+        //     be added if user-supplied metadata starts colliding.
+        let merged_attributes = merge_legacy_memory_attributes(
+            attributes_json,
+            record.contradicts.as_deref(),
+            record.contradicted_by.as_deref(),
+        );
+
         let next_fts_rowid: i64 = tx.query_row(
             "UPDATE fts_rowid_counter
              SET next_value = next_value + 1
@@ -1784,7 +1859,7 @@ impl Storage {
                 record.layer.to_string(),
                 record.memory_type.to_string(),
                 record.content,
-                attributes_json,
+                merged_attributes.as_deref(),
                 record.occurred_at.map(|dt| datetime_to_f64(&dt)),
                 datetime_to_f64(&record.created_at),
                 datetime_to_f64(&record.created_at),
@@ -7252,6 +7327,126 @@ pub(crate) fn row_to_record_impl(
         } else {
             Some(superseded_by_str)
         },
+        metadata,
+    })
+}
+
+/// Map a SQL row from `nodes` (Phase D unified table) into a `MemoryRecord`.
+///
+/// ISS-119 companion to `row_to_record_impl`. The unified `nodes` schema
+/// does not have dedicated `contradicts` / `contradicted_by` columns —
+/// they are stamped into `attributes` JSON under the reserved keys
+/// `_legacy_contradicts` / `_legacy_contradicted_by` by
+/// `merge_legacy_memory_attributes` at write time.
+///
+/// Differences from `row_to_record_impl`:
+///   - reads `attributes` column (not `metadata`)
+///   - extracts contradicts / contradicted_by from attributes JSON, not
+///     from dedicated columns
+///   - reads `deleted_at` as REAL (epoch) — not currently surfaced on
+///     `MemoryRecord` (the struct has no deleted_at field), but the
+///     liveness filter is in WHERE clauses so this decoder never sees
+///     a deleted row in normal usage.
+///
+/// Returns the cleaned `metadata` field as the JSON value *minus* the
+/// reserved legacy keys, so callers see the same `record.metadata` they
+/// would get from the legacy reader.
+//
+// Wired into reader paths in T29.7 (hot retrieval read-switch). Suppress
+// dead-code until then so the writer-side fix (ISS-119) can ship without
+// dragging the unrelated reader rewrite into the same commit.
+#[allow(dead_code)]
+pub(crate) fn row_to_record_from_node_impl(
+    row: &rusqlite::Row,
+    access_times: Vec<DateTime<Utc>>,
+) -> SqlResult<MemoryRecord> {
+    let memory_type_str: String = row.get("memory_type")?;
+    let layer_str: String = row.get("layer")?;
+    let created_at_f64: f64 = row.get("created_at")?;
+    let last_consolidated_f64: Option<f64> = row.get("last_consolidated")?;
+    let attributes_str: Option<String> = row.get("attributes").ok();
+
+    let memory_type = match memory_type_str.as_str() {
+        "factual" => MemoryType::Factual,
+        "episodic" => MemoryType::Episodic,
+        "relational" => MemoryType::Relational,
+        "emotional" => MemoryType::Emotional,
+        "procedural" => MemoryType::Procedural,
+        "opinion" => MemoryType::Opinion,
+        "causal" => MemoryType::Causal,
+        _ => MemoryType::Factual,
+    };
+
+    let layer = match layer_str.as_str() {
+        "core" => MemoryLayer::Core,
+        "working" => MemoryLayer::Working,
+        "archive" => MemoryLayer::Archive,
+        _ => MemoryLayer::Working,
+    };
+
+    let created_at = f64_to_datetime(created_at_f64);
+    let last_consolidated = last_consolidated_f64.map(f64_to_datetime);
+
+    let occurred_at = match row.get::<_, Option<f64>>("occurred_at") {
+        Ok(Some(ts)) => Some(f64_to_datetime(ts)),
+        Ok(None) => None,
+        Err(rusqlite::Error::InvalidColumnName(_)) => None,
+        Err(e) => return Err(e),
+    };
+
+    // Parse attributes JSON and extract legacy shim keys.
+    // ISS-119: contradicts / contradicted_by live here for unified rows.
+    let (contradicts, contradicted_by, metadata) = match attributes_str.as_deref() {
+        Some(s) if !s.is_empty() => {
+            match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(serde_json::Value::Object(mut map)) => {
+                    let c = map
+                        .remove(LEGACY_CONTRADICTS_KEY)
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .filter(|s| !s.is_empty());
+                    let cb = map
+                        .remove(LEGACY_CONTRADICTED_BY_KEY)
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .filter(|s| !s.is_empty());
+                    let md = if map.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::Value::Object(map))
+                    };
+                    (c, cb, md)
+                }
+                // Non-object JSON (rare, but tolerate): treat as opaque metadata.
+                Ok(other) => (None, None, Some(other)),
+                Err(_) => (None, None, None),
+            }
+        }
+        _ => (None, None, None),
+    };
+
+    let superseded_by: Option<String> = row
+        .get::<_, Option<String>>("superseded_by")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
+
+    Ok(MemoryRecord {
+        id: row.get("id")?,
+        content: row.get("content")?,
+        memory_type,
+        layer,
+        created_at,
+        occurred_at,
+        access_times,
+        working_strength: row.get("working_strength")?,
+        core_strength: row.get("core_strength")?,
+        importance: row.get("importance")?,
+        pinned: row.get::<_, i32>("pinned")? != 0,
+        consolidation_count: row.get("consolidation_count")?,
+        last_consolidated,
+        source: row.get("source")?,
+        contradicts,
+        contradicted_by,
+        superseded_by,
         metadata,
     })
 }
