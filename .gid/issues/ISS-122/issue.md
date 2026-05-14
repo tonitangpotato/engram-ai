@@ -1,9 +1,10 @@
 ---
 title: Phase B dual-write missing for Storage::upsert_entity; blocks T29.5 entity-reader switch
-status: open
+status: fixed
 priority: P1
 severity: degradation
 filed_by: rustclaw (overnight session 2026-05-14)
+fixed_by: cb9e2e9
 relates_to:
   - v04-unified-substrate
   - T29.5
