@@ -4948,7 +4948,7 @@ impl Memory {
             if polarity > 0.0 {
                 // Positive feedback: boost working strength
                 record.working_strength += self.config.reward_magnitude * polarity;
-                record.working_strength = record.working_strength.min(2.0);
+                record.working_strength = record.working_strength.min(1.0);
             } else {
                 // Negative feedback: suppress working strength
                 record.working_strength *= 1.0 + polarity * 0.1; // polarity is negative

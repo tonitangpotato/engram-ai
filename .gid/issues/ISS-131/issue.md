@@ -1,11 +1,15 @@
 ---
 id: ISS-131
 title: test_reward_learning fails on CHECK constraint working_strength BETWEEN 0.0 AND 1.0
-status: open
+status: done
 severity: medium
 priority: P2
 type: bug
-labels: [test, regression, hebbian, reward-learning]
+labels:
+- test
+- regression
+- hebbian
+- reward-learning
 relates_to: []
 created: 2026-05-15
 ---
@@ -112,3 +116,25 @@ But this is a judgment call I'm not making unattended. Flag for potato.
 Pick Option A or Option B. Once decided:
 - **A**: ~2-line patch + regression test that triggers the original failure path + verify other reward callers don't break. Likely a 30-minute job.
 - **B**: schema migration + grep+audit pass on all reads of `working_strength` + ditto regression test. Likely 1-2 hours.
+
+---
+
+## Resolution (2026-05-15)
+
+**Shipped Option A** — ratified with potato in current session.
+
+**Change:** `crates/engramai/src/memory.rs:4951` — `.min(2.0)` → `.min(1.0)`.
+
+**Rationale (biological invariant wins):**
+- Schema CHECK `working_strength BETWEEN 0.0 AND 1.0` encodes a probability-like quantity. That is the stricter, more recent invariant and the right one — real synapses do saturate.
+- The `.min(2.0)` was older code from a different mental model (transient dopaminergic super-saturation up to 2.0). It conflicted with the schema and was never reconciled.
+- Option A keeps the invariant uniform across Rust + schema with a one-line clamp fix, no migration, no audit ripple. Karpathy-guidelines test: smallest change that fixes the root cause.
+
+**Verification:**
+- `cargo test -p engramai --test integration_test test_reward_learning` — **passes** (was failing on `CHECK constraint failed: working_strength BETWEEN 0.0 AND 1.0`).
+- `cargo test -p engramai --lib` — **1902/1902 pass, 0 regressions**.
+
+**Acceptance criteria:**
+- [x] `cargo test -p engramai --test integration_test test_reward_learning` passes
+- [x] Root cause documented in commit message (clamp value mismatch — code allowed 2.0, schema enforces 1.0)
+- [x] Full `cargo test -p engramai --lib` green (1902/1902)
