@@ -103,8 +103,13 @@ This is doc-only. No code change.
 ## Progress notes (2026-05-15)
 
 - §C/D/E/F shipped in `eca36d6` (4 files, +536 / -23). All tests green.
-- §B partial→done-on-T21: B-#1/#2/#3 landed (new commit). B-#4 was already covered by `iss112_c_corrupt_existing_attributes_surfaced_in_counter`. Remaining §B work is the **cross-driver test-gap audit** for T19, T20, T22-T25 (separate from T21).
-- §A: still pending. Biggest item left — shared `audit_run_open/close` helper + move inside work tx across T19/T20/T21/T22/T23/T24 + panic-mid-tx regression test. Estimated 2-4h. Best done as its own commit.
+- §B partial→done-on-T21: B-#1/#2/#3 landed in `3ddf980`. B-#4 was already covered by `iss112_c_corrupt_existing_attributes_surfaced_in_counter`. Remaining §B work is the **cross-driver test-gap audit** for T19, T20, T22-T25 (separate from T21).
+- §A: still pending. Pre-implementation analysis (2026-05-15) surfaced a design tension:
+  - T19 (`backfill_memories_to_nodes`) intentionally runs Pass 1 in one tx, then Pass 2 + audit close OUTSIDE any tx, citing journal-size concerns at 24k rows. The existing comment says "We intentionally do NOT wrap both passes in one transaction".
+  - To satisfy §A's contract ("audit INSERT + UPDATE inside the work tx") for T19, we'd need to wrap audit_open + Pass 1 + Pass 2 + audit_close in ONE tx — which contradicts that explicit design choice.
+  - The 24k journal isn't actually a problem in practice (the same comment admits it's "fine at this row count"), but the decision deserves a written design judgment, not a unilateral refactor.
+  - **Recommendation**: when implementing §A, do it as a per-driver series (1 commit/driver) and re-examine T19's two-tx strategy with potato before flipping it.
+- Estimated effort: 2-4h for the 8 drivers + helper + panic-mid-tx regression test. Best done as a focused session with design discussion for T19.
 
 ## Dependency
 
