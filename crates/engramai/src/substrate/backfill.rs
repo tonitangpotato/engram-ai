@@ -53,6 +53,33 @@ use uuid::Uuid;
 
 use crate::storage::{row_to_record_impl, Storage};
 
+/// Test-only fault-injection hooks for `backfill.rs`.
+///
+/// These atomics let integration tests force the driver to abort at
+/// specific lifecycle points so we can verify the single-transaction
+/// atomicity contract (ISS-112 §A). They are `pub` so integration
+/// tests in `tests/` can reach them; in non-test code they default
+/// to `false` and the SeqCst load is a negligible single-instruction
+/// cost per driver invocation.
+///
+/// **Do not use in production code.** Setting these from non-test
+/// code is a bug.
+pub mod test_hooks {
+    use std::sync::atomic::AtomicBool;
+
+    /// When `true`, `backfill_memories_to_nodes` returns an error
+    /// after Pass 1's inserts but before Pass 2's UPDATE. Used to
+    /// verify Pass 1 rolls back if Pass 2 never runs.
+    ///
+    /// **Use only from a dedicated test binary** that contains no
+    /// other backfill-calling tests. The flag is global and shared
+    /// across all parallel tests in the same binary, so mixing it
+    /// with parallel backfill callers will racily corrupt their
+    /// expectations. See
+    /// `crates/engramai/tests/v04_phase_c_backfill_atomicity.rs`.
+    pub static FAULT_INJECT_BETWEEN_PASSES: AtomicBool = AtomicBool::new(false);
+}
+
 /// Wall-clock now as seconds-since-epoch with sub-second precision.
 /// Calling `Utc::now()` twice (once for `.timestamp()` and once for
 /// `.timestamp_subsec_nanos()`) could span a tick boundary; this
@@ -200,11 +227,34 @@ pub fn backfill_memories_to_nodes(
     // `superseded_by = NULL` (delegated to insert_memory_node_row).
     // -----------------------------------------------------------------
     //
-    // Why a single transaction for all 24k rows: SQLite's per-INSERT
-    // fsync cost dominates if we commit per row (~1 ms/row → 24s for
-    // 24k). One transaction amortises the fsync to a single fdatasync
-    // at commit time. The cost is RAM for the journal, which is fine
-    // at this row count.
+    // ## Atomicity across Pass 1 and Pass 2 (ISS-112 §A root fix)
+    //
+    // Pass 1 and Pass 2 used to commit independently: Pass 1 had its
+    // own tx, then Pass 2's UPDATE ran outside any tx. If the process
+    // crashed between the two, `nodes` would contain rows with
+    // `superseded_by = NULL` that should have been linked to a
+    // supersession target — a half-written backfill that the audit
+    // row could not detect (rows_read=rows_inserted=0 forever, but
+    // 24k nodes already committed).
+    //
+    // Fix: both passes share **one** transaction. Pass 1 inserts and
+    // Pass 2's supersession UPDATE both go through `tx`; the single
+    // `tx.commit()` at the end makes the entire data write atomic.
+    // A crash mid-work rolls everything back, restoring the legacy
+    // tables as the sole source of truth. The audit row stays
+    // *outside* the tx on purpose so the orphan
+    // `finished_at IS NULL` row remains as a crash detector — see
+    // the function-level rustdoc for the failure-mode contract.
+    //
+    // ## Journal size
+    //
+    // Wrapping ~24k INSERT OR IGNORE + one UPDATE in a single tx is
+    // ~12 MB of journal at typical row sizes. That is well within
+    // SQLite's WAL/rollback-journal sweet spot and the prior T19
+    // concern ("per-INSERT fsync cost") is unchanged — we still
+    // amortise to one fdatasync at commit time. The earlier
+    // two-tx split was premature optimization with a real
+    // correctness cost; this commit reverts it.
     //
     // We collect the row data up front to avoid holding a query stmt
     // and an INSERT stmt on the same Connection simultaneously
@@ -258,7 +308,26 @@ pub fn backfill_memories_to_nodes(
             rows_skipped_existing += 1;
         }
     }
-    tx.commit()?;
+    // NOTE: do NOT commit here — Pass 2 runs on the same tx so the
+    // entire data write (Pass 1 + Pass 2) is atomic. See atomicity
+    // note above (ISS-112 §A root fix).
+
+    // Test-only fault injection: simulate a failure between Pass 1
+    // and Pass 2 to verify the single-tx atomicity contract. When
+    // the flag is set the tx is dropped (rolled back) without
+    // committing, and the function returns a synthetic error.
+    //
+    // The flag is global so we can reach it from integration tests,
+    // but global mutable state is racy across parallel tests. The
+    // **only safe use** is from a dedicated test binary that runs
+    // no other backfill calls — see
+    // `tests/v04_phase_c_backfill_atomicity.rs`.
+    if test_hooks::FAULT_INJECT_BETWEEN_PASSES
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        drop(tx);
+        return Err(rusqlite::Error::ExecuteReturnedResults);
+    }
 
     // -----------------------------------------------------------------
     // Pass 2: propagate supersession.
@@ -293,7 +362,10 @@ pub fn backfill_memories_to_nodes(
     // For unfiltered runs the EXISTS guard is still cheap and acts
     // as defence-in-depth against any other source of dangling
     // supersession ids in legacy data.
-    let conn = storage.conn();
+    // Run Pass 2 on the same tx as Pass 1 (ISS-112 §A root fix —
+    // see atomicity note above). The legacy `conn.execute` here
+    // would have run outside any tx, leaving a window where Pass 1
+    // was committed but Pass 2 had not yet propagated supersession.
     let updated_at = utc_now_f64();
     let pass2_sql = if namespace.is_some() {
         r#"
@@ -346,10 +418,14 @@ pub fn backfill_memories_to_nodes(
         "#
     };
     if let Some(ns) = namespace {
-        conn.execute(pass2_sql, params![updated_at, ns])?;
+        tx.execute(pass2_sql, params![updated_at, ns])?;
     } else {
-        conn.execute(pass2_sql, params![updated_at])?;
+        tx.execute(pass2_sql, params![updated_at])?;
     }
+
+    // Atomic commit of Pass 1 + Pass 2 together (ISS-112 §A root
+    // fix). Either both passes are durable or neither is.
+    tx.commit()?;
 
     // -----------------------------------------------------------------
     // Close the audit row.

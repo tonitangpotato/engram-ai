@@ -104,12 +104,15 @@ This is doc-only. No code change.
 
 - §C/D/E/F shipped in `eca36d6` (4 files, +536 / -23). All tests green.
 - §B partial→done-on-T21: B-#1/#2/#3 landed in `3ddf980`. B-#4 was already covered by `iss112_c_corrupt_existing_attributes_surfaced_in_counter`. Remaining §B work is the **cross-driver test-gap audit** for T19, T20, T22-T25 (separate from T21).
-- §A: still pending. Pre-implementation analysis (2026-05-15) surfaced a design tension:
-  - T19 (`backfill_memories_to_nodes`) intentionally runs Pass 1 in one tx, then Pass 2 + audit close OUTSIDE any tx, citing journal-size concerns at 24k rows. The existing comment says "We intentionally do NOT wrap both passes in one transaction".
-  - To satisfy §A's contract ("audit INSERT + UPDATE inside the work tx") for T19, we'd need to wrap audit_open + Pass 1 + Pass 2 + audit_close in ONE tx — which contradicts that explicit design choice.
-  - The 24k journal isn't actually a problem in practice (the same comment admits it's "fine at this row count"), but the decision deserves a written design judgment, not a unilateral refactor.
-  - **Recommendation**: when implementing §A, do it as a per-driver series (1 commit/driver) and re-examine T19's two-tx strategy with potato before flipping it.
-- Estimated effort: 2-4h for the 8 drivers + helper + panic-mid-tx regression test. Best done as a focused session with design discussion for T19.
+- §A: **scope re-evaluated 2026-05-15, T19 portion shipped, rest closed as WONTFIX.**
+  - On second pass the original §A motivation listed three failure scenarios. First-principles re-evaluation with potato (2026-05-15):
+    - **Scenario 1** ("audit row stuck `finished_at=NULL, rows_*=0` after crash"): this is **not a bug, it's the crash-detector affordance**. `WHERE finished_at IS NULL` is the documented operator query to find orphan/crashed runs (see `backfill.rs` module rustdoc). Putting audit inside tx erases this. No fix needed; clarify in docs instead.
+    - **Scenario 2** ("crash between commit and audit UPDATE → audit says 0 rows but data is committed"): real bug but microsecond window. Verify (`check_audit_consistency`) already detects the inconsistency post-hoc.
+    - **Scenario 3** ("concurrent runs, two open audit rows"): not solvable by audit-in-tx — runs are still distinct tx with distinct rows. UUID `run_id` already disambiguates. Not in §A scope.
+  - The **real** root cause that ratification was supposed to fix was independent of audit: T19 had Pass 1 in its own tx that committed *before* Pass 2 ran outside any tx — a crash between would leave `nodes` rows with stale `superseded_by = NULL`. That's a data-atomicity bug, not an audit bug.
+  - **Shipped (Shape 0, minimal root fix)**: T19's Pass 1 + Pass 2 now share a single `unchecked_transaction()` so the data write is atomic. Audit unchanged (preserves crash-detector affordance). One commit, ~25 LOC + atomicity regression test in dedicated test binary `v04_phase_c_backfill_atomicity.rs` (using process-isolated fault-injection hook `test_hooks::FAULT_INJECT_BETWEEN_PASSES`).
+  - **WONTFIX rest**: T20, T21, T22-T25 do not have the two-pass two-tx pattern (verified by grep — they use single-tx work loops). The audit-in-tx contract from §A is not pursued because (a) Scenario 1 is a feature not a bug, (b) Scenario 2 is a microsecond window that verify already catches, (c) Scenario 3 isn't audit-in-tx-solvable. The shared `audit_run_open/close` helper extraction is also WONTFIX — would be over-engineering: changes 8 drivers to abstract away a pattern that isn't broken.
+  - Verification: T19 7/7 + atomicity 1/1 + lib 1902/1902 + all 75 integration test binaries green.
 
 ## Dependency
 
