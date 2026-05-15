@@ -1,11 +1,18 @@
 ---
 title: v0.3 KC EmbeddingInfomapClusterer collapses to 1 super-cluster on dense single-domain corpora
-status: open
+status: in_review
 priority: P1
 severity: degradation
-labels: [kc, v0.3, clustering, locomo, benchmark-regression]
-relates_to: [ISS-106]
+labels:
+- kc
+- v0.3
+- clustering
+- locomo
+- benchmark-regression
+relates_to:
+- ISS-106
 created: 2026-05-12
+fixed_by: 7f41bf7
 ---
 
 # Problem
@@ -45,12 +52,12 @@ ISS-106 ("v0.3 KC integration into LoCoMo harness") is about wiring `compile_kno
 
 ## Acceptance criteria
 
-- [ ] Reproduce the 1-super-cluster collapse on conv-26 in a unit test (or integration test against a fixture corpus)
-- [ ] Decide on a fix strategy: adaptive threshold, density-aware Infomap parameters, two-pass clustering, or fallback to a different algorithm for low-diversity corpora
-- [ ] Implement the fix
+- [x] Reproduce the 1-super-cluster collapse on conv-26 in a unit test (or integration test against a fixture corpus)
+- [x] Decide on a fix strategy: adaptive threshold, density-aware Infomap parameters, two-pass clustering, or fallback to a different algorithm for low-diversity corpora
+- [x] Implement the fix
 - [ ] Verify on RUN-0026 fixture: `knowledge_topics` row count > 1 (target ~10-30 for conv-26)
 - [ ] Re-run LoCoMo 152q with `compile_knowledge` enabled — J-score must recover to ≥ RUN-0025 baseline (0.559), ideally exceed it on Abstract category
-- [ ] Add a regression test: ingest a dense single-domain fixture, assert clusterer produces > 1 cluster
+- [x] Add a regression test: ingest a dense single-domain fixture, assert clusterer produces > 1 cluster
 
 ## Out of scope
 
@@ -64,3 +71,46 @@ ISS-106 ("v0.3 KC integration into LoCoMo harness") is about wiring `compile_kno
 - RUN-0027 archive (rollback baseline): `engram-bench/benchmarks/runs/RUN-0027-*`
 - v04 design §4.16.3 (feature debt): references this ISS as the clusterer-tuning track
 - ISS-106 (parent integration ticket, kept open until this is fixed and the patch can land cleanly)
+
+## Resolution (2026-05-15)
+
+**Status:** Code fix shipped in commit `7f41bf7`. AC #4 (RUN-0026 fixture verification) and AC #5 (LoCoMo J-score recovery) deferred — see "Remaining" section below.
+
+### Fix strategy chosen: Mutual k-NN edge filter
+
+Replaced the global absolute-threshold edge strategy with **mutual k-nearest-neighbors** as the new default. An edge `(i, j)` exists iff `j` is among `i`'s top-k most-similar nodes **and** vice versa. Bounds each node's degree by `k` regardless of corpus density, so Infomap can find substructure even on homogeneous data.
+
+Why this over the alternatives in the AC list:
+
+- **Adaptive threshold**: still global, still collapses if the whole corpus passes the bar. Doesn't fix the K_n problem.
+- **Density-aware Infomap parameters**: Infomap doesn't expose the knobs we'd need; the algorithm sees a clique and gives a clique answer.
+- **Two-pass clustering**: extra complexity for the same effect mutual k-NN gives in one pass.
+- **Fallback algorithm for low-diversity corpora**: requires a corpus-diversity oracle. We'd build the same kNN structure to measure diversity, so just use it for clustering directly.
+
+Mutual k-NN is the standard fix for this exact failure mode in graph-clustering literature (e.g. scikit-learn's `connectivity='kneighbors'` Ward, UMAP's connectivity graph). Implementation in `MutualKnnEdges` (clusterer.rs).
+
+### k sizing
+
+New `KNeighbors` enum:
+- `Auto`: `clamp(sqrt(n), 3, 10)` — sensible across corpus sizes (50 candidates → k=7; 1000 → k=10; 16 → k=4).
+- `Fixed(usize)`: pinned k for advanced callers.
+
+Default is `Some(KNeighbors::Auto)`. Legacy absolute-threshold mode preserved as `k_neighbors: None` for callers that explicitly want it (the two pre-existing struct-literal tests pin this).
+
+### Verification done
+
+- New test `iss111_dense_single_domain_collapses_to_one_supercluster` pins legacy mode, asserts 50 near-identical 16-D vectors collapse to exactly 1 cluster of size 50 — **passes**, confirming the bug.
+- New test `iss111_dense_single_domain_does_not_collapse_after_fix` uses the new default (mutual k-NN), asserts the same fixture splits into > 1 cluster — **passes**, confirming the fix.
+- Lib regression: 1904/1904 pass.
+- Integration regression: synthesis_integration_test (7), v04_phase_c_backfill, v04_phase_c_backfill_atomicity — all green.
+
+### Remaining (AC #4 + #5)
+
+LoCoMo end-to-end verification needs either:
+
+1. A recorded fixture from RUN-0026's ingest pass (441 OpenAI-embedded episodes), replayed offline through `compile_knowledge` to check `knowledge_topics` row count, OR
+2. A live re-ingest of conv-26 + full 152q run, costing API budget.
+
+Neither was done in this session. Synthetic-fixture evidence (50 near-identical 16-D vectors → splits cleanly) gives strong confidence the fix works on the underlying graph problem, but cannot prove the J-score number until real embeddings are exercised. Flagged to potato for the API-budget call.
+
+**Tracking:** Reopen this issue or file a follow-up before the v0.4 `unified_substrate=true` default flip if the LoCoMo recovery hasn't been measured by then.
