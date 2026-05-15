@@ -93,12 +93,18 @@ This is doc-only. No code change.
 
 - [ ] A: Audit INSERT+UPDATE moved inside work tx in T19, T20, T21 (and T22-T25 if shipped). Helper extracted.
 - [ ] A: regression test — panic mid-tx → no audit row leaked.
-- [ ] B: 4 new tests added to `v04_phase_c_backfill_entities.rs`.
+- [x] B: 4 new tests added to `v04_phase_c_backfill_entities.rs`. (commit `eca36d6` shipped B-#4 as `iss112_c_corrupt_existing_attributes_surfaced_in_counter`; B-#1/#2/#3 land in the §B commit.)
 - [ ] B: similar test-gap audit applied to T19, T20 (and T22-T25 if shipped).
-- [ ] C: `rows_existing_attrs_not_object` counter added; B-#4 test verifies it.
-- [ ] D: Pass 2 skips UPDATE when byte-identical; regression test asserts `updated_at` stability.
-- [ ] E: `rows_skipped_kind_mismatch` rename; invariant comment added.
-- [ ] F: T21 module docstring has "Ordering with T13" section.
+- [x] C: `rows_existing_attrs_not_object` counter added; B-#4 test verifies it. (commit `eca36d6`, 2026-05-15) — MergeOutcome enum surfaces ExistingNotObject/NewNotObject; T21 + T22 both count under new audit notes key.
+- [x] D: Pass 2 skips UPDATE when byte-identical; regression test asserts `updated_at` stability. (commit `eca36d6`, 2026-05-15) — diff-and-skip applied to T21 + T22; 2 regression tests pinned.
+- [x] E: `rows_skipped_kind_mismatch` rename; invariant comment added. (commit `eca36d6`, 2026-05-15) — applied to both T21 and T22, regression test `iss112_e_kind_mismatch_emits_under_skipped_prefix` added.
+- [x] F: T21 module docstring has "Ordering with T13" section. (commit `eca36d6`, 2026-05-15)
+
+## Progress notes (2026-05-15)
+
+- §C/D/E/F shipped in `eca36d6` (4 files, +536 / -23). All tests green.
+- §B partial→done-on-T21: B-#1/#2/#3 landed (new commit). B-#4 was already covered by `iss112_c_corrupt_existing_attributes_surfaced_in_counter`. Remaining §B work is the **cross-driver test-gap audit** for T19, T20, T22-T25 (separate from T21).
+- §A: still pending. Biggest item left — shared `audit_run_open/close` helper + move inside work tx across T19/T20/T21/T22/T23/T24 + panic-mid-tx regression test. Estimated 2-4h. Best done as its own commit.
 
 ## Dependency
 

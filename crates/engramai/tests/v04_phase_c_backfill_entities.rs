@@ -724,3 +724,238 @@ fn iss112_c_corrupt_existing_attributes_surfaced_in_counter() {
         assert_eq!(actual, expected, "row {id} attributes mutated unexpectedly");
     }
 }
+
+// ============================================================================
+// ISS-112 §B — Test gap closure for T21 contracts
+// ============================================================================
+// Three additional contract tests covering edge cases identified in the T21
+// review (round 1, FINDING-3). Companion to the iss112_c/d/e tests already
+// landed; together these close §B of the ISS-112 polish bucket. §B-#4
+// (corrupt-existing attributes) was already pinned by
+// `iss112_c_corrupt_existing_attributes_surfaced_in_counter` since the new
+// `rows_existing_attrs_not_object` counter is the surfacing mechanism.
+
+/// **§B-#1** — Re-seed with mutated legacy metadata: T21 must pick up new
+/// keys on rerun (existing-wins guarantees old keys are untouched, but
+/// gaps in the existing attribute map get filled).
+///
+/// Sequence:
+/// 1. Seed legacy entity with `{"role": "admin"}` and run T21.
+/// 2. UPDATE legacy entities.metadata to `{"role": "owner", "team": "core"}`.
+/// 3. Re-run T21.
+///
+/// Expected after step 3:
+/// - `attributes.role` stays `"admin"` (existing-wins, the original Pass-1
+///   write of the column-seeded attrs is the "existing" relative to the new
+///   legacy metadata in Pass-2 merge).
+/// - `attributes.team` is now `"core"` (new key, gets merged in).
+/// - `attributes.entity_type` still equals the column value.
+#[test]
+fn iss112_b_reseed_with_mutated_metadata_merges_new_keys_only() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    seed_legacy_entity(
+        &storage,
+        "ent-promote",
+        "Alice",
+        "person",
+        "default",
+        Some(r#"{"role":"admin"}"#),
+    );
+    let run1 = backfill_entities_to_nodes(&mut storage, None).expect("run1");
+    assert_eq!(run1.rows_inserted, 1, "Pass 1 inserts the new entity");
+    assert_eq!(run1.rows_skipped_existing, 0);
+
+    // Capture Pass-1 attributes — `role` came from legacy metadata,
+    // `entity_type` from the column.
+    let attrs_after_run1: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id='ent-promote'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed1: serde_json::Value = serde_json::from_str(&attrs_after_run1).unwrap();
+    assert_eq!(parsed1["role"], "admin");
+    assert_eq!(parsed1["entity_type"], "person");
+
+    // Mutate the legacy metadata: change `role` to `owner` AND add a new
+    // key `team`. After re-run, `role` must stay `admin` (existing-wins),
+    // `team` must appear (new key fills gap).
+    storage
+        .conn()
+        .execute(
+            "UPDATE entities SET metadata = ? WHERE id='ent-promote'",
+            params![r#"{"role":"owner","team":"core"}"#],
+        )
+        .unwrap();
+
+    let run2 = backfill_entities_to_nodes(&mut storage, None).expect("run2");
+    assert_eq!(run2.rows_inserted, 0, "row already in nodes");
+    assert_eq!(run2.rows_skipped_existing, 1, "Pass-2 merge path");
+
+    let attrs_after_run2: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id='ent-promote'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed2: serde_json::Value = serde_json::from_str(&attrs_after_run2).unwrap();
+    assert_eq!(
+        parsed2["role"], "admin",
+        "existing-wins: original role survives metadata mutation"
+    );
+    assert_eq!(
+        parsed2["team"], "core",
+        "new metadata key fills gap in attributes"
+    );
+    assert_eq!(parsed2["entity_type"], "person");
+
+    // §D regression overlap: this run is NOT a no-op (team key got added),
+    // so `rows_metadata_merged` should be 1 (net-change semantics post-§D).
+    let notes: String = storage
+        .conn()
+        .query_row(
+            "SELECT notes FROM backfill_runs WHERE run_id = ?",
+            params![&run2.run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed_notes: serde_json::Value = serde_json::from_str(&notes).unwrap();
+    assert_eq!(
+        parsed_notes["rows_metadata_merged"], 1,
+        "team key added → net-change UPDATE counted"
+    );
+}
+
+/// **§B-#2** — Metadata containing keys that collide with `nodes` column
+/// names (`id`, `namespace`) must NOT corrupt column values. They land as
+/// plain attribute keys; the actual columns come from `entities.id` and
+/// `entities.namespace`.
+///
+/// This test pins the current behavior so any future "flatten attributes
+/// into columns" refactor breaks loudly with a failing assertion rather
+/// than silently overwriting `nodes.namespace`.
+#[test]
+fn iss112_b_metadata_with_reserved_column_keys_does_not_corrupt_columns() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // Legacy row in namespace 'real-ns', but metadata says 'other-ns'
+    // and tries to override id to 'different-id'. Both attempts must
+    // land in attributes JSON and have no effect on columns.
+    seed_legacy_entity(
+        &storage,
+        "real-id",
+        "Bob",
+        "person",
+        "real-ns",
+        Some(r#"{"namespace":"other-ns","id":"different-id","extra":"ok"}"#),
+    );
+
+    let run = backfill_entities_to_nodes(&mut storage, None).expect("backfill");
+    assert_eq!(run.rows_inserted, 1);
+
+    // Column values come from the entities row, NOT from metadata.
+    let (col_id, col_ns, attrs): (String, String, String) = storage
+        .conn()
+        .query_row(
+            "SELECT id, namespace, attributes FROM nodes WHERE id='real-id'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(col_id, "real-id", "id column must NOT be hijacked by metadata");
+    assert_eq!(
+        col_ns, "real-ns",
+        "namespace column must NOT be hijacked by metadata"
+    );
+
+    // The reserved-named metadata keys DO live in attributes (verbatim).
+    let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
+    assert_eq!(
+        parsed["namespace"], "other-ns",
+        "metadata `namespace` key lands in attributes JSON"
+    );
+    assert_eq!(
+        parsed["id"], "different-id",
+        "metadata `id` key lands in attributes JSON"
+    );
+    assert_eq!(parsed["extra"], "ok", "other keys merge normally");
+    assert_eq!(parsed["entity_type"], "person");
+
+    // Verify a query by the REAL id finds exactly one node.
+    let count_real: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id='real-id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count_real, 1);
+
+    // And by the fake id finds none.
+    let count_fake: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id='different-id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count_fake, 0, "metadata id did not become a column id");
+}
+
+/// **§B-#3** — Empty-string `entity_type` (not NULL, just `''`) must land
+/// with `attributes.entity_type = ""`. Pins the contract that the column is
+/// always projected into attributes verbatim, even when empty.
+///
+/// Real-world reason: legacy data may contain placeholder empty types from
+/// pre-validation eras; we want them to round-trip through the backfill
+/// unchanged so a downstream cleanup pass can find and fix them.
+#[test]
+fn iss112_b_empty_entity_type_string_lands_as_empty_attribute() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // entity_type column is NOT NULL in the schema, so we use '' (empty
+    // string, which IS allowed and distinct from NULL).
+    seed_legacy_entity(
+        &storage,
+        "ent-blank",
+        "Untyped",
+        "",
+        "default",
+        Some(r#"{"note":"placeholder"}"#),
+    );
+
+    let run = backfill_entities_to_nodes(&mut storage, None).expect("backfill");
+    assert_eq!(run.rows_inserted, 1, "empty entity_type does not block insert");
+
+    let attrs: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id='ent-blank'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
+    assert_eq!(
+        parsed["entity_type"], "",
+        "empty entity_type column lands as empty string in attributes"
+    );
+    assert!(
+        parsed.get("entity_type").is_some(),
+        "key MUST be present, distinct from NULL"
+    );
+    assert_eq!(
+        parsed["note"], "placeholder",
+        "metadata still merges normally"
+    );
+}
