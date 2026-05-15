@@ -64,3 +64,51 @@ without clamping, and the schema-level CHECK constraint trips. Likely culprits:
 - [ ] `cargo test -p engramai --test integration_test test_reward_learning` passes
 - [ ] Root cause documented in commit message (clamp vs math fix vs seeding fix)
 - [ ] Full `cargo test -p engramai --tests` green
+
+---
+
+## Root-cause trace (2026-05-15)
+
+`crates/engramai/src/memory.rs:4951` (in `Memory::reward`):
+
+```rust
+record.working_strength += self.config.reward_magnitude * polarity;
+record.working_strength = record.working_strength.min(2.0);  // ← clamps to 2.0
+```
+
+But the schema's CHECK constraint says `working_strength BETWEEN 0.0 AND 1.0`. So when the reward path tries to write a record with `working_strength > 1.0` (which is allowed by the clamp), SQLite rejects with the observed `extended_code: 275 — CHECK constraint failed`.
+
+The bug is a **constraint mismatch between Rust code and schema**:
+
+- The Rust code wants working_strength to range up to 2.0 (modeling a dopaminergic surge that temporarily super-saturates a recent memory).
+- The schema invariant restricts to [0.0, 1.0] (modeling a probability-like quantity).
+
+These were defensible designs in isolation, but together they're inconsistent. The test `test_reward_learning` exposed the mismatch by exercising the reward path with `add → recall → reward → stats` — the recall path bumps `working_strength` toward 1.0, then `reward` adds another boost that puts it past 1.0, then `update()` to storage trips the CHECK.
+
+## Decision needed (deferred to potato)
+
+This is a design call, not a mechanical fix. Two reasonable options:
+
+### Option A — clamp to 1.0 in Rust, keep schema constraint
+- One-line change: `.min(2.0) → .min(1.0)` on memory.rs:4951
+- Preserves the schema invariant (`working_strength ∈ [0.0, 1.0]`)
+- **Caps reward magnitude at saturation**: once `working_strength == 1.0`, additional reward signals have no effect on the memory. Dopaminergic surges can't push past the ceiling.
+- Lowest-risk fix. No migration. No other code paths affected.
+
+### Option B — relax schema CHECK to allow [0.0, 2.0]
+- Schema migration to drop+recreate the constraint
+- Allows the up-to-2.0 super-saturation as designed in the Rust code
+- **Need to audit other code paths** that read `working_strength` and may assume `<= 1.0` (e.g. UI rendering, normalization in retrieval scoring, decay).
+- Higher complexity. May ripple into retrieval semantics.
+
+### Engineering recommendation
+
+Option A is the conservative move and probably the right one. The schema-level constraint `BETWEEN 0.0 AND 1.0` is the more recent, stricter invariant; the `.min(2.0)` clamp is older code that pre-dates the constraint. The reward signal being capped at saturation is biologically plausible — real synapses also have a saturation ceiling. Option B would expand the invariant under the entire codebase without verification, which is the kind of "while I'm here" scope expansion the karpathy-guidelines skill warns against.
+
+But this is a judgment call I'm not making unattended. Flag for potato.
+
+## When potato is back
+
+Pick Option A or Option B. Once decided:
+- **A**: ~2-line patch + regression test that triggers the original failure path + verify other reward callers don't break. Likely a 30-minute job.
+- **B**: schema migration + grep+audit pass on all reads of `working_strength` + ditto regression test. Likely 1-2 hours.
