@@ -44,6 +44,14 @@ use crate::storage::Storage;
 use crate::substrate::backfill::BackfillRun;
 use crate::triple_extractor::TripleExtractor;
 
+/// ISS-128: cap on failed memory_ids persisted in the audit notes
+/// JSON. At 14k-memory runs we've seen up to ~5k failures (T26c);
+/// 5000 IDs at ~40 chars each ≈ 200 KB, well within SQLite's TEXT
+/// comfort zone. Beyond this we set `failed_ids_truncated: true`
+/// and stop pushing — the operator gets a clear signal that the
+/// list is incomplete rather than an unbounded JSON blob.
+const FAILED_IDS_CAP: usize = 10_000;
+
 /// Driver options for the triple backfill.
 ///
 /// Defaults are tuned for the LoCoMo-scale dev DB (~5k memories); the
@@ -166,6 +174,14 @@ pub fn backfill_triples_from_memories(
     let mut rows_skipped_existing: u64 = 0;
     let mut rows_failed: u64 = 0;
     let mut triples_inserted_total: u64 = 0;
+    // ISS-128: persist failed memory_ids in the audit notes JSON so a
+    // rerun (ISS-129) can target only the failures rather than
+    // re-iterating the full corpus. Cap at FAILED_IDS_CAP to keep the
+    // JSON blob bounded on pathological runs; the truncation flag tells
+    // the operator that the list is incomplete.
+    let mut failed_memory_ids: Vec<String> = Vec::new();
+    let mut failed_ids_truncated: bool = false;
+    let mut last_error_message: Option<String> = None;
     let min_interval = if opts.rate_limit_per_sec.is_finite() && opts.rate_limit_per_sec > 0.0 {
         Some(Duration::from_secs_f64(1.0 / opts.rate_limit_per_sec))
     } else {
@@ -245,8 +261,18 @@ pub fn backfill_triples_from_memories(
                     memories_inserted += 1;
                     triples_inserted_total += inserted as u64;
                 }
-                Err(_) => {
+                Err(e) => {
                     rows_failed += 1;
+                    // ISS-128: record the failing memory_id and the
+                    // final error message so a follow-up rerun can
+                    // target the failures specifically. Bounded at
+                    // FAILED_IDS_CAP.
+                    if failed_memory_ids.len() < FAILED_IDS_CAP {
+                        failed_memory_ids.push(memory_id.clone());
+                    } else {
+                        failed_ids_truncated = true;
+                    }
+                    last_error_message = Some(e.to_string());
                 }
             }
             cursor = Some(memory_id.clone());
@@ -267,6 +293,15 @@ pub fn backfill_triples_from_memories(
         "rate_limit_per_sec": opts.rate_limit_per_sec,
         "max_retries": opts.max_retries,
         "namespace_filter": opts.namespace_filter,
+        // ISS-128: failure forensics. `failed_memory_ids` is the list
+        // of memory_ids that exhausted max_retries this run. Capped at
+        // FAILED_IDS_CAP — if `failed_ids_truncated` is true, more
+        // failures exist than are listed. `last_error_message` is the
+        // most recent extractor Err.to_string() for quick visual
+        // triage; full per-id error capture is a future enhancement.
+        "failed_memory_ids": failed_memory_ids,
+        "failed_ids_truncated": failed_ids_truncated,
+        "last_error_message": last_error_message,
     })
     .to_string();
     storage.conn().execute(

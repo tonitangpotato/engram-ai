@@ -391,3 +391,191 @@ fn t26a_counter_invariant_holds() {
         run.rows_read
     );
 }
+
+// ===================================================================
+// ISS-128 — failed memory_ids persistence in audit notes
+// ===================================================================
+
+/// Helper: read the `notes` JSON column for a given run_id.
+fn read_run_notes(storage: &Storage, run_id: &str) -> serde_json::Value {
+    let s: String = storage
+        .conn()
+        .query_row(
+            "SELECT notes FROM backfill_runs WHERE run_id = ?",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .expect("audit row should exist");
+    serde_json::from_str(&s).expect("notes is valid JSON")
+}
+
+/// Helper: find the most recently started backfill_runs row for the
+/// `triples` legacy_table.
+fn latest_triple_run_id(storage: &Storage) -> String {
+    storage
+        .conn()
+        .query_row(
+            "SELECT run_id FROM backfill_runs
+              WHERE legacy_table = 'triples'
+              ORDER BY started_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("backfill_runs row")
+}
+
+#[test]
+fn iss128_clean_run_has_empty_failed_ids_array() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_memory(&mut storage, "m-1", "alpha", "default");
+    seed_memory(&mut storage, "m-2", "beta", "default");
+
+    let mock = CountingMockExtractor::new();
+    let opts = TripleBackfillOpts {
+        retry_backoff_ms: 1,
+        ..TripleBackfillOpts::default()
+    };
+    let run = backfill_triples_from_memories(&storage, &mock, &opts).expect("backfill");
+    assert_eq!(run.rows_failed, 0);
+
+    let notes = read_run_notes(&storage, &latest_triple_run_id(&storage));
+    let failed_ids = notes
+        .get("failed_memory_ids")
+        .and_then(|v| v.as_array())
+        .expect("failed_memory_ids array present");
+    assert!(failed_ids.is_empty(), "clean run must have no failed IDs");
+    assert_eq!(notes["failed_ids_truncated"], serde_json::Value::Bool(false));
+    assert_eq!(notes["last_error_message"], serde_json::Value::Null);
+}
+
+#[test]
+fn iss128_failed_memories_recorded_in_notes() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_memory(&mut storage, "m-1", "always-fails-1", "default");
+    seed_memory(&mut storage, "m-2", "always-fails-2", "default");
+    seed_memory(&mut storage, "m-3", "always-fails-3", "default");
+
+    // 99 programmed failures, retry budget only 1 → every memory
+    // exhausts retries.
+    let mock = CountingMockExtractor::with_failures(99);
+    let opts = TripleBackfillOpts {
+        max_retries: 1,
+        retry_backoff_ms: 1,
+        ..TripleBackfillOpts::default()
+    };
+    let run = backfill_triples_from_memories(&storage, &mock, &opts).expect("backfill");
+    assert_eq!(run.rows_failed, 3);
+    assert_eq!(run.rows_inserted, 0);
+
+    let notes = read_run_notes(&storage, &latest_triple_run_id(&storage));
+    let failed_ids: Vec<String> = notes["failed_memory_ids"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(failed_ids, vec!["m-1", "m-2", "m-3"]);
+    assert_eq!(notes["failed_ids_truncated"], serde_json::Value::Bool(false));
+    assert_eq!(
+        notes["last_error_message"].as_str().unwrap(),
+        "simulated upstream failure"
+    );
+}
+
+#[test]
+fn iss128_mixed_success_and_failure_records_only_failures() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_memory(&mut storage, "m-1", "fail-then-die", "default");
+    seed_memory(&mut storage, "m-2", "ok-content", "default");
+    seed_memory(&mut storage, "m-3", "ok-content-2", "default");
+
+    // 2 programmed failures, retry budget 1: m-1 burns its 2 attempts
+    // and fails; m-2 + m-3 succeed.
+    let mock = CountingMockExtractor::with_failures(2);
+    let opts = TripleBackfillOpts {
+        max_retries: 1,
+        retry_backoff_ms: 1,
+        ..TripleBackfillOpts::default()
+    };
+    let run = backfill_triples_from_memories(&storage, &mock, &opts).expect("backfill");
+    assert_eq!(run.rows_failed, 1);
+    assert_eq!(run.rows_inserted, 2);
+
+    let notes = read_run_notes(&storage, &latest_triple_run_id(&storage));
+    let failed_ids: Vec<String> = notes["failed_memory_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(failed_ids, vec!["m-1"], "only m-1 should be recorded");
+}
+
+#[test]
+fn iss128_failed_ids_survive_resume() {
+    // Resume: first run fails on m-1, second run continues on m-2/m-3.
+    // The audit notes of the *second* run should record only m-2 if
+    // it fails (we test "only the run's own failures land in that
+    // run's notes"). Each run has its own audit row.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_memory(&mut storage, "m-1", "fail-1", "default");
+    seed_memory(&mut storage, "m-2", "fail-2", "default");
+
+    // First run: m-1 fails, m-2 also fails (no retry budget).
+    let mock1 = CountingMockExtractor::with_failures(99);
+    let opts = TripleBackfillOpts {
+        max_retries: 0,
+        retry_backoff_ms: 1,
+        ..TripleBackfillOpts::default()
+    };
+    let run1 = backfill_triples_from_memories(&storage, &mock1, &opts).expect("backfill 1");
+    assert_eq!(run1.rows_failed, 2);
+    let notes1 = read_run_notes(&storage, &run1.run_id);
+    let ids1: Vec<String> = notes1["failed_memory_ids"].as_array().unwrap().iter()
+        .map(|v| v.as_str().unwrap().to_string()).collect();
+    assert_eq!(ids1, vec!["m-1", "m-2"]);
+
+    // Second run: fresh storage state has both memories already
+    // "attempted" but with no triple rows. Driver does not have a
+    // failed-id replay cursor yet (out of scope per ISS-128); both
+    // memories will be re-attempted and (with a clean extractor)
+    // succeed.
+    let mock2 = CountingMockExtractor::new();
+    let run2 = backfill_triples_from_memories(&storage, &mock2, &opts).expect("backfill 2");
+    assert_eq!(run2.rows_failed, 0);
+    let notes2 = read_run_notes(&storage, &run2.run_id);
+    let ids2 = notes2["failed_memory_ids"].as_array().unwrap();
+    assert!(ids2.is_empty(), "run2 has no failures, its notes must be clean");
+
+    // Cross-check: run1's notes must NOT have been mutated by run2.
+    let notes1_after = read_run_notes(&storage, &run1.run_id);
+    let ids1_after: Vec<String> = notes1_after["failed_memory_ids"].as_array().unwrap().iter()
+        .map(|v| v.as_str().unwrap().to_string()).collect();
+    assert_eq!(ids1_after, vec!["m-1", "m-2"], "run1 notes immutable");
+}
+
+#[test]
+fn iss128_last_error_message_captures_extractor_error() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_memory(&mut storage, "m-1", "fail-content", "default");
+
+    let mock = CountingMockExtractor::with_failures(99);
+    let opts = TripleBackfillOpts {
+        max_retries: 0,
+        retry_backoff_ms: 1,
+        ..TripleBackfillOpts::default()
+    };
+    let run = backfill_triples_from_memories(&storage, &mock, &opts).expect("backfill");
+    assert_eq!(run.rows_failed, 1);
+
+    let notes = read_run_notes(&storage, &run.run_id);
+    assert_eq!(
+        notes["last_error_message"].as_str().unwrap(),
+        "simulated upstream failure",
+    );
+}

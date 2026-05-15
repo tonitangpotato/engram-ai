@@ -1,12 +1,16 @@
 ---
 id: ISS-128
-title: "T26a triple-backfill driver: persist failed memory_ids for forensic recovery"
-status: open
+title: 'T26a triple-backfill driver: persist failed memory_ids for forensic recovery'
+status: done
 priority: P3
 severity: minor
 created: 2026-05-14
-relates_to: [ISS-127]
-labels: [substrate, backfill, observability]
+relates_to:
+- ISS-127
+labels:
+- substrate
+- backfill
+- observability
 ---
 
 # Problem
@@ -47,3 +51,22 @@ Out of scope: retry-on-restart logic (the resumability cursor already advances p
 # Discovery context
 
 T26c live run at the time of filing: PID 18943, processing 14,881 memories, target DB `/Users/potato/rustclaw/engram-memory-t26c.db`. Pace 33.8 mem/min, 0 failures so far at memory 604/14,881.
+
+# Fix landed 2026-05-15
+
+Option A implemented. `backfill_runs.notes` JSON now carries three new fields:
+
+- `failed_memory_ids`: Vec<String> — every memory_id that exhausted max_retries this run, capped at `FAILED_IDS_CAP = 10_000` to keep the JSON blob bounded.
+- `failed_ids_truncated`: bool — set true once the cap is hit; signals operator that the list is incomplete.
+- `last_error_message`: Option<String> — most recent extractor `Err.to_string()` for quick visual triage. Per-id error capture is a future enhancement (would need option B's separate table to be worthwhile).
+
+Tests in `crates/engramai/tests/v04_phase_c_triple_backfill.rs`:
+- `iss128_clean_run_has_empty_failed_ids_array`
+- `iss128_failed_memories_recorded_in_notes`
+- `iss128_mixed_success_and_failure_records_only_failures`
+- `iss128_failed_ids_survive_resume` (verifies cross-run notes isolation)
+- `iss128_last_error_message_captures_extractor_error`
+
+15/15 triple-backfill tests pass, 1902/1902 lib pass.
+
+Unblocks **ISS-129** (T26c rerun) — operator can now read failed memory_ids from `backfill_runs.notes` and target the rerun precisely.
