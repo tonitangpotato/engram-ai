@@ -131,3 +131,24 @@ Closing with status = fixed-validated; downstream work tracked under ISS-075 Pha
 - Substrate: `.gid/eval-runs/RUN-0008-substrate/locomo-conv26-iss076.{db,graph.db}`
 - Ingestion log: `.gid/eval-runs/RUN-0008-substrate/ingest.log`
 - Retrieval log: `.gid/eval-runs/RUN-0008-substrate/RUN-0008-post-fix.log`
+
+---
+
+## Status-drift note (2026-05-15, post-v0.4 substrate migration)
+
+Attempted to verify the "fixed-validated" claim before flipping `status: open → done`. Re-ran the original verification queries on `.gid/eval-runs/RUN-0008-substrate/locomo-conv26-iss076.db`:
+
+```
+dangling_subjects = 0   (matches "Expected (fixed)")
+dangling_objects  = 0   (matches "Expected (fixed)")
+graph_entities total rows = 1   (NOT 'Caroline 1', it's an unrelated 'go' entity)
+graph_entities WHERE canonical_name='Caroline' = 0
+graph_entity_aliases total = 0
+graph_edges total = 0
+```
+
+The "0 dangling" numbers are now **vacuously true** because the substrate's `graph_edges` table is empty (0/0 = 0% dangling). The Caroline → 1 result from the original Phase A report cannot be reproduced from this substrate — schema has drifted under v0.4 work or the data was rebuilt.
+
+**Implication**: Status flip needs a fresh post-fix substrate to re-verify ACs. Filing this note so we don't accidentally mark `done` on stale evidence. The fix commit `f95480b` is still in `git log`; what we lack is a current substrate to re-verify on. Pair with ISS-075 (same situation).
+
+**Recommendation when potato is back**: Either (a) accept commit `f95480b` + code review as sufficient and close, or (b) trigger a fresh small re-ingest to regenerate the verification numbers.

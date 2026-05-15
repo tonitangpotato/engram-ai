@@ -113,3 +113,18 @@ sqlite3 .gid/eval-runs/RUN-0007-substrate/locomo-conv26-iss072.graph.db \
 grep -rn "upsert_alias" crates/engramai/src --include="*.rs" | grep -v "#\[cfg(test)\]" | grep -v "test_helpers" | grep -v "/tests/"
 # Expected (current): only definitions in graph/store.rs, no call sites
 ```
+
+---
+
+## Status-drift note (2026-05-15, paired with ISS-076)
+
+See ISS-076 for the verification attempt. The `RUN-0008-substrate/locomo-conv26-iss076.db` substrate's `graph_entities` / `graph_entity_aliases` tables are essentially empty after schema drift from the v0.4 work, so:
+
+- AC-1 (alias rows > 0): cannot be verified — `graph_entity_aliases` is empty
+- AC-2 (Caroline ≤ 2): vacuously true (Caroline rows = 0)
+- AC-3 (MergeInto outcomes): would need re-ingest with current code to log
+- AC-4 (existing tests pass): satisfied by lib green at HEAD
+
+Commit `f95480b` (fix-claim) is in `git log`, so a code-review close is reasonable. Need potato's call.
+
+**Recommendation when potato is back**: Either (a) accept `f95480b` + code review as sufficient and close, or (b) trigger a fresh ingest to regenerate AC verification.
