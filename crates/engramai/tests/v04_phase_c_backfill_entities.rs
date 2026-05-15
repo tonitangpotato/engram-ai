@@ -15,7 +15,11 @@
 //!      ran first), Pass 2 merges legacy metadata in **existing-wins**.
 //!   5. Idempotent: re-running the driver leaves attributes
 //!      unchanged (existing-wins is convergent under repeated
-//!      application). `updated_at` may bump but content is stable.
+//!      application). **ISS-112 §D**: `updated_at` also stays
+//!      byte-identical on idempotent rerun, because Pass-2 now
+//!      diffs the merge result against existing attributes and
+//!      skips the UPDATE entirely on no-op merges. Regression test:
+//!      `iss112_d_idempotent_rerun_does_not_bump_updated_at`.
 //!   6. Namespace filter respected.
 //!   7. Malformed `metadata` JSON does not fail the row — entity
 //!      lands with just `{"entity_type": "..."}`, count surfaced in
@@ -397,4 +401,326 @@ fn t21_null_metadata_lands_with_entity_type_only() {
     let obj = parsed.as_object().unwrap();
     assert_eq!(obj.len(), 1, "NULL metadata should leave only entity_type");
     assert_eq!(parsed["entity_type"], "place");
+}
+
+// ===================================================================
+// ISS-112 §D — idempotent rerun should not bump updated_at on
+// no-op Pass-2 merges. This was FINDING-5 in the T21 round-1 review.
+// ===================================================================
+
+#[test]
+fn iss112_d_idempotent_rerun_does_not_bump_updated_at() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // Plant a T13-shaped nodes row that already has the legacy
+    // metadata key (existing-wins keeps it). When T21 runs, Pass 2
+    // computes a merge that equals existing attributes byte-for-byte
+    // → no UPDATE → no updated_at bump.
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO nodes (id, node_kind, namespace, content, attributes, created_at, updated_at, fts_rowid)
+               VALUES ('ent-stable', 'entity', 'default', 'Stable Entity',
+                       '{"entity_type":"PERSON","note":"existing_value"}',
+                       1700000000.0, 1700000000.0,
+                       (SELECT next_value-1 FROM fts_rowid_counter WHERE singleton=0))"#,
+            [],
+        )
+        .unwrap();
+    storage
+        .conn()
+        .execute(
+            "UPDATE fts_rowid_counter SET next_value = next_value + 1 WHERE singleton = 0",
+            [],
+        )
+        .unwrap();
+
+    // Legacy entities row with the *same* metadata key — merge is a
+    // no-op under existing-wins.
+    seed_legacy_entity(
+        &storage,
+        "ent-stable",
+        "Stable Entity",
+        "PERSON",
+        "default",
+        Some(r#"{"note":"existing_value"}"#),
+    );
+
+    // Run 1: establishes the (already-correct) post-merge state.
+    let run1 = backfill_entities_to_nodes(&mut storage, None).expect("backfill 1");
+    assert_eq!(run1.rows_inserted, 0);
+    assert_eq!(run1.rows_skipped_existing, 1);
+
+    // Snapshot updated_at after run 1.
+    let updated_at_after_run1: f64 = storage
+        .conn()
+        .query_row(
+            "SELECT updated_at FROM nodes WHERE id = 'ent-stable'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // The T13 seed timestamp was 1700000000.0 — unchanged because the
+    // merge is a no-op.
+    assert!(
+        (updated_at_after_run1 - 1700000000.0).abs() < 1e-6,
+        "first run's merge should be byte-identical, no UPDATE: got {}",
+        updated_at_after_run1
+    );
+
+    // Sleep a tick so wall-clock advances; if a buggy implementation
+    // did UPDATE, updated_at would change to "now" which is > seed.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // Run 2: should also be a no-op.
+    let run2 = backfill_entities_to_nodes(&mut storage, None).expect("backfill 2");
+    assert_eq!(run2.rows_inserted, 0);
+    assert_eq!(run2.rows_skipped_existing, 1);
+
+    let updated_at_after_run2: f64 = storage
+        .conn()
+        .query_row(
+            "SELECT updated_at FROM nodes WHERE id = 'ent-stable'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        updated_at_after_run1, updated_at_after_run2,
+        "second idempotent rerun must not bump updated_at"
+    );
+
+    // Sanity: attributes content also unchanged.
+    let attrs: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id = 'ent-stable'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
+    assert_eq!(parsed["entity_type"], "PERSON");
+    assert_eq!(parsed["note"], "existing_value");
+}
+
+#[test]
+fn iss112_d_actual_merge_does_bump_updated_at() {
+    // Counter-test: when the merge IS a real change, updated_at
+    // should bump. Confirms the diff-and-skip doesn't suppress
+    // legitimate updates.
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO nodes (id, node_kind, namespace, content, attributes, created_at, updated_at, fts_rowid)
+               VALUES ('ent-newkey', 'entity', 'default', 'New-Key Entity',
+                       '{"entity_type":"PERSON"}',
+                       1700000000.0, 1700000000.0,
+                       (SELECT next_value-1 FROM fts_rowid_counter WHERE singleton=0))"#,
+            [],
+        )
+        .unwrap();
+    storage
+        .conn()
+        .execute(
+            "UPDATE fts_rowid_counter SET next_value = next_value + 1 WHERE singleton = 0",
+            [],
+        )
+        .unwrap();
+
+    // Legacy adds a new key not in existing — merge SHOULD change attributes.
+    seed_legacy_entity(
+        &storage,
+        "ent-newkey",
+        "New-Key Entity",
+        "PERSON",
+        "default",
+        Some(r#"{"new_key":"freshly_added"}"#),
+    );
+
+    let _run = backfill_entities_to_nodes(&mut storage, None).expect("backfill");
+    let updated_at_after: f64 = storage
+        .conn()
+        .query_row(
+            "SELECT updated_at FROM nodes WHERE id = 'ent-newkey'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        updated_at_after > 1700000000.0,
+        "real merge must bump updated_at past seed; got {}",
+        updated_at_after
+    );
+
+    // Sanity: the new key is in there.
+    let attrs: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id = 'ent-newkey'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
+    assert_eq!(parsed["new_key"], "freshly_added");
+}
+
+// ===================================================================
+// ISS-112 §E — counter naming: rows_skipped_kind_mismatch (was
+// rows_kind_mismatch). Subset signaling.
+// ===================================================================
+
+#[test]
+fn iss112_e_kind_mismatch_emits_under_skipped_prefix() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // Plant a foreign-kind nodes row (topic) that collides with our
+    // legacy entity id — Pass 2 should skip and count as kind_mismatch.
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO nodes (id, node_kind, namespace, content, attributes, created_at, updated_at, fts_rowid)
+               VALUES ('ent-foreign', 'topic', 'default', 'A topic',
+                       '{"some":"topic_attr"}', 1700000000.0, 1700000000.0,
+                       (SELECT next_value-1 FROM fts_rowid_counter WHERE singleton=0))"#,
+            [],
+        )
+        .unwrap();
+    storage
+        .conn()
+        .execute(
+            "UPDATE fts_rowid_counter SET next_value = next_value + 1 WHERE singleton = 0",
+            [],
+        )
+        .unwrap();
+
+    seed_legacy_entity(
+        &storage,
+        "ent-foreign",
+        "Same id, different kind",
+        "PERSON",
+        "default",
+        None,
+    );
+
+    let run = backfill_entities_to_nodes(&mut storage, None).expect("backfill");
+    assert_eq!(run.rows_inserted, 0);
+    assert_eq!(run.rows_skipped_existing, 1);
+
+    // Inspect audit notes JSON.
+    let notes: String = storage
+        .conn()
+        .query_row(
+            "SELECT notes FROM backfill_runs WHERE run_id = ?",
+            params![&run.run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&notes).unwrap();
+    // ISS-112 §E: counter renamed.
+    assert_eq!(parsed["rows_skipped_kind_mismatch"], 1);
+    // And: the foreign topic row was not mutated.
+    let foreign_attrs: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id = 'ent-foreign'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(foreign_attrs, r#"{"some":"topic_attr"}"#);
+}
+
+// ===================================================================
+// ISS-112 §C — when existing nodes.attributes is corrupt
+// ('null', '[]', scalar), legacy keys are silently dropped (defensive)
+// but the counter surfaces the drop.
+// ===================================================================
+
+#[test]
+fn iss112_c_corrupt_existing_attributes_surfaced_in_counter() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // Plant THREE T13-shaped nodes rows with progressively corrupt
+    // attributes payloads. Pass 2 should refuse to merge each, count
+    // each in `rows_existing_attrs_not_object`, and leave the
+    // existing (corrupt) attributes alone.
+    for (id, bad_attrs) in [
+        ("ent-null", "null"),
+        ("ent-array", "[]"),
+        ("ent-scalar", r#""string""#),
+    ] {
+        storage
+            .conn()
+            .execute(
+                r#"INSERT INTO nodes (id, node_kind, namespace, content, attributes, created_at, updated_at, fts_rowid)
+                   VALUES (?, 'entity', 'default', 'corrupt-existing',
+                           ?, 1700000000.0, 1700000000.0,
+                           (SELECT next_value-1 FROM fts_rowid_counter WHERE singleton=0))"#,
+                params![id, bad_attrs],
+            )
+            .unwrap();
+        storage
+            .conn()
+            .execute(
+                "UPDATE fts_rowid_counter SET next_value = next_value + 1 WHERE singleton = 0",
+                [],
+            )
+            .unwrap();
+
+        // Use unique (name, entity_type, namespace) per row to
+        // satisfy the legacy table's unique index. We're testing
+        // corrupt EXISTING `nodes` rows, the legacy seed data is
+        // just a vehicle to reach Pass 2.
+        seed_legacy_entity(
+            &storage,
+            id,
+            &format!("Name-for-{id}"),
+            "PERSON",
+            "default",
+            Some(r#"{"some":"legacy_key"}"#),
+        );
+    }
+
+    let run = backfill_entities_to_nodes(&mut storage, None).expect("backfill");
+    assert_eq!(run.rows_inserted, 0);
+    assert_eq!(run.rows_skipped_existing, 3);
+
+    let notes: String = storage
+        .conn()
+        .query_row(
+            "SELECT notes FROM backfill_runs WHERE run_id = ?",
+            params![&run.run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&notes).unwrap();
+    assert_eq!(
+        parsed["rows_existing_attrs_not_object"], 3,
+        "all three corrupt-existing rows should be counted"
+    );
+    // Defensive guarantee: existing corrupt attributes were not
+    // overwritten.
+    for (id, expected) in [
+        ("ent-null", "null"),
+        ("ent-array", "[]"),
+        ("ent-scalar", r#""string""#),
+    ] {
+        let actual: String = storage
+            .conn()
+            .query_row(
+                "SELECT attributes FROM nodes WHERE id = ?",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(actual, expected, "row {id} attributes mutated unexpectedly");
+    }
 }

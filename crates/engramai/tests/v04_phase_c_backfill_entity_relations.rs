@@ -17,7 +17,9 @@
 //!      legacy attributes in (existing-wins).
 //!   6. Pre-existing non-structural edge with same id (assertion,
 //!      associative, provenance) → refuse to merge, count in
-//!      `rows_existing_kind_mismatch`.
+//!      `rows_skipped_kind_mismatch` (ISS-112 §E renamed from
+//!      `rows_existing_kind_mismatch` to signal subset relation to
+//!      `rows_skipped_existing`).
 //!   7. Idempotent rerun.
 //!   8. Namespace filter respected.
 
@@ -337,7 +339,9 @@ fn t22_pre_existing_non_structural_edge_is_not_touched() {
         )
         .unwrap();
     let parsed_notes: serde_json::Value = serde_json::from_str(&notes).unwrap();
-    assert_eq!(parsed_notes["rows_existing_kind_mismatch"], 1);
+    // ISS-112 §E: counter renamed to `rows_skipped_kind_mismatch`
+    // to signal it's a subset of `rows_skipped_existing`.
+    assert_eq!(parsed_notes["rows_skipped_kind_mismatch"], 1);
 
     // associative edge attributes untouched
     let (kind, attrs): (String, String) = storage

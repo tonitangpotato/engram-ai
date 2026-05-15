@@ -637,17 +637,41 @@ pub fn backfill_embeddings_to_node_embeddings(
 /// dual-written by the T13 resolution pipeline path — the T13 row
 /// is canonical, the legacy projection only adds keys T13 didn't
 /// know about.
+///
+/// **ISS-112 §C**: returns a `MergeOutcome` so the caller can count
+/// the "existing was not a JSON object" case (corrupt data —
+/// `'null'`, `'[]'`, scalar string). Previously this case silently
+/// returned `existing` unchanged with no telemetry; now the audit
+/// pipeline surfaces it as `rows_existing_attrs_not_object`.
+enum MergeOutcome {
+    /// Merge happened (or was a no-op for content). The string is
+    /// the result; caller decides whether to UPDATE.
+    Merged(String),
+    /// Existing `attributes` is not a JSON object (e.g. `'null'`,
+    /// `'[]'`, `'"string"'`). The legacy keys are silently dropped
+    /// (same defensive philosophy as malformed legacy metadata).
+    /// The merge function returns this variant without producing a
+    /// usable result string — the caller should leave the row alone.
+    ExistingNotObject,
+    /// Legacy `new_keys` is not a JSON object. Treated as "nothing
+    /// to merge" — caller should leave the row alone. This case is
+    /// also counted in `rows_malformed_metadata` upstream of the
+    /// call, so callers can ignore this variant (it never reaches
+    /// them in practice).
+    NewNotObject,
+}
+
 fn merge_attributes_existing_wins(
     existing: &str,
     new_keys: &str,
-) -> String {
+) -> MergeOutcome {
     let mut existing_val: serde_json::Value = match serde_json::from_str(existing) {
         Ok(serde_json::Value::Object(m)) => serde_json::Value::Object(m),
-        _ => return existing.to_string(),
+        _ => return MergeOutcome::ExistingNotObject,
     };
     let new_val: serde_json::Value = match serde_json::from_str(new_keys) {
         Ok(serde_json::Value::Object(m)) => serde_json::Value::Object(m),
-        _ => return existing.to_string(),
+        _ => return MergeOutcome::NewNotObject,
     };
     if let (serde_json::Value::Object(ref mut ex), serde_json::Value::Object(nw)) =
         (&mut existing_val, new_val)
@@ -656,7 +680,8 @@ fn merge_attributes_existing_wins(
             ex.entry(k).or_insert(v);
         }
     }
-    serde_json::to_string(&existing_val).unwrap_or_else(|_| existing.to_string())
+    let s = serde_json::to_string(&existing_val).unwrap_or_else(|_| existing.to_string());
+    MergeOutcome::Merged(s)
 }
 
 /// T21 — backfill `entities` rows into `nodes(node_kind='entity')`
@@ -682,6 +707,32 @@ fn merge_attributes_existing_wins(
 /// with collision policy isn't expressible as a single SQLite
 /// statement without `JSON_PATCH`, which has overwrite semantics
 /// (last-write-wins, opposite of what we need).
+///
+/// ## Ordering relative to T13 dual-write (ISS-112 §F)
+///
+/// T13 dual-write (the live `ResolutionPipeline::insert_entity` path)
+/// writes new entities to BOTH `entities` and `nodes` in the same
+/// SQLite transaction. T21 is a backfill: it iterates `entities` and
+/// projects rows missing from `nodes`.
+///
+/// **Correct ordering**: run T21 either (a) on a quiesced DB (no
+/// live writers), or (b) while T13 dual-write is enabled and the
+/// system is steady-state. In both cases the contract holds because:
+///
+/// - Case (a): no concurrent writer, T21 sees a stable set of
+///   `entities` rows and produces the corresponding `nodes` rows.
+/// - Case (b): T13's atomic dual-write means any new entity is in
+///   both tables before T21's iterator can see it; T21 then either
+///   skips (already projected) or merges metadata into the T13-written
+///   row.
+///
+/// **Incorrect ordering**: running T21 while T13 dual-write is
+/// **disabled** but live ingest is writing only to legacy `entities`.
+/// In that mode T21 may project a snapshot, then live writes append
+/// to `entities` only, leaving `nodes` permanently divergent. The
+/// fix is operational: turn on T13 dual-write (`unified_substrate=true`)
+/// BEFORE running T21, or quiesce ingest for the duration of the
+/// backfill.
 ///
 /// ## Field mapping (design §5.3)
 ///
@@ -749,9 +800,26 @@ pub fn backfill_entities_to_nodes(
     let mut rows_read: u64 = 0;
     let mut rows_inserted: u64 = 0;
     let mut rows_skipped_existing: u64 = 0;
+    // ISS-112 §D: counts Pass-2 rows that produced a NET change to
+    // `nodes.attributes`. Byte-identical merges (idempotent reruns
+    // on quiesced data) do not bump this counter and do not write to
+    // SQLite — preserving stable `updated_at` for downstream
+    // change-since filters.
     let mut rows_metadata_merged: u64 = 0;
     let mut rows_malformed_metadata: u64 = 0;
     let mut rows_kind_mismatch: u64 = 0;
+    // ISS-112 §C: surfaced when an existing `nodes.attributes` value
+    // is not a JSON object (corrupt — 'null', '[]', scalar string).
+    // Legacy keys are silently dropped (defensive), but the counter
+    // makes the drop visible to operators.
+    let mut rows_existing_attrs_not_object: u64 = 0;
+    // ISS-112 §E: keep the variable name unchanged in code (it's local
+    // to this fn) but emit it under `rows_skipped_kind_mismatch` in the
+    // audit notes JSON. The `rows_skipped_*` prefix signals to audit
+    // readers that this counter is a subset of `rows_skipped_existing`,
+    // not an independent disposition — so summing
+    // `inserted + skipped_existing + failed + skipped_kind_mismatch`
+    // would double-count.
 
     let conn = storage.conn();
     let tx = conn.unchecked_transaction()?;
@@ -828,15 +896,42 @@ pub fn backfill_entities_to_nodes(
                 .ok();
             if let Some((existing_kind, existing_attrs)) = existing {
                 if existing_kind == "entity" {
-                    let merged = merge_attributes_existing_wins(
+                    match merge_attributes_existing_wins(
                         &existing_attrs,
                         &projected_attrs_json,
-                    );
-                    tx.execute(
-                        "UPDATE nodes SET attributes = ?, updated_at = ? WHERE id = ?",
-                        params![merged, utc_now_f64(), id],
-                    )?;
-                    rows_metadata_merged += 1;
+                    ) {
+                        MergeOutcome::Merged(merged) => {
+                            // ISS-112 §D: skip the UPDATE if the merge result
+                            // is byte-identical to existing. Otherwise every
+                            // idempotent rerun bumps `updated_at` on every
+                            // Pass-2 row, breaking downstream `updated_at > X`
+                            // change-since filters with false positives.
+                            if merged != existing_attrs {
+                                tx.execute(
+                                    "UPDATE nodes SET attributes = ?, updated_at = ? WHERE id = ?",
+                                    params![merged, utc_now_f64(), id],
+                                )?;
+                                rows_metadata_merged += 1;
+                            }
+                            // else: byte-identical merge, no UPDATE, no
+                            // counter bump — the row is already correct.
+                        }
+                        MergeOutcome::ExistingNotObject => {
+                            // ISS-112 §C: corrupt existing attributes
+                            // ('null', '[]', or a scalar). Legacy keys
+                            // dropped (defensive — same as malformed
+                            // legacy metadata), counter surfaced.
+                            rows_existing_attrs_not_object += 1;
+                        }
+                        MergeOutcome::NewNotObject => {
+                            // Unreachable in practice — legacy
+                            // metadata that doesn't parse to an
+                            // object is already counted upstream as
+                            // `rows_malformed_metadata` (entity
+                            // lands with only `entity_type`). No
+                            // additional bookkeeping needed here.
+                        }
+                    }
                 } else {
                     // Foreign node_kind already owns this id; leave
                     // it untouched. Surface in audit notes so the
@@ -855,7 +950,8 @@ pub fn backfill_entities_to_nodes(
         "design_ref": "v04-unified-substrate §5.3 / T21",
         "rows_metadata_merged": rows_metadata_merged,
         "rows_malformed_metadata": rows_malformed_metadata,
-        "rows_kind_mismatch": rows_kind_mismatch,
+        "rows_skipped_kind_mismatch": rows_kind_mismatch,
+        "rows_existing_attrs_not_object": rows_existing_attrs_not_object,
     })
     .to_string();
     let conn = storage.conn();
@@ -1031,6 +1127,9 @@ pub fn backfill_entity_relations_to_edges(
     let mut rows_metadata_merged: u64 = 0;
     let mut rows_malformed_metadata: u64 = 0;
     let mut rows_existing_kind_mismatch: u64 = 0;
+    // ISS-112 §C: same telemetry as T21 for corrupt
+    // `edges.attributes` values.
+    let mut rows_existing_attrs_not_object: u64 = 0;
 
     let conn = storage.conn();
     let tx = conn.unchecked_transaction()?;
@@ -1122,15 +1221,32 @@ pub fn backfill_entity_relations_to_edges(
                 .ok();
             if let Some((existing_kind, existing_attrs)) = existing {
                 if existing_kind == "structural" {
-                    let merged = merge_attributes_existing_wins(
+                    match merge_attributes_existing_wins(
                         &existing_attrs,
                         &projected_attrs_json,
-                    );
-                    tx.execute(
-                        "UPDATE edges SET attributes = ?, updated_at = ? WHERE id = ?",
-                        params![merged, utc_now_f64(), id],
-                    )?;
-                    rows_metadata_merged += 1;
+                    ) {
+                        MergeOutcome::Merged(merged) => {
+                            // ISS-112 §D applies here too: only
+                            // UPDATE if the merge actually changes
+                            // the row. Keeps `updated_at` stable on
+                            // idempotent reruns.
+                            if merged != existing_attrs {
+                                tx.execute(
+                                    "UPDATE edges SET attributes = ?, updated_at = ? WHERE id = ?",
+                                    params![merged, utc_now_f64(), id],
+                                )?;
+                                rows_metadata_merged += 1;
+                            }
+                        }
+                        MergeOutcome::ExistingNotObject => {
+                            // ISS-112 §C
+                            rows_existing_attrs_not_object += 1;
+                        }
+                        MergeOutcome::NewNotObject => {
+                            // Counted upstream as
+                            // `rows_malformed_metadata`.
+                        }
+                    }
                 } else {
                     rows_existing_kind_mismatch += 1;
                 }
@@ -1147,7 +1263,8 @@ pub fn backfill_entity_relations_to_edges(
         "rows_metadata_merged": rows_metadata_merged,
         "rows_malformed_metadata": rows_malformed_metadata,
         "rows_skipped_dangling_endpoint": rows_skipped_dangling_endpoint,
-        "rows_existing_kind_mismatch": rows_existing_kind_mismatch,
+        "rows_skipped_kind_mismatch": rows_existing_kind_mismatch,
+        "rows_existing_attrs_not_object": rows_existing_attrs_not_object,
     })
     .to_string();
 
