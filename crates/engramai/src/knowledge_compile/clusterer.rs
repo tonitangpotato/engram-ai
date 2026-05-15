@@ -108,17 +108,63 @@ impl Error for ClusterError {}
 /// communities. Memories without embeddings are silently skipped (no
 /// signal to cluster on).
 pub struct EmbeddingInfomapClusterer {
-    /// Minimum cosine similarity to add an edge. Lower → coarser clusters.
-    /// Default `0.5` mirrors `compiler::discovery`.
+    /// Minimum cosine similarity to add an edge under absolute-threshold
+    /// mode. Default `0.5` mirrors `compiler::discovery`. Only used when
+    /// `k_neighbors` is `None`.
     pub similarity_threshold: f64,
+
+    /// When `Some(k)`, build edges using **mutual k-nearest-neighbors**
+    /// instead of absolute thresholding. An edge `(i, j)` exists iff
+    /// `j` is among `i`'s top-k most-similar nodes **and** vice versa.
+    ///
+    /// This is the ISS-111 fix for dense single-domain corpora: with
+    /// homogeneous embeddings every pair clears any reasonable absolute
+    /// threshold, so the edge graph becomes K_n and Infomap collapses
+    /// into one super-community. Mutual k-NN bounds each node's degree
+    /// by `k` regardless of overall density, letting Infomap recover
+    /// real substructure.
+    ///
+    /// `None` preserves the legacy absolute-threshold behavior for
+    /// callers that don't want the new semantics. Default is
+    /// `Some(auto)` where `auto = clamp(sqrt(n), 3, 10)` — computed at
+    /// `cluster()` time from the candidate count, so a single config
+    /// works across corpus sizes.
+    pub k_neighbors: Option<KNeighbors>,
+
     /// Forwarded to the underlying Infomap engine.
     pub clustering_config: ClusteringConfig,
+}
+
+/// k-NN sizing strategy for [`EmbeddingInfomapClusterer`].
+///
+/// `Auto` picks `clamp(sqrt(n), 3, 10)` from the candidate count.
+/// `Fixed(k)` pins the exact k. See [`EmbeddingInfomapClusterer::k_neighbors`].
+#[derive(Debug, Clone, Copy)]
+pub enum KNeighbors {
+    /// `k = clamp(sqrt(n), 3, 10)`.
+    Auto,
+    /// Pinned `k`.
+    Fixed(usize),
+}
+
+impl KNeighbors {
+    /// Resolve the actual k for a given candidate count.
+    fn resolve(self, n: usize) -> usize {
+        match self {
+            KNeighbors::Fixed(k) => k.max(1),
+            KNeighbors::Auto => {
+                let sqrt_n = (n as f64).sqrt() as usize;
+                sqrt_n.clamp(3, 10)
+            }
+        }
+    }
 }
 
 impl Default for EmbeddingInfomapClusterer {
     fn default() -> Self {
         Self {
             similarity_threshold: 0.5,
+            k_neighbors: Some(KNeighbors::Auto),
             clustering_config: ClusteringConfig::default(),
         }
     }
@@ -148,6 +194,116 @@ impl<'a> EdgeWeightStrategy for CosineEdges<'a> {
         } else {
             None
         }
+    }
+}
+
+/// Edge-weight strategy: **mutual k-nearest-neighbor** with cosine
+/// similarity as the ranking metric (ISS-111 fix).
+///
+/// Returns `Some(sim)` for `(a, b)` iff `b` is among `a`'s top-k
+/// neighbors **and** `a` is among `b`'s top-k neighbors. This bounds
+/// each node's degree by `k` regardless of how dense the underlying
+/// pairwise-similarity matrix is, breaking the "K_n graph → one
+/// super-community" collapse mode that absolute thresholding suffers
+/// on homogeneous corpora.
+///
+/// ## Why mutual (and not unilateral) k-NN
+///
+/// Unilateral k-NN (`b ∈ topK(a)` OR `a ∈ topK(b)`) lets dense hubs
+/// pull in marginally-similar tails — exactly the failure mode we're
+/// trying to escape. Mutual k-NN requires both endpoints to consider
+/// each other "close enough to be in my top-k", which is a much
+/// stricter local-density test and is the standard choice in graph
+/// clustering literature (see e.g. Brito et al. 1997).
+///
+/// ## Cost
+///
+/// Precomputing top-k for `n` nodes is `O(n²)` time + `O(n·k)` space.
+/// At Phase D scale (≤ ~1000 candidates per compile run) this is fine.
+/// If the candidate budget grows beyond ~10k an approximate kNN index
+/// (HNSW etc.) would be the upgrade — out of scope for this fix.
+struct MutualKnnEdges {
+    /// For each node `i`, the set of nodes that are in `i`'s top-k
+    /// most-similar neighbors. We use HashSet for O(1) membership.
+    top_k: Vec<std::collections::HashSet<usize>>,
+    /// Precomputed sims, mirroring `top_k` indices — looked up when
+    /// the strategy returns a weight (we don't recompute cosine in
+    /// `edge_weight` since we already did the O(n²) pass).
+    /// Maps `(min(i,j), max(i,j)) → sim` for `O(1)` retrieval.
+    sims: std::collections::HashMap<(usize, usize), f64>,
+}
+
+impl MutualKnnEdges {
+    /// Build the mutual k-NN edge set from a slice of embeddings.
+    ///
+    /// `embeddings[i]` must be already-validated (non-empty, equal
+    /// dim within the batch). Returns an error if cosine_similarity
+    /// returns `None` for any pair (dimension mismatch).
+    fn build(embeddings: &[&[f32]], k: usize) -> Result<Self, ClusterError> {
+        let n = embeddings.len();
+        // For each node, sort all *other* nodes by sim desc and take
+        // top-k. We materialize the full sim matrix once because
+        // we need it both for top-k selection and to surface as the
+        // edge weight downstream.
+        let mut sims: std::collections::HashMap<(usize, usize), f64> =
+            std::collections::HashMap::with_capacity(n * (n - 1) / 2);
+        // Per-node neighbor lists: (sim, neighbor_idx), descending sim.
+        let mut per_node: Vec<Vec<(f64, usize)>> = vec![Vec::with_capacity(n - 1); n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let sim = cosine_similarity(embeddings[i], embeddings[j])
+                    .ok_or_else(|| {
+                        ClusterError::InvalidInput(
+                            "cosine_similarity returned None during k-NN build"
+                                .to_string(),
+                        )
+                    })?;
+                sims.insert((i, j), sim);
+                per_node[i].push((sim, j));
+                per_node[j].push((sim, i));
+            }
+        }
+
+        let mut top_k: Vec<std::collections::HashSet<usize>> =
+            Vec::with_capacity(n);
+        for mut neighbors in per_node {
+            // Partial sort: we only need the top-k. select_nth_unstable
+            // would be O(n) but the slice is already small and the
+            // sort is over f64 which doesn't impl Ord — use partial_cmp
+            // with a full sort_by for simplicity. n*log(n) per node is
+            // O(n² log n) overall, dominated by the O(n²) sim pass.
+            neighbors.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let set: std::collections::HashSet<usize> = neighbors
+                .into_iter()
+                .take(k)
+                .map(|(_, j)| j)
+                .collect();
+            top_k.push(set);
+        }
+
+        Ok(Self { top_k, sims })
+    }
+}
+
+impl EdgeWeightStrategy for MutualKnnEdges {
+    type Item = usize;
+
+    fn edge_weight(&self, a: &usize, b: &usize) -> Option<f64> {
+        if a == b {
+            return None;
+        }
+        // Mutual k-NN: both directions must agree.
+        if !self.top_k.get(*a)?.contains(b) {
+            return None;
+        }
+        if !self.top_k.get(*b)?.contains(a) {
+            return None;
+        }
+        // Edge survives — return the precomputed sim.
+        let key = if a < b { (*a, *b) } else { (*b, *a) };
+        self.sims.get(&key).copied()
     }
 }
 
@@ -209,13 +365,25 @@ impl Clusterer for EmbeddingInfomapClusterer {
         let n = indexed.len();
         let items: Vec<usize> = (0..n).collect();
         let embeddings: Vec<&[f32]> = indexed.iter().map(|(_, e)| e.as_slice()).collect();
-        let strategy = CosineEdges {
-            embeddings: &embeddings,
-            threshold: self.similarity_threshold,
-        };
 
-        let communities =
-            cluster_with_infomap(&items, &strategy, &self.clustering_config);
+        // Choose edge strategy based on config (ISS-111).
+        //   - `k_neighbors = Some(_)` → mutual k-NN, robust on dense
+        //     single-domain corpora (default).
+        //   - `k_neighbors = None`    → legacy absolute-threshold.
+        let communities = match self.k_neighbors {
+            Some(kn) => {
+                let k = kn.resolve(n);
+                let strategy = MutualKnnEdges::build(&embeddings, k)?;
+                cluster_with_infomap(&items, &strategy, &self.clustering_config)
+            }
+            None => {
+                let strategy = CosineEdges {
+                    embeddings: &embeddings,
+                    threshold: self.similarity_threshold,
+                };
+                cluster_with_infomap(&items, &strategy, &self.clustering_config)
+            }
+        };
 
         // Map back to memory ids.
         let mut out = Vec::with_capacity(communities.len());
@@ -269,8 +437,14 @@ mod tests {
 
     #[test]
     fn similar_embeddings_cluster_together() {
+        // Legacy absolute-threshold mode — this test predates ISS-111
+        // and its expectation (two near-identical pairs → at least two
+        // separate clusters at threshold 0.5) is exactly the case
+        // absolute thresholding handles correctly. Pin to legacy mode
+        // so we keep coverage of that branch.
         let c = EmbeddingInfomapClusterer {
             similarity_threshold: 0.5,
+            k_neighbors: None,
             clustering_config: ClusteringConfig {
                 min_community_size: 2,
                 max_community_size: usize::MAX,
@@ -353,6 +527,7 @@ mod tests {
     fn affect_bias_seen_recorded_in_weights() {
         let c = EmbeddingInfomapClusterer {
             similarity_threshold: 0.5,
+            k_neighbors: None,
             clustering_config: ClusteringConfig {
                 min_community_size: 2,
                 max_community_size: usize::MAX,
@@ -394,5 +569,106 @@ mod tests {
         assert_eq!(s, 0.0);
         // Mismatched dim → None
         assert!(cosine_similarity(&[1.0], &[1.0, 0.0]).is_none());
+    }
+
+    /// ISS-111 reproduction: dense single-domain corpora collapse into a
+    /// single super-cluster under the **legacy** absolute-threshold mode
+    /// (`k_neighbors = None`, `similarity_threshold = 0.5`).
+    ///
+    /// This is kept as a pinned reproduction test for the failure mode —
+    /// any future regression that bypasses the k-NN path and falls back
+    /// to absolute thresholding on a dense corpus would trigger this
+    /// failure pattern. The fix lives in
+    /// `iss111_dense_single_domain_does_not_collapse_after_fix` below.
+    ///
+    /// **Fixture**: 50 embeddings, all in a tight cone around the same
+    /// base direction. Cosine sims between any two are > 0.99, so every
+    /// pair crosses the 0.5 threshold and the edge graph is the complete
+    /// graph K_50. Infomap minimizes MDL by producing one giant
+    /// community.
+    ///
+    /// **Why this is a bug** in production: under the default v0.3 KC
+    /// config + a homogeneous corpus like one LoCoMo conversation, the
+    /// single super-topic matches every Abstract sub-plan query,
+    /// over-weights itself in the fuse stage, and squeezes
+    /// Factual/Episodic candidates out of the top-K — the -22pp J-score
+    /// regression observed in RUN-0026 vs RUN-0025.
+    #[test]
+    fn iss111_dense_single_domain_collapses_to_one_supercluster() {
+        // Build dense fixture (see header).
+        let base = vec![1.0f32; 16];
+        let candidates: Vec<CandidateMemory> = (0..50)
+            .map(|i| {
+                let mut e = base.clone();
+                // Tiny deterministic perturbation so the vectors aren't
+                // bit-identical but are all very close in direction.
+                e[i % 16] += 0.01 * (i as f32);
+                cand(&format!("m{i}"), 0.5, Some(e))
+            })
+            .collect();
+
+        // Explicitly pin legacy absolute-threshold mode so this test
+        // continues to demonstrate the failure regardless of the
+        // default's evolution.
+        let clusterer = EmbeddingInfomapClusterer {
+            similarity_threshold: 0.5,
+            k_neighbors: None,
+            clustering_config: ClusteringConfig::default(),
+        };
+        let clusters = clusterer.cluster(&candidates, None).unwrap();
+
+        assert_eq!(
+            clusters.len(),
+            1,
+            "ISS-111 reproduction: dense single-domain corpus should \
+             collapse to exactly 1 super-cluster under legacy \
+             absolute-threshold mode (threshold=0.5), got {} clusters",
+            clusters.len(),
+        );
+        assert_eq!(
+            clusters[0].memory_ids.len(),
+            50,
+            "super-cluster should swallow every candidate"
+        );
+    }
+
+    /// ISS-111 fix: with the default `k_neighbors = Some(Auto)` mode
+    /// the same dense fixture must produce **more than one** cluster,
+    /// proving mutual k-NN recovers substructure that absolute
+    /// thresholding cannot see.
+    #[test]
+    fn iss111_dense_single_domain_does_not_collapse_after_fix() {
+        // Same fixture as the legacy-mode test above.
+        let base = vec![1.0f32; 16];
+        let candidates: Vec<CandidateMemory> = (0..50)
+            .map(|i| {
+                let mut e = base.clone();
+                e[i % 16] += 0.01 * (i as f32);
+                cand(&format!("m{i}"), 0.5, Some(e))
+            })
+            .collect();
+
+        // Use default (`k_neighbors = Some(Auto)`).
+        let clusterer = EmbeddingInfomapClusterer::default();
+        let clusters = clusterer.cluster(&candidates, None).unwrap();
+
+        assert!(
+            clusters.len() > 1,
+            "ISS-111 fix target: dense single-domain corpus must \
+             produce >1 clusters under default (mutual k-NN), got {}",
+            clusters.len(),
+        );
+        // Total membership must still cover all candidates that pass
+        // the min_community_size filter (default 2). With n=50 and a
+        // mutual k-NN graph this should be most of them; we don't
+        // assert exact coverage to leave room for minor partitions
+        // dropped by min_community_size.
+        let total: usize = clusters.iter().map(|c| c.memory_ids.len()).sum();
+        assert!(
+            total >= 40,
+            "expected ≥40 of 50 candidates to land in some cluster, \
+             got {total} (clusters: {:?})",
+            clusters.iter().map(|c| c.memory_ids.len()).collect::<Vec<_>>()
+        );
     }
 }
