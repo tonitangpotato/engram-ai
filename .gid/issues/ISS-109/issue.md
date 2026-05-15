@@ -1,10 +1,18 @@
 ---
 title: EmbeddingInfomapClusterer collapses on single-conversation corpora (blocks ISS-106)
-status: open
+status: done
 priority: P1
-labels: [clustering, knowledge-compiler, locomo, blocks-iss-106]
-relates_to: [ISS-106, ISS-107, ISS-108]
+labels:
+- clustering
+- knowledge-compiler
+- locomo
+- blocks-iss-106
+relates_to:
+- ISS-106
+- ISS-107
+- ISS-108
 created: 2026-05-06
+duplicate_of: ISS-111
 ---
 
 # ISS-109 — EmbeddingInfomapClusterer collapses on single-conversation corpora (blocks ISS-106)
@@ -100,3 +108,15 @@ Direction 4 is most aligned with engramai's architecture (entity extraction is a
 ### 2026-05-06 — ISS opened
 - Discovered while diagnosing RUN-0026 J-score regression vs RUN-0024.
 - Smoke + RUN-0026 + RUN-0027 confirm clusterer is the failure point, not the ISS-106 patch logic.
+
+### 2026-05-15 — Closed as duplicate of ISS-111
+
+Same bug, same evidence, same RUN-0026/0027 trace. ISS-111 was filed
+2026-05-12 with a more rigorous framing (v04-unified-substrate
+design §4.16.3 reference, structural argument for fix) and has the
+full resolution thread (mutual k-NN edge filter, commit `7f41bf7`,
+status: done).
+
+**Canonical issue: ISS-111.** All discussion, fix design, and AC
+deferral lives there. This ticket closed as duplicate to avoid
+two-place tracking.

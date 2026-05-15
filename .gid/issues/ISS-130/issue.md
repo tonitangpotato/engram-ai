@@ -1,13 +1,19 @@
 ---
 id: ISS-130
 title: 'Retire v0.2 KC: delete 19 unused modules in compiler/, preserve 2 (intake/import, manual_edit) for v0.4 substrate writer re-integration'
-status: open
+status: blocked
 priority: P3
 severity: minor
 created: 2026-05-15
-depends_on: [ISS-111]
-relates_to: [ISS-106]
-labels: [substrate, v04, cleanup, v02-kc, retirement]
+depends_on: engram-cli-knowledge-migration-decision
+relates_to:
+- ISS-106
+labels:
+- substrate
+- v04
+- cleanup
+- v02-kc
+- retirement
 ---
 
 # Problem
@@ -113,6 +119,74 @@ Out of scope:
 
 # Discovery context
 
-T60 verification (design §8.14) confirmed v0.2 KC has zero production
-call sites. Filed 2026-05-15 as the actionable follow-up so T60 part 1
-can be ticked.
+## 2026-05-15 — Audit found CLI dependency, scope reassessment needed
+
+Re-audited `engramai::compiler::*` consumers across the full workspace
+(not just `crates/engramai/src/`). Found two consumers, not zero:
+
+1. **`crates/engramai/tests/kc_integration_test.rs`** — v0.2 KC's own
+   integration tests. Test-only, can be deleted with the module.
+
+2. **`crates/engram-cli/src/main.rs`** — **active CLI surface**:
+   - Top-level `engram knowledge` subcommand (line 591)
+   - 11 sub-subcommands: `query`, `inspect`, `export`, `import`,
+     `health`, `decay`, `conflicts`, `audit`, `privacy`, `compile`,
+     `list` (lines 831-944)
+   - Implementation block at line 2259-end uses
+     `MaintenanceApi`, `TopicDiscovery`, `DecayEngine`,
+     `ConflictDetector`, `HealthAuditor`, `ImportPipeline`,
+     `ExportEngine`, `PrivacyGuard`, `SqliteKnowledgeStore`,
+     `KcConfig`, `NoopProvider`, `TopicId`, `ConflictScope`,
+     `ConflictType`, `DecayAction`, …
+
+The original Problem section ("zero call sites outside compiler/")
+only grep'd `crates/engramai/src/` and missed `engram-cli`.
+
+### Implications
+
+This is **not** a simple "delete 19 dead modules, fix 1 test file"
+job. v0.2 KC is the implementation behind 11 user-facing CLI
+subcommands.
+
+v0.3 KC currently exposes only `compile` and `list_topics` — there
+is **no replacement** for export, import, health, decay, conflicts,
+audit, or privacy surfaces. Deleting `compiler/` without addressing
+the CLI would break the CLI; keeping the CLI without `compiler/`
+requires re-implementing those 11 surfaces on top of v0.3.
+
+### Options (need potato's call)
+
+- **(X) Re-scope this ISS to "v0.2 KC retirement is blocked on
+  engram-cli rewrite".** Keep compiler/ frozen. File a new ISS for
+  the CLI migration work (large, design-required). This issue stays
+  open with depends_on updated.
+
+- **(Y) Two-step retirement.** First migrate the 11 CLI subcommands
+  to v0.3 KC (adding missing v0.3 surfaces for export/import/health/
+  decay/etc.) as a separate feature. Then delete compiler/. This is
+  the most work but preserves user-facing surface.
+
+- **(Z) Delete CLI surface together with compiler/.** Acknowledge
+  v0.2 KC CLI is unused dead surface in practice. Single PR drops
+  both. Major version bump for engram-cli. Requires confirmation
+  that no one (including potato) actively uses `engram knowledge *`.
+
+### Recommendation
+
+Need potato to weigh in on (X) / (Y) / (Z) before any code change.
+Defaulting to (X) for now: change ISS-130 scope to capture the CLI
+dependency, leave compiler/ alone until CLI question is answered.
+
+### What ISS-111 closing changed
+
+ISS-111 (clusterer collapse) was the original soft-block. It's now
+done — the algorithmic concern is gone. But this audit reveals a
+**hard** block (active CLI consumer) that the original ISS body did
+not catch. Scope must expand or split before this ISS is actionable.
+
+### Original framing (now superseded)
+
+T60 verification (design §8.14) said v0.2 KC had zero production
+call sites. That was based on grep'ing `crates/engramai/src/` only.
+With engram-cli included, the call-site count is non-zero. The T60
+verification status in design.md may need a correction note.
