@@ -211,3 +211,19 @@ costly + LLM-bound). Auto-compiling on every ingest would change
 production semantics. Bench drivers are the right place to compose
 "ingest then compile" because they own the benchmark contract
 (steady-state evaluation, not streaming production).
+
+## Update 2026-05-15: ISS-111 no longer blocks
+
+ISS-111 (clusterer super-cluster collapse) — the underlying bug
+that made RUN-0026 worse than RUN-0024 when the compile_knowledge
+patch was applied — has been fixed and closed (commit `7f41bf7`,
+mutual k-NN edge strategy). The patch above can now be re-applied
+without producing a poison-pill super-topic.
+
+This ISS-106 itself is still **blocked** pending the same decision
+that gates v0.4 T31 (LoCoMo parity campaign): we don't want to burn
+API budget on a J-score baseline that v0.4 substrate flip will
+invalidate. Folded into T31 — when that bench run happens, the
+ISS-106 patch will be active and its effect measured at the same
+time as the ISS-111 verification and the substrate-equivalence check.
+One run, three answers.
