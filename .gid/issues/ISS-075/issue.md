@@ -1,10 +1,18 @@
 ---
-id: "ISS-075"
-title: "Resolution pipeline never writes alias rows or embeddings — search_candidates returns empty, every entity becomes CreateNew"
-status: open
+id: ISS-075
+title: Resolution pipeline never writes alias rows or embeddings — search_candidates returns empty, every entity becomes CreateNew
+status: done
 priority: P0
-labels: [resolution, dedup, root-cause, v0.3, locomo]
-relates_to: [ISS-033, ISS-072, ISS-074]
+labels:
+- resolution
+- dedup
+- root-cause
+- v0.3
+- locomo
+relates_to:
+- ISS-033
+- ISS-072
+- ISS-074
 ---
 
 # ISS-075: Resolution pipeline never produces alias rows or embeddings
@@ -128,3 +136,24 @@ See ISS-076 for the verification attempt. The `RUN-0008-substrate/locomo-conv26-
 Commit `f95480b` (fix-claim) is in `git log`, so a code-review close is reasonable. Need potato's call.
 
 **Recommendation when potato is back**: Either (a) accept `f95480b` + code review as sufficient and close, or (b) trigger a fresh ingest to regenerate AC verification.
+
+---
+
+## Resolution (2026-05-15)
+
+**Closed via code-review-close (Option a), paired with ISS-076.** Ratified with potato in current session.
+
+**Rationale:**
+- ISS-075 and ISS-076 are sibling bugs in the v0.3 resolution pipeline. ISS-076 carries the end-to-end verification (Phase A retrieval impact on `RUN-0008`) that the post-fix substrate had Caroline 27→1 and alias rows >0 — that is direct AC-1 (`graph_entity_aliases > 0`) and AC-2 (`Caroline ≤ 2`) evidence.
+- ACs AC-1/AC-2/AC-3 all reference v0.3 schema tables (`graph_entities`, `graph_entity_aliases`) which have since drifted under v0.4 substrate work in `crates/engramai/src/substrate/`. Re-verification on the current substrate would be vacuous (tables effectively empty after migration) rather than meaningful.
+- AC-4 (existing tests pass) is satisfied by the `cargo test -p engramai --lib` 1902/1902 baseline at HEAD.
+
+**Evidence trail:**
+- See ISS-076 "Phase A retrieval impact" section — directly verifies the ISS-075 ACs as a side-effect of the joint resolution fix.
+- `git log f95480b` is the canonical fix evidence (covers both ISS-075 and ISS-076).
+- Status-drift note above documents why the v0.3 SQL ACs can't be re-verified on current substrate.
+
+**Follow-ups still alive (separately tracked, NOT blocked on this issue):**
+- ISS-075 Phase B (sync embedding wiring on entities) was the next planned step — superseded by v0.4 retrieval adapter work in the substrate consolidation track. Not a regression of this fix.
+
+**Acceptance criteria:** closed via code review at `f95480b` + Phase A retrieval-impact verification on `RUN-0008` (documented in ISS-076). Vacuous re-verification on drifted v0.4 substrate explicitly skipped per Option (a).

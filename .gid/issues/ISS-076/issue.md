@@ -1,10 +1,18 @@
 ---
-id: "ISS-076"
-title: "All graph_edges endpoint UUIDs are dangling — edges have no resolvable subject or object entity"
-status: open
+id: ISS-076
+title: All graph_edges endpoint UUIDs are dangling — edges have no resolvable subject or object entity
+status: done
 priority: P0
-labels: [resolution, edges, root-cause, v0.3, locomo]
-relates_to: [ISS-075, ISS-072, ISS-068]
+labels:
+- resolution
+- edges
+- root-cause
+- v0.3
+- locomo
+relates_to:
+- ISS-075
+- ISS-072
+- ISS-068
 ---
 
 # ISS-076: graph_edges endpoint UUIDs do not match any graph_entities row
@@ -151,4 +159,22 @@ The "0 dangling" numbers are now **vacuously true** because the substrate's `gra
 
 **Implication**: Status flip needs a fresh post-fix substrate to re-verify ACs. Filing this note so we don't accidentally mark `done` on stale evidence. The fix commit `f95480b` is still in `git log`; what we lack is a current substrate to re-verify on. Pair with ISS-075 (same situation).
 
-**Recommendation when potato is back**: Either (a) accept commit `f95480b` + code review as sufficient and close, or (b) trigger a fresh small re-ingest to regenerate the verification numbers.
+**Recommendation when potato is back**: Either (a) accept `f95480b` + code review as sufficient and close, or (b) trigger a fresh ingest to regenerate AC verification.
+
+---
+
+## Resolution (2026-05-15)
+
+**Closed via code-review-close (Option a).** Ratified with potato in current session.
+
+**Rationale:**
+- Fix commit `f95480b` is in `git log` and was verified end-to-end against `RUN-0008-substrate` immediately after landing (see ISS-076 Phase A retrieval impact section — `Caroline 27 → 1`, alias rows >0, dangling endpoints 0/0).
+- The original ACs target a v0.3 substrate shape (`graph_entities` / `graph_entity_aliases`). The substrate has since drifted to v0.4 (unified nodes/edges substrate, Phase B/C/D work in `crates/engramai/src/substrate/`), making the original verification SQL vacuously-true rather than meaningfully-true.
+- A fresh ingest just to re-verify pre-drift ACs would cost LoCoMo API spend with no engineering signal — the fix is already in code and the relevant retrieval-quality follow-ups are tracked in separate live issues (ISS-075 Phase B was Hybrid-plan downgrade investigation; that has since been superseded by v0.4 retrieval adapter work).
+
+**Evidence trail (kept in this file):**
+- Phase A retrieval impact section above documents the end-to-end verification on `RUN-0008` (the only substrate that ever existed with the fix applied and v0.3 schema intact).
+- Status-drift note documents why the original SQL ACs can't be re-verified on current substrate.
+- `git log f95480b` is the canonical fix evidence.
+
+**Acceptance criteria:** closed via code review at `f95480b` + Phase A retrieval-impact verification on `RUN-0008`. Vacuous re-verification on drifted v0.4 substrate explicitly skipped per Option (a).
