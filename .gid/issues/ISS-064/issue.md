@@ -1,7 +1,7 @@
 ---
 id: ISS-064
 title: Namespace mismatch in graph_query is silently swallowed (returns empty instead of warning)
-status: in_review
+status: done
 severity: medium
 priority: P2
 labels:
@@ -12,6 +12,7 @@ relates_to:
 - ISS-056
 - ISS-063
 discovered: 2026-04-28
+fixed_by: be42a57
 ---
 
 # Namespace mismatch silently returns empty
@@ -84,3 +85,23 @@ log makes the mismatch immediately discoverable.
 - The smoke run report at
   `.gid/issues/_smoke-locomo-2026-04-28/RUN-0002.md` documents the
   full discovery trail.
+
+## Closure (2026-05-15)
+
+**Status: done.** Code shipped commit `be42a57` (2026-04-29) —
+adds tracing::warn! + a `NamespaceNotFound`-style `reason` field
+(`reason: "namespace_not_found"`) when an explicit namespace
+exists but has no memories AND no graph entities. AC option 1
+satisfied (fail-fast with distinguishable reason).
+
+Verified 2026-05-15: code present at
+`crates/engramai/src/retrieval/api.rs:414-442`. Regression test
+binary `crates/engramai/tests/iss064_namespace_mismatch_warn_test.rs`
+ships 3 tests — all pass:
+
+- `iss064_query_nonexistent_namespace_returns_empty_and_warns`
+- `iss064_explicit_default_on_empty_store_warns`
+- `iss064_implicit_default_namespace_does_not_warn` (negative
+  test: implicit-default path stays quiet)
+
+`fixed_by: be42a57`. Status flipped open → done.

@@ -1,6 +1,6 @@
 ---
 title: 'orchestrator: thread query namespace into Abstract plan (fix DowngradedFromAbstract empties)'
-status: in_review
+status: done
 severity: high
 priority: P1
 filed: 2026-04-28
@@ -12,6 +12,7 @@ labels:
 relates_to:
 - ISS-049
 - ISS-056
+fixed_by: dbcc715
 ---
 
 # ISS-059: Thread query namespace into Abstract plan inputs
@@ -163,3 +164,44 @@ Option 1 is the cleaner trait extension. Option 2 fights existing
 "single-row CRUD stays pinned to self.namespace" invariant
 (comment at `store.rs:2838`).
 
+
+## Closure (2026-05-15)
+
+**Status: done.** Two-layer fix shipped:
+
+1. `dbcc715 fix(retrieval): Abstract honours per-query namespace
+   (ISS-059)` — orchestrator threading: both call sites in
+   `orchestrator.rs` pass `GraphQuery::namespace` into
+   `AbstractPlanInputs`. AC #1, #2 satisfied.
+
+2. Deeper-layer fix (the "Follow-up" section above): `GraphRead`
+   trait now has a `get_topic_in(id, ns)` method with a default
+   impl that post-filters by namespace (`graph/store.rs:362`).
+   `AbstractPlan::execute` at `retrieval/plans/abstract_l5.rs:414`
+   now calls `graph.get_topic_in(hit.topic_id, inputs.namespace)`
+   instead of namespace-pinned `get_topic`. Option 1 from the
+   Follow-up section, implemented.
+
+**Verified 2026-05-15:**
+
+- `cargo test -p engramai --test iss059_retrieval_abstract_namespace_test`
+  → 2/2 pass:
+  - `iss059_abstract_query_with_namespace_finds_topic` PASS (the
+    test that was originally FAIL when only `dbcc715` had landed)
+  - `iss059_abstract_query_without_namespace_uses_default` PASS
+- AC #1 (call sites thread namespace) — DONE
+- AC #2 (TODO comments removed) — DONE
+- AC #3 (`cargo test -p engramai` passes) — DONE (1904 lib pass)
+- AC #4 (new unit test with non-default namespace) — DONE (the
+  `iss059_*finds_topic` test exercises exactly this path)
+- AC #5 (LoCoMo conv-26 P@5 improves) — **deferred to v0.4 T31
+  parity campaign**, same reasoning as ISS-111: re-running LoCoMo
+  now means burning API budget on a baseline that v0.4 substrate
+  flip (T30→T32) will invalidate. Folded into T31 alongside
+  ISS-106 + ISS-111 verification.
+- AC #6 (`outcome=no_cognitive_state` count unchanged at 2) —
+  DONE (separate issue, untouched by this fix).
+
+`fixed_by: dbcc715` (orchestrator threading) and the `get_topic_in`
+trait extension (committed alongside earlier graph-layer work — no
+single commit, the change is integrated). Status: in_review → done.
