@@ -1,13 +1,14 @@
 ---
 id: ISS-041
 title: Episode struct definition (v0.3 ingestion contract)
-status: in_review
+status: done
 priority: P1
 created: 2026-04-26
 component: crates/engramai/src/resolution/
 related:
 - v03-resolution
 - v03-graph-layer
+fixed_by: aa51bbd
 ---
 
 # ISS-041: `Episode` struct — v0.3 ingestion input contract
@@ -61,3 +62,21 @@ The design for `v03-resolution` hasn't been written yet (per `gid_tasks` on the 
 - [ ] `Episode` struct defined with all required fields for ingestion
 - [ ] Serde round-trip tested
 - [ ] `Memory::add_episode(ep: Episode) -> Result<Uuid, EngramError>` lands in `task:res-impl-memory-api`
+
+## Closure (2026-05-15)
+
+**Status: done.** Struct shipped commit `aa51bbd` (feat(resolution):
+Episode + ReextractReport public types). AC #1 (struct defined with
+required fields) and AC #2 (serde round-trip tested) satisfied:
+
+- `crates/engramai/src/resolution/episode.rs` — `Episode`
+- Test suite: resolution::episode::tests (6 tests) — all pass on trunk 2026-05-15
+
+**AC #3 (Memory::* method lands) split out as ISS-133** — wiring
+the struct to a Memory-level API needs separate design work
+(async semantics, worker reachability, idempotence routing).
+Bundling it here was overreach; the struct deliverable stands on
+its own and is properly done.
+
+`fixed_by: aa51bbd`. Status: in_review → done. Memory API
+follow-up: ISS-133.

@@ -8,6 +8,7 @@ component: crates/engramai-migrate/src/cli.rs
 related:
 - v03-migration
 - ISS-043
+depends_on: ISS-132
 ---
 
 # ISS-044: Wire MigrationOrchestrator::run_backfill to PipelineRecordProcessor
@@ -128,3 +129,43 @@ Today the CLI has no `--graph-db` flag. Options:
 ## Notes for whoever implements this
 
 Don't combine this with ISS-043. Land the wiring first (this issue), then refactor the tx model. Otherwise the diff is too large to review and a regression hides too easily.
+
+## 2026-05-15 verify-and-close attempt — REGRESSION FOUND, NOT CLOSING
+
+Tried to flip ISS-044 in_review → done. The original `aff16dc` fix
+shipped end-to-end CLI wiring + 3 integration tests in
+`crates/engramai-migrate/tests/iss044_backfill.rs`. Two of those
+three tests **now fail on trunk**:
+
+```
+test_backfill_completes_against_populated_v02_db ... FAILED
+  BackfillFatal("apply_graph_delta: invariant violation:
+                 entity embedding dim mismatch")
+
+test_backfill_idempotent_on_v03_db ... FAILED
+  (same panic, first migrate)
+
+test_backfill_dry_run_does_not_write ... ok
+```
+
+This is a **regression** introduced somewhere in the Phase B/C/D
+substrate dual-write campaign (`v04-unified-substrate`) — the
+backfill driver writes a `GraphDelta` with entity embeddings whose
+dimensions don't match what `apply_graph_delta` now expects. Most
+likely candidates: the embedding dual-write writer (T29.3 in v04
+design) or one of the entity-projection helpers (T13, T21, T22).
+
+Bisect target: between `aff16dc` (where these tests passed) and
+HEAD, find the commit that broke the embedding-dim invariant.
+
+**Not fixing in this session.** ISS-044 stays `in_review` — we
+shipped the wiring, but trunk has regressed and a separate fix is
+needed before this can close. Filing as a new issue would be
+cleaner since the regression cause is unrelated to ISS-044's
+original scope (CLI wiring), but for now noted here so it doesn't
+get lost.
+
+**Action items:**
+- File new ISS for the embedding-dim regression in `apply_graph_delta` — **filed as ISS-132**
+- Once ISS-132 lands, re-run the iss044_backfill test suite and close
+  ISS-044 with the regression-fix commit referenced.

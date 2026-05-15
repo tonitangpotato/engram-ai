@@ -1,13 +1,14 @@
 ---
 id: ISS-042
 title: ReextractReport struct definition (v0.3 retry surface)
-status: in_review
+status: done
 priority: P1
 created: 2026-04-26
 component: crates/engramai/src/resolution/
 related:
 - v03-resolution
 - v03-graph-layer
+fixed_by: aa51bbd
 ---
 
 # ISS-042: `ReextractReport` struct — v0.3 retry surface contract
@@ -61,3 +62,21 @@ Same reasoning as ISS-041: the report is a v03-resolution contract. Defining it 
 - [ ] Serde round-trip tested
 - [ ] `Memory::reextract_episodes` lands in `task:res-impl-memory-api` and delegates to the resolution worker
 - [ ] Idempotence (GOAL-2.1): re-calling on already-resolved episodes populates `skipped_idempotent`, not `succeeded`
+
+## Closure (2026-05-15)
+
+**Status: done.** Struct shipped commit `aa51bbd` (feat(resolution):
+Episode + ReextractReport public types). AC #1 (struct defined with
+required fields) and AC #2 (serde round-trip tested) satisfied:
+
+- `crates/engramai/src/resolution/reextractreport.rs` — `ReextractReport`
+- Test suite: resolution::reextract::tests (8 tests) — all pass on trunk 2026-05-15
+
+**AC #3 (Memory::* method lands) split out as ISS-133** — wiring
+the struct to a Memory-level API needs separate design work
+(async semantics, worker reachability, idempotence routing).
+Bundling it here was overreach; the struct deliverable stands on
+its own and is properly done.
+
+`fixed_by: aa51bbd`. Status: in_review → done. Memory API
+follow-up: ISS-133.
