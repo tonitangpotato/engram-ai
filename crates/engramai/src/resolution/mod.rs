@@ -113,13 +113,15 @@ pub use episode::Episode;
 pub use fusion::{fuse, FusionResult, Measurement, SignalWeights};
 pub use reextract::ReextractReport;
 pub use memory_reader::SqliteMemoryReader;
+pub use pipeline::OnTiebreakFailure;
 pub use queue::{BoundedJobQueue, EnqueueError, JobMode, JobQueue, PipelineJob};
 pub use signals::{
     affective_continuity, cooccurrence, graph_context, identity_hint, name_match, recency,
     semantic_similarity, somatic_match, Signal, DEFAULT_RECENCY_HALF_LIFE,
 };
 pub use stage_persist::{
-    build_delta, drive_persist, ApplyDelta, EdgeResolution, EntityResolution, PersistOutcome,
+    build_delta, build_delta_with_policy, drive_persist, drive_persist_with_policy, ApplyDelta,
+    EdgeResolution, EntityResolution, PersistOutcome,
 };
 pub use stats::{
     ConfigError as ResolutionConfigError, ResolutionConfig, ResolutionStats, DEFAULT_QUEUE_CAP,

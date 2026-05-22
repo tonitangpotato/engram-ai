@@ -48,11 +48,17 @@
 //!   layered on top of this stage; the diff produces the
 //!   `entity_decisions` / `edge_decisions` slices that this stage consumes
 //!   verbatim.
-//! - **No LLM tie-break.** `Decision::DeferToLlm` and
-//!   `EdgeDecision::DeferToLlm` arriving here are programming errors; the
-//!   pipeline must resolve those *before* persist (record a `StageFailure`
-//!   if the tie-break itself failed). Defensive: we record a failure and
-//!   skip the entry rather than panic.
+//! - **No LLM tie-break.** A real LLM tie-breaker is not implemented at
+//!   the persist stage; design §3.4 places it between resolve and
+//!   persist. What `build_delta` *does* offer is the
+//!   [`crate::resolution::OnTiebreakFailure`] policy (design §8.1, ISS-135):
+//!   if `Decision::DeferToLlm` or `EdgeDecision::DeferToLlm` arrives
+//!   here, `Conservative` (default) materializes the draft as a
+//!   `CreateNew` / `Add` with `confidence = low` and emits a
+//!   `tiebreak_fallback` audit row (GUARD-2 visible trace);
+//!   `Abort` emits an `unresolved_defer` row and skips the entry.
+//!   Backfill (§6.5) never calls an LLM, so Conservative is what
+//!   migration relies on.
 //! - **No idempotence-key construction.** `apply_graph_delta` derives the
 //!   key from `delta.delta_hash()`; persist just hands off the delta.
 
@@ -61,7 +67,8 @@ use uuid::Uuid;
 
 use crate::graph::{
     audit::{
-        CATEGORY_APPLY_GRAPH_DELTA_ERROR, CATEGORY_MISSING_CANONICAL, CATEGORY_UNRESOLVED_DEFER,
+        CATEGORY_APPLY_GRAPH_DELTA_ERROR, CATEGORY_MISSING_CANONICAL,
+        CATEGORY_TIEBREAK_FALLBACK, CATEGORY_UNRESOLVED_DEFER,
     },
     delta::{
         ApplyReport, EdgeInvalidation, GraphDelta, MemoryEntityMention,
@@ -78,6 +85,7 @@ use crate::resolution::context::{
 };
 use crate::resolution::decision::Decision;
 use crate::resolution::edge_decision::EdgeDecision;
+use crate::resolution::pipeline::OnTiebreakFailure;
 
 // ---------------------------------------------------------------------------
 // Public input types
@@ -111,8 +119,13 @@ pub struct EntityResolution {
     ///
     /// - `CreateNew` → freshly minted `Uuid::new_v4()`.
     /// - `MergeInto { candidate_id }` → equal to `candidate_id`.
-    /// - `DeferToLlm { candidate_id }` → equal to `candidate_id` (placeholder;
-    ///   `DeferToLlm` reaching persist is an error path, see ISS-072).
+    /// - `DeferToLlm { candidate_id }` → depends on
+    ///   `PipelineConfig::on_tiebreak_failure` (ISS-135 / design §8.1):
+    ///   under `Conservative` (default) it is a freshly minted
+    ///   `Uuid::new_v4()` (Conservative fallback materializes the draft
+    ///   as a low-confidence `CreateNew`); under `Abort` it equals
+    ///   `candidate_id` (placeholder — persist records
+    ///   `unresolved_defer` and skips the entry).
     pub assigned_id: Uuid,
 }
 
@@ -129,10 +142,16 @@ impl EntityResolution {
         decision: Decision,
         canonical: Option<Entity>,
     ) -> Self {
+        // Mirrors the production `assigned_id` policy in
+        // `ResolutionPipeline::resolve_entities` under the default
+        // `OnTiebreakFailure::Conservative` (ISS-135): `DeferToLlm`
+        // gets a fresh id (Conservative fallback mints a new entity),
+        // `MergeInto` reuses `candidate_id`. Tests exercising the
+        // `Abort` branch construct `EntityResolution` directly with
+        // `assigned_id = candidate_id`.
         let assigned_id = match &decision {
-            Decision::CreateNew => Uuid::new_v4(),
-            Decision::MergeInto { candidate_id }
-            | Decision::DeferToLlm { candidate_id } => *candidate_id,
+            Decision::CreateNew | Decision::DeferToLlm { .. } => Uuid::new_v4(),
+            Decision::MergeInto { candidate_id } => *candidate_id,
         };
         Self {
             draft_index,
@@ -199,20 +218,50 @@ pub struct PersistOutcome {
 ///
 /// Construction-time defenses:
 /// - `Decision::DeferToLlm` / `EdgeDecision::DeferToLlm` arriving here
-///   means the LLM tie-break did not run or did not commit a concrete
-///   decision. We record a `StageFailureRow { stage: "persist", kind:
-///   "unresolved_defer" }` and skip the entry. The delta is still valid;
-///   the operator sees the failure in `graph_extraction_failures`.
+///   triggers the policy chosen by the `tiebreak_policy` parameter
+///   (ISS-135 / design §8.1):
+///   - [`OnTiebreakFailure::Conservative`] (default for [`build_delta`])
+///     materializes the draft as a `CreateNew` / `Add` with
+///     `identity_confidence = low` and emits one `StageFailureRow {
+///     stage: "persist", category: "tiebreak_fallback" }` so the trace
+///     is visible (GUARD-2). The entry **is** written.
+///   - [`OnTiebreakFailure::Abort`] emits a `StageFailureRow { stage:
+///     "persist", category: "unresolved_defer" }` and skips the entry.
+///     The delta is still valid; the operator sees the failure in
+///     `graph_extraction_failures`.
 /// - `EdgeDecision::None` is a true no-op: skipped entirely (no row, no
 ///   failure).
 /// - Unmapped subject/object on an edge `Add` / `Update` (subject_id or
 ///   object missing in `EdgeResolution`) is not representable here: the
 ///   caller must have resolved them. If a future caller mis-builds the
 ///   slice, the bad entry is skipped and a failure is recorded.
+///
+/// [`OnTiebreakFailure::Conservative`]: crate::resolution::OnTiebreakFailure::Conservative
+/// [`OnTiebreakFailure::Abort`]: crate::resolution::OnTiebreakFailure::Abort
 pub fn build_delta(
     ctx: &PipelineContext,
     entity_decisions: &[EntityResolution],
     edge_decisions: &[EdgeResolution],
+) -> GraphDelta {
+    // Default policy = Conservative (design §8.1). Tests and production
+    // callers that need `Abort` semantics go through `build_delta_with_policy`.
+    build_delta_with_policy(
+        ctx,
+        entity_decisions,
+        edge_decisions,
+        OnTiebreakFailure::default(),
+    )
+}
+
+/// As [`build_delta`] but takes an explicit `tiebreak_policy`. Used by
+/// `drive_persist` / `resolve_for_backfill` to thread
+/// `PipelineConfig::on_tiebreak_failure`. Tests can also call this
+/// directly to exercise `Abort` behaviour.
+pub fn build_delta_with_policy(
+    ctx: &PipelineContext,
+    entity_decisions: &[EntityResolution],
+    edge_decisions: &[EdgeResolution],
+    tiebreak_policy: OnTiebreakFailure,
 ) -> GraphDelta {
     // Memory ids are free-form strings (v0.2 schema); the delta stores them
     // verbatim. The physical schema (`memories.id`,
@@ -307,20 +356,75 @@ pub fn build_delta(
                     ctx.episode_id,
                 ));
             }
-            Decision::DeferToLlm { candidate_id } => {
-                deferred_mention_failures.push(failure_row(
-                    ctx.episode_id,
-                    CATEGORY_UNRESOLVED_DEFER,
-                    format!(
-                        "EntityResolution::DeferToLlm reached persist for draft '{}' \
-                         (index {}, candidate {}). LLM tie-break must commit a concrete \
-                         Decision before §3.5.",
-                        er.draft.canonical_name, er.draft_index, candidate_id
-                    ),
-                    now,
-                ));
-                // Do not emit a mention row: there is no resolved id.
-            }
+            Decision::DeferToLlm { candidate_id } => match tiebreak_policy {
+                OnTiebreakFailure::Conservative => {
+                    // ISS-135 / design §8.1: Conservative fallback.
+                    // Materialize the draft as a low-confidence
+                    // `CreateNew` (NOT a merge — the candidate may be
+                    // the wrong entity, that's *why* the resolver
+                    // deferred). `er.assigned_id` was minted fresh in
+                    // `resolve_entities` under this policy so edge
+                    // endpoints lifted via `name_to_id` already point
+                    // here (ISS-076 invariant preserved).
+                    let mut new_entity =
+                        build_new_entity(er.assigned_id, &er.draft, now, ctx);
+                    // Stamp the confidence floor. design §1061:
+                    // "method = Automatic, confidence = low". 0.1 is
+                    // the smallest value the resolver may produce;
+                    // retrieval reads `identity_confidence` to weight
+                    // disambiguation candidates.
+                    new_entity.identity_confidence = 0.1;
+                    let entity_id = new_entity.id;
+                    debug_assert_eq!(
+                        entity_id, er.assigned_id,
+                        "ISS-076 invariant: Conservative-fallback entity row id must equal EntityResolution.assigned_id",
+                    );
+                    mentions.push(mention_row(
+                        memory_id,
+                        entity_id,
+                        &er.draft,
+                        er.draft_index,
+                        ctx,
+                    ));
+                    delta.entities.push(new_entity);
+                    delta.aliases.extend(alias_upserts_for_draft(
+                        &er.draft,
+                        entity_id,
+                        ctx.episode_id,
+                    ));
+                    // GUARD-2: visible trace. The fallback succeeded,
+                    // but the operator must be able to find it later.
+                    deferred_mention_failures.push(failure_row(
+                        ctx.episode_id,
+                        CATEGORY_TIEBREAK_FALLBACK,
+                        format!(
+                            "EntityResolution::DeferToLlm fell back to CreateNew (Conservative) \
+                             for draft '{}' (index {}, candidate {}). \
+                             New entity id = {}; identity_confidence = 0.1. \
+                             Agent may merge via agent_curate_entity (§6.3).",
+                            er.draft.canonical_name,
+                            er.draft_index,
+                            candidate_id,
+                            entity_id,
+                        ),
+                        now,
+                    ));
+                }
+                OnTiebreakFailure::Abort => {
+                    deferred_mention_failures.push(failure_row(
+                        ctx.episode_id,
+                        CATEGORY_UNRESOLVED_DEFER,
+                        format!(
+                            "EntityResolution::DeferToLlm reached persist for draft '{}' \
+                             (index {}, candidate {}). LLM tie-break must commit a concrete \
+                             Decision before §3.5.",
+                            er.draft.canonical_name, er.draft_index, candidate_id
+                        ),
+                        now,
+                    ));
+                    // Do not emit a mention row: there is no resolved id.
+                }
+            },
         }
     }
 
@@ -348,29 +452,67 @@ pub fn build_delta(
                     superseded_by: Some(new_id),
                 });
             }
-            EdgeDecision::DeferToLlm => {
-                edge_failures.push(failure_row(
-                    ctx.episode_id,
-                    CATEGORY_UNRESOLVED_DEFER,
-                    format!(
-                        "EdgeDecision::DeferToLlm reached persist for triple index {}. \
-                         LLM tie-break must commit a concrete decision before §3.5.",
-                        er.draft_index
-                    ),
-                    now,
-                ));
-            }
+            EdgeDecision::DeferToLlm => match tiebreak_policy {
+                OnTiebreakFailure::Conservative => {
+                    // ISS-135 / design §8.1: mirror the entity arm. We
+                    // materialize the edge as a low-confidence `Add`
+                    // (no `supersedes`) — the resolver was uncertain,
+                    // but the draft itself is valid (extractor +
+                    // subject/object resolution succeeded). The agent
+                    // can revisit via curation.
+                    let mut new_edge = build_new_edge(er, None, now, ctx);
+                    new_edge.confidence = 0.1;
+                    // Mark provenance: this confidence was *defaulted*
+                    // by the policy, not recovered from real signals.
+                    new_edge.confidence_source = ConfidenceSource::Defaulted;
+                    let new_edge_id = new_edge.id;
+                    edges.push(new_edge);
+                    edge_failures.push(failure_row(
+                        ctx.episode_id,
+                        CATEGORY_TIEBREAK_FALLBACK,
+                        format!(
+                            "EdgeDecision::DeferToLlm fell back to Add (Conservative) for triple \
+                             index {} (subject {} → object {:?}). \
+                             New edge id = {}; confidence = 0.1 (Defaulted).",
+                            er.draft_index, er.subject_id, er.object, new_edge_id,
+                        ),
+                        now,
+                    ));
+                }
+                OnTiebreakFailure::Abort => {
+                    edge_failures.push(failure_row(
+                        ctx.episode_id,
+                        CATEGORY_UNRESOLVED_DEFER,
+                        format!(
+                            "EdgeDecision::DeferToLlm reached persist for triple index {}. \
+                             LLM tie-break must commit a concrete decision before §3.5.",
+                            er.draft_index
+                        ),
+                        now,
+                    ));
+                }
+            },
         }
     }
 
     // ── Proposed predicates (§3.3.2) ───────────────────────────────────
     // One registration row per distinct Proposed label seen in the
-    // accepted edge drafts. Skipped predicates (`None` / `DeferToLlm`)
-    // do not register — only edges that actually persist do.
+    // accepted edge drafts. Skipped predicates (`None`, or
+    // `DeferToLlm` under `OnTiebreakFailure::Abort`) do not register —
+    // only edges that actually persist do. Under `Conservative`,
+    // `DeferToLlm` *does* persist (low-confidence Add), so its
+    // predicate must also register.
     let mut proposed: Vec<ProposedPredicate> = Vec::new();
     let mut seen_labels: Vec<String> = Vec::new();
     for er in edge_decisions {
-        if matches!(er.decision, EdgeDecision::Add | EdgeDecision::Update { .. }) {
+        let emits_edge = match &er.decision {
+            EdgeDecision::Add | EdgeDecision::Update { .. } => true,
+            EdgeDecision::DeferToLlm => {
+                matches!(tiebreak_policy, OnTiebreakFailure::Conservative)
+            }
+            EdgeDecision::None => false,
+        };
+        if emits_edge {
             if let Predicate::Proposed(label) = &er.draft.predicate {
                 if !seen_labels.iter().any(|l| l == label) {
                     seen_labels.push(label.clone());
@@ -437,13 +579,35 @@ impl<S: GraphStore + ?Sized> ApplyDelta for S {
 ///
 /// Impure: writes to the store. The pure delta construction lives in
 /// [`build_delta`] and is independently tested.
+///
+/// Uses the default tie-break policy (`Conservative`). To override (e.g.
+/// for `Abort` tests), use [`drive_persist_with_policy`].
 pub fn drive_persist<S: ApplyDelta + ?Sized>(
     store: &mut S,
     ctx: &mut PipelineContext,
     entity_decisions: &[EntityResolution],
     edge_decisions: &[EdgeResolution],
 ) -> Result<PersistOutcome, GraphError> {
-    let delta = build_delta(ctx, entity_decisions, edge_decisions);
+    drive_persist_with_policy(
+        store,
+        ctx,
+        entity_decisions,
+        edge_decisions,
+        OnTiebreakFailure::default(),
+    )
+}
+
+/// As [`drive_persist`] but takes an explicit `tiebreak_policy`. Used by
+/// `ResolutionPipeline::run_job` to thread
+/// `PipelineConfig::on_tiebreak_failure`.
+pub fn drive_persist_with_policy<S: ApplyDelta + ?Sized>(
+    store: &mut S,
+    ctx: &mut PipelineContext,
+    entity_decisions: &[EntityResolution],
+    edge_decisions: &[EdgeResolution],
+    tiebreak_policy: OnTiebreakFailure,
+) -> Result<PersistOutcome, GraphError> {
+    let delta = build_delta_with_policy(ctx, entity_decisions, edge_decisions, tiebreak_policy);
 
     match store.apply_graph_delta(&delta) {
         Ok(report) => {

@@ -29,8 +29,10 @@ use crate::resolution::context::{
 };
 use crate::resolution::decision::Decision;
 use crate::resolution::edge_decision::EdgeDecision;
+use crate::resolution::pipeline::OnTiebreakFailure;
 use crate::resolution::stage_persist::{
-    build_delta, drive_persist, ApplyDelta, EdgeResolution, EntityResolution,
+    build_delta, build_delta_with_policy, drive_persist, ApplyDelta, EdgeResolution,
+    EntityResolution,
 };
 use crate::types::{MemoryLayer, MemoryRecord, MemoryType};
 
@@ -212,7 +214,10 @@ fn build_delta_merge_into_without_canonical_records_failure_skips_mention() {
 }
 
 #[test]
-fn build_delta_defer_to_llm_records_failure_no_entity_no_mention() {
+fn build_delta_defer_to_llm_under_default_conservative_emits_entity_and_tiebreak_audit() {
+    // ISS-135: default policy = Conservative. DeferToLlm at persist mints
+    // a fresh entity with identity_confidence = 0.1 and writes an
+    // informational `tiebreak_fallback` audit row (NOT `unresolved_defer`).
     let ctx = fixture_ctx("mem-4");
     let draft = fixture_draft("Charlie", EntityKind::Person);
     let res = EntityResolution::for_test(
@@ -222,10 +227,12 @@ fn build_delta_defer_to_llm_records_failure_no_entity_no_mention() {
         None,
     );
     let delta = build_delta(&ctx, &[res], &[]);
-    assert!(delta.entities.is_empty());
-    assert!(delta.mentions.is_empty());
+    assert_eq!(delta.entities.len(), 1);
+    assert_eq!(delta.mentions.len(), 1);
+    assert!((delta.entities[0].identity_confidence - 0.1).abs() < 1e-9);
     assert_eq!(delta.stage_failures.len(), 1);
-    assert_eq!(delta.stage_failures[0].error_category, "unresolved_defer");
+    assert_eq!(delta.stage_failures[0].error_category, "tiebreak_fallback");
+    assert_eq!(delta.stage_failures[0].stage, "persist");
 }
 
 #[test]
@@ -420,7 +427,10 @@ fn build_delta_edge_none_emits_nothing() {
 }
 
 #[test]
-fn build_delta_edge_defer_to_llm_records_failure_no_edge() {
+fn build_delta_edge_defer_to_llm_under_default_conservative_emits_edge_and_tiebreak_audit() {
+    // ISS-135: default = Conservative. EdgeDecision::DeferToLlm now emits
+    // the edge with confidence = 0.1 + ConfidenceSource::Defaulted, plus
+    // an informational `tiebreak_fallback` audit row.
     let ctx = fixture_ctx("mem-edge-4");
     let er = EdgeResolution {
         draft_index: 7,
@@ -435,10 +445,11 @@ fn build_delta_edge_defer_to_llm_records_failure_no_edge() {
         object: EdgeEnd::Entity { id: Uuid::new_v4() },
     };
     let delta = build_delta(&ctx, &[], &[er]);
-    assert!(delta.edges.is_empty());
+    assert_eq!(delta.edges.len(), 1);
+    assert!((delta.edges[0].confidence - 0.1).abs() < 1e-9);
     assert!(delta.edges_to_invalidate.is_empty());
     assert_eq!(delta.stage_failures.len(), 1);
-    assert_eq!(delta.stage_failures[0].error_category, "unresolved_defer");
+    assert_eq!(delta.stage_failures[0].error_category, "tiebreak_fallback");
     assert!(delta.stage_failures[0].error_detail.contains("triple index 7"));
 }
 
@@ -607,7 +618,7 @@ fn build_delta_combines_ctx_failures_and_locally_generated() {
     );
     let delta = build_delta(&ctx, &[res], &[]);
     // Should have both the carried Resolve failure and the persist-stage
-    // unresolved_defer.
+    // tiebreak_fallback (ISS-135 default = Conservative).
     assert_eq!(delta.stage_failures.len(), 2);
     let kinds: Vec<&str> = delta
         .stage_failures
@@ -615,7 +626,7 @@ fn build_delta_combines_ctx_failures_and_locally_generated() {
         .map(|f| f.error_category.as_str())
         .collect();
     assert!(kinds.contains(&"candidate_retrieval"));
-    assert!(kinds.contains(&"unresolved_defer"));
+    assert!(kinds.contains(&"tiebreak_fallback"));
 }
 
 // ---------------------------------------------------------------------------
@@ -986,4 +997,113 @@ fn build_delta_create_new_without_embedding_yields_none_on_entity() {
 
     assert_eq!(delta.entities.len(), 1);
     assert!(delta.entities[0].embedding.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// ISS-135 — OnTiebreakFailure policy (entity + edge × Conservative + Abort)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_delta_with_policy_entity_conservative_mints_fresh_id_and_emits_audit() {
+    // Conservative: DeferToLlm becomes a CreateNew with identity_confidence
+    // = 0.1, fresh Uuid (NOT candidate_id so ISS-076 single-mint holds),
+    // and a `tiebreak_fallback` audit row.
+    let ctx = fixture_ctx("mem-iss135-1");
+    let draft = fixture_draft("Dora", EntityKind::Person);
+    let candidate_id = Uuid::new_v4();
+    let res = EntityResolution::for_test(
+        0,
+        draft,
+        Decision::DeferToLlm { candidate_id },
+        None,
+    );
+    let assigned_id = res.assigned_id;
+    let delta = build_delta_with_policy(&ctx, &[res], &[], OnTiebreakFailure::Conservative);
+
+    assert_eq!(delta.entities.len(), 1);
+    let entity = &delta.entities[0];
+    assert_eq!(entity.id, assigned_id);
+    assert_ne!(entity.id, candidate_id, "must not reuse candidate_id");
+    assert!((entity.identity_confidence - 0.1).abs() < 1e-9);
+
+    assert_eq!(delta.mentions.len(), 1);
+    assert_eq!(delta.stage_failures.len(), 1);
+    let f = &delta.stage_failures[0];
+    assert_eq!(f.error_category, "tiebreak_fallback");
+    assert_eq!(f.stage, "persist");
+    assert!(f.error_detail.contains(&assigned_id.to_string()));
+}
+
+#[test]
+fn build_delta_with_policy_entity_abort_skips_entity_emits_unresolved_defer() {
+    // Abort: legacy behaviour. No entity, no mention; one
+    // `unresolved_defer` audit row so the record halts.
+    let ctx = fixture_ctx("mem-iss135-2");
+    let draft = fixture_draft("Erin", EntityKind::Person);
+    let res = EntityResolution::for_test(
+        0,
+        draft,
+        Decision::DeferToLlm { candidate_id: Uuid::new_v4() },
+        None,
+    );
+    let delta = build_delta_with_policy(&ctx, &[res], &[], OnTiebreakFailure::Abort);
+
+    assert!(delta.entities.is_empty(), "Abort must not emit entity");
+    assert!(delta.mentions.is_empty(), "Abort must not emit mention");
+    assert_eq!(delta.stage_failures.len(), 1);
+    assert_eq!(delta.stage_failures[0].error_category, "unresolved_defer");
+}
+
+#[test]
+fn build_delta_with_policy_edge_conservative_emits_edge_low_conf_and_audit() {
+    // Conservative: EdgeDecision::DeferToLlm now emits the edge with
+    // confidence = 0.1 + ConfidenceSource::Defaulted and a
+    // `tiebreak_fallback` audit row.
+    let ctx = fixture_ctx("mem-iss135-3");
+    let er = EdgeResolution {
+        draft_index: 4,
+        draft: fixture_edge_draft(
+            "Fay",
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            DraftEdgeEnd::EntityName("Globex".into()),
+            0.95,
+        ),
+        decision: EdgeDecision::DeferToLlm,
+        subject_id: Uuid::new_v4(),
+        object: EdgeEnd::Entity { id: Uuid::new_v4() },
+    };
+    let delta = build_delta_with_policy(&ctx, &[], &[er], OnTiebreakFailure::Conservative);
+
+    assert_eq!(delta.edges.len(), 1);
+    let edge = &delta.edges[0];
+    assert!((edge.confidence - 0.1).abs() < 1e-9);
+    assert_eq!(delta.stage_failures.len(), 1);
+    let f = &delta.stage_failures[0];
+    assert_eq!(f.error_category, "tiebreak_fallback");
+    assert!(f.error_detail.contains("triple index 4"));
+}
+
+#[test]
+fn build_delta_with_policy_edge_abort_skips_edge_emits_unresolved_defer() {
+    // Abort: legacy behaviour for edges. No edge; one `unresolved_defer`
+    // row so the record halts.
+    let ctx = fixture_ctx("mem-iss135-4");
+    let er = EdgeResolution {
+        draft_index: 11,
+        draft: fixture_edge_draft(
+            "Gail",
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            DraftEdgeEnd::EntityName("Initech".into()),
+            0.8,
+        ),
+        decision: EdgeDecision::DeferToLlm,
+        subject_id: Uuid::new_v4(),
+        object: EdgeEnd::Entity { id: Uuid::new_v4() },
+    };
+    let delta = build_delta_with_policy(&ctx, &[], &[er], OnTiebreakFailure::Abort);
+
+    assert!(delta.edges.is_empty(), "Abort must not emit edge");
+    assert_eq!(delta.stage_failures.len(), 1);
+    assert_eq!(delta.stage_failures[0].error_category, "unresolved_defer");
+    assert!(delta.stage_failures[0].error_detail.contains("triple index 11"));
 }

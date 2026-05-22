@@ -1,7 +1,7 @@
 ---
 id: ISS-044
 title: Wire MigrationOrchestrator::run_backfill to PipelineRecordProcessor
-status: in_review
+status: done
 priority: P1
 created: 2026-04-27
 component: crates/engramai-migrate/src/cli.rs
@@ -169,3 +169,26 @@ get lost.
 - File new ISS for the embedding-dim regression in `apply_graph_delta` — **filed as ISS-132**
 - Once ISS-132 lands, re-run the iss044_backfill test suite and close
   ISS-044 with the regression-fix commit referenced.
+
+## 2026-05-22 close — all 3 backfill tests green
+
+Both downstream regressions are now fixed:
+
+- **ISS-132** (embedding-dim mismatch) — fixed in `6607314`
+  (DEFAULT_EMBEDDING_DIM 384 → 768).
+- **ISS-135** (DeferToLlm reaching persist) — fixed in this commit
+  via the design-§8.1 Conservative/Abort fallback policy. Default
+  is Conservative, so a tie-break-eligible draft now persists as a
+  fresh low-confidence entity + `tiebreak_fallback` audit row, not
+  a record failure.
+
+```
+$ cargo test -p engramai-migrate --test iss044_backfill
+test test_backfill_dry_run_does_not_write ........... ok
+test test_backfill_completes_against_populated_v02_db ok
+test test_backfill_idempotent_on_v03_db ............. ok
+test result: ok. 3 passed; 0 failed
+```
+
+All ACs above are satisfied by `aff16dc` (CLI wiring) + `6607314`
+(ISS-132 fix) + this commit (ISS-135 fix). Closing as **done**.

@@ -57,6 +57,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::entities::EntityExtractor;
@@ -77,7 +78,9 @@ use super::queue::{JobMode, PipelineJob};
 use super::adapters::draft_entity_from_triple_endpoint;
 use super::stage_edge_extract::extract_edges;
 use super::stage_extract::extract_entities;
-use super::stage_persist::{build_delta, drive_persist, EdgeResolution, EntityResolution};
+use super::stage_persist::{
+    build_delta_with_policy, drive_persist_with_policy, EdgeResolution, EntityResolution,
+};
 use super::stats::ResolutionStats;
 use super::worker::{JobProcessor, ProcessError};
 
@@ -185,6 +188,42 @@ impl std::fmt::Display for MemoryReadError {
 
 impl std::error::Error for MemoryReadError {}
 
+/// Controls behaviour when `Decision::DeferToLlm` (entity) or
+/// `EdgeDecision::DeferToLlm` (edge) reaches the persist stage.
+///
+/// The §3.4 resolver emits `DeferToLlm` when fused signals land in the
+/// tier-B ambiguous band (above the auto-merge threshold but below the
+/// confident-match floor). The §3.5 persist stage must then commit a
+/// concrete outcome — `DeferToLlm` is not a write-able decision on its
+/// own. Two policies, per design §8.1:
+///
+/// - [`OnTiebreakFailure::Conservative`] (default) — fall back to
+///   `CreateNew` for entities and `Add` for edges, with `confidence =
+///   low` (`identity_confidence = 0.1` on entities) and a visible trace
+///   annotation (`StageFailureRow` with `category =
+///   `[crate::graph::audit::CATEGORY_TIEBREAK_FALLBACK]`). Preserves
+///   extractor + classifier work; the agent can curate the resulting
+///   (possibly duplicate) entity later via `agent_curate_entity`
+///   (§6.3). **GUARD-2 visible trace** — not silent.
+/// - [`OnTiebreakFailure::Abort`] — record an `unresolved_defer`
+///   `StageFailureRow` and skip the entry entirely (no entity/edge
+///   row, no mention). This is the legacy fail-loud path; useful for
+///   tests and dev diagnostics, not for production backfill (which
+///   has no LLM tie-breaker and would lose every tier-B mention).
+///
+/// **Default is `Conservative`**: backfill (§6.5) never calls an LLM,
+/// so without Conservative every ambiguous mention would be lost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnTiebreakFailure {
+    /// Fall back to `CreateNew` / `Add` with low confidence + visible
+    /// trace annotation. See enum-level docs.
+    #[default]
+    Conservative,
+    /// Emit `unresolved_defer` failure row and skip the entry.
+    Abort,
+}
+
 // ---------------------------------------------------------------------------
 // ResolutionPipeline — the JobProcessor implementation.
 // ---------------------------------------------------------------------------
@@ -202,6 +241,10 @@ pub struct PipelineConfig {
     /// Namespace tag passed to `search_candidates`. Production callers
     /// pin this to the memory's namespace; tests may use `""`.
     pub namespace: String,
+    /// What persist does when `DeferToLlm` reaches §3.5. See
+    /// [`OnTiebreakFailure`] for the policy split. Default is
+    /// `Conservative` (matches design §8.1).
+    pub on_tiebreak_failure: OnTiebreakFailure,
 }
 
 impl Default for PipelineConfig {
@@ -211,6 +254,7 @@ impl Default for PipelineConfig {
             weights: SignalWeights::default(),
             retrieval: RetrievalParams::default(),
             namespace: String::new(),
+            on_tiebreak_failure: OnTiebreakFailure::default(),
         }
     }
 }
@@ -390,7 +434,13 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         let persist_outcome = {
             let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.set_namespace(ctx.namespace.clone());
-            drive_persist(&mut *store, &mut ctx, &entity_decisions, &edge_decisions)
+            drive_persist_with_policy(
+                &mut *store,
+                &mut ctx,
+                &entity_decisions,
+                &edge_decisions,
+                self.config.on_tiebreak_failure,
+            )
         };
         stats.persist_duration = t.elapsed();
 
@@ -637,10 +687,27 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
             // `assigned_id` instead of independently calling
             // `Uuid::new_v4()`. This is the structural fix for
             // dangling mention→entity edges.
+            //
+            // ISS-135: `DeferToLlm` under `OnTiebreakFailure::Conservative`
+            // is treated as `CreateNew` for id-minting purposes — we
+            // mint a fresh id rather than reusing `candidate_id`, so
+            // edge endpoints lifted via `name_to_id` point at the new
+            // (about-to-be-created) row rather than the candidate row
+            // (which is the wrong target for a Conservative fallback —
+            // that would silently merge). The persist stage detects the
+            // same condition and emits the row + a visible
+            // `tiebreak_fallback` audit annotation.
+            //
+            // `OnTiebreakFailure::Abort` preserves the legacy contract:
+            // `assigned_id = candidate_id` (a placeholder; persist
+            // records `unresolved_defer` and skips the entry).
             let assigned_id = match &outcome.decision {
                 Decision::CreateNew => uuid::Uuid::new_v4(),
-                Decision::MergeInto { candidate_id }
-                | Decision::DeferToLlm { candidate_id } => *candidate_id,
+                Decision::MergeInto { candidate_id } => *candidate_id,
+                Decision::DeferToLlm { candidate_id } => match self.config.on_tiebreak_failure {
+                    OnTiebreakFailure::Conservative => uuid::Uuid::new_v4(),
+                    OnTiebreakFailure::Abort => *candidate_id,
+                },
             };
 
             decisions.push(EntityResolution {
@@ -857,7 +924,16 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         let edge_decisions = self.resolve_edges(&mut ctx, &entity_decisions, &mut sink)?;
 
         // §3.5 build delta — pure, no IO. Idempotent on equal inputs.
-        let delta = build_delta(&ctx, &entity_decisions, &edge_decisions);
+        // Backfill never calls an LLM tie-breaker (§6.5), so the
+        // policy decides whether tier-B drafts (`DeferToLlm`) become
+        // low-confidence rows (`Conservative`, default) or get dropped
+        // as `unresolved_defer` failures (`Abort`). ISS-135.
+        let delta = build_delta_with_policy(
+            &ctx,
+            &entity_decisions,
+            &edge_decisions,
+            self.config.on_tiebreak_failure,
+        );
         Ok(delta)
     }
 }

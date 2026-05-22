@@ -311,7 +311,20 @@ impl RecordProcessor for PipelineRecordProcessor {
         };
 
         // ---- Inspect stage_failures: they may exist even with Ok(delta) ----
-        let had_stage_failures = !delta.stage_failures.is_empty();
+        //
+        // ISS-135: `tiebreak_fallback` audit rows are *informational*, not
+        // failures. Under the Conservative on-tie-break policy (default),
+        // a DeferToLlm decision still produces a fresh entity/edge with
+        // low confidence (identity_confidence = 0.1) and writes a
+        // forensic row to `graph_extraction_failures`. The record itself
+        // succeeded (entity persisted, just degraded) so it must not
+        // increment records_failed. See design §8.1.
+        let real_failures: Vec<&StageFailureRow> = delta
+            .stage_failures
+            .iter()
+            .filter(|f| f.error_category != "tiebreak_fallback")
+            .collect();
+        let had_stage_failures = !real_failures.is_empty();
 
         // ---- Advance checkpoint counters ----
         let (delta_succeeded, delta_failed) = if had_stage_failures { (0, 1) } else { (1, 0) };
@@ -326,7 +339,7 @@ impl RecordProcessor for PipelineRecordProcessor {
 
         // ---- Build outcome ----
         if had_stage_failures {
-            let first = &delta.stage_failures[0];
+            let first = real_failures[0];
             Ok(RecordOutcome::Failed {
                 record_id,
                 kind: classify_stage_failure_kind(first).to_string(),
@@ -334,7 +347,7 @@ impl RecordProcessor for PipelineRecordProcessor {
                 episode_id: None,
                 message: format!(
                     "{} stage_failures persisted to graph_extraction_failures",
-                    delta.stage_failures.len()
+                    real_failures.len()
                 ),
             })
         } else {
@@ -759,6 +772,78 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM graph_extraction_failures", [], |r| r.get(0))
             .unwrap();
         assert!(failed_rows >= 1, "stage_failure must be persisted");
+    }
+
+    #[test]
+    fn process_one_tiebreak_fallback_counts_as_success_iss135() {
+        // ISS-135: `tiebreak_fallback` audit rows are informational —
+        // the Conservative on-tie-break policy persisted an entity/edge
+        // with low confidence, so the record SUCCEEDED. It must not
+        // increment records_failed. See design §8.1.
+        let mut conn = fresh_db();
+        let mut delta = GraphDelta::new(Uuid::nil());
+        delta.stage_failures.push(StageFailureRow {
+            episode_id: Uuid::nil(),
+            stage: "persist".into(),
+            error_category: "tiebreak_fallback".into(),
+            error_detail: "DeferToLlm fell back to CreateNew (Conservative)".into(),
+            occurred_at: 1714158000.0,
+        });
+        let resolver = ScriptedResolver::new(vec![Ok(delta)]);
+        let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>)
+            .with_namespace("default");
+
+        let outcome = proc.process_one(&mut conn, fixture_record("m_iss135")).unwrap();
+        match outcome {
+            RecordOutcome::Succeeded { .. } => {}
+            other => panic!("tiebreak_fallback must be Succeeded, got {other:?}"),
+        }
+
+        let state = CheckpointStore::load_state(&conn).unwrap().unwrap();
+        assert_eq!(state.records_succeeded, 1);
+        assert_eq!(state.records_failed, 0, "tiebreak_fallback must not count as failure");
+
+        // The forensic row should still be persisted for audit.
+        let failed_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM graph_extraction_failures", [], |r| r.get(0))
+            .unwrap();
+        assert!(failed_rows >= 1, "tiebreak_fallback audit row must be persisted");
+    }
+
+    #[test]
+    fn process_one_mixed_tiebreak_and_real_failure_counts_as_failed_iss135() {
+        // Mixed case: one tiebreak_fallback (informational) PLUS one real
+        // failure (e.g. llm_timeout). Record must be Failed (the real
+        // failure dominates), and the Failed outcome must surface the
+        // REAL failure category, not tiebreak_fallback.
+        let mut conn = fresh_db();
+        let mut delta = GraphDelta::new(Uuid::nil());
+        delta.stage_failures.push(StageFailureRow {
+            episode_id: Uuid::nil(),
+            stage: "persist".into(),
+            error_category: "tiebreak_fallback".into(),
+            error_detail: "Conservative fallback".into(),
+            occurred_at: 1714158000.0,
+        });
+        delta.stage_failures.push(StageFailureRow {
+            episode_id: Uuid::nil(),
+            stage: "entity_extract".into(),
+            error_category: "llm_timeout".into(),
+            error_detail: "model didn't respond".into(),
+            occurred_at: 1714158001.0,
+        });
+        let resolver = ScriptedResolver::new(vec![Ok(delta)]);
+        let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>)
+            .with_namespace("default");
+
+        let outcome = proc.process_one(&mut conn, fixture_record("m_mixed")).unwrap();
+        match outcome {
+            RecordOutcome::Failed { kind, stage, .. } => {
+                assert_eq!(kind, crate::failure::CATEGORY_LLM_TIMEOUT);
+                assert_eq!(stage, STAGE_ENTITY_EXTRACT);
+            }
+            other => panic!("expected Failed (real failure dominates), got {other:?}"),
+        }
     }
 
     #[test]

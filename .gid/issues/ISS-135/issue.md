@@ -1,13 +1,20 @@
 ---
 id: ISS-135
 title: DeferToLlm reaches persist for backfill — implement Conservative/Abort fallback per design §8.1
-status: in_progress
+status: resolved
 priority: P1
 severity: blocker
 created: 2026-05-22
-relates_to: [ISS-044, ISS-132]
-blocks: [ISS-044]
-labels: [resolution, v03, design-drift, migrate]
+relates_to:
+- ISS-044
+- ISS-132
+blocks:
+- ISS-044
+labels:
+- resolution
+- v03
+- design-drift
+- migrate
 ---
 
 # Problem
@@ -139,20 +146,20 @@ Implement design §8.1 verbatim.
 
 # Acceptance criteria
 
-- [ ] `OnTiebreakFailure` enum exists; `PipelineConfig` carries
+- [x] `OnTiebreakFailure` enum exists; `PipelineConfig` carries
       it with `Default = Conservative`.
-- [ ] `build_delta` consumes the policy; both `Conservative` and
+- [x] `build_delta` consumes the policy; both `Conservative` and
       `Abort` paths covered for entity and edge `DeferToLlm` arms.
-- [ ] `CATEGORY_TIEBREAK_FALLBACK` is emitted on Conservative
+- [x] `CATEGORY_TIEBREAK_FALLBACK` is emitted on Conservative
       fallback (GUARD-2 visible trace).
-- [ ] `iss044_backfill` all 3 tests pass.
-- [ ] New unit tests in `stage_persist_tests.rs` cover both
+- [x] `iss044_backfill` all 3 tests pass.
+- [x] New unit tests in `stage_persist_tests.rs` cover both
       modes for both decision kinds.
-- [ ] Misleading ISS-072 comment removed from
+- [x] Misleading ISS-072 comment removed from
       `stage_persist.rs:117`.
-- [ ] Full `engramai` + `engramai-migrate` test suites green; no
+- [x] Full `engramai` + `engramai-migrate` test suites green; no
       new regressions.
-- [ ] ISS-044 unblocked: move from in_review → done.
+- [x] ISS-044 unblocked: move from in_review → done.
 
 # Out of scope
 
@@ -185,3 +192,68 @@ Implement design §8.1 verbatim.
   apply path)
 - ISS-044 — the original v0.2 → v0.3 backfill wiring task, in
   in_review pending this fix
+
+# Resolution (2026-05-22)
+
+Implemented design §8.1 verbatim. Conservative is the default; the
+DeferToLlm-reaches-persist path now produces a low-confidence
+entity/edge plus a `tiebreak_fallback` audit row instead of failing
+the record.
+
+**Shipped:**
+- `OnTiebreakFailure { Conservative, Abort }` enum in
+  `crates/engramai/src/resolution/pipeline.rs`, re-exported from
+  `resolution::mod`.
+- `PipelineConfig.on_tiebreak_failure` field (default = Conservative).
+- `CATEGORY_TIEBREAK_FALLBACK = "tiebreak_fallback"` in `graph/audit.rs`,
+  registered in `graph/store.rs::validate_failure_closed_sets`.
+- `build_delta_with_policy` / `drive_persist_with_policy` —
+  policy-aware variants. `build_delta` / `drive_persist` kept as
+  wrappers that call the `_with_policy` form with
+  `OnTiebreakFailure::default()` (Conservative). Back-compat preserved.
+- `resolve_entities` mints a fresh `Uuid::new_v4()` for DeferToLlm
+  under Conservative (NOT `candidate_id`, so ISS-076 single-mint
+  invariant holds). Under Abort, falls back to `candidate_id` to
+  preserve legacy behaviour.
+- Entity `Decision::DeferToLlm` arm in `build_delta_with_policy`:
+  - Conservative emits entity row (identity_confidence = 0.1) +
+    mention + aliases + one `tiebreak_fallback` audit row.
+  - Abort preserves legacy `unresolved_defer` (no entity, no mention).
+- Edge `EdgeDecision::DeferToLlm` arm: symmetric — Conservative emits
+  edge (confidence = 0.1, ConfidenceSource::Defaulted) +
+  `tiebreak_fallback` audit row; Abort preserves legacy.
+- Proposed-predicates filter updated to register predicates from
+  Conservative DeferToLlm edges.
+- `PipelineRecordProcessor::process_one`
+  (`engramai-migrate/src/processor.rs`) discriminates: rows with
+  `error_category = "tiebreak_fallback"` are informational and do NOT
+  increment `records_failed`. Real failures (any other category) still
+  do.
+- Misleading "see ISS-072" comment in `stage_persist.rs` replaced with
+  ISS-135 + design §8.1 reference.
+
+**Tests added:**
+- `stage_persist_tests.rs`: 4 new tests
+  (`build_delta_with_policy_entity_conservative_*`,
+  `build_delta_with_policy_entity_abort_*`,
+  `build_delta_with_policy_edge_conservative_*`,
+  `build_delta_with_policy_edge_abort_*`) — explicit policy paths
+  for both decision kinds.
+- `stage_persist_tests.rs`: 3 existing DeferToLlm tests updated to
+  new default-Conservative semantics.
+- `processor.rs` unit tests: 2 new
+  (`process_one_tiebreak_fallback_counts_as_success_iss135`,
+  `process_one_mixed_tiebreak_and_real_failure_counts_as_failed_iss135`)
+  pinning the discriminator.
+
+**Verification:**
+- `cargo test -p engramai-migrate --test iss044_backfill` → 3/3 pass
+  (was 1/3 before this fix).
+- `cargo test -p engramai-migrate` → 206 pass, 0 fail.
+- `cargo test -p engramai --lib` → 1908 pass, 0 fail.
+- `cargo test -p engramai --lib resolution::` → 234 pass, 0 fail.
+- `cargo test -p engramai --lib stage_persist` → 37 pass, 0 fail
+  (including 4 new ISS-135 tests).
+
+**Follow-ups:** none for this issue. ISS-044 unblocked; ISS-134
+(embedding-dim single source of truth) remains a separate P2 follow-up.

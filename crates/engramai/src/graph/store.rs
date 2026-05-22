@@ -1586,8 +1586,9 @@ fn validate_failure_closed_sets(stage: &str, category: &str) -> Result<(), Graph
         CATEGORY_CANDIDATE_RETRIEVAL_ERROR, CATEGORY_CANONICAL_FETCH_ERROR, CATEGORY_DB_ERROR,
         CATEGORY_EXTRACTOR_ERROR, CATEGORY_FIND_EDGES_ERROR, CATEGORY_INTERNAL,
         CATEGORY_LLM_INVALID_OUTPUT, CATEGORY_LLM_TIMEOUT, CATEGORY_MISSING_CANONICAL,
-        CATEGORY_NO_FACTS_EXTRACTED, CATEGORY_QUEUE_FULL, CATEGORY_UNRESOLVED_DEFER,
-        CATEGORY_UNRESOLVED_OBJECT, CATEGORY_UNRESOLVED_SUBJECT, STAGE_DEDUP, STAGE_EDGE_EXTRACT,
+        CATEGORY_NO_FACTS_EXTRACTED, CATEGORY_QUEUE_FULL, CATEGORY_TIEBREAK_FALLBACK,
+        CATEGORY_UNRESOLVED_DEFER, CATEGORY_UNRESOLVED_OBJECT, CATEGORY_UNRESOLVED_SUBJECT,
+        STAGE_DEDUP, STAGE_EDGE_EXTRACT,
         STAGE_ENTITY_EXTRACT, STAGE_INGEST, STAGE_KNOWLEDGE_COMPILE, STAGE_PERSIST, STAGE_RESOLVE,
     };
     const STAGES: &[&str] = &[
@@ -1619,6 +1620,9 @@ fn validate_failure_closed_sets(stage: &str, category: &str) -> Result<(), Graph
         CATEGORY_QUEUE_FULL,
         // ISS-068: extractor returned empty — raw memory still persisted.
         CATEGORY_NO_FACTS_EXTRACTED,
+        // ISS-135: Conservative tie-break fallback (DeferToLlm under default policy
+        // still emitted an entity/edge with low confidence — visible-trace audit row).
+        CATEGORY_TIEBREAK_FALLBACK,
     ];
     if !STAGES.contains(&stage) {
         return Err(GraphError::Invariant(

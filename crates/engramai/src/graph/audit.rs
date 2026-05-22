@@ -72,6 +72,15 @@ pub const CATEGORY_FIND_EDGES_ERROR: &str = "find_edges_error";
 pub const CATEGORY_APPLY_GRAPH_DELTA_ERROR: &str = "apply_graph_delta_error";
 pub const CATEGORY_MISSING_CANONICAL: &str = "missing_canonical";
 pub const CATEGORY_UNRESOLVED_DEFER: &str = "unresolved_defer";
+/// ISS-135: Conservative fallback for `Decision::DeferToLlm` (entity) or
+/// `EdgeDecision::DeferToLlm` (edge) at the persist stage. The entry was
+/// **not** skipped — it was minted as `CreateNew` / `Add` with low
+/// confidence per design §8.1. This row exists purely so the trace is
+/// visible (GUARD-2: "this is not silent degradation").
+///
+/// To find rows that **did** skip, query `CATEGORY_UNRESOLVED_DEFER`
+/// (the `Abort` policy or pre-ISS-135 behaviour).
+pub const CATEGORY_TIEBREAK_FALLBACK: &str = "tiebreak_fallback";
 pub const CATEGORY_QUEUE_FULL: &str = "queue_full";
 /// ISS-068: extractor ran successfully but produced zero facts. The raw
 /// memory is still persisted (so FTS / embedding recall still work) — this
