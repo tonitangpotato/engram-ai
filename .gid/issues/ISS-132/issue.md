@@ -7,7 +7,7 @@ severity: blocker
 created: 2026-05-15
 resolved: 2026-05-22
 relates_to: [ISS-044, ISS-134, ISS-135]
-fixed_by: pending-commit
+fixed_by: 6607314
 labels: [substrate, v04, regression, migrate, embedding]
 ---
 
