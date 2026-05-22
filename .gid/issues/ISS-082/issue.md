@@ -103,13 +103,51 @@ impl StoreArgs {
 
 ## Acceptance criteria
 
-- [ ] `engram store --content "-0"` succeeds (no `--` needed)
-- [ ] `engram store -- "-0"` still succeeds (back-compat)
-- [ ] `engram store "-0"` still fails as before (back-compat — explicit positional behavior unchanged)
-- [ ] `engram store --content "x" "y"` errors with mutual-exclusion message
-- [ ] Same flags added for `recall --query` and `reward --feedback`
-- [ ] Docs (`docs/cli.md` or equivalent) updated to recommend `--content` form for programmatic callers
-- [ ] cogmembench `engram_adapter.py` migrated to `--content` form (drop `--` sentinel)
+- [x] `engram store --content "-0"` succeeds (no `--` needed)
+- [x] `engram store -- "-0"` still succeeds (back-compat) — positional form unchanged, sentinel still works
+- [x] `engram store "-0"` still fails as before (back-compat — explicit positional behavior unchanged)
+- [x] `engram store --content "x" "y"` errors with mutual-exclusion message
+- [x] Same flags added for `recall --query` and `reward --feedback`
+- [ ] Docs (`docs/cli.md` or equivalent) updated to recommend `--content` form for programmatic callers — *deferred, no `docs/cli.md` exists yet; clap `--help` text on the new flag references ISS-082 inline*
+- [ ] cogmembench `engram_adapter.py` migrated to `--content` form (drop `--` sentinel) — *deferred to cogmembench-side issue; engram-side fix is complete and back-compat with existing `--` sentinel callers*
+
+## Resolution — 2026-05-22
+
+Shipped in commits TBD (impl + tests) and TBD (fixed_by pin).
+
+**Approach.** Dualized `Commands::Store` / `Recall` / `Reward` in
+`crates/engram-cli/src/main.rs`:
+
+- The positional `<CONTENT>` / `<QUERY>` / `<FEEDBACK>` argument is now
+  `Option<String>`, marked `conflicts_with = "<name>_flag"`.
+- A new sibling `--content` / `--query` / `--feedback` flag (also
+  `Option<String>`) carries `allow_hyphen_values = true` so clap stops
+  treating `-0` etc. as an unknown flag.
+- Handler arms at the three match sites resolve via
+  `positional.or(flag).ok_or_else(missing_content_err)?`; clap enforces
+  mutual exclusion before the handler runs.
+
+**Tests** (`crates/engram-cli/tests/iss082_leading_dash.rs`, 5/5 pass):
+
+1. `store --content="-0 …"` stores and recall finds it
+2. `recall --query="-foo"` parses (no clap rc=2)
+3. positional `store "<plain>"` back-compat
+4. `store --content x y` → clap conflicts_with error
+5. `store` with neither form → missing-content error from handler
+
+Full `cargo test -p engram-cli` = 14/14 (6 unit + 3 ISS-081 + 5 ISS-082).
+
+**Scope notes.** The two un-ticked ACs (docs/cli.md, cogmembench adapter
+migration) are deferred:
+- `docs/cli.md` does not exist in the engram tree; the new flags carry
+  inline `--help` text referencing ISS-082, which is the discoverable
+  surface today.
+- The cogmembench adapter `--` sentinel still works (back-compat AC #2);
+  migrating it to `--content` form is a cogmembench-side cleanup that
+  should be tracked there, not here.
+
+Both the engram CLI fix and the LoCoMo-unblock value of this issue are
+complete.
 
 ## Out of scope
 

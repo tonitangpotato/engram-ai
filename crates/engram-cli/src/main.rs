@@ -73,8 +73,18 @@ enum Commands {
     
     /// Store a new memory
     Store {
-        /// Memory content
-        content: String,
+        /// Memory content (positional). Prefer `--content` for payloads
+        /// that may start with `-` or `--` — clap parses leading-dash
+        /// positionals as flags. See ISS-082.
+        #[arg(value_name = "CONTENT", conflicts_with = "content_flag")]
+        content: Option<String>,
+
+        /// Memory content via flag. Use this when the payload starts
+        /// with `-` (clap rejects such payloads as unknown flags when
+        /// passed positionally, even with `--` sentinel in some shells).
+        /// Mutually exclusive with the positional form.
+        #[arg(long = "content", value_name = "CONTENT", allow_hyphen_values = true)]
+        content_flag: Option<String>,
         
         /// Namespace to store in
         #[arg(long, short = 'n', default_value = "default")]
@@ -160,8 +170,15 @@ enum Commands {
 
     /// Recall memories by query
     Recall {
-        /// Search query
-        query: String,
+        /// Search query (positional). Prefer `--query` for payloads
+        /// that may start with `-` — see ISS-082.
+        #[arg(value_name = "QUERY", conflicts_with = "query_flag")]
+        query: Option<String>,
+
+        /// Search query via flag. Mutually exclusive with the positional
+        /// form. Use this when the query starts with `-`.
+        #[arg(long = "query", value_name = "QUERY", allow_hyphen_values = true)]
+        query_flag: Option<String>,
         
         /// Namespace to search (use "*" for all)
         #[arg(long, short = 'n', default_value = "default")]
@@ -341,8 +358,14 @@ enum Commands {
     
     /// Apply reward signal to recent memories
     Reward {
-        /// Feedback text (positive/negative sentiment detected)
-        feedback: String,
+        /// Feedback text (positive/negative sentiment detected).
+        /// Prefer `--feedback` for payloads starting with `-` — see ISS-082.
+        #[arg(value_name = "FEEDBACK", conflicts_with = "feedback_flag")]
+        feedback: Option<String>,
+
+        /// Feedback via flag. Mutually exclusive with the positional form.
+        #[arg(long = "feedback", value_name = "FEEDBACK", allow_hyphen_values = true)]
+        feedback_flag: Option<String>,
         
         /// Number of recent memories to affect
         #[arg(long, short = 'n', default_value = "3")]
@@ -1227,7 +1250,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         
-        Commands::Store { content, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, graph_db, no_graph, graph_drain_timeout_secs, meta, occurred_at } => {
+        Commands::Store { content, content_flag, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, graph_db, no_graph, graph_drain_timeout_secs, meta, occurred_at } => {
+            // ISS-082: positional `<CONTENT>` or `--content` flag (clap
+            // enforces mutual exclusion). Require at least one.
+            let content: String = content.or(content_flag).ok_or_else(|| -> Box<dyn std::error::Error> {
+                "store: missing content — provide as positional <CONTENT> or via --content".into()
+            })?;
             // === ISS-046: install v0.3 graph layer pipeline pool ===
             // Default ON: ingest writes to <main_db>.graph.db unless --no-graph.
             // Triple extractor: reuses --auth-token if Anthropic mode chosen,
@@ -1389,7 +1417,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         
-        Commands::Recall { query, ns, limit, min_confidence, json } => {
+        Commands::Recall { query, query_flag, ns, limit, min_confidence, json } => {
+            // ISS-082: positional or --query flag (mutually exclusive).
+            let query: String = query.or(query_flag).ok_or_else(|| -> Box<dyn std::error::Error> {
+                "recall: missing query — provide as positional <QUERY> or via --query".into()
+            })?;
             let ns_opt = if ns == "default" { None } else { Some(ns.as_str()) };
             let results = mem.recall_from_namespace(&query, limit, None, min_confidence, ns_opt)?;
             
@@ -1510,7 +1542,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Deleted memory {}", memory_id);
         }
         
-        Commands::Reward { feedback, recent } => {
+        Commands::Reward { feedback, feedback_flag, recent } => {
+            // ISS-082: positional or --feedback flag (mutually exclusive).
+            let feedback: String = feedback.or(feedback_flag).ok_or_else(|| -> Box<dyn std::error::Error> {
+                "reward: missing feedback — provide as positional <FEEDBACK> or via --feedback".into()
+            })?;
             mem.reward(&feedback, recent)?;
             println!("Applied reward signal to {} recent memories", recent);
         }
