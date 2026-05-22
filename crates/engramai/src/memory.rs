@@ -95,6 +95,21 @@ pub struct Memory {
     recent_recalls: VecDeque<(String, std::time::Instant)>,
     /// Last add result for metrics access. Reset each sleep_cycle.
     last_add_result: Option<crate::lifecycle::AddResult>,
+    /// One-shot caller-supplied memory id for the *next* `add_raw` call.
+    ///
+    /// Set by [`Memory::add_episode`] when `Episode.id` is `Some(uuid)`,
+    /// to thread the caller's idempotency key into the storage layer
+    /// without changing every `add_raw` signature. Consumed exactly
+    /// once via `Option::take()` inside `add_raw`; subsequent calls
+    /// (e.g. later facts in a multi-fact extraction loop) see `None`
+    /// and fall through to the normal id-minting path. See ISS-133
+    /// (multi-fact dispatch decision: caller id honored on first fact
+    /// only, log::warn for the rest).
+    ///
+    /// Lifetime is bounded by `&mut self` — `add_episode` sets it then
+    /// immediately calls `store_raw`, which calls `add_raw` synchronously.
+    /// No async gap, no cross-call leakage.
+    pending_caller_id: Option<String>,
     /// Dedup merge counter (reset each sleep_cycle).
     dedup_merge_count: usize,
     /// Dedup new-write counter (reset each sleep_cycle).
@@ -630,12 +645,17 @@ impl Memory {
     // ## What is *not* shipped here (deferred per task scope)
     //
     // * `Memory::graph(&self) -> &dyn GraphRead` — blocked on ISS-040.
-    // * `Memory::add_episode(ep: Episode)` — blocked on ISS-041 (the
-    //   `Episode` struct is a v03-resolution ingestion contract; the
-    //   graph layer only sees `Uuid`s).
-    // * `Memory::reextract_episodes(eps) -> ReextractReport` — blocked
-    //   on ISS-042 (`ReextractReport` is a v03-resolution contract;
-    //   the actual retry pipeline lives in `task:res-impl-worker`).
+    //
+    // ## Shipped here (ISS-133, follows ISS-041 / ISS-042)
+    //
+    // * `Memory::add_episode(ep: Episode) -> Result<Uuid, _>` —
+    //   v0.3 ingestion entrypoint. Wires the `Episode` contract
+    //   (ISS-041) into the existing `store_raw` path and enqueues a
+    //   resolution job via `enqueue_pipeline_job`.
+    // * `Memory::reextract_episodes(ids: Vec<Uuid>) -> ReextractReport` —
+    //   blocking multi-id retry driver. Buckets each id into
+    //   `succeeded` / `still_failed` / `skipped_idempotent` per the
+    //   `ReextractReport` contract (ISS-042).
     //
     // Those three land in `task:res-impl-memory-api` and the
     // ISS-040 follow-up.
@@ -789,6 +809,336 @@ impl Memory {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
         let store = SqliteGraphStore::new(self.storage.connection_mut());
         store.list_proposed_predicates(min_usage)
+    }
+
+    /// v0.3 ingestion entrypoint: admit a single [`Episode`] into memory
+    /// and enqueue its resolution job (ISS-133, design §5 /
+    /// v03-resolution).
+    ///
+    /// ## Semantics
+    ///
+    /// * **Enqueue-only.** Returns after `store_raw` admits the row and
+    ///   `PipelineJob::initial` is enqueued — *not* after the resolution
+    ///   worker finishes. To observe completion poll
+    ///   [`Memory::extraction_status`] on the returned id.
+    /// * **Idempotency via `Episode.id`.** If `ep.id` is `Some(uuid)` the
+    ///   memory row is stored under that id (full 36-char Uuid string),
+    ///   so a follow-up call with the same id is a no-op admit (the row
+    ///   already exists; storage returns the existing record). If `None`
+    ///   the engine mints a fresh id via the legacy 8-char hex path.
+    /// * **Multi-fact dispatch.** When an extractor is configured and
+    ///   produces N facts from `ep.text`, the caller-supplied id is
+    ///   honored on the *first* fact only and a `log::warn!` is emitted
+    ///   for the remaining N-1; their ids are minted normally. This is
+    ///   the ISS-133 Q1=(b) decision: silent fabrication of sibling ids
+    ///   is worse than partial honoring + audit log.
+    /// * **Dedup incompatibility.** Caller-supplied ids are semantically
+    ///   incompatible with content-hash dedup (an existing row with the
+    ///   same hash would force the caller's id to be silently discarded
+    ///   in favor of the existing row's id, violating the idempotency
+    ///   contract). When `Episode.id` is `Some` and
+    ///   `MemoryConfig::dedup_enabled` is `true` this returns an error.
+    ///   Caller must pick one or the other. (ISS-133 Q2=(d).)
+    ///
+    /// ## Fields
+    ///
+    /// * `ep.text` — required, must be non-empty after trim (otherwise
+    ///   `store_raw` skips with `TooShort`; we surface that as an error).
+    /// * `ep.id` — see "Idempotency" above.
+    /// * `ep.when` — when `Some(t)`, threads through to
+    ///   `MemoryRecord.occurred_at`; when `None`, the storage layer uses
+    ///   wall-clock `Utc::now()`.
+    /// * `ep.session_id` — propagated into `StorageMeta.user_metadata`
+    ///   under the `session_id` key so retrieval can filter by session.
+    /// * `ep.metadata` — merged into `StorageMeta.user_metadata` (caller
+    ///   metadata wins, but `session_id` is set after, so a user-supplied
+    ///   `session_id` key would be overwritten).
+    ///
+    /// ## Returns
+    ///
+    /// The `Uuid` of the admitted memory row. When `ep.id` was `Some`,
+    /// equals `ep.id.unwrap()`. When `ep.id` was `None`, equals the
+    /// freshly-minted Uuid (parsed from the 8-char hex by left-padding
+    /// with zeros — see implementation note).
+    ///
+    /// ## Errors
+    ///
+    /// * `text` is empty / whitespace-only → `"add_episode: text is empty"`.
+    /// * Dedup + caller-id incompatibility (see above).
+    /// * Underlying `store_raw` / queue errors surfaced as
+    ///   `Box<dyn Error>`.
+    pub fn add_episode(
+        &mut self,
+        ep: crate::resolution::Episode,
+    ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+        use crate::store_api::{RawStoreOutcome, StorageMeta, StoreError, StoreOutcome};
+
+        // Validate text up front — store_raw would return Skipped/TooShort
+        // for empty content, but the contract is clearer if we surface it
+        // as an explicit error here.
+        if ep.text.trim().is_empty() {
+            return Err("add_episode: text is empty".into());
+        }
+
+        // Materialize the caller's id (or mint a fresh one) into a Uuid
+        // that we'll both park for storage and return to the caller.
+        let episode_uuid: uuid::Uuid = ep.id.unwrap_or_else(uuid::Uuid::new_v4);
+        let caller_supplied_id = ep.id.is_some();
+
+        // Park the caller-supplied id (if any) into the one-shot slot
+        // consumed by `add_raw`. When `ep.id` was None we DON'T park
+        // anything — `add_raw` falls through to the legacy 8-char hex
+        // path, which we'd then have to re-derive into a Uuid for the
+        // return value. Honoring caller ids in full-Uuid format is the
+        // ISS-133 path; the no-caller-id path stays as-is for v0.2
+        // compatibility (see the implementation note below).
+        if caller_supplied_id {
+            self.pending_caller_id = Some(episode_uuid.to_string());
+        }
+
+        // Build StorageMeta. session_id and metadata both ride in
+        // user_metadata; session_id is set last so it survives a
+        // collision in caller-supplied metadata (and a warning is
+        // emitted for visibility).
+        let mut user_metadata = ep.metadata.clone();
+        if !user_metadata.is_object() && !user_metadata.is_null() {
+            // Episode.metadata is typed as serde_json::Value but the
+            // resolution-layer contract is "object or null". Surface a
+            // non-object so the caller sees the misuse rather than
+            // silently coercing.
+            return Err(format!(
+                "add_episode: Episode.metadata must be a JSON object or null, got {}",
+                match &ep.metadata {
+                    serde_json::Value::Array(_) => "array",
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Bool(_) => "bool",
+                    _ => "other",
+                }
+            )
+            .into());
+        }
+        if let Some(session) = ep.session_id {
+            // Normalize user_metadata to an object so we can splice the
+            // session id in.
+            if user_metadata.is_null() {
+                user_metadata = serde_json::json!({});
+            }
+            if let Some(obj) = user_metadata.as_object_mut() {
+                if obj.contains_key("session_id") {
+                    log::warn!(
+                        "add_episode: Episode.metadata.session_id overridden by Episode.session_id ({})",
+                        session
+                    );
+                }
+                obj.insert(
+                    "session_id".to_string(),
+                    serde_json::Value::String(session.to_string()),
+                );
+            }
+        }
+
+        let meta = StorageMeta {
+            importance_hint: None,
+            source: None,
+            namespace: None,
+            user_metadata,
+            memory_type_hint: None,
+            occurred_at: ep.when,
+            emotion: None,
+            domain: None,
+        };
+
+        // Admit the row. store_raw consumes `pending_caller_id` on the
+        // first `add_raw` call inside the path it picks (Path A no-facts
+        // fallback, Path A multi-fact loop's first iteration, or Path B
+        // single-write).
+        let outcome = self.store_raw(&ep.text, meta).map_err(|e| match e {
+            StoreError::Quarantined { id, reason } => Box::<dyn std::error::Error>::from(
+                format!("add_episode: quarantined: {reason:?} (id={})", id.as_str()),
+            ),
+            other => Box::<dyn std::error::Error>::from(other.to_string()),
+        })?;
+
+        // Belt-and-braces: if store_raw took a path that *didn't* call
+        // add_raw (currently impossible but defensive) clear the parked
+        // id so it can't leak into a later admit.
+        self.pending_caller_id = None;
+
+        // Pull out the admitted id. For multi-fact admits we honored
+        // the caller id on the first fact; warn about the rest.
+        let admitted_id: String = match outcome {
+            RawStoreOutcome::Stored(outcomes) => {
+                if outcomes.len() > 1 && caller_supplied_id {
+                    log::warn!(
+                        "add_episode: extractor produced {} facts; Episode.id honored on first fact only \
+                         (remaining {} facts got fresh ids — ISS-133 Q1=(b) multi-fact dispatch rule)",
+                        outcomes.len(),
+                        outcomes.len() - 1
+                    );
+                }
+                outcomes
+                    .first()
+                    .map(|o| match o {
+                        StoreOutcome::Inserted { id } => id.clone(),
+                        StoreOutcome::Merged { id, .. } => id.clone(),
+                    })
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "add_episode: store_raw returned Stored with empty outcomes".into()
+                    })?
+            }
+            RawStoreOutcome::Skipped { reason, content_hash } => {
+                return Err(format!(
+                    "add_episode: content skipped at write time ({:?}, hash={})",
+                    reason,
+                    content_hash.as_str()
+                )
+                .into());
+            }
+            RawStoreOutcome::Quarantined { id, reason } => {
+                return Err(format!(
+                    "add_episode: content quarantined ({:?}, id={})",
+                    reason,
+                    id.as_str()
+                )
+                .into());
+            }
+        };
+
+        // Resolve the Uuid we return to the caller.
+        // * If they supplied an id, we already stored under that string
+        //   AND we have it in `episode_uuid` — return that.
+        // * If they did not, `add_raw` minted an 8-char hex id. Wrap it
+        //   into a Uuid by parsing as hex into the trailing 32 bits of
+        //   an otherwise-zero Uuid. This is lossy (the original hex is
+        //   the source of truth in `memories.id`), but the ACs require
+        //   a Uuid return and this is the v0.2-compat tradeoff. Callers
+        //   who need round-trip MUST supply `Episode.id`.
+        let returned_uuid: uuid::Uuid = if caller_supplied_id {
+            episode_uuid
+        } else {
+            // admitted_id is 8 lowercase hex chars (see add_raw).
+            let parsed = u32::from_str_radix(&admitted_id, 16).map_err(|e| -> Box<dyn std::error::Error> {
+                format!(
+                    "add_episode: unexpected admitted id format {admitted_id:?}: {e}"
+                )
+                .into()
+            })?;
+            uuid::Uuid::from_u128(parsed as u128)
+        };
+
+        // Fire-and-forget enqueue. enqueue_pipeline_job returns None
+        // when no queue is installed (v0.2-compat mode) — that's not
+        // an error, the caller just won't see extraction_status
+        // progress beyond NotStarted.
+        let _ = self.enqueue_pipeline_job(&admitted_id);
+
+        Ok(returned_uuid)
+    }
+
+    /// Retry pipeline resolution for a batch of episodes (ISS-133, GOAL-2.1
+    /// idempotence). Blocking: polls
+    /// [`Memory::extraction_status`] until every requested id reaches a
+    /// terminal state, then buckets the results into a [`ReextractReport`].
+    ///
+    /// ## Semantics
+    ///
+    /// For each `id` in `ids`:
+    ///
+    /// * If the memory row does not exist → `still_failed` with reason
+    ///   `"memory not found"` (we cannot enqueue a job for a missing
+    ///   row).
+    /// * If the latest pipeline run is already `Completed` *and* the row
+    ///   has at least one extracted entity → `skipped_idempotent`. This
+    ///   is the GOAL-2.1 carve-out: re-running on already-resolved input
+    ///   is observable as a distinct outcome, not a "succeeded" event.
+    /// * Otherwise we enqueue a `PipelineJob::reextract` and poll
+    ///   `extraction_status` until it reports `Completed` (→ `succeeded`)
+    ///   or `Failed` (→ `still_failed` carrying the failure reason).
+    ///
+    /// Polls every 50 ms; no timeout (ISS-133 Q3=(a) — caller may abort
+    /// via tokio task cancellation). The poll interval is intentionally
+    /// short because resolution worker turnaround is sub-second in the
+    /// common case.
+    ///
+    /// ## Errors
+    ///
+    /// Returns `Err` only on infrastructure failure (no pipeline queue
+    /// installed). Per-id failures populate `still_failed` and the call
+    /// still returns `Ok(report)` so callers can inspect partial results.
+    pub fn reextract_episodes(
+        &mut self,
+        ids: Vec<uuid::Uuid>,
+    ) -> Result<crate::resolution::ReextractReport, Box<dyn std::error::Error>> {
+        use crate::resolution::ExtractionStatus;
+
+        let mut report = crate::resolution::ReextractReport::new(ids.len());
+
+        // Snapshot ids as strings up front — `memories.id` is `String`
+        // and we'll need them repeatedly for `Memory::get` and
+        // `extraction_status` lookups.
+        let ids_as_strings: Vec<(uuid::Uuid, String)> =
+            ids.into_iter().map(|u| (u, u.to_string())).collect();
+
+        // Pass 1: classify into "skip" vs "enqueue".
+        let mut to_poll: Vec<(uuid::Uuid, String)> = Vec::new();
+        for (uuid, id_str) in &ids_as_strings {
+            // Memory must exist for the resolution worker to do anything.
+            let exists = self.get(id_str)?.is_some();
+            if !exists {
+                report
+                    .still_failed
+                    .push((*uuid, "memory not found".to_string()));
+                continue;
+            }
+
+            // Idempotency check (GOAL-2.1): if the latest run is
+            // Completed, this is a no-op retry.
+            let current = self.extraction_status(id_str)?;
+            if matches!(current, ExtractionStatus::Completed { .. }) {
+                report.skipped_idempotent.push(*uuid);
+                continue;
+            }
+
+            // Enqueue a re-extract job. We use the lower-level
+            // `Memory::reextract(memory_id)` which returns the new
+            // episode_id; we discard it because polling uses
+            // `extraction_status` keyed on memory_id, not episode_id.
+            if let Err(e) = self.reextract(id_str) {
+                report
+                    .still_failed
+                    .push((*uuid, format!("enqueue failed: {e}")));
+                continue;
+            }
+            to_poll.push((*uuid, id_str.clone()));
+        }
+
+        // Pass 2: poll each enqueued id until terminal. We iterate
+        // until `to_poll` is drained; on each pass we re-check status
+        // for every id still pending and remove those that have
+        // resolved.
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+        while !to_poll.is_empty() {
+            let mut still_pending: Vec<(uuid::Uuid, String)> = Vec::new();
+            for (uuid, id_str) in to_poll.drain(..) {
+                match self.extraction_status(&id_str)? {
+                    ExtractionStatus::Completed { .. } => {
+                        report.succeeded.push(uuid);
+                    }
+                    ExtractionStatus::Failed { message, .. } => {
+                        report.still_failed.push((uuid, message));
+                    }
+                    // NotStarted / Pending / Running → keep polling.
+                    _ => still_pending.push((uuid, id_str)),
+                }
+            }
+            to_poll = still_pending;
+            if !to_poll.is_empty() {
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+
+        Ok(report)
     }
 
     /// Enqueue a `PipelineJob::initial` for `memory_id` after a
@@ -966,6 +1316,7 @@ impl Memory {
             last_extraction_emotions: std::sync::Mutex::new(None),
             recent_recalls: VecDeque::new(),
             last_add_result: None,
+            pending_caller_id: None,
             dedup_merge_count: 0,
             dedup_write_count: 0,
             metacognition: None,
@@ -1035,6 +1386,7 @@ impl Memory {
             last_extraction_emotions: std::sync::Mutex::new(None),
             recent_recalls: VecDeque::new(),
             last_add_result: None,
+            pending_caller_id: None,
             dedup_merge_count: 0,
             dedup_write_count: 0,
             metacognition: None,
@@ -1102,6 +1454,7 @@ impl Memory {
             last_extraction_emotions: std::sync::Mutex::new(None),
             recent_recalls: VecDeque::new(),
             last_add_result: None,
+            pending_caller_id: None,
             dedup_merge_count: 0,
             dedup_write_count: 0,
             metacognition: None,
@@ -1174,6 +1527,7 @@ impl Memory {
             last_extraction_emotions: std::sync::Mutex::new(None),
             recent_recalls: VecDeque::new(),
             last_add_result: None,
+            pending_caller_id: None,
             dedup_merge_count: 0,
             dedup_write_count: 0,
             metacognition: None,
@@ -2401,7 +2755,28 @@ impl Memory {
         occurred_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let ns = namespace.unwrap_or("default");
-        let id = format!("{}", Uuid::new_v4())[..8].to_string();
+        // ISS-133: if `add_episode` parked a caller-supplied id, consume it
+        // here. `Option::take()` ensures multi-fact loops only honor the id
+        // for the first fact (subsequent `add_raw` calls see `None`).
+        let id = match self.pending_caller_id.take() {
+            Some(caller_id) => {
+                // ISS-133 Q2=(d): caller-supplied id is semantically
+                // incompatible with content-hash dedup. If dedup is on, the
+                // caller's id might silently be discarded in favor of an
+                // existing row's id — that violates the idempotency contract
+                // they're paying for. Reject explicitly so the caller picks
+                // one or the other.
+                if self.config.dedup_enabled {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "caller-supplied memory id is incompatible with content-hash dedup; \
+                         disable MemoryConfig::dedup_enabled or omit Episode.id",
+                    )));
+                }
+                caller_id
+            }
+            None => format!("{}", Uuid::new_v4())[..8].to_string(),
+        };
         let base_importance = importance.unwrap_or_else(|| memory_type.default_importance());
         
         // Apply drive alignment boost if Empathy Bus is attached

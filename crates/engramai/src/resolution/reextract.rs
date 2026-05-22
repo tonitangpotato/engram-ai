@@ -37,9 +37,13 @@
 //!
 //! ## Consumer
 //!
-//! The intended consumer is `Memory::reextract_episodes` (currently deferred,
-//! see `crates/engramai/src/memory.rs` "What is *not* shipped here" block).
-//! Once `task:res-impl-memory-api` lands, that method will return this type.
+//! The consumer is [`Memory::reextract_episodes`] (shipped in ISS-133):
+//! given a `Vec<Uuid>` of memory ids, that method enqueues a retry job
+//! for each, polls until terminal, and returns this report with the
+//! requested ids bucketed into `succeeded` / `still_failed` /
+//! `skipped_idempotent`.
+//!
+//! [`Memory::reextract_episodes`]: ../../memory/struct.Memory.html#method.reextract_episodes
 //!
 //! ## Example
 //!

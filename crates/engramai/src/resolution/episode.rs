@@ -1,10 +1,12 @@
 //! Episode — v0.3 ingestion contract.
 //!
-//! `Episode` is the public input type for `Memory::add_episode`. It packages a
-//! single ingested memory event with optional caller-supplied identity, session
-//! affinity, timestamp, and free-form metadata. The resolution pipeline
+//! `Episode` is the public input type for [`Memory::add_episode`]. It packages
+//! a single ingested memory event with optional caller-supplied identity,
+//! session affinity, timestamp, and free-form metadata. The resolution pipeline
 //! (see `crates/engramai/src/resolution/`) consumes this structure and produces
 //! v0.3 semantic graph nodes and edges.
+//!
+//! [`Memory::add_episode`]: ../../memory/struct.Memory.html#method.add_episode
 //!
 //! ## Field semantics
 //!
