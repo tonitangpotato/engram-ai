@@ -9,6 +9,7 @@ related:
 - v03-migration
 - ISS-043
 depends_on: ISS-132
+fixed_by: 00c804c
 ---
 
 # ISS-044: Wire MigrationOrchestrator::run_backfill to PipelineRecordProcessor
