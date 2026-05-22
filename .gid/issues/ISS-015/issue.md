@@ -1,11 +1,44 @@
 ---
 id: "ISS-015"
-title: "[improvement] [P1] [closed]"
-status: open
+title: "Clustering algorithm upgrade — Union-Find/single-linkage → Infomap community detection"
+status: resolved
 priority: P2
 created: 2026-04-26
+resolved: 2026-05-22
+fixed_by: "974a642+2108e67"
+relates_to: [ISS-110]
 ---
-# ISS-015 [improvement] [P1] [closed]
+# ISS-015 — Clustering algorithm upgrade — Union-Find/single-linkage → Infomap community detection
+
+> **Resolution note (2026-05-22):** This issue was completed in code but the
+> artifact frontmatter was never flipped. The title `[improvement] [P1] [closed]`
+> recorded the intent. Verified 2026-05-22:
+>
+> - `crates/engramai/src/compiler/discovery.rs` uses `infomap_rs::Infomap`
+>   directly (Step 1 of the proposal — discovery no longer runs its own
+>   single-linkage agglomerative clustering).
+> - `crates/engramai/src/synthesis/cluster.rs` uses `infomap_rs::Infomap`
+>   directly (Step 2 — synthesis migrated away from Union-Find connected
+>   components).
+> - Both call sites contain comments explicitly documenting the migration
+>   ("This replaced the previous Union-Find connected-components approach
+>   which suffered from the single-linkage chaining effect").
+> - The chaining-resistance regression test at
+>   `compiler/discovery.rs:650` ("Test that Infomap doesn't suffer from
+>   single-linkage chaining") pins the behavioral fix.
+>
+> The architectural follow-up (unify BOTH call sites through one shared
+> `InfomapClusterer<MultiSignal>` wrapper, per ADR
+> `docs/adr-unified-clustering.md`) regressed during the ISS-023 monorepo
+> sync and is tracked separately by **ISS-110**. ISS-015's algorithmic
+> upgrade objective is independent from that architectural cleanup —
+> closing here.
+>
+> Title also normalized: dropped the bracketed `[improvement] [P1] [closed]`
+> metadata that was duplicating frontmatter fields. The Chinese body below
+> is preserved verbatim for historical context.
+
+---
 
 **标题**: 聚类算法升级 — Union-Find 连通分量 → Infomap 社区检测
 **发现日期**: 2026-04-18
