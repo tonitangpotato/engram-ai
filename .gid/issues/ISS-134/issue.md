@@ -1,11 +1,15 @@
 ---
 id: ISS-134
 title: Single source of truth for embedding dimensions (consolidate 3 constants)
-status: todo
+status: resolved
 priority: P2
 kind: design-debt
-labels: [substrate, embeddings, tech-debt]
-relates_to: [ISS-132]
+labels:
+- substrate
+- embeddings
+- tech-debt
+relates_to:
+- ISS-132
 ---
 
 # ISS-134 — Single source of truth for embedding dimensions
@@ -59,14 +63,55 @@ config consolidation work, not bolted on now.
 
 ## Acceptance criteria
 
-- [ ] Single canonical place for "default embedding dim" — others reference it.
-- [ ] Adding a new model (e.g. 1024-dim) requires editing exactly **one** file.
-- [ ] No `pub const` or magic number 768 (or 384) appears in resolution or
+- [x] Single canonical place for "default embedding dim" — others reference it.
+- [x] Adding a new model (e.g. 1024-dim) requires editing exactly **one** file.
+- [x] No `pub const` or magic number 768 (or 384) appears in resolution or
   graph layers — only in the canonical site.
-- [ ] Test added: assert that all three legacy constant sites (if kept for
+- [x] Test added: assert that all three legacy constant sites (if kept for
   back-compat) agree on dim at compile time or test time.
-- [ ] `apply_graph_delta` invariant violations cannot be triggered by mismatched
+- [x] `apply_graph_delta` invariant violations cannot be triggered by mismatched
   defaults again (regression test from ISS-132 still passes after refactor).
+
+## Resolution (2026-05-22)
+
+Implemented Option B (function anchored to `EmbeddingConfig::default()`).
+
+**Shipped:**
+- `pub fn default_embedding_dim() -> usize` in
+  `crates/engramai/src/embeddings.rs` — anchored to
+  `EmbeddingConfig::default().dimensions`. Inline, runtime-resolved (one
+  `Default::default()` call per invocation, intended for startup paths
+  only).
+- Deleted `DEFAULT_ENTITY_EMBEDDING_DIM` from `graph/store.rs`; replaced
+  the one use site (`SqliteGraphStore::new`) with
+  `crate::embeddings::default_embedding_dim()`.
+- Deleted `DEFAULT_EMBEDDING_DIM` from `resolution/mod.rs`; replaced the
+  one use site (`default_embedder()`) with the same call.
+- Updated `with_embedding_dim` and `graph_mut` doc-comments to point at
+  the new canonical function.
+- Stale comment in `iss075_embedding_dim_smoke.rs` rewritten — the test
+  has always been about rejecting a deliberately-wrong 384-dim vector;
+  it does NOT (and never did, post-ISS-132) model production resolution.
+
+**Tests added:**
+- `embeddings::tests::default_embedding_dim_matches_default_config_iss134`
+  — guarantees the function never drifts from
+  `EmbeddingConfig::default().dimensions`.
+- `embeddings::tests::default_embedding_dim_is_nonzero_iss134` —
+  defence-in-depth against accidental `dimensions: 0`.
+
+**Verification:**
+- `grep -rn 'DEFAULT_EMBEDDING_DIM\|DEFAULT_ENTITY_EMBEDDING_DIM' --include='*.rs'`
+  returns empty — both constants fully removed, no dangling references.
+- `cargo test -p engramai --lib` → 1910 pass, 0 fail (was 1908; +2).
+- `cargo test -p engramai-migrate --lib` → 190 pass, 0 fail.
+- `cargo test -p engramai-migrate --test iss044_backfill` → 3/3 pass
+  (ISS-132 regression test still green).
+- `cargo test -p engramai --test iss075_embedding_dim_smoke` → 1/1 pass.
+
+**Future swap procedure:** to change the default embedding model, edit
+exactly one place: `EmbeddingConfig::default()` in `embeddings.rs`. The
+graph store and resolution pipeline pick it up automatically.
 
 ## Non-goals
 

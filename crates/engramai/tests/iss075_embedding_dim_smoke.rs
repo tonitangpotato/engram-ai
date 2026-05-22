@@ -19,8 +19,11 @@ fn entity_with_384_dim_embedding_into_default_768_store_smoke() {
     .unwrap();
     init_graph_tables(&conn).expect("init graph tables");
     let mut store = SqliteGraphStore::new(&mut conn).with_namespace("smoke");
-    // Default embedding_dim = 768 (DEFAULT_ENTITY_EMBEDDING_DIM).
-    // Resolution pipeline produces 384 (DEFAULT_EMBEDDING_DIM).
+    // Default embedding_dim = `crate::embeddings::default_embedding_dim()`
+    // (ISS-134 single source of truth, currently 768 for nomic-embed-text).
+    // This smoke test confirms a *deliberately wrong* 384-dim vector is
+    // rejected by the dim-checked store — it does NOT model production
+    // resolution, which uses the canonical 768 dim post-ISS-132.
 
     let id = Uuid::new_v4();
     let mut e = Entity::new(id, "Alice".to_string(), EntityKind::Person, Utc::now());

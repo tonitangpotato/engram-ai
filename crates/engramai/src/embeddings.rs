@@ -46,6 +46,28 @@ impl Default for EmbeddingConfig {
     }
 }
 
+/// **Canonical embedding dimension for the engramai crate (ISS-134).**
+///
+/// Returns the dimensionality of vectors produced by the default embedder
+/// (`EmbeddingConfig::default().dimensions`). This is the single source of
+/// truth — every subsystem that needs to allocate, validate, or persist
+/// embedding vectors at the crate-default dim MUST call this function
+/// rather than hard-coding `768` or maintaining its own constant.
+///
+/// Anchored to `EmbeddingConfig::default()` so swapping the default model
+/// (e.g. nomic-embed-text → mxbai-embed-large) automatically propagates to
+/// the graph-row invariant (`graph_entities.embedding` BLOB length) and
+/// the resolution-pipeline placeholder dim with no further code changes.
+///
+/// **Performance:** allocates one `EmbeddingConfig` on every call. The
+/// function is intended for one-shot startup paths (pipeline construction,
+/// table-schema init); do not call it in a hot loop. If you need a
+/// long-lived value, capture it once into a local variable.
+#[inline]
+pub fn default_embedding_dim() -> usize {
+    EmbeddingConfig::default().dimensions
+}
+
 impl EmbeddingConfig {
     /// Get the model identifier in protocol format: `{provider}/{model}`.
     ///
@@ -489,7 +511,24 @@ impl From<rusqlite::Error> for EmbeddingError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
+    #[test]
+    fn default_embedding_dim_matches_default_config_iss134() {
+        // ISS-134: `default_embedding_dim()` is the single source of truth.
+        // It MUST return whatever `EmbeddingConfig::default().dimensions`
+        // returns; any drift = the consolidation has been broken.
+        assert_eq!(default_embedding_dim(), EmbeddingConfig::default().dimensions);
+    }
+
+    #[test]
+    fn default_embedding_dim_is_nonzero_iss134() {
+        // Defence-in-depth: zero-dim vectors would silently break alias
+        // lookup and cosine similarity. If someone ever sets
+        // `EmbeddingConfig::default().dimensions = 0` they should fail
+        // this test rather than ship broken embeddings.
+        assert!(default_embedding_dim() > 0);
+    }
+
     #[test]
     fn test_cosine_similarity_identical() {
         let a = vec![1.0, 2.0, 3.0];

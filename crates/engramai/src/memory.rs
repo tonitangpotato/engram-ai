@@ -651,7 +651,8 @@ impl Memory {
     /// and `GraphWrite` — until ISS-040 splits the storage layer, the
     /// concrete type is the same for both views.
     ///
-    /// Defaults: namespace `"default"`, `DEFAULT_ENTITY_EMBEDDING_DIM`.
+    /// Defaults: namespace `"default"`, dim from
+    /// [`crate::embeddings::default_embedding_dim`].
     /// Advanced callers that need a different namespace or embedding
     /// dim should call `SqliteGraphStore::new(self.storage.connection_mut())`
     /// directly with `.with_namespace(...)` / `.with_embedding_dim(...)`.

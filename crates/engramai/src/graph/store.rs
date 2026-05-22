@@ -653,19 +653,12 @@ pub struct SqliteGraphStore<'a> {
     /// blobs MUST decode to a vector of this length; mismatch is a hard
     /// `GraphError::Invariant("entity embedding dim mismatch")`. Same value
     /// as `EmbeddingClient::config.dimensions` and `KnowledgeTopic` write
-    /// path — single source of truth lives in the embedding provider config,
-    /// not duplicated here. Defaulted to [`DEFAULT_ENTITY_EMBEDDING_DIM`] for
-    /// fresh stores; override via [`Self::with_embedding_dim`].
+    /// path — single source of truth lives in the embedding provider config
+    /// (`crate::embeddings::default_embedding_dim`), not duplicated here.
+    /// Defaulted to that value for fresh stores; override via
+    /// [`Self::with_embedding_dim`].
     pub(crate) embedding_dim: usize,
 }
-
-/// Default embedding dim for `SqliteGraphStore` (ISS-033). 768 matches the
-/// nomic-embed-text Ollama default declared in
-/// `crate::embeddings::EmbeddingConfig::default()`. Production code that
-/// uses a different provider (OpenAI 1536, etc.) MUST call
-/// [`SqliteGraphStore::with_embedding_dim`] with the matching value before
-/// any write touches `graph_entities.embedding`.
-pub const DEFAULT_ENTITY_EMBEDDING_DIM: usize = 768;
 
 impl<'a> SqliteGraphStore<'a> {
     /// Construct a new store with default namespace `"default"` and a
@@ -678,7 +671,7 @@ impl<'a> SqliteGraphStore<'a> {
             sink: Box::new(NoopSink),
             watermark: WatermarkTracker::new(1000),
             predicate_use_buffer: HashMap::new(),
-            embedding_dim: DEFAULT_ENTITY_EMBEDDING_DIM,
+            embedding_dim: crate::embeddings::default_embedding_dim(),
         }
     }
 
@@ -694,7 +687,8 @@ impl<'a> SqliteGraphStore<'a> {
 
     /// Override the system-wide embedding dim (ISS-033). Must match the dim
     /// of the embedding provider that produces `Entity::embedding` vectors;
-    /// see [`DEFAULT_ENTITY_EMBEDDING_DIM`].
+    /// see [`crate::embeddings::default_embedding_dim`] for the canonical
+    /// default.
     pub fn with_embedding_dim(mut self, dim: usize) -> Self {
         self.embedding_dim = dim;
         self
