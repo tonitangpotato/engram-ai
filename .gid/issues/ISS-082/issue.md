@@ -1,10 +1,16 @@
 ---
-title: CLI store/recall/reward: positional content with leading dash crashes clap (needs flag-based content arg)
-status: open
+title: 'CLI store/recall/reward: positional content with leading dash crashes clap (needs flag-based content arg)'
+status: resolved
 priority: P1
 severity: medium
-tags: [cli, ergonomics, ingest, locomo]
-relates_to: [ISS-081]
+tags:
+- cli
+- ergonomics
+- ingest
+- locomo
+relates_to:
+- ISS-081
+fixed_by: eb10b2e
 ---
 
 # ISS-082: CLI positional `<CONTENT>` crashes on leading-dash payloads
