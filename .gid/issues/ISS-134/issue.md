@@ -10,6 +10,7 @@ labels:
 - tech-debt
 relates_to:
 - ISS-132
+fixed_by: 3ee180c
 ---
 
 # ISS-134 — Single source of truth for embedding dimensions
