@@ -136,12 +136,18 @@ use std::sync::Arc;
 
 /// Default embedding dimension for [`default_embedder`].
 ///
-/// Matches the `nomic-embed-text` dimension used by the production Ollama
-/// embedder so an `IdentityEmbedder` placeholder produces vectors of the
-/// same shape — switching the wiring to a real embedder later does not
-/// touch any persisted-row schema (alias rows store the dimension in
-/// metadata, not in the column type).
-pub const DEFAULT_EMBEDDING_DIM: usize = 384;
+/// Matches the `nomic-embed-text` dimension (768) used by the production
+/// Ollama embedder and the `graph_entities.embedding` column invariant
+/// enforced by [`crate::graph::store::DEFAULT_ENTITY_EMBEDDING_DIM`]. An
+/// `IdentityEmbedder` placeholder produces vectors of the same shape so
+/// alias rows and entity-embedding blobs round-trip cleanly through
+/// `apply_graph_delta`.
+///
+/// NOTE: this constant duplicates the dim defined in
+/// [`crate::embeddings::EmbeddingConfig::default`] and
+/// [`crate::graph::store::DEFAULT_ENTITY_EMBEDDING_DIM`]. Consolidating
+/// these three sites onto a single source of truth is tracked in ISS-134.
+pub const DEFAULT_EMBEDDING_DIM: usize = 768;
 
 /// Construct the default `Arc<dyn Embedder + Send + Sync>` used to wire
 /// [`pipeline::ResolutionPipeline`] in callers that have no real embedder
