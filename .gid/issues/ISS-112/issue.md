@@ -1,12 +1,18 @@
 ---
 id: ISS-112
 kind: issue
-status: open
+status: resolved
 priority: P2
 severity: hardening
-labels: [v04, phase-c, backfill, follow-up]
+labels:
+- v04
+- phase-c
+- backfill
+- follow-up
 created_at: 2026-05-13
-relates_to: [v04-unified-substrate]
+relates_to:
+- v04-unified-substrate
+fixed_by: 8a48213
 ---
 
 # v04 Phase C backfill polish: audit durability, test gaps, merge silent-drops
