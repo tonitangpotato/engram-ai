@@ -91,10 +91,10 @@ This is doc-only. No code change.
 
 ## Acceptance
 
-- [ ] A: Audit INSERT+UPDATE moved inside work tx in T19, T20, T21 (and T22-T25 if shipped). Helper extracted.
-- [ ] A: regression test — panic mid-tx → no audit row leaked.
+- [x] A: Audit INSERT+UPDATE moved inside work tx in T19, T20, T21 (and T22-T25 if shipped). Helper extracted. *(Scope re-evaluated 2026-05-15 — T19 root-fix shipped (single-tx Pass 1+Pass 2), rest WONTFIX; see progress notes.)*
+- [x] A: regression test — panic mid-tx → no audit row leaked. *(Shipped as T19 atomicity test using `FAULT_INJECT_BETWEEN_PASSES`; see progress notes.)*
 - [x] B: 4 new tests added to `v04_phase_c_backfill_entities.rs`. (commit `eca36d6` shipped B-#4 as `iss112_c_corrupt_existing_attributes_surfaced_in_counter`; B-#1/#2/#3 land in the §B commit.)
-- [ ] B: similar test-gap audit applied to T19, T20 (and T22-T25 if shipped).
+- [x] B: similar test-gap audit applied to T19, T20 (and T22-T25 if shipped). (commit TBD, 2026-05-22) — scope-evaluated cross-driver: T19 + T22 are the only drivers that merge user metadata, both now covered. T20/T23/T25 do not merge user metadata (T20 has no metadata blob, T23/T25 build attributes from synthetic keys), so §B-#1/#2 are N/A. §B-#4 (corrupt existing attributes → counter) is covered globally by the `MergeOutcome::ExistingNotObject` infrastructure shipped in §C.
 - [x] C: `rows_existing_attrs_not_object` counter added; B-#4 test verifies it. (commit `eca36d6`, 2026-05-15) — MergeOutcome enum surfaces ExistingNotObject/NewNotObject; T21 + T22 both count under new audit notes key.
 - [x] D: Pass 2 skips UPDATE when byte-identical; regression test asserts `updated_at` stability. (commit `eca36d6`, 2026-05-15) — diff-and-skip applied to T21 + T22; 2 regression tests pinned.
 - [x] E: `rows_skipped_kind_mismatch` rename; invariant comment added. (commit `eca36d6`, 2026-05-15) — applied to both T21 and T22, regression test `iss112_e_kind_mismatch_emits_under_skipped_prefix` added.
@@ -122,3 +122,26 @@ Blocked by: T22-T25 completion (so the audit-row durability fix can be done acro
 
 T21 review round 1: `.gid/features/v04-unified-substrate/reviews/t21-r1.md` FINDINGs 2-7.
 T21 commit: `78f8eb5` (engram).
+
+---
+
+## Resolution — 2026-05-22
+
+All ACs ticked. §A scope-resolved 2026-05-15 (T19 root fix shipped; scenarios 1-3 documented WONTFIX per first-principles re-eval). §B cross-driver audit completed 2026-05-22:
+
+**Cross-driver §B audit findings:**
+
+| Driver | Has metadata merge? | §B-#1/#2 applicable? | Coverage status |
+|---|---|---|---|
+| T19 (memories) | Yes — `merge_legacy_memory_attributes` stamps reserved `_legacy_*` keys | Yes (reserved-key shadowing only — Pass-1-only, no rerun merge) | ✅ 2 new tests in `v04_phase_c_backfill.rs`: `iss112_b_t19_reserved_legacy_key_in_metadata_does_not_shadow_column` (column wins), `iss112_b_t19_metadata_legacy_key_passes_through_when_column_null` (pins documented soft behavior) |
+| T20 (memory_embeddings) | No — projects `vector`/`model_id`/`dim` only | No metadata blob | N/A (pre-existing `t20_malformed_created_at_uses_fallback` already covers corruption resilience) |
+| T21 (entities) | Yes — full Pass-2 `merge_attributes_existing_wins` | Yes | ✅ Shipped 2026-05-15 (`3ddf980`) |
+| T22 (entity_relations) | Yes — full Pass-2 `merge_attributes_existing_wins` | Yes (full §B-#1 mutated-rerun) | ✅ 1 new test in `v04_phase_c_backfill_entity_relations.rs`: `iss112_b_t22_mutated_metadata_rerun_existing_wins` (covers existing-wins + §D updated_at bump on real merge) |
+| T23 (memory_entities) | No — builds attributes from synthetic role keys; no user metadata read | N/A | N/A |
+| T25 (synthesis_provenance) | No — builds attributes from synthetic `gate_decision`/`cluster_id`/`gate_scores` | N/A | N/A |
+
+§B-#4 (corrupt existing attributes → counter) is pinned globally by the `MergeOutcome::ExistingNotObject` infrastructure shipped in §C — all merge-using drivers (T21, T22) share the counter contract.
+
+**Tests**: 3 new (+0 lib changes). Phase C backfill suite: 84/84 across 8 test files. 1910/1910 lib pass.
+
+ISS-112 closed.

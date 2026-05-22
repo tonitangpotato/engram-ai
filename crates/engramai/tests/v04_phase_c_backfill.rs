@@ -448,3 +448,120 @@ fn t19_counter_invariant_holds() {
     // assert_counter_invariant is called inside the driver — getting
     // here means the sum invariant held.
 }
+
+// ---------------------------------------------------------------------------
+// ISS-112 §B cross-driver test-gap audit applied to T19 (memories).
+//
+// The §B patterns (mutated-metadata rerun, reserved column-key shadowing,
+// empty-string column, corrupt existing attributes) were first applied to
+// T21 (entities). This block extends the relevant subset to T19. T19 is
+// Pass-1-only for the data write (no metadata merge — `INSERT OR IGNORE`
+// drops conflicts), so the mutated-metadata RERUN pattern collapses into
+// the existing `t19_backfill_inserts_missing_rows_and_skips_existing`
+// idempotency assertion. The remaining gap that DOES apply is the
+// reserved-key shadowing pattern: `merge_legacy_memory_attributes` stamps
+// `_legacy_contradicts` / `_legacy_contradicted_by` into the attributes
+// JSON. We pin both directions of the shadowing contract:
+//
+//   1. When BOTH the legacy column and metadata supply the reserved key,
+//      the column value wins (system-owned shim overrides user metadata).
+//   2. When ONLY metadata supplies the reserved key (column is NULL), the
+//      metadata value passes through unchanged.
+//
+// Direction (2) is the current "soft" behavior. If a future refactor adds
+// a formal reserved-key gate (see storage.rs:1957–1973 module comment),
+// this test will break loudly — which is the intent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn iss112_b_t19_reserved_legacy_key_in_metadata_does_not_shadow_column() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    // The supersession target must exist as a real `memories` row,
+    // otherwise the legacy column would be unsettable through `add`.
+    let target = sample_record("mem-real-target");
+    storage.add(&target, "default").expect("seed target");
+
+    // Construct a memory whose user-supplied `metadata` declares the
+    // reserved `_legacy_contradicts` key with a bogus value, AND whose
+    // real `contradicts` column points at a different (real) target.
+    // After backfill, the column value must shadow the metadata value.
+    let mut subject = sample_record("mem-with-reserved-key");
+    subject.contradicts = Some("mem-real-target".to_string());
+    subject.metadata = Some(serde_json::json!({
+        "_legacy_contradicts": "bogus-fake-target",
+        "tag": "phase-c",
+    }));
+    seed_legacy_only(&mut storage, &subject, "default");
+
+    let run = backfill_memories_to_nodes(&mut storage, None).expect("backfill");
+    assert!(run.rows_inserted >= 1, "subject must be inserted");
+
+    let attrs: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id = 'mem-with-reserved-key'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("read attributes");
+    let parsed: serde_json::Value = serde_json::from_str(&attrs).expect("attrs json");
+
+    assert_eq!(
+        parsed.get("_legacy_contradicts").and_then(|v| v.as_str()),
+        Some("mem-real-target"),
+        "column value must shadow user-supplied reserved key in metadata",
+    );
+    assert_eq!(
+        parsed.get("tag").and_then(|v| v.as_str()),
+        Some("phase-c"),
+        "non-reserved user metadata keys must survive intact",
+    );
+}
+
+#[test]
+fn iss112_b_t19_metadata_legacy_key_passes_through_when_column_null() {
+    // Pins the current "soft" behavior: when the legacy column is NULL
+    // / empty, the user-supplied `_legacy_contradicts` value in metadata
+    // is NOT stripped. This is documented in storage.rs:1969–1972 as a
+    // known reserved-key shim limitation. If a future formal
+    // reserved-key gate is added, this test will fail and the gate
+    // implementation must update the assertion (and the docs).
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+
+    let mut subject = sample_record("mem-metadata-only-legacy");
+    subject.contradicts = None;
+    subject.contradicted_by = None;
+    subject.metadata = Some(serde_json::json!({
+        "_legacy_contradicts": "passthrough-from-metadata",
+        "tag": "phase-c",
+    }));
+    seed_legacy_only(&mut storage, &subject, "default");
+
+    let run = backfill_memories_to_nodes(&mut storage, None).expect("backfill");
+    assert!(run.rows_inserted >= 1);
+
+    let attrs: String = storage
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id = 'mem-metadata-only-legacy'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("read attributes");
+    let parsed: serde_json::Value = serde_json::from_str(&attrs).expect("attrs json");
+
+    assert_eq!(
+        parsed.get("_legacy_contradicts").and_then(|v| v.as_str()),
+        Some("passthrough-from-metadata"),
+        "metadata-supplied reserved key must pass through when column is NULL \
+         (pins documented soft behavior — break this loudly if a formal \
+         reserved-key gate is added; see storage.rs:1969)",
+    );
+    assert_eq!(
+        parsed.get("tag").and_then(|v| v.as_str()),
+        Some("phase-c"),
+    );
+}

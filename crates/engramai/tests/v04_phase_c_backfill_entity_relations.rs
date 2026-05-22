@@ -515,3 +515,99 @@ fn t22_null_source_and_null_metadata_yield_empty_attributes() {
         obj
     );
 }
+
+// ---------------------------------------------------------------------------
+// ISS-112 §B cross-driver test-gap audit applied to T22 (entity_relations).
+//
+// Mirrors the §B-#1 (mutated-metadata rerun, existing-wins merge) pattern
+// already covered for T21 in `iss112_d_idempotent_rerun_does_not_bump_updated_at`
+// and related tests. T22 has full Pass-2 merge via
+// `merge_attributes_existing_wins` (backfill.rs:1300) so the mutated-metadata
+// contract applies: re-running with new metadata keys must add the new keys
+// without disturbing existing ones, and existing keys must NOT be overwritten
+// even when the legacy metadata has a different value.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn iss112_b_t22_mutated_metadata_rerun_existing_wins() {
+    let tmp = tempdir().unwrap();
+    let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
+    seed_legacy_entity(&storage, "ent-a", "A", "default");
+    seed_legacy_entity(&storage, "ent-b", "B", "default");
+    run_t21(&mut storage);
+
+    // Initial seed: legacy metadata declares `k1=v1`.
+    seed_legacy_relation(
+        &storage,
+        "rel-mut",
+        "ent-a",
+        "ent-b",
+        "knows",
+        1.0,
+        Some("s"),
+        "default",
+        Some(r#"{"k1":"v1"}"#),
+    );
+
+    let r1 = backfill_entity_relations_to_edges(&mut storage, None).expect("first run");
+    assert_eq!(r1.rows_inserted, 1);
+
+    let attrs1: String = storage
+        .conn()
+        .query_row("SELECT attributes FROM edges WHERE id='rel-mut'", [], |r| r.get(0))
+        .unwrap();
+    let parsed1: serde_json::Value = serde_json::from_str(&attrs1).unwrap();
+    assert_eq!(parsed1["k1"], "v1");
+
+    // Snapshot updated_at after first run for §D idempotency-noise check.
+    let updated_at_run1: f64 = storage
+        .conn()
+        .query_row("SELECT updated_at FROM edges WHERE id='rel-mut'", [], |r| r.get(0))
+        .unwrap();
+
+    // MUTATE the legacy metadata in two ways:
+    //   - existing key `k1` changes from `v1` to `v1-changed` (must be
+    //     dropped on merge — existing-wins keeps the edges row's `v1`)
+    //   - new key `k2=v2` (must land on merge)
+    storage
+        .conn()
+        .execute(
+            r#"UPDATE entity_relations
+                  SET metadata = ?
+                WHERE id = 'rel-mut'"#,
+            params![r#"{"k1":"v1-changed","k2":"v2"}"#],
+        )
+        .unwrap();
+
+    // Re-run backfill — Pass 2 merge runs against the mutated metadata.
+    let r2 = backfill_entity_relations_to_edges(&mut storage, None).expect("second run");
+    assert_eq!(r2.rows_inserted, 0, "row already exists; Pass 1 must skip");
+
+    let attrs2: String = storage
+        .conn()
+        .query_row("SELECT attributes FROM edges WHERE id='rel-mut'", [], |r| r.get(0))
+        .unwrap();
+    let parsed2: serde_json::Value = serde_json::from_str(&attrs2).unwrap();
+
+    // Existing-wins contract:
+    assert_eq!(
+        parsed2["k1"], "v1",
+        "existing-wins: legacy k1=v1-changed must NOT overwrite edges k1=v1",
+    );
+    assert_eq!(
+        parsed2["k2"], "v2",
+        "merge: new key k2 from mutated legacy metadata must land",
+    );
+
+    // ISS-112 §D regression: updated_at MUST bump because Pass 2
+    // actually added a new key (`k2`). Idempotent reruns (no change)
+    // don't bump; mutated reruns that produce a real merge DO bump.
+    let updated_at_run2: f64 = storage
+        .conn()
+        .query_row("SELECT updated_at FROM edges WHERE id='rel-mut'", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        updated_at_run2 > updated_at_run1,
+        "merge that adds a key MUST bump updated_at; was {updated_at_run1} -> {updated_at_run2}",
+    );
+}
