@@ -11,6 +11,7 @@ tags:
 - breaking-contract
 relates_to: []
 created: 2026-04-30
+fixed_by: d4896b8
 ---
 
 # CLI store missing --meta flag — user_metadata side-channel unreachable from CLI
