@@ -11,6 +11,7 @@ labels:
 - memory-api
 - resolution
 - v0.3
+fixed_by: 8e9dfcb
 ---
 
 # Problem
