@@ -1,10 +1,14 @@
 ---
 id: ISS-081
 title: CLI store missing --meta flag — user_metadata side-channel unreachable from CLI
-status: open
+status: resolved
 priority: P0
 severity: high
-tags: [cli, metadata-channel, regression-blocker, breaking-contract]
+tags:
+- cli
+- metadata-channel
+- regression-blocker
+- breaking-contract
 relates_to: []
 created: 2026-04-30
 ---
@@ -104,3 +108,79 @@ batch examples).
 - `docs/metadata-channel.md` — the design contract this implements
 - `crates/engramai/src/store_api.rs:84` — `StorageMeta.user_metadata` field
 - cogmembench (unregistered project) — adapter pattern blocked on this
+
+## 2026-05-22 — Resolved (with one AC dropped after spec re-read)
+
+The fix landed in code months ago but the issue was never closed. This
+session verified, added the missing integration test, and reconciled one
+AC item against the actual design doc.
+
+### What was already done (in-tree before this session)
+
+- `--meta key=value` repeatable flag on `engram store`
+  (`crates/engram-cli/src/main.rs:147-148`)
+- `parse_meta_kv` helper with JSON-or-string fallback semantics
+  (`main.rs:973-994`)
+- In-process unit tests `meta_kv_tests` covering empty input, mixed
+  parse, `=`-in-values, repeated keys (last-write-wins), bad keys, and
+  missing-`=` rejection (`main.rs:999-1046`, 6 tests).
+- `--meta` is wired into `StorageMeta.user_metadata` at the Store
+  dispatch site (`main.rs:1331`).
+- `engram recall --json` round-trips `MemoryRecord` via serde, so
+  `metadata.user.*` is included verbatim (no separate wire-up needed
+  — `MemoryRecord` already serializes its full payload).
+
+### What this session added
+
+- `crates/engram-cli/tests/iss081_meta_roundtrip.rs` — 3 integration
+  tests exec'ing the `engram` binary against a tempdir DB:
+  1. `store_and_recall_round_trips_meta_flag` — string + number + JSON
+     array round-trip through `metadata.user.*`.
+  2. `meta_repeated_key_is_last_write_wins` — pins the dedup contract
+     at the CLI surface.
+  3. `meta_missing_equals_is_rejected_with_clear_error` — diagnostic
+     error message includes the offending input.
+- `[dev-dependencies] tempfile = "3"` added to
+  `crates/engram-cli/Cargo.toml`.
+
+### AC reconciliation — one item dropped
+
+The original AC list included:
+
+> "Reserved keys (`engram_*`, `extractor_*`) are rejected with a clear
+> error per docs/metadata-channel.md §Namespace Reservation"
+
+This section **does not exist in the design doc**. `docs/metadata-channel.md`
+§"Engram's Contract" promise #1 (line 118) says:
+
+> Opaque pass-through — metadata is stored as `serde_json::Value` and
+> returned on recall exactly as provided. Engram does not parse,
+> validate, mutate, or interpret it.
+
+And §"Caller's Responsibility: Schema Location" (line 128) says:
+
+> Engram does not enforce a metadata schema.
+
+Adding reserved-prefix validation would **contradict the documented
+contract**. The AC item was based on a misread / fabricated reference;
+dropping it. If reserved namespaces become useful in the future (e.g.
+for `engram.synthesized=true` markers from KC), that's a forward
+design change to `metadata-channel.md`, not a CLI-side patch.
+
+The other ACs are all met:
+
+- [x] `engram store "hello" --meta dia_id=D1:3 --meta turn_index=5`
+      succeeds — pinned by `store_and_recall_round_trips_meta_flag`
+- [x] Stored memory's `user_metadata` is the expected JSON — same test
+- [x] `engram recall ... --json` output includes `user_metadata` —
+      same test (asserts `/record/metadata/user/*`)
+- [x] Repeated keys: last write wins, documented — pinned by
+      `meta_repeated_key_is_last_write_wins` and unit test
+- ~~Reserved keys rejected~~ — dropped per AC reconciliation above
+- [x] Round-trip integration test in `crates/engram-cli/tests/` —
+      added this session
+
+### Status
+
+Marking resolved. cogmembench / LongMemEval blockers from the original
+issue are unblocked.

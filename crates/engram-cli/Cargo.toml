@@ -25,3 +25,6 @@ log = "0.4"
 [[bin]]
 name = "engram"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
