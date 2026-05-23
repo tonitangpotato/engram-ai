@@ -315,6 +315,13 @@ pub(crate) fn factual_to_scored(
     let ids: Vec<MemoryId> = result.memories.iter().map(|m| m.memory_id.clone()).collect();
     let records = loader.load_many(&ids);
 
+    // ISS-139 Strategy A: batch-fetch embeddings so the MMR Stage C.5
+    // hook has diversity signal even on non-Hybrid plans (factual
+    // queries on single-conv corpora are the LoCoMo list-question hot
+    // path; without this they regressed to relevance-only MMR no-op).
+    let id_strs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let embeddings_by_id = loader.load_embeddings(&id_strs);
+
     result
         .memories
         .iter()
@@ -326,11 +333,12 @@ pub(crate) fn factual_to_scored(
                 graph_score: Some(graph_score.clamp(0.0, 1.0)),
                 ..Default::default()
             };
+            let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
             Some(ScoredResult::Memory {
                 record,
                 score: 0.0, // overwritten by fusion::combine
                 sub_scores,
-                embedding: None, // factual path doesn't carry embeddings; MMR will Strategy-A lookup
+                embedding,
             })
         })
         .collect()
@@ -351,6 +359,13 @@ pub(crate) fn episodic_to_scored(
     }
 
     let records = loader.load_many(&result.memories);
+
+    // ISS-139 Strategy A: batch-fetch embeddings so MMR sees diversity
+    // signal on episodic results too. Episodic plans rank within a
+    // time window, but list-style questions ("what did we do last
+    // week?") can still cluster on near-duplicate memories.
+    let id_strs: Vec<&str> = result.memories.iter().map(|s| s.as_str()).collect();
+    let embeddings_by_id = loader.load_embeddings(&id_strs);
 
     // Recency is computed against the window.end (anchor of the
     // half-life decay). When window is None (defensive — plan
@@ -380,11 +395,12 @@ pub(crate) fn episodic_to_scored(
                 recency_score: Some(recency_score),
                 ..Default::default()
             };
+            let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
             Some(ScoredResult::Memory {
                 record,
                 score: 0.0, // overwritten by fusion
                 sub_scores,
-                embedding: None, // episodic path doesn't carry embeddings
+                embedding,
             })
         })
         .collect()
@@ -406,6 +422,14 @@ pub(crate) fn associative_to_scored(
     let ids: Vec<MemoryId> = result.candidates.iter().map(|c| c.memory_id.clone()).collect();
     let records = loader.load_many(&ids);
 
+    // ISS-139 Strategy A: batch-fetch embeddings so MMR sees diversity
+    // on associative walks. Associative is the "find me memories
+    // related to X" path — high risk of cluster-collapse on dense
+    // topics (the same failure mode that motivated MMR in the first
+    // place).
+    let id_strs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let embeddings_by_id = loader.load_embeddings(&id_strs);
+
     result
         .candidates
         .iter()
@@ -419,11 +443,12 @@ pub(crate) fn associative_to_scored(
                 graph_score: Some(graph_score),
                 ..Default::default()
             };
+            let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
             Some(ScoredResult::Memory {
                 record,
                 score: 0.0,
                 sub_scores,
-                embedding: None, // associative-walk path doesn't carry embeddings
+                embedding,
             })
         })
         .collect()
@@ -469,6 +494,12 @@ pub(crate) fn affective_to_scored(
     let ids: Vec<MemoryId> = result.candidates.iter().map(|c| c.memory_id.clone()).collect();
     let records = loader.load_many(&ids);
 
+    // ISS-139 Strategy A: batch-fetch embeddings for MMR diversity on
+    // affective queries. Mood-congruent candidates can cluster tightly
+    // around a single emotional theme; MMR pulls in adjacent affect.
+    let id_strs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let embeddings_by_id = loader.load_embeddings(&id_strs);
+
     result
         .candidates
         .iter()
@@ -481,11 +512,12 @@ pub(crate) fn affective_to_scored(
                 affect_similarity: Some(cand.affect_similarity.clamp(0.0, 1.0)),
                 ..Default::default()
             };
+            let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
             Some(ScoredResult::Memory {
                 record,
                 score: 0.0,
                 sub_scores,
-                embedding: None, // affective path doesn't carry embeddings
+                embedding,
             })
         })
         .collect()
