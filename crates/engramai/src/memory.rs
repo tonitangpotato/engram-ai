@@ -8282,23 +8282,27 @@ mod confidence_tests {
             .add("Memory B about Rust compilers", MemoryType::Factual, Some(0.5), None, None)
             .unwrap();
 
-        // Create a Hebbian link by simulating co-recall via the storage layer.
-        // We need to strengthen it enough (weight > 0.1) for spreading to activate.
-        // record_coactivation with threshold=1 → second call forms the link.
-        {
-            // Use recall to trigger co-activation recording (indirect approach).
-            // Or directly use the underlying record_coactivation on Memory.
-            // Since Memory doesn't expose &mut Storage, we'll use a workaround:
-            // call recall with both IDs to trigger Hebbian learning.
-            //
-            // Actually, the cleanest approach: use rusqlite directly on the
-            // connection to insert a Hebbian link for testing purposes.
-            let conn = mem.connection();
-            conn.execute(
-                "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?1, ?2, 0.5, 5, ?3)",
-                rusqlite::params![&id_a, &id_b, Utc::now().timestamp() as f64],
-            ).unwrap();
-        }
+        // Create a Hebbian link via the canonical API so dual-write to
+        // edges (T14 / ISS-116) fires automatically. Previously this
+        // test raw-INSERTed into `hebbian_links` directly, which worked
+        // pre-T32 when broadcast_admission read from the legacy table,
+        // but bypassed the dual-write to `edges`. After T32 the default
+        // is `unified_substrate = true`, so `get_hebbian_links_weighted`
+        // reads from `edges WHERE edge_kind='associative'` and the
+        // raw-INSERT path produces an empty edge set → broadcast finds
+        // no neighbors. Use the proper API instead.
+        //
+        // Two `record_coactivation` calls with threshold=1 form the
+        // link in `hebbian_links` (strength=1.0 after the second call)
+        // AND dual-write `delta_weight=0.1` each to `edges`, leaving
+        // weight=0.2 — enough for the unified read's `weight > 0`
+        // filter.
+        mem.storage_mut()
+            .record_coactivation(&id_a, &id_b, 1)
+            .unwrap();
+        mem.storage_mut()
+            .record_coactivation(&id_a, &id_b, 1)
+            .unwrap();
 
         // Now broadcast only memory A → should spread to B via Hebbian link.
         let neighbors = mem.broadcast_admission(&[id_a.clone()], &mut wm);

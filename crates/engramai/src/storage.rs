@@ -404,9 +404,22 @@ impl Storage {
     ///
     /// Use `:memory:` for an in-memory database.
     ///
-    /// Defaults to legacy read mode (`unified_substrate = false`). To
-    /// open with v0.4 unified-substrate reads enabled, use
-    /// [`Storage::with_unified_substrate`].
+    /// **Defaults to legacy read mode (`unified_substrate = false`)** —
+    /// this is *not* the same as `MemoryConfig::default().unified_substrate`,
+    /// which after T32 is `true`. `Storage::new` is a low-level
+    /// constructor primarily used by parity/regression tests that want
+    /// the legacy read path explicitly; user-facing callers should use
+    /// `Memory::new` (which routes through `MemoryConfig` and gets the
+    /// post-T32 default), or call
+    /// [`Storage::with_unified_substrate`] directly with the desired
+    /// flag.
+    ///
+    /// This asymmetry is intentional: the parity tests under
+    /// `tests/t29_*` use `("legacy", Storage::new(...))` /
+    /// `("unified", Storage::with_unified_substrate(..., true))` to
+    /// compare the two arms, so flipping `Storage::new`'s default would
+    /// invert those test labels without changing behaviour. Keep this
+    /// constructor pinned to legacy.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
         Self::with_unified_substrate(path, false)
     }

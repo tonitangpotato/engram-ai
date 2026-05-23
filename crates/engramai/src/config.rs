@@ -299,24 +299,36 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub metacognition_enabled: bool,
 
-    /// Phase D read-switch flag for v0.4 unified substrate (default: false).
+    /// Phase D read-switch flag for v0.4 unified substrate
+    /// (default: **true** since T32, 2026-05-23).
     ///
-    /// When `false` (default), retrieval reads from legacy tables
-    /// (`memories`, `entities`, `memory_embeddings`, `entity_relations`,
-    /// `memory_entities`, `hebbian_links`, `synthesis_provenance`).
-    /// When `true`, retrieval reads from the unified substrate
+    /// When `true` (default), retrieval reads from the unified substrate
     /// (`nodes`, `edges`, `node_embeddings`).
+    /// When `false`, retrieval reads from legacy tables
+    /// (`memories`, `entities`, `memory_embeddings`, `entity_relations`,
+    /// `memory_entities`, `hebbian_links`, `synthesis_provenance`) — opt
+    /// out only if the unified path is suspected of a regression and a
+    /// comparison run is needed.
     ///
     /// Writes are unaffected by this flag — Phase B (T13–T18) dual-writes
     /// keep both sides in sync until Phase E (T34–T37) removes legacy
     /// writes. See `.gid/features/v04-unified-substrate/design.md` §5.4
     /// and §8.5 for the read-switch plan.
     ///
-    /// Parity gate: enable in production only after `verify_phase_c_parity`
-    /// (substrate::verify::verify_phase_c_parity) reports zero violations
-    /// AND the LoCoMo J-score on unified is ≥ legacy baseline (currently
-    /// 42.1% per RUN-0018).
-    #[serde(default)]
+    /// Default flip rationale (T32):
+    /// - Phase C verifier (`verify_phase_c_parity`) reports zero
+    ///   violations across all 7 backfill drivers.
+    /// - RUN-T31 LoCoMo parity (152q conv-26): unified 0.4013, legacy
+    ///   0.3947, +0.66pp overall. Per-category multi-hop +5.4pp,
+    ///   open-domain +7.7pp, temporal flat, single-hop -6.25pp where
+    ///   the loss is 2 LLM-judge wobbles on near-identical predictions
+    ///   (see `.gid/eval-runs/RUN-T31/summary.md`).
+    /// - T30 50-query probe Jaccard@10 parity_ratio = 0.40 at jac≥0.95
+    ///   is a structural FTS5 IDF shift (nodes_fts has 14% non-memory
+    ///   mass), absorbed by the downstream generator+judge as confirmed
+    ///   by T31. See `.gid/eval-runs/RUN-T30/rank-diag-root-cause.md`
+    ///   Option 3.
+    #[serde(default = "default_unified_substrate")]
     pub unified_substrate: bool,
 }
 
@@ -365,6 +377,14 @@ fn default_somatic_weight() -> f64 {
 }
 
 fn default_adaptive_weights() -> bool {
+    true
+}
+
+/// T32 (Phase D §8.5 cutover, 2026-05-23): default unified-substrate reads.
+/// Used by both the `#[serde(default = ...)]` attribute (so configs that
+/// predate T32 and lack the key opt into unified on upgrade) and the
+/// `impl Default for MemoryConfig` (so in-process construction agrees).
+fn default_unified_substrate() -> bool {
     true
 }
 
@@ -418,7 +438,7 @@ impl Default for MemoryConfig {
             promotion: PromotionConfig::default(),
             metacognition_enabled: false,
             intent_classification: IntentClassificationConfig::default(),
-            unified_substrate: false,
+            unified_substrate: default_unified_substrate(),
         }
     }
 }
@@ -626,51 +646,73 @@ mod tests {
         assert!((deserialized.mu1 - config.mu1).abs() < f64::EPSILON);
     }
 
-    /// T28 (Phase D §8.5): `unified_substrate` flag defaults to false so
-    /// existing deployments stay on legacy reads until explicitly opted in.
+    /// T32 (Phase D §8.5 cutover, 2026-05-23): `unified_substrate` flag
+    /// now defaults to `true` after RUN-T31 confirmed unified ≥ legacy on
+    /// the LoCoMo end-to-end gate. Legacy reads remain available via
+    /// explicit opt-out (`unified_substrate = false`) for regression
+    /// comparison runs.
     #[test]
-    fn test_unified_substrate_default_off() {
+    fn test_unified_substrate_default_on() {
         let config = MemoryConfig::default();
         assert!(
-            !config.unified_substrate,
-            "unified_substrate must default to false until the Phase D parity \
-             gate (verify_phase_c_parity + LoCoMo J-score) is cleared in prod"
+            config.unified_substrate,
+            "unified_substrate must default to true after T32 cutover \
+             (RUN-T31 PASS, see .gid/eval-runs/RUN-T31/summary.md)"
         );
     }
 
-    /// All v0.3 presets must inherit `unified_substrate = false` via
-    /// `..Default::default()`. If a future preset overrides the flag it must
-    /// document why; this test guards against accidental flips.
+    /// All v0.3+ presets inherit `unified_substrate = true` via
+    /// `..Default::default()` after T32. If a future preset overrides the
+    /// flag to `false` it must document why; this test guards against
+    /// accidental opt-outs.
     #[test]
-    fn test_unified_substrate_off_in_all_presets() {
-        assert!(!MemoryConfig::chatbot().unified_substrate, "chatbot");
-        assert!(!MemoryConfig::task_agent().unified_substrate, "task_agent");
+    fn test_unified_substrate_on_in_all_presets() {
+        assert!(MemoryConfig::chatbot().unified_substrate, "chatbot");
+        assert!(MemoryConfig::task_agent().unified_substrate, "task_agent");
         assert!(
-            !MemoryConfig::personal_assistant().unified_substrate,
+            MemoryConfig::personal_assistant().unified_substrate,
             "personal_assistant",
         );
-        assert!(!MemoryConfig::researcher().unified_substrate, "researcher");
+        assert!(MemoryConfig::researcher().unified_substrate, "researcher");
     }
 
-    /// Round-trip the flag through serde to confirm the `#[serde(default)]`
-    /// attribute doesn't drop user-set values, and that an explicit `true`
+    /// Round-trip the flag through serde to confirm the
+    /// `#[serde(default = "default_unified_substrate")]` attribute doesn't
+    /// drop user-set values, and that an explicit `false` (opt-out)
     /// survives ser/de unchanged.
     #[test]
     fn test_unified_substrate_serde_roundtrip() {
         let mut config = MemoryConfig::default();
-        config.unified_substrate = true;
+        config.unified_substrate = false;
 
         let json = serde_json::to_string(&config).expect("serialize");
         let deserialized: MemoryConfig = serde_json::from_str(&json).expect("deserialize");
-        assert!(deserialized.unified_substrate);
+        assert!(
+            !deserialized.unified_substrate,
+            "explicit opt-out (false) must survive ser/de"
+        );
+
+        // And the opposite — explicit true also survives.
+        let mut config_on = MemoryConfig::default();
+        config_on.unified_substrate = true;
+        let json_on = serde_json::to_string(&config_on).expect("serialize on");
+        let deserialized_on: MemoryConfig =
+            serde_json::from_str(&json_on).expect("deserialize on");
+        assert!(deserialized_on.unified_substrate);
     }
 
-    /// Backwards-compat: configs written before T28 do not carry the
-    /// `unified_substrate` key. They must deserialize cleanly and default
-    /// to the safe (legacy-read) value. This is what `#[serde(default)]`
-    /// is for; the test pins it so future refactors can't silently drop it.
+    /// T32 upgrade semantics: configs written before T32 may not carry the
+    /// `unified_substrate` key. After T32 they MUST deserialize to `true`
+    /// (the new default) so upgrading deployments pick up unified reads
+    /// without requiring config edits. This is what
+    /// `#[serde(default = "default_unified_substrate")]` provides; the test
+    /// pins it so future refactors can't silently revert to `false`.
+    ///
+    /// Pre-T32 callers that want to *stay* on legacy reads must add an
+    /// explicit `"unified_substrate": false` to their config — there is no
+    /// silent grandfathering of the old default.
     #[test]
-    fn test_unified_substrate_absent_key_defaults_false() {
+    fn test_unified_substrate_absent_key_defaults_true() {
         // Minimal config JSON omitting unified_substrate entirely.
         let default_json = serde_json::to_string(&MemoryConfig::default())
             .expect("serialize default");
@@ -686,8 +728,8 @@ mod tests {
         let deserialized: MemoryConfig =
             serde_json::from_str(&stripped).expect("deserialize without flag");
         assert!(
-            !deserialized.unified_substrate,
-            "missing key must fall back to the safe default (false)"
+            deserialized.unified_substrate,
+            "missing key must fall back to the post-T32 default (true)"
         );
     }
 }

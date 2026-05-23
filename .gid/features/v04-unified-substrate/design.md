@@ -1987,7 +1987,43 @@ Plus three earlier shim-key fixes (ISS-119 `contradicts`/`contradicted_by` round
 
   engram-bench harness change committed in 82e26d6; RUN-T31 archive
   committed in engram 270fef4.
-- [ ] **T32** Flip default to on
+- [x] **T32** Flip default to on (2026-05-23). `MemoryConfig::default()`
+  now sets `unified_substrate = true`, via a dedicated
+  `default_unified_substrate()` helper used by both `impl Default` and
+  `#[serde(default = "default_unified_substrate")]`. Upgrading
+  configs that omit the key now opt into unified reads; explicit
+  `"unified_substrate": false` remains supported for regression
+  comparison runs. T28 config tests inverted accordingly
+  (`test_unified_substrate_default_on`,
+  `test_unified_substrate_on_in_all_presets`,
+  `test_unified_substrate_absent_key_defaults_true`).
+
+  `Storage::new` was intentionally NOT flipped — it stays pinned to
+  legacy reads because the `tests/t29_*` parity tests use
+  `("legacy", Storage::new(..))` / `("unified", with_unified_substrate(true))`
+  as their two arms. Flipping `Storage::new` would invert the test
+  labels without changing what is being tested. Docs on `Storage::new`
+  updated to call out the asymmetry: user-facing callers go through
+  `Memory::new` (post-T32 default = unified); low-level / parity
+  callers use `Storage::new` (legacy) or `Storage::with_unified_substrate`
+  (explicit).
+
+  Test fallout: 1 lib test broke
+  (`memory::confidence_tests::test_broadcast_hebbian_spreading`). Root
+  cause: test raw-INSERTed into legacy `hebbian_links` to seed a link,
+  bypassing the T14/ISS-116 dual-write to `edges`. Post-T32 the read
+  path queries `edges WHERE edge_kind='associative'` and found the
+  edge missing. Fixed by replacing the raw INSERT with two calls to
+  `Storage::record_coactivation` (canonical API, threshold=1), which
+  forms the link in `hebbian_links` AND fires the dual-write properly.
+  All 1910 lib tests pass post-fix.
+
+  Acceptance soak (≥1 week production at default-on) starts now. Watch
+  ISS-136 master regression and any new quality-regression reports.
+  If a regression is traced to unified reads (not ISS-136 or LLM
+  noise), opt back to legacy via explicit
+  `"unified_substrate": false` in config and reopen this task; do
+  NOT revert the default without a clear post-mortem.
 - [ ] **T33** 1-week production observation, log quality issues
 
 ### 8.6 Phase E — stop legacy writes
