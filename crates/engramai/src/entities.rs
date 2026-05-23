@@ -182,6 +182,27 @@ impl EntityExtractor {
                 name_group: 1,
             },
             EntityPattern {
+                // Speaker prefix in dialogue-style text: "Caroline: ...", "Dr. Smith:".
+                // Matches a capitalised-token speaker tag at line start.
+                // Multiline (`(?m)`) so episodes containing multiple turns
+                // ("Alice:\nHi\nBob:\nHey") each contribute a speaker.
+                //
+                // - Requires `:` immediately after the name to avoid matching
+                //   sentence starts ("Caroline went home." should NOT match).
+                // - Captures `\p{Lu}\p{L}+` — one upper-case letter then one
+                //   or more letters. Single-letter speakers (`X:`) are rejected
+                //   as too noisy. Honorifics + names ("Dr. Smith:") match the
+                //   final token only ("Smith:"); good enough for v1, future
+                //   work can widen if needed.
+                // - LoCoMo / dialogue corpora ingest under this in their
+                //   canonical "<Speaker>: <utterance>" episode shape.
+                //   See engram ISS-144 for the data + root-cause analysis.
+                regex: Regex::new(r"(?m)^(\p{Lu}\p{L}+):")
+                    .expect("invalid speaker-prefix regex"),
+                entity_type: EntityType::Person,
+                name_group: 1,
+            },
+            EntityPattern {
                 regex: Regex::new(r"([a-z][a-z0-9_]*-rs)")
                     .expect("invalid project-fallback regex"),
                 entity_type: EntityType::Project,
@@ -491,6 +512,58 @@ mod tests {
             .expect("should extract a person");
         assert_eq!(person.name, "@potatosoupup");
         assert_eq!(person.normalized, "potatosoupup");
+    }
+
+    // ISS-144 L1 fix: dialogue-style speaker prefixes.
+    #[test]
+    fn test_extract_speaker_prefix_single_turn() {
+        // LoCoMo-style single-turn episode.
+        let extractor = EntityExtractor::new(&EntityConfig::default());
+        let ents = extractor.extract("Caroline: Hey Mel, I'm off to do some research.");
+        let people: Vec<_> = ents.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        assert_eq!(people.len(), 1, "expected exactly Caroline, got: {ents:?}");
+        assert_eq!(people[0].name, "Caroline");
+        assert_eq!(people[0].normalized, "caroline");
+    }
+
+    #[test]
+    fn test_extract_speaker_prefix_multiline() {
+        // Multi-turn episode — each speaker tag should be extracted once.
+        let extractor = EntityExtractor::new(&EntityConfig::default());
+        let txt = "Caroline: Hi there\nMelanie: Hey Caroline\nCaroline: How are you?";
+        let ents = extractor.extract(txt);
+        let mut people: Vec<_> = ents.iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .map(|e| e.name.clone())
+            .collect();
+        people.sort();
+        assert_eq!(people, vec!["Caroline".to_string(), "Melanie".to_string()],
+            "expected Caroline + Melanie, got: {ents:?}");
+    }
+
+    #[test]
+    fn test_speaker_prefix_does_not_match_mid_sentence() {
+        // "Caroline went home." should NOT be treated as a speaker tag —
+        // the trailing colon requirement prevents this false positive.
+        let extractor = EntityExtractor::new(&EntityConfig::default());
+        let ents = extractor.extract("Earlier today Caroline went home.");
+        let people: Vec<_> = ents.iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
+        assert!(people.is_empty(),
+            "no person should be extracted from 'Caroline went home.'; got: {ents:?}");
+    }
+
+    #[test]
+    fn test_speaker_prefix_does_not_match_single_letter() {
+        // Single-letter speakers ("X: yo") rejected — `\p{L}+` requires
+        // at least 2 letters total (one upper + one more).
+        let extractor = EntityExtractor::new(&EntityConfig::default());
+        let ents = extractor.extract("X: short");
+        let people: Vec<_> = ents.iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
+        assert!(people.is_empty(), "single-letter speaker rejected; got: {ents:?}");
     }
 
     #[test]
