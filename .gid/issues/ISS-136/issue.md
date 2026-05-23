@@ -172,3 +172,100 @@ the prioritised list above.
 - `engram-bench/benchmarks/runs/T31-legacy-20260523T010504Z/`
 - engram-bench commit `82e26d6` — harness change shipped in T31 timeframe
 - engram commit `270fef4` — RUN-T31 archive
+
+## Update 2026-05-23 02:50 — Pre-bisect signal analysis points at ISS-105 (4943aea)
+
+Performed cheap pre-bisect signal #3 (config drift) and code-inspection
+based suspect refinement (no LoCoMo runs spent).
+
+**Signal #3 (config drift)**: `git diff d54a3e1..HEAD --
+crates/engramai/src/config.rs` shows the only `MemoryConfig` change is
+addition of the `unified_substrate` field (T28, commit 7ee3898). No
+default-value drift on retrieval weights, decay coefficients, or
+ranker thresholds. **Clean — not the cause.**
+
+**Code inspection — narrowed suspect list**:
+
+Filtering the 78-commit window (d54a3e1..HEAD) by files-touched =
+`retrieval/`, `recall/`, `memory.rs`, `ranker/`, `spreading/`,
+`association/` yields only **5 commits**:
+
+1. `4943aea` ISS-105 generalized overfetch wiring (2026-05-12 23:56)
+2. `4163f36` ISS-117 hebbian canonical row collapse (2026-05-13 20:22)
+3. `aca955b` ISS-131 working_strength clamp 2.0→1.0 (2026-05-15)
+4. `ec45c92` ISS-103 separate occurred_at from created_at (~2026-05-09)
+5. `6f47e66` lock-free store API + consolidation split
+
+**New top suspect: `4943aea` ISS-105 generalized overfetch wiring.**
+
+Why this jumps to #1 (above ISS-117):
+
+- ISS-105 is **explicitly** a candidate-pool-sizing change. Pre-ISS-105
+  the K_seed cap silently held the fused candidate pool at ~10
+  regardless of requested top-K (commit msg: "RUN-0020 K=15 had
+  145/152 queries returning exactly 10 candidates"). Post-ISS-105 the
+  Factual sub-plan computes `effective_limit = min(α × requested_k /
+  anchors.len(), memory_limit_per_entity)` with α=3 and the per-entity
+  cap bumped 50→100. Associative sub-plan also gets `.with_k_seed(
+  query.limit)`. For LoCoMo `requested_k=10`, this is a **15× increase
+  in candidate pool** (10 → ~150) flowing into `fuse_rrf`.
+- A 15× candidate-pool expansion fundamentally changes the ranker's
+  job: pre-fix it was choosing top-K from ~10 candidates (so rank
+  order ≈ identity, all 10 returned), post-fix it's choosing top-K
+  from ~150 candidates (real ranker discrimination). If the ranker is
+  noisy or the new candidates introduce semantically-distant memories
+  that score artificially high on FTS/embedding channels, J-score
+  drops even though "more candidates" sounds like a strict win.
+- Timeline match: RUN-0027 (pre-regression, 0.467) was 2026-05-06.
+  ISS-105 landed 2026-05-12 23:56 — between RUN-0027 and RUN-T31. ✓
+- Per-category evidence from RUN-T31 supports this hypothesis:
+  - `single-hop` 0.125 (legacy) / 0.0625 (unified) — both arms
+    collapsed. Single-hop is where wide candidate pools hurt most
+    because there's exactly one correct answer; surfacing 149 wrong
+    candidates dilutes ranker signal.
+  - `multi-hop` 0.541 / 0.595 — held up better because multi-hop
+    benefits from richer candidate pools.
+  - `open-domain` 0.154 / 0.231 — unified gained from broader pool,
+    legacy didn't. Consistent with the ranker handling expansion
+    differently per arm.
+
+Why this displaces ISS-117 as top suspect:
+
+- ISS-117 writer collapse halves `hebbian_links` row count, but the
+  reader is `WHERE source_id = ? OR target_id = ?` post-ISS-117 — so
+  it returns one row per pair instead of two, same distinct-neighbor
+  count.
+- `hebbian_channel_scores` normalizes to [0, 1] internally (divides
+  by max) before fusion, so absolute halving is invisible to the
+  final score.
+- The commit msg explicitly notes a side-benefit: "memory.rs:4412
+  recall scoring summed strength across the dup pair → 2× over-score
+  on formed Hebbian neighbours. Now correct." — meaning ISS-117 may
+  have lowered Hebbian channel **absolute weight** by 2×, but the
+  channel weight `hebbian_recall_weight` is a config knob that was
+  presumably tuned before ISS-117. Net effect on top-K: small.
+- ISS-117 still belongs on the list (it changed Hebbian neighbour
+  pool composition during decay/merge edge cases), just not #1.
+
+**Refined cheap confirmation (no LoCoMo $)**:
+
+Before running a 152q bisect, revert just the `requested_k` /
+`memory_limit_per_entity` changes from 4943aea and compute the
+**candidate-pool size histogram** on conv-26's 152 queries. If
+pre-ISS-105 the histogram concentrated at ~10 and post-ISS-105 it
+spreads to 30-150, the mechanism is confirmed and we know exactly
+which knob to revert.
+
+Alternatively, **A/B revert ISS-105 only** and run a 152q LoCoMo
+(~25 min, ~$X). If J-score returns to ≥0.45, ISS-105 is the cause
+and we either: (a) tune α down (3 → 1.5?), (b) keep ISS-105 but
+add ranker calibration that handles wider pools, or (c) accept the
+trade and re-baseline the P0 LoCoMo gate.
+
+### Updated prioritised suspect list
+
+1. **`4943aea` ISS-105 — generalized overfetch wiring (2026-05-12)** ← NEW #1
+2. **`4163f36` ISS-117 — hebbian canonical row collapse (2026-05-13)** ← was #1
+3. **`aca955b` ISS-131 — working_strength clamp (2026-05-15)**
+4. **`ec45c92` ISS-103 — occurred_at separation (~2026-05-09)**
+5. **`6f47e66` lock-free store + consolidation split**
