@@ -453,6 +453,7 @@ fn fuse_and_rank_is_pure_repeated_call_byte_identical() {
                 actr_score: Some(0.2),
                 affect_similarity: Some(0.1),
             },
+            embedding: None,
         })
         .collect::<Vec<_>>();
 
@@ -467,11 +468,13 @@ fn fuse_and_rank_is_pure_repeated_call_byte_identical() {
                     record: ra,
                     score: sa,
                     sub_scores: ssa,
+                    embedding: _,
                 },
                 ScoredResult::Memory {
                     record: rb,
                     score: sb,
                     sub_scores: ssb,
+                    embedding: _,
                 },
             ) => {
                 assert_eq!(ra.id, rb.id, "id drift across calls");
@@ -505,6 +508,7 @@ fn fuse_and_rank_tie_break_is_memory_id_ascending() {
                 actr_score: None,
                 affect_similarity: None,
             },
+            embedding: None,
         })
         .collect::<Vec<_>>();
 

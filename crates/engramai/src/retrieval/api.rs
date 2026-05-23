@@ -286,6 +286,21 @@ pub enum ScoredResult {
         record: MemoryRecord,
         score: f64,
         sub_scores: SubScores,
+        /// Optional candidate embedding (ISS-139 MMR support).
+        ///
+        /// Populated by adapters that already have the embedding in
+        /// hand from the vector-search step (e.g. `HybridSeedRecaller`).
+        /// `None` when the candidate came from a path that doesn't
+        /// touch embeddings (e.g. graph-only walks, FTS-only seeds);
+        /// rerankers that need vector similarity must then fall back
+        /// to `Storage::get_embedding(record.id, model)` per
+        /// candidate.
+        ///
+        /// Default `None` keeps construction sites that don't have an
+        /// embedding cheap. ~1.5KB per populated candidate × ~200
+        /// pool candidates ≈ 300KB transient memory at the rerank
+        /// boundary — acceptable per ISS-139 design note.
+        embedding: Option<Vec<f32>>,
     },
     /// L5 topic candidate (Abstract plan, optionally Hybrid).
     Topic {
@@ -723,6 +738,7 @@ mod tests {
             },
             score: 0.42,
             sub_scores: SubScores::default(),
+            embedding: None,
         };
         assert!((mem.score() - 0.42).abs() < f64::EPSILON);
     }

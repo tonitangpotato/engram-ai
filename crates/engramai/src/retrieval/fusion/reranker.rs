@@ -274,6 +274,7 @@ mod tests {
             record: mk_record(id),
             score,
             sub_scores: SubScores::default(),
+            embedding: None,
         }
     }
 

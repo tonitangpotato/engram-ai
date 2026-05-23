@@ -136,8 +136,30 @@ pub struct FusionConfig {
     pub rrf_k: f64,
     /// Drop fused candidates below this threshold.
     pub min_fused_score: f64,
+    /// MMR diversity parameter for the post-fusion reranker (ISS-139).
+    ///
+    /// `1.0` = pure relevance, byte-identical to the no-rerank path
+    /// (current v0.3 default). `0.0` = pure diversity (don't use).
+    /// `0.5..0.8` = balanced (literature-recommended range for
+    /// list-style queries).
+    ///
+    /// When `< 1.0`, the API routes the fused candidate list through
+    /// `MmrReranker` before applying `top_k`. When `== 1.0`, the
+    /// `NullReranker` path is taken — preserves the ISS-100 cross-
+    /// validate envelope.
+    ///
+    /// Serde-defaults to `1.0` so older reproducibility records
+    /// without this field still deserialize to the legacy behavior.
+    #[serde(default = "default_mmr_lambda")]
+    pub mmr_lambda: f32,
     /// Semantic version pin — bumped on weight changes.
     pub version: &'static str,
+}
+
+/// Serde default for [`FusionConfig::mmr_lambda`]. `1.0` = MMR off,
+/// matches pre-ISS-139 behavior.
+fn default_mmr_lambda() -> f32 {
+    1.0
 }
 
 impl FusionConfig {
@@ -208,6 +230,7 @@ impl FusionConfig {
             },
             rrf_k: RRF_DEFAULT_K,
             min_fused_score: 0.0,
+            mmr_lambda: default_mmr_lambda(),
             version: "v0.3.0-locked-r3",
         }
     }

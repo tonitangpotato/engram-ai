@@ -12,6 +12,7 @@
 //! output (`Vec<ScoredResult>`) regardless of how that output is produced.
 
 pub mod combiner;
+pub mod mmr;
 pub mod reranker;
 pub mod signals;
 
@@ -19,6 +20,7 @@ pub use combiner::{
     combine, fuse_and_rank, reciprocal_rank_fusion, FusionConfig, FusionWeights,
     SignalWeightMatrix, RRF_DEFAULT_K,
 };
+pub use mmr::MmrReranker;
 pub use reranker::{
     assert_reranker_contract, ContractCheck, NullReranker, Reranker,
 };

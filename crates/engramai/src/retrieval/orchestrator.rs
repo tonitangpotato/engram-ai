@@ -279,6 +279,7 @@ pub(crate) fn factual_to_scored(
                 record,
                 score: 0.0, // overwritten by fusion::combine
                 sub_scores,
+                embedding: None, // factual path doesn't carry embeddings; MMR will Strategy-A lookup
             })
         })
         .collect()
@@ -332,6 +333,7 @@ pub(crate) fn episodic_to_scored(
                 record,
                 score: 0.0, // overwritten by fusion
                 sub_scores,
+                embedding: None, // episodic path doesn't carry embeddings
             })
         })
         .collect()
@@ -370,6 +372,7 @@ pub(crate) fn associative_to_scored(
                 record,
                 score: 0.0,
                 sub_scores,
+                embedding: None, // associative-walk path doesn't carry embeddings
             })
         })
         .collect()
@@ -431,6 +434,7 @@ pub(crate) fn affective_to_scored(
                 record,
                 score: 0.0,
                 sub_scores,
+                embedding: None, // affective path doesn't carry embeddings
             })
         })
         .collect()
@@ -470,6 +474,7 @@ pub(crate) fn hybrid_to_scored(
                     record,
                     score: ranked.rrf_score,
                     sub_scores: SubScores::default(),
+                    embedding: None, // hybrid path doesn't pre-thread embeddings yet (ISS-139 follow-up)
                 })
             }
             HybridItem::Topic(uuid) => {
