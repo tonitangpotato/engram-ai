@@ -140,29 +140,77 @@ Key observations:
 ### Revised root cause
 
 The classifier `EntityLookup` is broken (L2) — but its real impact is **not** routing.
-It's that the **`EntityResolver` used inside `FactualPlan::execute`** is also a
-`Null*`-backed default (verify in spike), so anchor resolution returns 0 anchors on
-real factual questions → `FactualPlan` either downgrades or returns fuzzy fallback
-candidates. The classifier `EntityLookup` and the plan-internal `EntityResolver` are
-**two separate traits**, but they both feed off the same missing data: entities that
-were never extracted into the graph in the first place (L1).
+It's that the **`EntityResolver` used inside `FactualPlan::execute`** also has nothing
+to resolve against, because **Layer 1 (extraction) never wrote any Person entities to
+the graph in the first place**.
 
-So the fix-order remains correct (L1 → L2 → L3) but the impact ranking changes:
+**Direct probe confirmation (2026-05-23)** — see `entity-resolution-probe.log`:
 
-- **L1 + EntityResolver wiring inside Factual plan** = high-impact, hits 70% of failures
-- L2 classifier lookup = lower direct impact, but still wrong; nice cleanup
-- L3 ISS-111 = touches only 14% of failures, but where it does, it's catastrophic
+```
+After ingesting 419 conv-26 episodes (every episode mentions Caroline or Melanie):
 
-### Action items added by this probe
+total entities in graph: 1
+  the only entity is "go" (entity_type=technology, used 7x — a Golang false-positive
+  on the phrase "go do some research")
 
-- Spike the EntityResolver inside FactualPlan — confirm it's `NullEntityResolver` in
-  production (orchestrator.rs:1034 area shows `collaborators.entity_resolver`; trace
-  where that comes from in `Memory::graph_query`).
-- Pick 5 Factual+IDK+gold-missing queries from the JSONL dump, hand-trace each through
-  classifier → orchestrator → FactualPlan to confirm the EntityResolver path is the
-  bottleneck (not, say, edge walking or fusion).
+Caroline mentions in graph: 0
+Melanie mentions in graph: 0
 
-Artifact: `/tmp/iss144-conv26-all.jsonl` (152 rows, one per query).
+GraphEntityResolver::resolve on 5 IDK-failed factual queries:
+  q3  "What did Caroline research?"        → n_anchors=0
+  q7  "What is Melanie's marital status?"  → n_anchors=0
+  q11 "Where does Caroline want to travel?" → n_anchors=0
+  q40 "How many children does Melanie have?" → n_anchors=0
+  q55 "What does Caroline enjoy taking photos of?" → n_anchors=0
+```
+
+This is **decisive**: `GraphEntityResolver` is a real graph-backed implementation
+(adapters/graph_entity_resolver.rs, not Null), so L2 (classifier `NullEntityLookup`)
+is the only remaining `Null*` adapter — but it doesn't matter because there's nothing
+in the graph to look up. **L1 is the binding constraint.**
+
+So the priority ranking inverts again:
+
+- **L1 (EntityExtractor known_people bootstrapping) = the only true root.** Without it,
+  L2 and L3 have nothing to do.
+- L2 (classifier `NullEntityLookup` → real GraphEntityLookup) = trivial cleanup *after*
+  L1, because nodes will exist.
+- L3 (ISS-111 KC collapse) = orthogonal, still real, lower impact since only 14% of
+  queries route Abstract.
+
+### Cheapest L1 fix (proposed)
+
+LoCoMo episodes have a fixed shape: `"<Speaker>: ..."` (e.g. `"Caroline: Hey Melanie, ..."`).
+The cheapest L1 fix is to **bootstrap `known_people` from the speaker prefixes** in a
+preprocessing pass before the main extractor runs. This is:
+
+- Zero LLM cost (regex match `^([A-Z][a-z]+):`)
+- Zero new dependencies (no NER model)
+- Covers all dialogue-style corpora (LoCoMo, AGI Eval dialog tracks, dialogue-style
+  benchmarks, future user chats with engram)
+- Generalises to a `Source-derived known-list bootstrap` design pattern: any well-shaped
+  corpus annotates its own speakers, future GitHub issues bootstrap repo + issue IDs,
+  emails bootstrap senders, etc.
+
+Real production paths (potato's RustClaw / engram use cases) that don't have a speaker
+prefix would still rely on user-supplied `known_people` config OR an NER fallback. But
+this fix gets LoCoMo (and any structured-dialogue eval) from "0 entities" to "near-full
+entity coverage" with a 5-line regex.
+
+### Secondary independent finding from probe logs
+
+```
+[engramai::memory] Dedup: merging into existing memory c2cee531 (similarity: 0.9529)
+```
+
+Engram aggressively deduplicates conversational episodes by embedding similarity
+(threshold ~0.95). Many conv-26 episodes are short repetitive utterances ("Wow, that's
+cool!", "Thanks, Mel!"), which trigger this. Effect: 419 ingested episodes likely
+result in significantly fewer storage rows. This may or may not be a problem —
+deduping noise is good, deduping evidence is bad — but it's worth measuring after L1
+is fixed, because it may further suppress evidence the Factual plan needs to walk.
+
+File as separate ISS if needed; not blocking ISS-144.
 
 ## Compounding interaction with ISS-111
 

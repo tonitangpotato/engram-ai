@@ -1,0 +1,45 @@
+============================================================
+[iss144-er] entity-resolution spike
+[iss144-er] conv = conv-26
+============================================================
+[iss144-er] loaded n_episodes=419
+[2026-05-23T23:11:59Z INFO  engramai::memory] Ollama available at http://localhost:11434, embedding enabled
+[2026-05-23T23:12:05Z INFO  engramai::memory] Dedup: merging into existing memory c2cee531 (similarity: 0.9529)
+[2026-05-23T23:12:05Z INFO  engramai::storage] merge_enriched_into: id=c2cee531 content_updated=false merge_count=1 importance=0.500
+[iss144-er] ingest done in 8.3s
+
+--- ENTITY CENSUS (Memory::list_entities, limit=10000) ---
+total entities: 1
+  "technology"         1
+
+top 30 entities by usage count:
+  [   7x] "technology" "default" :: go
+
+Caroline/Melanie probe:
+  contains "caroline": 0 hit(s)
+  contains "melanie": 0 hit(s)
+  contains "Caroline": 0 hit(s)
+  contains "Melanie": 0 hit(s)
+  contains "CAROLINE": 0 hit(s)
+
+--- GraphEntityResolver::resolve direct probe ---
+
+[conv-26-q3] gold="Adoption agencies"
+  question: What did Caroline research?
+  n_anchors: 0
+
+[conv-26-q7] gold="Single"
+  question: What is Melanie's marital status?
+  n_anchors: 0
+
+[conv-26-q11] gold="Sweden"
+  question: Where does Caroline want to travel?
+  n_anchors: 0
+
+[conv-26-q40] gold="2"
+  question: How many children does Melanie have?
+  n_anchors: 0
+
+[conv-26-q55] gold="Sunsets"
+  question: What does Caroline enjoy taking photos of?
+  n_anchors: 0
