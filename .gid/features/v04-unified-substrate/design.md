@@ -1296,11 +1296,225 @@ fixtures).
 
 ### 5.6 Phase F — drop legacy
 
-17. After ≥2 weeks of unified-only writes, drop legacy tables in a
-    schema migration (`0.4-final`).
+**Entry gate**: Phase E complete (§5.5.5 acceptance met), plus ≥2
+consecutive calendar weeks of unified-only writes in production
+(double the Phase D/E soak length because schema drops are
+irreversible without a restore). No ISS-136-class regressions
+during the soak, master LoCoMo within ±1pp of the Phase D baseline
+(0.4013) across ≥2 independent runs. Backfill helpers and
+test fixtures rewritten to the unified substrate (see §5.6.4).
+
+**Approach**: Phase F is a sequenced schema migration plus a one-time
+test-fixture rewrite. The migration is irreversible — once a legacy
+table is dropped, the only recovery path is a backup restore.
+Therefore the phase is split into three steps with explicit checkpoint
+gates: (1) prove zero readers, (2) drop tables/columns in dependency
+order, (3) VACUUM and verify.
+
+#### 5.6.1 Final drop set
+
+Tables to DROP (all 10 legacy tables from the §5.5.1 inventory, plus
+`triples` per §7.6):
+
+- `memories` (created storage.rs:1056) — superseded by `nodes(node_kind='memory')`
+- `memories_fts` (created storage.rs:1171, virtual FTS5) — superseded by `nodes_fts`
+- `memory_embeddings` (created storage.rs:1250/1275) — superseded by `nodes.embedding` + `node_embeddings`
+- `hebbian_links` (created storage.rs:1080) — superseded by `edges(edge_kind='associative')`
+- `entities` (created storage.rs:1110) — superseded by `nodes(node_kind='entity')`
+- `entity_relations` (created storage.rs:1120) — superseded by `edges(edge_kind='structural')`
+- `memory_entities` (created storage.rs:1132) — superseded by `edges` (provenance/mentions + structural/subject_of + structural/object_of per §3.3)
+- `synthesis_provenance` (created storage.rs:1152) — superseded by `edges(edge_kind='provenance')`
+- `cluster_assignments` (created storage.rs:7333) — superseded by `edges(edge_kind='containment', predicate='belongs_to_cluster')`
+- `graph_entities` (created graph/storage_graph.rs:219) — duplicate of `entities`, superseded by `nodes(node_kind='entity')`
+- `graph_edges` (created graph/storage_graph.rs:270) — duplicate of `entity_relations`, superseded by `edges(edge_kind='structural')`
+- `knowledge_topics` (created graph/storage_graph.rs:362) — superseded by `nodes(node_kind='topic')`
+- `triples` (created storage.rs:1623) — dead schema per §7.6, 0 rows in prod, no writer/reader, drop unconditionally
+
+Columns to DROP (per §7.4 Q4):
+
+- `nodes.episode_id` — episodes are nodes with `containment` edges, no column needed
+- `edges.episode_id` — same rationale
+
+Tables RETAINED (per §3.5 audit boundary):
+
+- `pipeline_runs`, `resolution_traces`, `extraction_failures`, `access_log`,
+  `engram_meta`, `backfill_queue`, `quarantine`, `backfill_runs`,
+  `promotion_candidates` (Q5)
+
+#### 5.6.2 Drop sequence (dependency order)
+
+SQLite enforces foreign key constraints when `PRAGMA foreign_keys=ON`,
+so tables with incoming FK references must be dropped *last* (or FKs
+disabled for the migration window). The unified-side tables (`nodes`,
+`edges`, `node_embeddings`, `nodes_fts`) have no incoming legacy FKs
+at this point because:
+
+- Phase E removed all prod writes from legacy tables (no new FK rows added).
+- Phase B dual-writes already populate the unified side, so the unified
+  tables stand on their own without legacy parent rows.
+
+The drop order within Phase F is therefore driven by *legacy-to-legacy*
+FKs only. From the schema:
+
+1. **Drop dependent tables first** (have FKs into other legacy tables):
+   - `memory_entities` (FK → `memories`, `entities`)
+   - `entity_relations` (FK → `entities`)
+   - `synthesis_provenance` (FK → `memories`)
+   - `cluster_assignments` (FK → `memories`, `knowledge_topics`)
+   - `memory_embeddings` (FK → `memories`)
+   - `hebbian_links` (FK → `memories`)
+   - `memories_fts` (virtual FTS, tied to `memories` via rowid)
+   - `graph_edges` (FK → `graph_entities`)
+
+2. **Drop parent tables** (no remaining incoming legacy FKs):
+   - `memories`
+   - `entities`
+   - `knowledge_topics`
+   - `graph_entities`
+   - `triples` (no FKs, drop with the parents)
+
+3. **Drop columns** (after all tables dropped, to avoid pending FK refs):
+   - `ALTER TABLE nodes DROP COLUMN episode_id`
+   - `ALTER TABLE edges DROP COLUMN episode_id`
+
+Implementation note: SQLite's `ALTER TABLE … DROP COLUMN` is supported
+in 3.35+ (released 2021). The repo's `rusqlite` bundles a recent
+version, but the migration should still gate on `PRAGMA
+user_version` rather than assuming syntax availability — see T40
+acceptance.
+
+#### 5.6.3 Migration script structure (`0.4-final`)
+
+The Phase F migration is a single transactional unit named
+`0.4-final` (matches `engram_meta.schema_version`). Pseudocode:
+
+```sql
+BEGIN IMMEDIATE;
+  PRAGMA foreign_keys = OFF;  -- legacy-to-legacy FKs only; safe because
+                              -- all writers gone (Phase E) and readers
+                              -- proven absent (T38 audit)
+
+  -- Step 1: dependent tables
+  DROP TABLE IF EXISTS memory_entities;
+  DROP TABLE IF EXISTS entity_relations;
+  DROP TABLE IF EXISTS synthesis_provenance;
+  DROP TABLE IF EXISTS cluster_assignments;
+  DROP TABLE IF EXISTS memory_embeddings;
+  DROP TABLE IF EXISTS hebbian_links;
+  DROP TABLE IF EXISTS memories_fts;  -- virtual, drops shadow tables
+  DROP TABLE IF EXISTS graph_edges;
+
+  -- Step 2: parent tables
+  DROP TABLE IF EXISTS memories;
+  DROP TABLE IF EXISTS entities;
+  DROP TABLE IF EXISTS knowledge_topics;
+  DROP TABLE IF EXISTS graph_entities;
+  DROP TABLE IF EXISTS triples;
+
+  -- Step 3: columns
+  ALTER TABLE nodes DROP COLUMN episode_id;
+  ALTER TABLE edges DROP COLUMN episode_id;
+
+  PRAGMA foreign_keys = ON;
+  UPDATE engram_meta SET schema_version = '0.4-final';
+COMMIT;
+VACUUM;  -- outside the transaction; reclaims space from dropped tables
+```
+
+The migration runs inside `Storage::run_migrations` like every prior
+migration, gated on `schema_version < '0.4-final'`. Failure mid-script
+rolls back the transaction; the schema stays at the previous version
+and the migration retries on next open.
+
+#### 5.6.4 Test fixture rewrite
+
+Phase E retained legacy-table writes in test fixtures because rewriting
+them was out of scope for a deletion phase. Phase F's drop migration
+will break those fixtures unless they are rewritten first. Affected
+files:
+
+- `crates/engramai/src/graph/store.rs` — Batch A/B test helpers
+  (`fresh_conn`, `insert_stub_memory`, `set_memory_episode`, etc.)
+  write to `memories`, `graph_entities`, `graph_edges`. Rewrite to seed
+  `nodes`/`edges` directly using the same helpers the prod code uses
+  (`Storage::insert_memory_node_row`, `Storage::insert_structural_edge_row`).
+- `crates/engramai/src/bus/subscriptions.rs` — test mod writes to
+  `memories` for FK satisfaction in subscription replay tests.
+  Rewrite to insert `nodes(node_kind='memory')` rows.
+- Any `tests/v04_phase_b_dual_write.rs` / `v04_phase_c_*.rs` fixtures
+  that seed both sides for parity tests — these tests *expect* both
+  legacy and unified rows to exist. Mark them with `#[ignore]` or
+  delete them as part of Phase F because their reason for existence
+  (proving dual-write parity) is moot once the legacy tables are
+  gone. Keep one or two as historical regression markers if useful.
+
+The migration helpers (`migrate_hebbian_*`, T19–T25 backfill drivers
+in `substrate/backfill.rs`) are also removed in Phase F because they
+have nothing to migrate from — the legacy tables they read no longer
+exist. Their unit tests go with them.
+
+#### 5.6.5 Per-task acceptance
+
+**T38 acceptance** — production observation gate:
+
+- ≥2 calendar weeks at `unified_substrate=true` in default with
+  Phase E shipped, logged in `.gid/eval-runs/PHASE-F-SOAK/`.
+- ≥2 independent LoCoMo runs, both within ±1pp of Phase D baseline.
+- Zero ISS filed against unified substrate read or write paths
+  during the soak.
+- Code-search audit (mirror of §5.5.1, but for *readers*) confirms
+  zero `SELECT … FROM <legacy_table>` outside migration helpers
+  and tests. Critical: ANY remaining production reader of a legacy
+  table is a Phase F blocker — file as a Phase D regression and
+  retire only after the reader is moved to the unified side.
+
+**T39 acceptance** — schema migration:
+
+- Migration `0.4-final` lands behind `schema_version` gate.
+- Fresh DB created on `0.4-final` does not create any of the 13
+  dropped tables (verify via `SELECT name FROM sqlite_master`).
+- Upgrade path from `0.3.x` → `0.3-final` → `0.4-final` exercised
+  in an integration test with seeded legacy data.
+- Downgrade path is explicitly NOT supported — document this in
+  the release notes for the Phase F release.
+
+**T40 acceptance** — VACUUM and size report:
+
+- `VACUUM;` runs successfully outside the migration transaction.
+- `ls -lh engram-memory.db` shows size reduction proportional to
+  dropped table sizes (typically 30–50% on production-scale DBs
+  because `memories` + `memories_fts` + `hebbian_links` are the
+  three largest tables and they all go).
+- Report committed to `.gid/eval-runs/PHASE-F-VACUUM/` with
+  before/after byte counts and per-table size estimate.
+
+**T41 acceptance** — documentation:
+
+- README updated to describe the unified substrate only (no
+  reference to legacy tables except in a "historical" appendix).
+- Design docs (this file, `v03-wireup/design.md`) marked as
+  superseded for the legacy-substrate sections.
+- Migration guide written for downstream consumers (cogmembench,
+  engram-bench, autoalpha) explaining that `0.4-final` is a
+  one-way upgrade.
+
+#### 5.6.6 Phase-level acceptance
+
+Phase F is complete when:
+
+- All 13 legacy tables dropped (verified via `sqlite_master`).
+- `nodes.episode_id` and `edges.episode_id` columns dropped.
+- Schema diff between fresh DB and §3 specification is empty.
+- VACUUM run, size report committed.
+- Full test suite green on the post-migration schema.
+- All downstream consumers (cogmembench, engram-bench) updated
+  to read from `nodes`/`edges` (no remaining reads of legacy
+  tables anywhere in the codebase tree).
 
 **Acceptance**: schema diff matches §3 exactly. `ls -lh
-engram-memory.db` shows size reduction proportional to dropped tables.
+engram-memory.db` shows size reduction proportional to dropped
+tables. T38–T41 acceptance criteria above all met. Release tag
+applied (e.g. `v0.4.0-substrate-unified`).
 
 ---
 
@@ -2260,10 +2474,40 @@ below maps to a numbered sub-section in §5.5.3.
 - [ ] **T37x** Phase E exit gate: run §5.5.1 AST-strip inventory on `crates/engramai/src/` (with `#[cfg(test)]` masked) and confirm 0 prod hits across all 10 legacy tables. Full test suite green (lib + integration + all `v04_phase_*`). One-week production soak at `unified_substrate=true` with no quality regression, master LoCoMo within ±1pp of Phase D baseline (0.4013) across ≥2 independent runs. Per §5.5.5.
 
 ### 8.7 Phase F — drop legacy
-- [ ] **T38** ≥2 weeks of unified-only operation logged
-- [ ] **T39** Schema migration `0.4-final`: DROP legacy tables (`memories`, `graph_entities`, `graph_edges`, `hebbian_links`, `knowledge_topics`, `cluster_assignments`, `entity_aliases` if present) **and** DROP dead schema (`triples` table per §7.6) **and** DROP denormalized columns (`nodes.episode_id`, `edges.episode_id` per §7.4)
-- [ ] **T40** DB VACUUM, size-reduction report
-- [ ] **T41** Documentation: update README, design docs reflecting terminal state
+
+See §5.6 for the full drop set, dependency-ordered drop sequence,
+migration script structure, and test fixture rewrite plan. Each task
+below maps to a numbered sub-section in §5.6.
+
+- [ ] **T38** ≥2 weeks of unified-only operation logged at
+  `unified_substrate=true` default, ≥2 independent LoCoMo runs
+  within ±1pp of Phase D baseline (0.4013), code-search audit
+  confirms zero remaining prod *readers* of legacy tables outside
+  migration helpers and tests. Acceptance criteria per §5.6.5
+  T38 block.
+- [ ] **T39** Schema migration `0.4-final`: DROP all 13 legacy tables
+  in dependency order (`memory_entities`, `entity_relations`,
+  `synthesis_provenance`, `cluster_assignments`, `memory_embeddings`,
+  `hebbian_links`, `memories_fts`, `graph_edges`, then `memories`,
+  `entities`, `knowledge_topics`, `graph_entities`, `triples`)
+  **and** DROP denormalized columns (`nodes.episode_id`,
+  `edges.episode_id` per §7.4). Migration script structure +
+  rollback semantics per §5.6.3. Test fixture rewrites (Batch A/B
+  helpers in `graph/store.rs`, `bus/subscriptions.rs` test mod,
+  `v04_phase_b_dual_write.rs` / `v04_phase_c_*.rs` fixtures) land
+  in the same release per §5.6.4.
+- [ ] **T40** DB VACUUM, size-reduction report. VACUUM runs outside
+  the migration transaction; report committed to
+  `.gid/eval-runs/PHASE-F-VACUUM/` with before/after byte counts
+  and per-table size estimates. Expected reduction: 30–50% on
+  production-scale DBs (`memories` + `memories_fts` + `hebbian_links`
+  dominate). Per §5.6.5 T40 block.
+- [ ] **T41** Documentation: update README and design docs to
+  reflect terminal state. Mark legacy-substrate sections of this
+  doc and `v03-wireup/design.md` as superseded. Write a migration
+  guide for downstream consumers (cogmembench, engram-bench,
+  autoalpha) noting that `0.4-final` is a one-way upgrade. Per
+  §5.6.5 T41 block.
 
 ### 8.8 Cleanup / supersession of prior plans
 - [x] **T42** Mark `v03-wireup/design.md` as superseded by this doc — **shipped 2026-05-14**: added supersession note at top of `v03-wireup/design.md` pointing to `v04-unified-substrate/design.md` and noting Phase A–D complete.
