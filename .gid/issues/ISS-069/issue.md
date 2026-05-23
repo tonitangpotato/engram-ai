@@ -146,3 +146,99 @@ q14 and q22:
 - `.gid/eval-runs/RUN-0005.md` — the run that surfaced the regression
 - `.gid/issues/ISS-068/issue.md` — data-layer fix; post-fix correction
   note explains the retrieval non-lift in detail
+
+---
+
+## 2026-05-23 update — full-152q evidence + recall@K ceiling
+
+After ISS-137 (temp=0) pinned LoCoMo variance to 0.66pp stdev, we can
+now read retrieval quality directly off the J-score with confidence.
+Using `engram-bench/examples/iss136_candidate_histogram.rs` (no-LLM
+probe) on conv-26 full 152q at git `82e26d6`, the retrieval recall@K
+curve is:
+
+| K | ALL | single-hop | multi-hop | open-domain | temporal |
+|---|-----|-----------|-----------|-------------|----------|
+| 1 | 18.7% | 2.7% | 40.5% | 10.0% | 26.8% |
+| 3 | 25.6% | 4.0% | 54.1% | 15.0% | 36.6% |
+| **5** (LoCoMo K) | **31.5%** | **9.3%** | **62.2%** | 20.0% | 42.3% |
+| 10 | 39.4% | 17.3% | **70.3%** | 30.0% | 49.3% |
+| 20 | 41.9% | 18.7% | 70.3% | 40.0% | 52.1% |
+| 30 | 43.8% | 22.7% | 70.3% | 40.0% | 53.5% |
+| 50 | 45.3% | 26.7% | 70.3% | 40.0% | 53.5% |
+
+This decomposes into two failure modes:
+
+### Mode A — ranking problem (recall keeps climbing past K=5)
+- **single-hop**: 9.3% @ K=5 → 26.7% @ K=50 (2.9× lift from ranking
+  alone). Evidence is in the candidate pool, just buried at ranks
+  10-50.
+- **open-domain**: 20% @ K=5 → 40% @ K=50 (2× lift).
+
+This is the original ISS-069 pathology, now sharper.
+
+### Mode B — recall ceiling (retrieval truly can't find it)
+- **multi-hop**: saturates at **70.3% by K=10**, no improvement at K=50.
+  29.7% of multi-hop evidence is **not in top-50 at all**. This is not
+  a ranking problem — these evidence turns aren't being retrieved by
+  any combination of fusion components.
+- **temporal**: saturates at 53.5% by K=30.
+
+### Failure-mode correlation with LoCoMo J-score
+
+| Category | recall@5 | LoCoMo run-1 score | gap |
+|----------|----------|---------------------|-----|
+| single-hop | 9.3% | 9.4% | ~0 — generator is bottlenecked by retrieval |
+| multi-hop | 62.2% | 51.4% | 10pp — generator drops some recalled evidence |
+| open-domain | 20.0% | 38.5% | +18pp — generator synthesizes correctly w/o full evidence |
+| temporal | 42.3% | 48.6% | +6pp |
+
+**Single-hop score = single-hop recall**. Generator is doing its job
+honestly: it says "I don't know" 55% of failures because retrieval
+returned no evidence, and gives partial-list answers the rest because
+retrieval returned 1 of 3-4 evidence turns. This is not a generator
+problem.
+
+### List-question failure pattern
+
+The 13 "partial-list" failures (q15, q24, q32, q34, q37, q39, q43, q48,
+q51, q60, q65, q70 etc.) all share the structure: gold = comma-separated
+list of 2-4 items, evidence = 2-4 dialog turns from different sessions.
+With K=5, even if 2 of 4 evidence turns rank in top-5, the generator
+emits a partial answer and LLM-judge scores it 0.0.
+
+Possible fix directions (not committing to one):
+1. **Raise K from 5 to 10** — would lift overall recall 31.5% → 39.4%
+   (+8pp). LoCoMo published K=5 to match mem0; we can re-baseline.
+2. **MMR / diversity in top-K** — list questions need spread, not
+   concentration. Current fusion concentrates near the query embedding.
+3. **Re-ranker stage** — score top-50 candidates against query semantic
+   role, not lexical similarity. Would target Mode A specifically.
+4. **HyDE / query expansion** — expand "What did Caroline research?"
+   into hypothetical-document form before embedding. Targets Mode B
+   (multi-hop ceiling).
+
+### Concrete failure trace (q3 "What did Caroline research?")
+
+- gold: "Adoption agencies" / evidence D2:8 = "Caroline: Researching
+  adoption agencies — it's been a dream to have a family..."
+- top-5 retrieved (verbatim from probe k=10):
+  1. "caroline: totally agree, mel. relaxing and expressing ourselves"
+  2. "caroline: cool! what did it look like?"
+  3. "melanie: wow, what an experience! how did it make you feel?"
+  4. "melanie: thanks for the tip, caroline. doing research and readyi..."
+  5. "melanie: that sounds awesome! what did you take away from it..."
+- Rank 4 contains the word "research" — but as a verb in Melanie's
+  reply context, not Caroline's adoption research statement. Lexical
+  match works; semantic role doesn't.
+
+### Run artifacts
+
+- `/tmp/iss136-histogram-current2.json` (K=10, git 82e26d6)
+- `/tmp/iss136-histogram-k50.json` (K=50, git 82e26d6, 2026-05-23)
+- `engram-bench/benchmarks/runs/ISS137-temp0-20260523T034444Z/` (run 1)
+
+### Status update
+
+Still open. **Now blocking** any further LoCoMo signal extraction —
+overall stuck at 0.40 ± 0.66pp until retrieval gets a real lift.

@@ -1,10 +1,21 @@
 ---
-title: 'LoCoMo overall accuracy regression on master (legacy reads): 0.467 → 0.395'
-status: open
+title:
+- LoCoMo single-run variance ±10pp (apparent 0.467→0.395 regression was noise
+- not retrieval)
+status: closed
 priority: P1
 severity: degradation
-tags: [locomo, regression, eval, retrieval]
-relates_to: [ISS-001, ISS-106, ISS-111]
+tags:
+- locomo
+- regression
+- eval
+- retrieval
+relates_to:
+- ISS-001
+- ISS-106
+- ISS-111
+resolution: not-a-bug
+superseded_by: .gid/issues/ISS-137/issue.md
 ---
 
 # LoCoMo overall accuracy regression on master (legacy reads)
@@ -339,4 +350,105 @@ content-diff probe applies cleanly here too: run the A/B with `git revert
 **Cost so far:** 2 builds × ~45s engramai + ~20s engram-bench, 4 probe runs ×
 ~15s = ~3 min compute, **$0 LLM**. The probe is reusable for the remaining
 4 suspects.
+
+
+---
+
+## 2026-05-23 — Pre-bisect signal #5: ISS-117 also falsified + ROOT CAUSE FOUND (variance, not regression)
+
+Second A/B with same content-fingerprint probe, this time on the canonical-row collapse:
+
+- Built engram-bench against `/tmp/engram-pre-iss117/crates/engramai` (worktree at
+  `4163f36^` = d61471b), patched the `infomap-rs` relative path to absolute,
+  fixed up `engram-bench/Cargo.toml` to point at the worktree.
+- Diff: `identical_set@10 = 152/152`, `jaccard@10 = 1.000`, only 2/152 rank-order
+  swaps (all tied at score=1.000 — pure tie-break noise).
+- ISS-117 **falsified** as the cause of top-K@10 set membership change on conv-26.
+
+But the bigger discovery: the worktree at `4163f36^` is **41 commits behind current
+engramai**, including ISS-131, ISS-103, ISS-111, ISS-132, ISS-135, and many others.
+**The cumulative delta of ALL 42 engramai commits since d61471b does NOT change
+the conv-26 top-K@10 result set.** The retrieval candidate set is essentially
+identical between RUN-T31's "regressed" code and the supposedly-better
+RUN-0027-era code.
+
+### So where did the 0.467 → 0.395 "regression" actually come from?
+
+Inspected the **2026-05-06 same-day runs** in `engram-bench/benchmarks/runs/`:
+
+| timestamp           | overall_accuracy |
+| ------------------- | ---------------- |
+| 02:22Z              | 0.467            |
+| 03:23Z              | 0.408            |
+| 04:42Z              | 0.467            |
+| 15:31Z              | **0.559**        |
+| 16:40Z              | **0.296**        |
+| 17:21Z              | 0.342            |
+| 19:25Z              | 0.322            |
+
+**Stdev across 7 same-day, same-code, same-fixture runs = 9.5pp. Range = 26pp.**
+
+RUN-T31's 0.395 vs RUN-0027's 0.467 is a **-7.2pp delta — less than one stdev.**
+The "baseline" 0.467 was cherry-picked (it's tied for the second-highest of the
+7 same-day runs; one of those same runs hit 0.296).
+
+### Root cause: temperature=1.0 in both generator and judge
+
+Inspected `engram-bench/src/llm_client.rs::call_llm` (lines 135-151):
+
+```rust
+let payload = serde_json::json!({
+    "model": model,
+    "max_tokens": max_tokens,
+    "system": effective_system,
+    "messages": [{"role": "user", "content": prompt}],
+});
+```
+
+**No `temperature` field.** Anthropic's default is `1.0`. This is the single
+LLM call used by both `generate_answer` and `judge_answer` in
+`engram-bench/src/scorers/locomo_judge.rs`. Both the answer generator AND
+the verdict judge run at temperature=1.0. Two stochastic stages compounding
+across 152 queries → ±9.5pp per-run stdev.
+
+Cross-checked the Python reference `cogmembench/benchmarks/common/llm.py:75-80`:
+also omits temperature. The Rust port is byte-for-byte faithful; the original
+Python ALSO runs at temp=1.0. The high variance is structural, inherited from
+the upstream LoCoMo eval harness design.
+
+The RUN-T31 summary itself already flagged this — "all 9 flips are LLM-generator
+/ judge wobble, not retrieval divergence" — but the implication wasn't propagated
+to the regression hypothesis.
+
+### Conclusion: ISS-136 is NOT a real regression
+
+The retrieval is unchanged. The reported drop 0.467 → 0.395 is **within one
+standard deviation** of single-run J-score variance (9.5pp). There is no
+regression to fix.
+
+### Real actionable: fix variance, not retrieval
+
+Two options for making LoCoMo a usable signal for future engineering work:
+
+1. **Pin `temperature=0`** in `engram-bench/src/llm_client.rs::call_llm`.
+   Pros: single-line fix, halves variance immediately, makes J-score deltas
+   actually interpretable. Cons: changes the byte-for-byte cross-validation
+   envelope (ISS-100 AC #4) — would need to re-baseline against a
+   temperature=0 Python reference run.
+2. **Multi-run averaging.** Run each evaluation N=3+ times, report mean ±
+   stdev. Pros: doesn't change the harness contract. Cons: 3× LLM spend per
+   run, doesn't fix the underlying signal/noise ratio for any single
+   diagnostic.
+
+Recommend (1) as the root fix — high leverage, single LOC, ~0 ongoing cost.
+The cross-validation envelope renegotiation is a one-time cost. Will file
+separately as ISS-137 (variance reduction for LoCoMo harness).
+
+### Status
+
+**Closing ISS-136 as 'not a regression — single-run variance ≈ ±10pp'.**
+
+Investigation cost: 4 builds, 6 probe runs, $0 LLM. The
+`iss136_candidate_histogram` probe tool stays in the tree as a reusable
+diagnostic for any future "did retrieval change between X and Y?" question.
 
