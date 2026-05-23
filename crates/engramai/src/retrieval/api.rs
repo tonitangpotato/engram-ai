@@ -171,6 +171,25 @@ pub struct GraphQuery {
     /// fingerprint from the interoceptive hub. If the hub is empty the
     /// affective plan downgrades to associative per §6.2.
     pub self_state_override: Option<crate::graph::affect::SomaticFingerprint>,
+
+    /// ISS-139 — per-query override for the MMR diversity λ.
+    ///
+    /// When `Some(λ)`, the post-fusion reranker uses this λ instead of
+    /// `FusionConfig::locked().mmr_lambda`. When `None` (default), the
+    /// locked config's value applies (currently `1.0` = MMR off,
+    /// byte-identical to pre-ISS-139 behavior).
+    ///
+    /// **Range**: `λ ∈ [0.0, 1.0]`. `1.0` = pure relevance (no-op);
+    /// `0.0` = pure diversity (don't use); literature recommends
+    /// `0.5..0.8` for list-style queries. Out-of-range values cause
+    /// `MmrReranker::new` to panic — this is intentional fail-fast,
+    /// not a silent clamp.
+    ///
+    /// Intended consumers: benchmark drivers (LoCoMo, cogmembench)
+    /// that want to compare with/without MMR on the same query set,
+    /// and reproducibility records that pin the exact λ used. Normal
+    /// callers should leave this `None`.
+    pub mmr_lambda_override: Option<f32>,
 }
 
 impl GraphQuery {
@@ -190,6 +209,7 @@ impl GraphQuery {
             explain: false,
             self_state_override: None,
             namespace: None,
+            mmr_lambda_override: None,
         }
     }
 
@@ -245,6 +265,15 @@ impl GraphQuery {
         fp: crate::graph::affect::SomaticFingerprint,
     ) -> Self {
         self.self_state_override = Some(fp);
+        self
+    }
+
+    /// Builder: per-query MMR diversity λ override (ISS-139).
+    ///
+    /// See [`GraphQuery::mmr_lambda_override`] for semantics. Pass
+    /// `None` to fall back to `FusionConfig::locked().mmr_lambda`.
+    pub fn with_mmr_lambda(mut self, lambda: Option<f32>) -> Self {
+        self.mmr_lambda_override = lambda;
         self
     }
 }
@@ -464,6 +493,12 @@ impl Memory {
         // Stage A: dispatch.
         let classifier =
             crate::retrieval::classifier::HeuristicClassifier::with_null_lookup();
+        // Capture the user text + MMR override before `dispatch()` takes
+        // ownership of `query`. The text is needed by the MMR reranker
+        // hook (Stage C.5) for trace honesty; the override picks the λ
+        // (None → use `FusionConfig::locked().mmr_lambda`).
+        let query_text = query.text.clone();
+        let mmr_lambda_override = query.mmr_lambda_override;
         let dispatched = crate::retrieval::dispatch::dispatch(query, &classifier);
         let plan_kind = dispatched.plan_kind;
         let intent = dispatched.intent;
@@ -561,6 +596,34 @@ impl Memory {
             crate::retrieval::dispatch::PlanKind::Hybrid => candidates,
             _ => crate::retrieval::fusion::fuse_and_rank(intent, &cfg, candidates),
         };
+
+        // Stage C.5 (ISS-139): optional post-fusion MMR reranker.
+        //
+        // Runs **before** `top_k` truncation so the diversity pick can
+        // displace lower-ranked relevant-but-redundant items from the
+        // final result set. At effective `λ == 1.0` (the locked
+        // default unless the caller passes `with_mmr_lambda(Some(<1.0))`)
+        // MMR degenerates to pure relevance and returns the input
+        // unchanged (byte-identical, preserves the §5.4 reproducibility
+        // envelope). Lower λ shifts toward diversity.
+        //
+        // Source of λ: per-query override wins over the locked config
+        // default. See `GraphQuery::mmr_lambda_override` for the
+        // rationale of putting the knob on the query rather than
+        // mutating `FusionConfig::locked()`.
+        //
+        // Hook location chosen per ISS-139 §"Hook location": single
+        // chokepoint covers all 7 plans, runs once per query, and
+        // doesn't need plumbing into each plan's adapter.
+        let effective_lambda = mmr_lambda_override.unwrap_or(cfg.mmr_lambda);
+        if effective_lambda < 1.0 {
+            use crate::retrieval::fusion::Reranker;
+            let mmr = crate::retrieval::fusion::MmrReranker::new(effective_lambda);
+            // `query` arg is ignored by MmrReranker (see its docstring);
+            // passing `query_text` for trace/log honesty if a future
+            // Reranker decides to use it.
+            ranked = mmr.rerank(&query_text, &ranked)?;
+        }
 
         // Top-K cutoff.
         if ranked.len() > limit {

@@ -77,24 +77,22 @@
 use super::super::api::{RetrievalError, ScoredResult};
 use super::reranker::Reranker;
 
-/// MMR reranker. Construct with the query embedding and a λ ∈ [0, 1].
+/// MMR reranker. Construct with λ ∈ [0, 1].
 ///
-/// **Purity**: same `(query, candidates, query_embedding, lambda)` →
-/// same output. The `query` argument to `rerank()` is **ignored** —
-/// MMR's relevance term uses the pre-computed fused score on the
-/// candidate, and the query embedding is captured at construction.
-/// This makes the reranker trivially deterministic.
+/// **Purity**: same `(query, candidates, lambda)` → same output. The
+/// `query` argument to `rerank()` is **ignored** — MMR's relevance
+/// term reuses the pre-computed fused score on the candidate (the
+/// fusion pipeline already encoded query-relevance into it; re-scoring
+/// with cosine-to-query here would double-count). Diversity is
+/// measured between candidates, not against the query.
+///
+/// This keeps the constructor minimal — see ISS-139 §"Constructor
+/// shape" for the design rationale (rejected: `Storage`-aware fallback
+/// path; rejected: capturing query embedding for relevance rescoring).
 #[derive(Debug, Clone)]
 pub struct MmrReranker {
     /// Diversity / relevance trade-off. `1.0` = pure relevance.
     lambda: f32,
-    /// Query embedding (used for the `rel` term if we ever want to
-    /// re-score; currently unused because we reuse the fused score).
-    /// Kept as a field so the reranker is self-contained and future
-    /// extensions (re-scoring relevance with cosine to query) don't
-    /// require a constructor change.
-    #[allow(dead_code)]
-    query_embedding: Vec<f32>,
 }
 
 impl MmrReranker {
@@ -105,15 +103,12 @@ impl MmrReranker {
     /// Panics if `lambda` is NaN or outside `[0, 1]`. MMR with `λ`
     /// outside that range is meaningless — fail-fast at construction
     /// rather than silently producing garbage rankings.
-    pub fn new(lambda: f32, query_embedding: Vec<f32>) -> Self {
+    pub fn new(lambda: f32) -> Self {
         assert!(
             !lambda.is_nan() && (0.0..=1.0).contains(&lambda),
             "MmrReranker: lambda must be in [0, 1], got {lambda}"
         );
-        Self {
-            lambda,
-            query_embedding,
-        }
+        Self { lambda }
     }
 
     /// Current λ value. Test-only accessor.
@@ -361,7 +356,7 @@ mod tests {
 
     #[test]
     fn lambda_one_is_byte_identical_to_input_order() {
-        let rr = MmrReranker::new(1.0, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(1.0);
         let input = list_fixture();
         let out = rr.rerank("q", &input).unwrap();
         assert_eq!(ids(&out), ids(&input));
@@ -377,7 +372,7 @@ mod tests {
     fn low_lambda_diversifies_apple_cluster() {
         // λ=0.3: diversity dominates. Apple-A wins seed (highest rel).
         // Next: car (sim to apple ≈ 0) wins over apple-b (sim ≈ 1).
-        let rr = MmrReranker::new(0.3, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.3);
         let out = rr.rerank("q", &list_fixture()).unwrap();
         let order = ids(&out);
         assert_eq!(order[0], "m:apple-a", "seed = top-rel");
@@ -389,7 +384,7 @@ mod tests {
     #[test]
     fn lambda_zero_seven_keeps_seed_top() {
         // λ=0.7 is the production-target default; seed is always top.
-        let rr = MmrReranker::new(0.7, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.7);
         let out = rr.rerank("q", &list_fixture()).unwrap();
         let order = ids(&out);
         assert_eq!(order[0], "m:apple-a");
@@ -403,7 +398,7 @@ mod tests {
 
     #[test]
     fn candidates_with_no_embedding_are_not_dropped() {
-        let rr = MmrReranker::new(0.5, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.5);
         let input = vec![
             mk_memory("with-emb", 0.9, Some(vec![1.0, 0.0])),
             mk_memory("no-emb-1", 0.85, None),
@@ -422,7 +417,7 @@ mod tests {
 
     #[test]
     fn topics_preserve_their_original_indices() {
-        let rr = MmrReranker::new(0.3, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.3);
         let input = vec![
             mk_memory("apple-a", 0.95, Some(vec![1.0, 0.0, 0.0])),
             mk_topic(0.92),
@@ -452,7 +447,7 @@ mod tests {
 
     #[test]
     fn empty_input_returns_empty_output() {
-        let rr = MmrReranker::new(0.5, vec![1.0]);
+        let rr = MmrReranker::new(0.5);
         let out = rr.rerank("q", &[]).unwrap();
         assert!(out.is_empty());
     }
@@ -461,7 +456,7 @@ mod tests {
 
     #[test]
     fn satisfies_contract_at_lambda_one_zero() {
-        let rr = MmrReranker::new(1.0, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(1.0);
         let input = list_fixture();
         assert_reranker_contract(&rr, "q", &input, &ContractCheck::default())
             .expect("contract @ λ=1.0");
@@ -469,7 +464,7 @@ mod tests {
 
     #[test]
     fn satisfies_contract_at_lambda_zero_nine() {
-        let rr = MmrReranker::new(0.9, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.9);
         let input = list_fixture();
         assert_reranker_contract(&rr, "q", &input, &ContractCheck::default())
             .expect("contract @ λ=0.9");
@@ -477,7 +472,7 @@ mod tests {
 
     #[test]
     fn satisfies_contract_at_lambda_zero_seven() {
-        let rr = MmrReranker::new(0.7, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.7);
         let input = list_fixture();
         assert_reranker_contract(&rr, "q", &input, &ContractCheck::default())
             .expect("contract @ λ=0.7");
@@ -485,7 +480,7 @@ mod tests {
 
     #[test]
     fn satisfies_contract_at_lambda_zero_five() {
-        let rr = MmrReranker::new(0.5, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.5);
         let input = list_fixture();
         assert_reranker_contract(&rr, "q", &input, &ContractCheck::default())
             .expect("contract @ λ=0.5");
@@ -493,7 +488,7 @@ mod tests {
 
     #[test]
     fn satisfies_contract_at_lambda_zero_zero() {
-        let rr = MmrReranker::new(0.0, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.0);
         let input = list_fixture();
         assert_reranker_contract(&rr, "q", &input, &ContractCheck::default())
             .expect("contract @ λ=0.0");
@@ -503,7 +498,7 @@ mod tests {
 
     #[test]
     fn satisfies_contract_with_topics_mixed_in() {
-        let rr = MmrReranker::new(0.5, vec![1.0, 0.0, 0.0]);
+        let rr = MmrReranker::new(0.5);
         let input = vec![
             mk_memory("m1", 0.95, Some(vec![1.0, 0.0])),
             mk_topic(0.90),
@@ -520,19 +515,19 @@ mod tests {
     #[test]
     #[should_panic(expected = "lambda must be in [0, 1]")]
     fn rejects_lambda_above_one() {
-        let _ = MmrReranker::new(1.5, vec![1.0]);
+        let _ = MmrReranker::new(1.5);
     }
 
     #[test]
     #[should_panic(expected = "lambda must be in [0, 1]")]
     fn rejects_lambda_negative() {
-        let _ = MmrReranker::new(-0.1, vec![1.0]);
+        let _ = MmrReranker::new(-0.1);
     }
 
     #[test]
     #[should_panic(expected = "lambda must be in [0, 1]")]
     fn rejects_lambda_nan() {
-        let _ = MmrReranker::new(f32::NAN, vec![1.0]);
+        let _ = MmrReranker::new(f32::NAN);
     }
 
     // -- cosine_clamped sanity --------------------------------------------
@@ -573,7 +568,7 @@ mod tests {
 
     #[test]
     fn lambda_accessor_roundtrips() {
-        let rr = MmrReranker::new(0.7, vec![1.0]);
+        let rr = MmrReranker::new(0.7);
         assert_eq!(rr.lambda(), 0.7);
     }
 }

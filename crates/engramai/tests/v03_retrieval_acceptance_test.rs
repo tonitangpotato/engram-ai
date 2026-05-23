@@ -594,3 +594,72 @@ fn classifier_method_is_observable_for_every_query() {
         }
     }
 }
+
+// ===========================================================================
+// Section F — ISS-139 MMR override plumbing
+// ===========================================================================
+//
+// The MmrReranker itself is contract-tested in
+// `crates/engramai/src/retrieval/fusion/mmr.rs` (22 unit tests covering
+// score preservation, multiset preservation, diversity behavior, λ
+// validation). These integration-layer tests target the *plumbing*:
+//
+//   - `GraphQuery::with_mmr_lambda` accepts the override and stores it.
+//   - `GraphQuery::new(text)` defaults the override to `None`.
+//   - `FusionConfig::locked().mmr_lambda` is `1.0` (the canonical
+//     "MMR off" sentinel — preserves §5.4 byte-identity for callers
+//     who don't set the override).
+//
+// End-to-end "MMR actually diversifies a real query against a real
+// substrate" coverage is deferred to the LoCoMo benchmark driver
+// (engram-bench RUN-T??) — it requires `ScoredResult::Memory.embedding`
+// to be populated, which is ISS-139 Step 5 (HybridSeedRecaller wiring,
+// follow-up commit).
+
+#[test]
+fn fusion_config_locked_mmr_lambda_defaults_to_one() {
+    // Canonical "MMR off" sentinel. Lowering this in `locked()` would
+    // change the global default for every caller — a deliberate,
+    // separate decision from per-query overrides. This test pins the
+    // current default so a future bump must be explicit.
+    let cfg = FusionConfig::locked();
+    assert_eq!(
+        cfg.mmr_lambda, 1.0,
+        "FusionConfig::locked().mmr_lambda must default to 1.0 (MMR off) \
+         — preserves §5.4 byte-identity for callers who don't opt in"
+    );
+}
+
+#[test]
+fn graph_query_new_defaults_mmr_lambda_override_to_none() {
+    // `GraphQuery::new("text")` is the documented zero-config entry
+    // point. Default of `None` means "use the locked config's value"
+    // — which is `1.0` — which means MMR doesn't fire.
+    let q = GraphQuery::new("anything");
+    assert!(
+        q.mmr_lambda_override.is_none(),
+        "GraphQuery::new must default mmr_lambda_override to None"
+    );
+}
+
+#[test]
+fn graph_query_with_mmr_lambda_stores_the_override() {
+    // Builder smoke: the value flows from `with_mmr_lambda` to the
+    // field that `Memory::graph_query` reads.
+    let q = GraphQuery::new("list-style query").with_mmr_lambda(Some(0.7));
+    assert_eq!(q.mmr_lambda_override, Some(0.7));
+
+    // Roundtrip None → None (explicit opt-out).
+    let q2 = GraphQuery::new("q").with_mmr_lambda(None);
+    assert!(q2.mmr_lambda_override.is_none());
+
+    // Builder composes with other `with_*` setters without clobbering.
+    let q3 = GraphQuery::new("q")
+        .with_limit(20)
+        .with_mmr_lambda(Some(0.5))
+        .with_namespace("tenant-a");
+    assert_eq!(q3.mmr_lambda_override, Some(0.5));
+    assert_eq!(q3.limit, 20);
+    assert_eq!(q3.namespace.as_deref(), Some("tenant-a"));
+}
+
