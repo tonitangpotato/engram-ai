@@ -13,6 +13,8 @@ relates_to:
 - ISS-069
 - ISS-138
 - ISS-140
+- engram:ISS-142
+- engram:ISS-143
 filed: 2026-05-23
 filed_by: rustclaw
 depends_on: .gid/issues/ISS-140/issue.md
