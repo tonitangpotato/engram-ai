@@ -1,0 +1,872 @@
+============================================================
+[iss144-batch] ISS-144 batch cognitive introspection probe
+[iss144-batch] fixture = benchmarks/fixtures/locomo/39e7df4ea492e8bc7a483b2cfc8e18620054beb05fed267f5cc098bd65fd5f4d/conversations.jsonl
+[iss144-batch] conv    = conv-26
+[iss144-batch] top_k   = 10
+[iss144-batch] out     = /tmp/iss144-conv26-all.jsonl
+============================================================
+[iss144-batch] loaded conv: n_episodes=419 n_questions=152
+[iss144-batch] will probe 152 questions
+[2026-05-23T23:02:17Z INFO  engramai::memory] Ollama available at http://localhost:11434, embedding enabled
+[iss144-batch] ingesting 419 episodes …
+[2026-05-23T23:02:23Z INFO  engramai::memory] Dedup: merging into existing memory 0f0be2b9 (similarity: 0.9529)
+[2026-05-23T23:02:23Z INFO  engramai::storage] merge_enriched_into: id=0f0be2b9 content_updated=false merge_count=1 importance=0.500
+[iss144-batch] ingest done in 8.53s
+============================================================
+[iss144-batch] running 152 retrievals
+============================================================
+
+--- [  1/152] conv-26-q0 (multi-hop) — When did Caroline go to the LGBTQ support group?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline go to the LGBTQ support group?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [  2/152] conv-26-q1 (multi-hop) — When did Melanie paint a sunrise?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie paint a sunrise?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [  3/152] conv-26-q2 (open-domain) — What fields would Caroline be likely to pursue in her educaton?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What fields would Caroline be likely to pursue in her educaton?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [  4/152] conv-26-q3 (single-hop) — What did Caroline research?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Caroline research?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=None
+
+--- [  5/152] conv-26-q4 (single-hop) — What is Caroline's identity?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What is Caroline's identity?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [  6/152] conv-26-q5 (multi-hop) — When did Melanie run a charity race?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie run a charity race?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [  7/152] conv-26-q6 (multi-hop) — When is Melanie planning on going camping?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When is Melanie planning on going camping?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [  8/152] conv-26-q7 (single-hop) — What is Caroline's relationship status?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What is Caroline's relationship status?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [  9/152] conv-26-q8 (multi-hop) — When did Caroline give a speech at a school?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline give a speech at a school?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 10/152] conv-26-q9 (multi-hop) — When did Caroline meet up with her friends, family, and mentors?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline meet up with her friends, family, and mentors?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 11/152] conv-26-q10 (multi-hop) — How long has Caroline had her current group of friends for?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How long has Caroline had her current group of friends for?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 12/152] conv-26-q11 (single-hop) — Where did Caroline move from 4 years ago?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=episodic query_limit=10 query="Where did Caroline move from 4 years ago?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=episodic candidates=10 outcome=ok
+    plan=Episodic outcome=Ok gold_rank=None
+
+--- [ 13/152] conv-26-q12 (multi-hop) — How long ago was Caroline's 18th birthday?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How long ago was Caroline's 18th birthday?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(3)
+
+--- [ 14/152] conv-26-q13 (single-hop) — What career path has Caroline decided to persue?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What career path has Caroline decided to persue?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 15/152] conv-26-q14 (open-domain) — Would Caroline still want to pursue counseling as a career if she hadn't received support growing up?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Caroline still want to pursue counseling as a career if she hadn't receive"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 16/152] conv-26-q15 (single-hop) — What activities does Melanie partake in?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What activities does Melanie partake in?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 17/152] conv-26-q16 (multi-hop) — When did Melanie sign up for a pottery class?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie sign up for a pottery class?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 18/152] conv-26-q17 (multi-hop) — When is Caroline going to the transgender conference?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When is Caroline going to the transgender conference?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 19/152] conv-26-q18 (single-hop) — Where has Melanie camped?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Where has Melanie camped?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 20/152] conv-26-q19 (single-hop) — What do Melanie's kids like?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What do Melanie's kids like?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 21/152] conv-26-q20 (multi-hop) — When did Melanie go to the museum?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie go to the museum?"
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 22/152] conv-26-q21 (multi-hop) — When did Caroline have a picnic?
+[2026-05-23T23:02:26Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline have a picnic?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 23/152] conv-26-q22 (open-domain) — Would Caroline likely have Dr. Seuss books on her bookshelf?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Caroline likely have Dr. Seuss books on her bookshelf?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 24/152] conv-26-q23 (single-hop) — What books has Melanie read?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What books has Melanie read?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 25/152] conv-26-q24 (single-hop) — What does Melanie do to destress?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What does Melanie do to destress?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 26/152] conv-26-q25 (multi-hop) — When did Caroline go to the LGBTQ conference?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline go to the LGBTQ conference?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 27/152] conv-26-q26 (multi-hop) — When did Melanie read the book "nothing is impossible"?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie read the book "nothing is impossible"?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 28/152] conv-26-q27 (open-domain) — Would Caroline pursue writing as a career option?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Caroline pursue writing as a career option?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 29/152] conv-26-q28 (multi-hop) — When did Caroline go to the adoption meeting?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline go to the adoption meeting?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [ 30/152] conv-26-q29 (multi-hop) — When did Melanie go to the pottery workshop?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie go to the pottery workshop?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 31/152] conv-26-q30 (open-domain) — Would Melanie be considered a member of the LGBTQ community?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Melanie be considered a member of the LGBTQ community?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 32/152] conv-26-q31 (multi-hop) — When did Melanie go camping in June?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie go camping in June?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 33/152] conv-26-q32 (single-hop) — What LGBTQ+ events has Caroline participated in?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What LGBTQ+ events has Caroline participated in?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 34/152] conv-26-q33 (multi-hop) — When did Caroline go to a pride parade during the summer?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=10 query="When did Caroline go to a pride parade during the summer?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+    plan=Affective outcome=NoCognitiveState gold_rank=None
+
+--- [ 35/152] conv-26-q34 (single-hop) — What events has Caroline participated in to help children?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What events has Caroline participated in to help children?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 36/152] conv-26-q35 (multi-hop) — When did Melanie go camping in July?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie go camping in July?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 37/152] conv-26-q36 (multi-hop) — When did Caroline join a mentorship program?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline join a mentorship program?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 38/152] conv-26-q37 (single-hop) — What did Melanie paint recently?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Melanie paint recently?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(2)
+
+--- [ 39/152] conv-26-q38 (single-hop) — What activities has Melanie done with her family?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What activities has Melanie done with her family?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 40/152] conv-26-q39 (single-hop) — In what ways is Caroline participating in the LGBTQ community?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="In what ways is Caroline participating in the LGBTQ community?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 41/152] conv-26-q40 (single-hop) — How many times has Melanie gone to the beach in 2023?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How many times has Melanie gone to the beach in 2023?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 42/152] conv-26-q41 (multi-hop) — When did Caroline join a new activist group?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline join a new activist group?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 43/152] conv-26-q42 (open-domain) — Would Melanie be more interested in going to a national park or a theme park?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="Would Melanie be more interested in going to a national park or a theme park?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(2)
+
+--- [ 44/152] conv-26-q43 (single-hop) — What kind of art does Caroline make?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What kind of art does Caroline make?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 45/152] conv-26-q44 (multi-hop) — When is Melanie's daughter's birthday?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When is Melanie's daughter's birthday?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 46/152] conv-26-q45 (multi-hop) — When did Caroline attend a pride parade in August?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=10 query="When did Caroline attend a pride parade in August?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+    plan=Affective outcome=NoCognitiveState gold_rank=Some(4)
+
+--- [ 47/152] conv-26-q46 (open-domain) — Would Melanie be considered an ally to the transgender community?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Melanie be considered an ally to the transgender community?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 48/152] conv-26-q47 (single-hop) — Who supports Caroline when she has a negative experience?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Who supports Caroline when she has a negative experience?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [ 49/152] conv-26-q48 (single-hop) — What types of pottery have Melanie and her kids made?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What types of pottery have Melanie and her kids made?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 50/152] conv-26-q49 (multi-hop) — When did Caroline and Melanie go to a pride fesetival together?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=10 query="When did Caroline and Melanie go to a pride fesetival together?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+    plan=Affective outcome=NoCognitiveState gold_rank=None
+
+--- [ 51/152] conv-26-q50 (open-domain) — What would Caroline's political leaning likely be?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What would Caroline's political leaning likely be?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 52/152] conv-26-q51 (single-hop) — What has Melanie painted?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What has Melanie painted?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(2)
+
+--- [ 53/152] conv-26-q52 (single-hop) — What are Melanie's pets' names?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What are Melanie's pets' names?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=None
+
+--- [ 54/152] conv-26-q53 (multi-hop) — When did Caroline apply to adoption agencies?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline apply to adoption agencies?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 55/152] conv-26-q54 (multi-hop) — When did Caroline draw a self-portrait?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline draw a self-portrait?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 56/152] conv-26-q55 (single-hop) — What subject have Caroline and Melanie both painted?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What subject have Caroline and Melanie both painted?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 57/152] conv-26-q56 (single-hop) — What symbols are important to Caroline?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What symbols are important to Caroline?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 58/152] conv-26-q57 (multi-hop) — When did Caroline encounter people on a hike and have a negative experience?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline encounter people on a hike and have a negative experience?"
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 59/152] conv-26-q58 (multi-hop) — When did Melanie make a plate in pottery class?
+[2026-05-23T23:02:27Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie make a plate in pottery class?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 60/152] conv-26-q59 (open-domain) — Would Caroline be considered religious?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Caroline be considered religious?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 61/152] conv-26-q60 (single-hop) — What instruments does Melanie play?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What instruments does Melanie play?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(3)
+
+--- [ 62/152] conv-26-q61 (single-hop) — What musical artists/bands has Melanie seen?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What musical artists/bands has Melanie seen?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 63/152] conv-26-q62 (multi-hop) — When did Melanie go to the park?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie go to the park?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 64/152] conv-26-q63 (multi-hop) — When is Caroline's youth center putting on a talent show?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When is Caroline's youth center putting on a talent show?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 65/152] conv-26-q64 (open-domain) — Would Melanie likely enjoy the song "The Four Seasons" by Vivaldi?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Melanie likely enjoy the song "The Four Seasons" by Vivaldi?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [ 66/152] conv-26-q65 (single-hop) — What are some changes Caroline has faced during her transition journey?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What are some changes Caroline has faced during her transition journey?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(9)
+
+--- [ 67/152] conv-26-q66 (single-hop) — What does Melanie do with her family on hikes?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What does Melanie do with her family on hikes?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 68/152] conv-26-q67 (multi-hop) — When did Caroline go biking with friends?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline go biking with friends?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 69/152] conv-26-q68 (multi-hop) — How long has Melanie been practicing art?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How long has Melanie been practicing art?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 70/152] conv-26-q69 (open-domain) — What personality traits might Melanie say Caroline has?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What personality traits might Melanie say Caroline has?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 71/152] conv-26-q70 (single-hop) — What transgender-specific events has Caroline attended?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What transgender-specific events has Caroline attended?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 72/152] conv-26-q71 (single-hop) — What book did Melanie read from Caroline's suggestion?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What book did Melanie read from Caroline's suggestion?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 73/152] conv-26-q72 (multi-hop) — When did Melanie's friend adopt a child?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie's friend adopt a child?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 74/152] conv-26-q73 (multi-hop) — When did Melanie get hurt?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie get hurt?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 75/152] conv-26-q74 (multi-hop) — When did Melanie's family go on a roadtrip?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie's family go on a roadtrip?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 76/152] conv-26-q75 (single-hop) — How many children does Melanie have?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How many children does Melanie have?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 77/152] conv-26-q76 (single-hop) — When did Melanie go on a hike after the roadtrip?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=episodic query_limit=10 query="When did Melanie go on a hike after the roadtrip?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=episodic candidates=10 outcome=ok
+    plan=Episodic outcome=Ok gold_rank=None
+
+--- [ 78/152] conv-26-q77 (open-domain) — Would Melanie go on another roadtrip soon?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Melanie go on another roadtrip soon?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 79/152] conv-26-q78 (single-hop) — What items has Melanie bought?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What items has Melanie bought?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 80/152] conv-26-q79 (multi-hop) — When did Caroline pass the adoption interview?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Caroline pass the adoption interview?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [ 81/152] conv-26-q80 (multi-hop) — When did Melanie buy the figurines?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="When did Melanie buy the figurines?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 82/152] conv-26-q81 (open-domain) — Would Caroline want to move back to her home country soon?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Would Caroline want to move back to her home country soon?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 83/152] conv-26-q82 (temporal) — What did the charity race raise awareness for?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did the charity race raise awareness for?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(1)
+
+--- [ 84/152] conv-26-q83 (temporal) — What did Melanie realize after the charity race?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=10 query="What did Melanie realize after the charity race?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=Ok items=10
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=10
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=10 outcome=ok
+    plan=Hybrid outcome=Ok gold_rank=None
+
+--- [ 85/152] conv-26-q84 (temporal) — How does Melanie prioritize self-care?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How does Melanie prioritize self-care?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [ 86/152] conv-26-q85 (temporal) — What are Caroline's plans for the summer?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What are Caroline's plans for the summer?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=None
+
+--- [ 87/152] conv-26-q86 (temporal) — What type of individuals does the adoption agency Caroline is considering support?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What type of individuals does the adoption agency Caroline is considering suppor"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [ 88/152] conv-26-q87 (temporal) — Why did Caroline choose the adoption agency?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Why did Caroline choose the adoption agency?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(6)
+
+--- [ 89/152] conv-26-q88 (temporal) — What is Caroline excited about in the adoption process?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=10 query="What is Caroline excited about in the adoption process?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+    plan=Affective outcome=NoCognitiveState gold_rank=Some(2)
+
+--- [ 90/152] conv-26-q89 (temporal) — What does Melanie think about Caroline's decision to adopt?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What does Melanie think about Caroline's decision to adopt?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 91/152] conv-26-q90 (temporal) — How long have Mel and her husband been married?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How long have Mel and her husband been married?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 92/152] conv-26-q91 (temporal) — What does Caroline's necklace symbolize?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What does Caroline's necklace symbolize?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(3)
+
+--- [ 93/152] conv-26-q92 (temporal) — What country is Caroline's grandma from?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What country is Caroline's grandma from?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 94/152] conv-26-q93 (temporal) — What was grandma's gift to Caroline?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What was grandma's gift to Caroline?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 95/152] conv-26-q94 (temporal) — What is Melanie's hand-painted bowl a reminder of?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What is Melanie's hand-painted bowl a reminder of?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 96/152] conv-26-q95 (temporal) — What did Melanie and her family do while camping?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Melanie and her family do while camping?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(5)
+
+--- [ 97/152] conv-26-q96 (temporal) — What kind of counseling and mental health services is Caroline interested in pursuing?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What kind of counseling and mental health services is Caroline interested in pur"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 98/152] conv-26-q97 (temporal) — What workshop did Caroline attend recently?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What workshop did Caroline attend recently?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [ 99/152] conv-26-q98 (temporal) — What was discussed in the LGBTQ+ counseling workshop?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What was discussed in the LGBTQ+ counseling workshop?"
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [100/152] conv-26-q99 (temporal) — What motivated Caroline to pursue counseling?
+[2026-05-23T23:02:28Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What motivated Caroline to pursue counseling?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [101/152] conv-26-q100 (temporal) — What kind of place does Caroline want to create for people?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What kind of place does Caroline want to create for people?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(3)
+
+--- [102/152] conv-26-q101 (temporal) — Did Melanie make the black and white bowl in the photo?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Did Melanie make the black and white bowl in the photo?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [103/152] conv-26-q102 (temporal) — What kind of books does Caroline have in her library?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What kind of books does Caroline have in her library?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [104/152] conv-26-q103 (temporal) — What was Melanie's favorite book from her childhood?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What was Melanie's favorite book from her childhood?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [105/152] conv-26-q104 (temporal) — What book did Caroline recommend to Melanie?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What book did Caroline recommend to Melanie?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(3)
+
+--- [106/152] conv-26-q105 (temporal) — What did Caroline take away from the book "Becoming Nicole"?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Caroline take away from the book "Becoming Nicole"?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=None
+
+--- [107/152] conv-26-q106 (temporal) — What are the new shoes that Melanie got used for?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What are the new shoes that Melanie got used for?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(4)
+
+--- [108/152] conv-26-q107 (temporal) — What is Melanie's reason for getting into running?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What is Melanie's reason for getting into running?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [109/152] conv-26-q108 (temporal) — What does Melanie say running has been great for?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What does Melanie say running has been great for?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(4)
+
+--- [110/152] conv-26-q109 (temporal) — What did Mel and her kids make during the pottery workshop?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Mel and her kids make during the pottery workshop?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=None
+
+--- [111/152] conv-26-q110 (temporal) — What kind of pot did Mel and her kids make with clay?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What kind of pot did Mel and her kids make with clay?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [112/152] conv-26-q111 (temporal) — What creative project do Mel and her kids do together besides pottery?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What creative project do Mel and her kids do together besides pottery?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [113/152] conv-26-q112 (temporal) — What did Mel and her kids paint in their latest project in July 2023?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Mel and her kids paint in their latest project in July 2023?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(6)
+
+--- [114/152] conv-26-q113 (temporal) — What did Caroline see at the council meeting for adoption?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Caroline see at the council meeting for adoption?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(1)
+
+--- [115/152] conv-26-q114 (temporal) — What do sunflowers represent according to Caroline?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What do sunflowers represent according to Caroline?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [116/152] conv-26-q115 (temporal) — Why are flowers important to Melanie?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Why are flowers important to Melanie?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(3)
+
+--- [117/152] conv-26-q116 (temporal) — What inspired Caroline's painting for the art show?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What inspired Caroline's painting for the art show?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(5)
+
+--- [118/152] conv-26-q117 (temporal) — How often does Melanie go to the beach with her kids?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How often does Melanie go to the beach with her kids?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [119/152] conv-26-q118 (temporal) — What did Melanie and her family see during their camping trip last year?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=10 query="What did Melanie and her family see during their camping trip last year?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=Ok items=10
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=10
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=10 outcome=ok
+    plan=Hybrid outcome=Ok gold_rank=None
+
+--- [120/152] conv-26-q119 (temporal) — How did Melanie feel while watching the meteor shower?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=10 query="How did Melanie feel while watching the meteor shower?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+    plan=Affective outcome=NoCognitiveState gold_rank=Some(2)
+
+--- [121/152] conv-26-q120 (temporal) — Whose birthday did Melanie celebrate recently?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Whose birthday did Melanie celebrate recently?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [122/152] conv-26-q121 (temporal) — Who performed at the concert at Melanie's daughter's birthday?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Who performed at the concert at Melanie's daughter's birthday?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [123/152] conv-26-q122 (temporal) — Why did Melanie choose to use colors and patterns in her pottery project?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="Why did Melanie choose to use colors and patterns in her pottery project?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(5)
+
+--- [124/152] conv-26-q123 (temporal) — What pet does Caroline have?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What pet does Caroline have?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [125/152] conv-26-q124 (temporal) — What pets does Melanie have?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What pets does Melanie have?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [126/152] conv-26-q125 (temporal) — Where did Oliver hide his bone once?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Where did Oliver hide his bone once?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [127/152] conv-26-q126 (temporal) — What activity did Caroline used to do with her dad?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What activity did Caroline used to do with her dad?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [128/152] conv-26-q127 (temporal) — What did Caroline make for a local church?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Caroline make for a local church?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=None
+
+--- [129/152] conv-26-q128 (temporal) — What did Caroline find in her neighborhood during her walk?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did Caroline find in her neighborhood during her walk?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=Some(1)
+
+--- [130/152] conv-26-q129 (temporal) — Which song motivates Caroline to be courageous?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Which song motivates Caroline to be courageous?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(3)
+
+--- [131/152] conv-26-q130 (temporal) — Which  classical musicians does Melanie enjoy listening to?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Which  classical musicians does Melanie enjoy listening to?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [132/152] conv-26-q131 (temporal) — Who is Melanie a fan of in terms of modern music?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="Who is Melanie a fan of in terms of modern music?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [133/152] conv-26-q132 (temporal) — How long has Melanie been creating art?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How long has Melanie been creating art?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [134/152] conv-26-q133 (temporal) — What precautionary sign did Melanie see at the café?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What precautionary sign did Melanie see at the café?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [135/152] conv-26-q134 (temporal) — What advice does Caroline give for getting started with adoption?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What advice does Caroline give for getting started with adoption?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [136/152] conv-26-q135 (temporal) — What setback did Melanie face in October 2023?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What setback did Melanie face in October 2023?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [137/152] conv-26-q136 (temporal) — What does Melanie do to keep herself busy during her pottery break?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What does Melanie do to keep herself busy during her pottery break?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [138/152] conv-26-q137 (temporal) — What painting did Melanie show to Caroline on October 13, 2023?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What painting did Melanie show to Caroline on October 13, 2023?"
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [139/152] conv-26-q138 (temporal) — What kind of painting did Caroline share with Melanie on October 13, 2023?
+[2026-05-23T23:02:29Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What kind of painting did Caroline share with Melanie on October 13, 2023?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [140/152] conv-26-q139 (temporal) — What was the poetry reading that Caroline attended about?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What was the poetry reading that Caroline attended about?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [141/152] conv-26-q140 (temporal) — What did the posters at the poetry reading say?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=abstract query_limit=10 query="What did the posters at the poetry reading say?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] fallback ENTER trigger=abstract reason=l5_unavailable
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=downgraded_from_abstract
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=abstract candidates=10 outcome=downgraded_from_abstract
+    plan=Abstract outcome=DowngradedFromAbstract { reason: "l5_unavailable" } gold_rank=None
+
+--- [142/152] conv-26-q141 (temporal) — What does Caroline's drawing symbolize for her?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What does Caroline's drawing symbolize for her?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=None
+
+--- [143/152] conv-26-q142 (temporal) — How do Melanie and Caroline describe their journey through life together?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How do Melanie and Caroline describe their journey through life together?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [144/152] conv-26-q143 (temporal) — What happened to Melanie's son on their road trip?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What happened to Melanie's son on their road trip?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(1)
+
+--- [145/152] conv-26-q144 (temporal) — How did Melanie's son handle the accident?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How did Melanie's son handle the accident?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(2)
+
+--- [146/152] conv-26-q145 (temporal) — How did Melanie feel about her family after the accident?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=10 query="How did Melanie feel about her family after the accident?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=Ok items=10
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=10
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Affective
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Affective outcome=DowngradedNoSelfState items=0
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Affective items=0
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=10 outcome=ok
+    plan=Hybrid outcome=Ok gold_rank=None
+
+--- [147/152] conv-26-q146 (temporal) — How did Melanie's children handle the accident?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="How did Melanie's children handle the accident?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(4)
+
+--- [148/152] conv-26-q147 (temporal) — How did Melanie feel after the accident?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=10 query="How did Melanie feel after the accident?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=Ok items=10
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=10
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Affective
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Affective outcome=DowngradedNoSelfState items=0
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Affective items=0
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=10 outcome=ok
+    plan=Hybrid outcome=Ok gold_rank=Some(5)
+
+--- [149/152] conv-26-q148 (temporal) — What was Melanie's reaction to her children enjoying the Grand Canyon?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What was Melanie's reaction to her children enjoying the Grand Canyon?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(4)
+
+--- [150/152] conv-26-q149 (temporal) — What do Melanie's family give her?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=associative query_limit=10 query="What do Melanie's family give her?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=associative candidates=10 outcome=ok
+    plan=Factual outcome=Ok gold_rank=Some(7)
+
+--- [151/152] conv-26-q150 (temporal) — How did Melanie feel about her family supporting her?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=affective query_limit=10 query="How did Melanie feel about her family supporting her?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] fallback ENTER trigger=affective reason=no_self_state
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] fallback EXIT  candidates=10 outcome=no_cognitive_state
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=affective candidates=10 outcome=no_cognitive_state
+    plan=Affective outcome=NoCognitiveState gold_rank=None
+
+--- [152/152] conv-26-q151 (temporal) — What did Melanie do after the road trip to relax?
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan ENTER plan_kind=hybrid query_limit=10 query="What did Melanie do after the road trip to relax?"
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Episodic
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Episodic outcome=Ok items=10
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Episodic items=10
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan ENTER sub_kind=Abstract
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan_outcome sub_kind=Abstract outcome=DowngradedL5Unavailable items=0
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] hybrid_sub_plan EXIT  sub_kind=Abstract items=0
+[2026-05-23T23:02:30Z INFO  engramai::retrieval] execute_plan EXIT  plan_kind=hybrid candidates=10 outcome=ok
+    plan=Hybrid outcome=Ok gold_rank=None
+
+============================================================
+[iss144-batch] aggregate summary (n=152)
+============================================================
+plan_used distribution:
+  Abstract             18 (12%)
+  Affective            6 (4%)
+  Episodic             2 (1%)
+  Factual              121 (80%)
+  Hybrid               5 (3%)
+outcome_variant distribution:
+  DowngradedFromAbstract              18 (12%)
+  NoCognitiveState                    6 (4%)
+  Ok                                  128 (84%)
+gold-token-in-top-K: 72/152 (47%)
+gold-at-rank-1     : 37/152 (24%)
+wrote 152 JSONL rows → /tmp/iss144-conv26-all.jsonl

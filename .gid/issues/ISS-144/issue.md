@@ -16,14 +16,17 @@ related: [ISS-111, ISS-136, ISS-141, ISS-142, ISS-143]
 
 `Memory::graph_query` (api.rs:495) hardcodes `HeuristicClassifier::with_null_lookup()` →
 entity signal in the classifier is **always 0.0**, regardless of how many entities the
-unified substrate has stored. This silently mis-routes factual questions ("What did X
-research?") to the Abstract plan, which then `DowngradedFromAbstract { reason: "l5_unavailable" }`
-(because of ISS-111 KC cluster collapse) and falls back to bare vector RAG. Gold facts then
-miss top-K.
+unified substrate has stored. Combined with `EntityConfig::default()` shipping with
+`known_people: vec![]`, the entire entity-extraction + entity-lookup pipeline is a
+3-layer silent no-op chain on free-form conversational corpora like LoCoMo.
 
-**This is the dominant failure mode on LoCoMo conv-26 IDK failures.** Found while building
-the introspection probe in `engram-bench/examples/iss144_introspect_one.rs` (the very
-first query I tried surfaced this).
+**⚠️ Diagnosis refined after batch probe (n=152) — see "Refined diagnosis" section below.**
+The original n=1 finding ("Abstract mis-routing is dominant") turned out to be wrong:
+only 12% of conv-26 queries route to Abstract. The dominant pattern is 80% route to
+**Factual**, but Factual plan's `EntityResolver` is broken by the same root cause
+(no entities in graph, no lookup if there were), so anchors are empty and the plan
+falls through to fuzzy fallback — which is why **65% of IDK-failed queries have the
+gold fact completely missing from top-10**.
 
 ## Evidence
 
@@ -102,6 +105,64 @@ All three need fixing to recover factual-question accuracy on free-form corpora 
    and Melanie from the LoCoMo turn-prefix format `"Caroline: ..."`.
 2. **Layer 2** — wire `EntityLookup` to read from the now-populated `nodes` table.
 3. **Layer 3** — ISS-111 KC clusterer fix (separate root-cause work).
+
+## Refined diagnosis (batch probe n=152, 2026-05-23)
+
+After the first probe surfaced this ISS, I extended the introspection tool to batch
+mode and ran it across all 152 conv-26 queries (no LLM calls, ~10s wall). The original
+n=1 hypothesis ("Abstract mis-routing is the dominant failure mode") was **wrong**.
+
+Actual plan distribution on conv-26:
+
+| Plan | All (n=152) | IDK-failed (n=57) | Other (n=95) |
+|---|---|---|---|
+| Factual    | 80% | 70% | 85% |
+| Abstract   | 12% | 14% | 11% |
+| Hybrid     | 3%  | 9%  | 0%  |
+| Episodic   | 1%  | 4%  | 0%  |
+| Affective  | 4%  | 4%  | 4%  |
+
+Key observations:
+
+- **Abstract mis-routing is a minor pattern** (only 14% of IDK failures). It is real
+  (q3 lives in this 14%) but not dominant.
+- **Factual plan is where most failures happen** — 70% of IDK failures route to Factual.
+- **The classifier is NOT the differentiator** — Plan distribution is nearly identical
+  between IDK-failed and OTHER. The same `NullEntityLookup` is in play, but routes the
+  same way. What differs is what happens **inside** the plan.
+- **65% of IDK-failed queries have the gold fact completely absent from top-10**.
+  Compared to 45% in the OTHER group. The plan is running, returning 10 candidates,
+  and **the right answer just isn't among them**.
+- **OTHER group's gold-in-top-K is only 55%** — meaning a meaningful fraction of "correct"
+  LoCoMo answers come from the LLM correctly guessing or inferring from semantically
+  related but factually different chunks. This is concerning in its own right.
+
+### Revised root cause
+
+The classifier `EntityLookup` is broken (L2) — but its real impact is **not** routing.
+It's that the **`EntityResolver` used inside `FactualPlan::execute`** is also a
+`Null*`-backed default (verify in spike), so anchor resolution returns 0 anchors on
+real factual questions → `FactualPlan` either downgrades or returns fuzzy fallback
+candidates. The classifier `EntityLookup` and the plan-internal `EntityResolver` are
+**two separate traits**, but they both feed off the same missing data: entities that
+were never extracted into the graph in the first place (L1).
+
+So the fix-order remains correct (L1 → L2 → L3) but the impact ranking changes:
+
+- **L1 + EntityResolver wiring inside Factual plan** = high-impact, hits 70% of failures
+- L2 classifier lookup = lower direct impact, but still wrong; nice cleanup
+- L3 ISS-111 = touches only 14% of failures, but where it does, it's catastrophic
+
+### Action items added by this probe
+
+- Spike the EntityResolver inside FactualPlan — confirm it's `NullEntityResolver` in
+  production (orchestrator.rs:1034 area shows `collaborators.entity_resolver`; trace
+  where that comes from in `Memory::graph_query`).
+- Pick 5 Factual+IDK+gold-missing queries from the JSONL dump, hand-trace each through
+  classifier → orchestrator → FactualPlan to confirm the EntityResolver path is the
+  bottleneck (not, say, edge walking or fusion).
+
+Artifact: `/tmp/iss144-conv26-all.jsonl` (152 rows, one per query).
 
 ## Compounding interaction with ISS-111
 
