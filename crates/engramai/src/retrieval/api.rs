@@ -509,10 +509,10 @@ impl Memory {
         // store from `with_graph_read` and runs the dispatched plan
         // against `Null*` collaborators (deferred until per-recaller
         // tasks land — see `crate::retrieval::orchestrator` module note).
-        // The `StorageLoader` borrows `&Storage`, hydrating
-        // `MemoryRecord`s lazily.
-        let loader =
-            crate::retrieval::orchestrator::StorageLoader::new(self.storage());
+        // The `StorageLoader` is constructed below — after the
+        // embedding model is resolved (it captures the model id so
+        // `load_embeddings` can target the right row in
+        // `*_embeddings`, ISS-139).
 
         // Self-state resolution (`task:retr-impl-cognitive-state-readback`
         // / GOAL-5.6):
@@ -549,6 +549,15 @@ impl Memory {
         // ISS-056: namespace was extracted from `query` before dispatch
         // (see top of this fn). Re-borrow as `&str` for adapter ctors.
         let namespace: &str = namespace.as_str();
+
+        // Now we have `embedding_model_owned`; construct the loader.
+        // It captures `&Storage` + the model id so post-fusion
+        // `hybrid_to_scored` can batch-fetch candidate embeddings for
+        // MMR diversity (ISS-139).
+        let loader = crate::retrieval::orchestrator::StorageLoader::new(
+            self.storage(),
+            embedding_model_owned.as_str(),
+        );
 
         let (candidates, outcome) = self.with_graph_read(|graph| {
             let entity_resolver =

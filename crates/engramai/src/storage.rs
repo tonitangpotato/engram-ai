@@ -3990,7 +3990,86 @@ impl Storage {
 
         Ok(result.map(|bytes| bytes_to_f32_vec(&bytes)))
     }
-    
+
+    /// Batch-fetch embeddings for a list of memory ids and a single model.
+    /// Returns a `HashMap<id, embedding>` containing only the ids that
+    /// have a row in `*_embeddings` for the given model — missing ids are
+    /// silently omitted (caller decides how to handle absence).
+    ///
+    /// **Why this API exists (ISS-139)**: MMR diversity needs the
+    /// candidate embedding alongside the candidate id; `hybrid_to_scored`
+    /// holds the post-fusion id list and wants one round-trip to populate
+    /// `ScoredResult::Memory.embedding`. Per-id `get_embedding` would
+    /// fire N SQL calls; `get_embeddings_in_namespace` would pull every
+    /// embedding in the namespace then client-side-filter (memory blowup
+    /// at prod scale). This API is the right primitive for that pattern.
+    ///
+    /// **SQL shape**: one prepared statement with an `IN (?,?,...)`
+    /// clause sized to the input length. SQLite's default `SQLITE_MAX_VARIABLE_NUMBER`
+    /// is 999; ISS-139 candidate counts are bounded by `K_seed × 2`
+    /// (~100). Empty input short-circuits to an empty map without
+    /// touching SQL.
+    ///
+    /// **Liveness**: routes through `memories` JOIN so deleted / superseded
+    /// rows are excluded — matches the existing `get_embedding` semantics
+    /// under unified-substrate mode.
+    pub fn get_embeddings_for_ids(
+        &self,
+        ids: &[&str],
+        model: &str,
+    ) -> Result<std::collections::HashMap<String, Vec<f32>>, rusqlite::Error> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let model = Self::normalize_model_id(model);
+
+        // Build "?,?,?,..." placeholder list matching the input length.
+        let placeholders: String =
+            std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
+
+        let sql = if self.unified_substrate {
+            format!(
+                r#"SELECT e.node_id, e.embedding
+                   FROM node_embeddings e
+                   JOIN memories m ON e.node_id = m.id
+                   WHERE e.model = ?
+                     AND e.node_id IN ({placeholders})
+                     AND m.deleted_at IS NULL
+                     AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
+            )
+        } else {
+            format!(
+                r#"SELECT e.memory_id, e.embedding
+                   FROM memory_embeddings e
+                   JOIN memories m ON e.memory_id = m.id
+                   WHERE e.model = ?
+                     AND e.memory_id IN ({placeholders})
+                     AND m.deleted_at IS NULL
+                     AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
+            )
+        };
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        // Params: model first, then each id.
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+        params_vec.push(&model);
+        for id in ids {
+            params_vec.push(id);
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec.iter()), |row| {
+            let memory_id: String = row.get(0)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            Ok((memory_id, bytes_to_f32_vec(&bytes)))
+        })?;
+
+        let mut out = std::collections::HashMap::with_capacity(ids.len());
+        for r in rows {
+            let (id, emb) = r?;
+            out.insert(id, emb);
+        }
+        Ok(out)
+    }
+
     /// Get all embeddings for a specific model.
     ///
     /// Returns (memory_id, embedding) pairs for the given model only.
@@ -10281,6 +10360,117 @@ mod tests {
         // not nodes.
         let stats = unified.embedding_stats().unwrap();
         assert_eq!(stats.embedded_count, 1);
+    }
+
+    // =============================================================
+    // ISS-139 — `get_embeddings_for_ids` batch fetch.
+    //
+    // The MMR reranker needs candidate embeddings to compute diversity;
+    // `hybrid_to_scored` calls this API once per `graph_query` with the
+    // post-fusion id list. These tests pin the SQL behavior end-to-end:
+    // empty input, partial match, model isolation, deleted/superseded
+    // filtering, and unified/legacy parity.
+    // =============================================================
+
+    #[test]
+    fn iss139_get_embeddings_for_ids_empty_input_returns_empty_map() {
+        // No SQL should be issued for an empty input — short-circuit.
+        let s = test_storage();
+        let out = s.get_embeddings_for_ids(&[], "ollama/nomic-embed-text").unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn iss139_get_embeddings_for_ids_returns_only_matching_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, _unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &[0.1, 0.2]);
+        t29_3_seed_embedding(&mut legacy, "m2", "default", model, &[0.3, 0.4]);
+        t29_3_seed_embedding(&mut legacy, "m3", "default", model, &[0.5, 0.6]);
+
+        // Ask for m1, m2, and a non-existent id.
+        let out = legacy
+            .get_embeddings_for_ids(&["m1", "m2", "ghost"], model)
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out["m1"], vec![0.1f32, 0.2]);
+        assert_eq!(out["m2"], vec![0.3f32, 0.4]);
+        assert!(!out.contains_key("ghost"));
+        // m3 was inserted but not requested — must be absent.
+        assert!(!out.contains_key("m3"));
+    }
+
+    #[test]
+    fn iss139_get_embeddings_for_ids_filters_by_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, _unified) = t29_3_open_pair(dir.path());
+        t29_3_seed_embedding(&mut legacy, "m1", "default", "ollama/A", &[1.0, 2.0]);
+        t29_3_seed_embedding(&mut legacy, "m2", "default", "ollama/B", &[3.0, 4.0]);
+
+        // Querying model A returns only m1, not m2.
+        let out_a = legacy.get_embeddings_for_ids(&["m1", "m2"], "ollama/A").unwrap();
+        assert_eq!(out_a.len(), 1);
+        assert_eq!(out_a["m1"], vec![1.0f32, 2.0]);
+
+        // Querying an unrelated model returns nothing.
+        let out_c = legacy.get_embeddings_for_ids(&["m1", "m2"], "ollama/C").unwrap();
+        assert!(out_c.is_empty());
+    }
+
+    #[test]
+    fn iss139_get_embeddings_for_ids_excludes_soft_deleted_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, _unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &[0.1, 0.2]);
+        t29_3_seed_embedding(&mut legacy, "m2", "default", model, &[0.3, 0.4]);
+
+        // Soft-delete m1 by setting deleted_at directly.
+        legacy
+            .conn
+            .execute("UPDATE memories SET deleted_at=? WHERE id='m1'", params![now_f64()])
+            .unwrap();
+
+        let out = legacy.get_embeddings_for_ids(&["m1", "m2"], model).unwrap();
+        // m1 is soft-deleted → excluded. m2 is live → included.
+        assert!(!out.contains_key("m1"));
+        assert_eq!(out["m2"], vec![0.3f32, 0.4]);
+    }
+
+    #[test]
+    fn iss139_get_embeddings_for_ids_excludes_superseded_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, _unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &[0.1, 0.2]);
+        t29_3_seed_embedding(&mut legacy, "m2", "default", model, &[0.3, 0.4]);
+
+        // Supersede m1 by m2.
+        legacy
+            .conn
+            .execute("UPDATE memories SET superseded_by='m2' WHERE id='m1'", [])
+            .unwrap();
+
+        let out = legacy.get_embeddings_for_ids(&["m1", "m2"], model).unwrap();
+        assert!(!out.contains_key("m1"), "superseded row must be filtered");
+        assert_eq!(out["m2"], vec![0.3f32, 0.4]);
+    }
+
+    #[test]
+    fn iss139_get_embeddings_for_ids_unified_matches_legacy() {
+        // Same data, two handles (legacy + unified). Both must return
+        // bit-identical maps. This pins the SQL shape against silent
+        // divergence between the two read paths.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &[0.1, 0.2, 0.3]);
+        t29_3_seed_embedding(&mut legacy, "m2", "default", model, &[0.4, 0.5, 0.6]);
+
+        let l = legacy.get_embeddings_for_ids(&["m1", "m2"], model).unwrap();
+        let u = unified.get_embeddings_for_ids(&["m1", "m2"], model).unwrap();
+        assert_eq!(l, u);
     }
 
     // =============================================================

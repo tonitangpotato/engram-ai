@@ -157,6 +157,30 @@ pub(crate) trait RecordLoader {
     fn load_many(&self, ids: &[MemoryId]) -> Vec<Option<MemoryRecord>> {
         ids.iter().map(|id| self.load(id)).collect()
     }
+
+    /// Batch-fetch embeddings for the given memory ids (ISS-139).
+    ///
+    /// Returns a map containing only the ids that have an embedding row
+    /// for the loader's configured model. Missing ids are silently
+    /// omitted (caller treats absence as "no diversity signal for this
+    /// candidate").
+    ///
+    /// Default impl returns an empty map — for test loaders that don't
+    /// model embeddings, this means MMR sees `embedding: None` on every
+    /// candidate and degenerates to pure relevance. The production
+    /// `StorageLoader` overrides this with a single `WHERE id IN (...)`
+    /// SQL round-trip.
+    ///
+    /// Intentionally **not** taking a model parameter: the model id is
+    /// per-`graph_query` and is captured at loader construction time
+    /// (along with the `&Storage` lifetime). Keeping it off the method
+    /// keeps test loaders' implementations a no-op.
+    fn load_embeddings(
+        &self,
+        _ids: &[&str],
+    ) -> std::collections::HashMap<String, Vec<f32>> {
+        std::collections::HashMap::new()
+    }
 }
 
 /// Production loader — wraps `&Storage` for batched SQL lookups.
@@ -164,13 +188,23 @@ pub(crate) trait RecordLoader {
 /// Held as a thin adapter so the lifetime of `&Storage` is bound to
 /// the lifetime of the loader, not stashed inside `Memory`. The
 /// orchestrator constructs one of these per `graph_query` call.
+///
+/// `model` is the embedding model id captured at construction so
+/// `load_embeddings` can query the right `*_embeddings` rows
+/// (ISS-139). Empty string is a valid "embedding provider disabled"
+/// sentinel — `load_embeddings` will then find no matching rows and
+/// return an empty map.
 pub(crate) struct StorageLoader<'a> {
     storage: &'a crate::storage::Storage,
+    model: String,
 }
 
 impl<'a> StorageLoader<'a> {
-    pub(crate) fn new(storage: &'a crate::storage::Storage) -> Self {
-        Self { storage }
+    pub(crate) fn new(storage: &'a crate::storage::Storage, model: impl Into<String>) -> Self {
+        Self {
+            storage,
+            model: model.into(),
+        }
     }
 }
 
@@ -200,6 +234,23 @@ impl RecordLoader for StorageLoader<'_> {
         let mut by_id: HashMap<String, MemoryRecord> =
             fetched.into_iter().map(|r| (r.id.clone(), r)).collect();
         ids.iter().map(|id| by_id.remove(id)).collect()
+    }
+
+    fn load_embeddings(
+        &self,
+        ids: &[&str],
+    ) -> std::collections::HashMap<String, Vec<f32>> {
+        if ids.is_empty() || self.model.is_empty() {
+            return std::collections::HashMap::new();
+        }
+        // Single SQL round-trip via the dedicated batch API (ISS-139).
+        // SQL errors are silently swallowed → empty map → MMR sees
+        // `None` on every candidate and degenerates to relevance-only.
+        // This matches the GUARD-9 "missing data is not a retrieval
+        // failure" pattern used by `load_many`.
+        self.storage
+            .get_embeddings_for_ids(ids, &self.model)
+            .unwrap_or_default()
     }
 }
 
@@ -464,17 +515,39 @@ pub(crate) fn hybrid_to_scored(
 ) -> Vec<ScoredResult> {
     use crate::retrieval::plans::hybrid::HybridItem;
 
+    // ISS-139 Strategy A: collect Memory ids from the post-fusion
+    // candidate list and batch-fetch their embeddings in one SQL call.
+    // The cost is bounded — Hybrid's RRF output is already top-K
+    // truncated (k_seed × ~2) before reaching this function, so the
+    // IN-list stays well below SQLite's 999-variable cap.
+    //
+    // Missing embeddings (e.g. memory rows ingested before embedding
+    // provider was enabled) are silently absent from the returned
+    // map — MMR treats those candidates as "no diversity signal"
+    // and ranks them by relevance only. This matches GUARD-9
+    // ("missing data is not a retrieval failure").
+    let memory_ids: Vec<&str> = result
+        .items
+        .iter()
+        .filter_map(|ranked| match &ranked.item {
+            HybridItem::Memory(id) => Some(id.as_str()),
+            HybridItem::Topic(_) => None,
+        })
+        .collect();
+    let embeddings_by_id = loader.load_embeddings(&memory_ids);
+
     result
         .items
         .iter()
         .filter_map(|ranked| match &ranked.item {
             HybridItem::Memory(id) => {
                 let record = loader.load(id)?;
+                let embedding = embeddings_by_id.get(id.as_str()).cloned();
                 Some(ScoredResult::Memory {
                     record,
                     score: ranked.rrf_score,
                     sub_scores: SubScores::default(),
-                    embedding: None, // hybrid path doesn't pre-thread embeddings yet (ISS-139 follow-up)
+                    embedding,
                 })
             }
             HybridItem::Topic(uuid) => {
@@ -1334,3 +1407,102 @@ fn run_associative_fallback(
 // `crate::graph::test_helpers::fresh_conn()` + `SqliteGraphStore` setup
 // is the established pattern — see `retrieval/api.rs`
 // `graph_query_with_empty_graph_returns_typed_outcome`.
+//
+// One exception: `StorageLoader::load_embeddings` is a thin adapter
+// over `Storage::get_embeddings_for_ids` (ISS-139) and has no GraphRead
+// dependency. We pin its three end-to-end paths directly here.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Storage;
+    use crate::types::{MemoryLayer, MemoryRecord, MemoryType};
+    use chrono::Utc;
+    use tempfile::TempDir;
+
+    const MODEL: &str = "ollama/nomic-embed-text";
+
+    fn open_storage() -> (TempDir, Storage) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("loader.db");
+        let storage = Storage::new(&path).expect("open storage");
+        (dir, storage)
+    }
+
+    fn seed_embedding(s: &mut Storage, id: &str, emb: &[f32]) {
+        let now = Utc::now();
+        let mut rec = MemoryRecord {
+            id: id.to_string(),
+            content: format!("content for {id}"),
+            memory_type: MemoryType::Factual,
+            layer: MemoryLayer::Working,
+            created_at: now,
+            occurred_at: None,
+            access_times: vec![now],
+            working_strength: 1.0,
+            core_strength: 0.0,
+            importance: 0.5,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: String::new(),
+            contradicts: None,
+            contradicted_by: None,
+            superseded_by: None,
+            metadata: None,
+        };
+        s.add(&mut rec, "default").expect("seed memory");
+        s.store_embedding(id, emb, MODEL, emb.len())
+            .expect("seed embedding");
+    }
+
+    #[test]
+    fn storage_loader_load_embeddings_empty_input_short_circuits() {
+        let (_dir, storage) = open_storage();
+        let loader = StorageLoader::new(&storage, MODEL);
+
+        let out = loader.load_embeddings(&[]);
+        assert!(out.is_empty(), "empty ids → empty map, no SQL");
+    }
+
+    #[test]
+    fn storage_loader_load_embeddings_returns_populated_map_for_live_rows() {
+        let (_dir, mut storage) = open_storage();
+        seed_embedding(&mut storage, "m1", &[0.1, 0.2]);
+        seed_embedding(&mut storage, "m2", &[0.3, 0.4]);
+
+        let loader = StorageLoader::new(&storage, MODEL);
+        let out = loader.load_embeddings(&["m1", "m2"]);
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out["m1"], vec![0.1f32, 0.2]);
+        assert_eq!(out["m2"], vec![0.3f32, 0.4]);
+    }
+
+    #[test]
+    fn storage_loader_load_embeddings_empty_model_short_circuits() {
+        // The documented sentinel pattern (see line ~191): an empty
+        // `model` means "no embeddings available for this namespace";
+        // MMR degenerates to relevance-only via missing embeddings.
+        let (_dir, mut storage) = open_storage();
+        seed_embedding(&mut storage, "m1", &[0.1, 0.2]);
+
+        let loader = StorageLoader::new(&storage, "");
+        let out = loader.load_embeddings(&["m1"]);
+        assert!(out.is_empty(), "empty model → empty map, never hits SQL");
+    }
+
+    #[test]
+    fn storage_loader_load_embeddings_returns_only_matching_ids() {
+        let (_dir, mut storage) = open_storage();
+        seed_embedding(&mut storage, "m1", &[0.1, 0.2]);
+        seed_embedding(&mut storage, "m2", &[0.3, 0.4]);
+
+        let loader = StorageLoader::new(&storage, MODEL);
+        // Ask for one present + one missing — map contains only present.
+        let out = loader.load_embeddings(&["m1", "missing"]);
+        assert_eq!(out.len(), 1);
+        assert!(out.contains_key("m1"));
+        assert!(!out.contains_key("missing"));
+    }
+}
