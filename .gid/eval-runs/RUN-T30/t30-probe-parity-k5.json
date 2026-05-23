@@ -1,0 +1,1065 @@
+{
+  "source": "/tmp/t30-probe.db",
+  "top_k": 5,
+  "jaccard_threshold": 0.95,
+  "parity_threshold": 0.95,
+  "queries_total": 50,
+  "queries_passing_jaccard": 29,
+  "queries_with_legacy_error": 0,
+  "queries_with_unified_error": 0,
+  "parity_ratio": 0.58,
+  "passed": false,
+  "wall_clock_secs": 7.045755208,
+  "per_query": [
+    {
+      "query": "rust programming language",
+      "legacy_ids": [
+        "32442870",
+        "e209d9c3",
+        "b710697e",
+        "8bf48019",
+        "8ba227cb"
+      ],
+      "unified_ids": [
+        "32442870",
+        "e209d9c3",
+        "b710697e",
+        "8ba227cb",
+        "b9c10727"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "memory safety",
+      "legacy_ids": [
+        "d31b3906",
+        "e6bde91f",
+        "68c71c5a",
+        "8a0c705a",
+        "c3ce8a66"
+      ],
+      "unified_ids": [
+        "d31b3906",
+        "e6bde91f",
+        "68c71c5a",
+        "8a0c705a",
+        "c3ce8a66"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "python data science",
+      "legacy_ids": [
+        "bb72fa0a",
+        "c40df105",
+        "4668395f",
+        "75fc3376",
+        "1be63921"
+      ],
+      "unified_ids": [
+        "c40df105",
+        "bb72fa0a",
+        "4668395f",
+        "75fc3376",
+        "1be63921"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "dynamic typing",
+      "legacy_ids": [
+        "c121ce72",
+        "28797fb4",
+        "c24ed9bf",
+        "8d0599da",
+        "c22692d0"
+      ],
+      "unified_ids": [
+        "c121ce72",
+        "c24ed9bf",
+        "8d0599da",
+        "d48f2823",
+        "c22692d0"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "graph database",
+      "legacy_ids": [
+        "bfb54037",
+        "03ebc00a",
+        "c1953cd4",
+        "e09183d6",
+        "796c2faf"
+      ],
+      "unified_ids": [
+        "bfb54037",
+        "03ebc00a",
+        "c1953cd4",
+        "e09183d6",
+        "796c2faf"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "entity relationship",
+      "legacy_ids": [
+        "3ed25454",
+        "4999d61e",
+        "dc90e5a9",
+        "d23109c8",
+        "940fa116"
+      ],
+      "unified_ids": [
+        "3ed25454",
+        "4999d61e",
+        "dc90e5a9",
+        "d23109c8",
+        "940fa116"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "memory consolidation",
+      "legacy_ids": [
+        "0d5fe0ec",
+        "bbba80e1",
+        "81854169",
+        "923c1f99",
+        "959871cd"
+      ],
+      "unified_ids": [
+        "0d5fe0ec",
+        "81854169",
+        "bbba80e1",
+        "959871cd",
+        "47a10f45"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "long-term storage",
+      "legacy_ids": [
+        "6f691fc9",
+        "75f280d4",
+        "99a527bc",
+        "edf37f56",
+        "6a5f4076"
+      ],
+      "unified_ids": [
+        "6f691fc9",
+        "75f280d4",
+        "99a527bc",
+        "edf37f56",
+        "6a5f4076"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "retrieval augmented generation",
+      "legacy_ids": [
+        "d62350ae",
+        "dc50dd43",
+        "cc1b77b6",
+        "04e7452d",
+        "11a732a0"
+      ],
+      "unified_ids": [
+        "d62350ae",
+        "dc50dd43",
+        "cc1b77b6",
+        "04e7452d",
+        "11a732a0"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "private knowledge",
+      "legacy_ids": [
+        "4f86142d",
+        "e6ae0d9f",
+        "1ceea29a",
+        "5a4cd3d7",
+        "2d0b791d"
+      ],
+      "unified_ids": [
+        "4f86142d",
+        "e6ae0d9f",
+        "1ceea29a",
+        "5a4cd3d7",
+        "2d0b791d"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "embeddings dense vectors",
+      "legacy_ids": [
+        "2bc588bf",
+        "fb3fc803",
+        "d67b32d5",
+        "5d75ae9b",
+        "98041ac7"
+      ],
+      "unified_ids": [
+        "2bc588bf",
+        "fb3fc803",
+        "d67b32d5",
+        "98041ac7",
+        "5d75ae9b"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "semantic meaning",
+      "legacy_ids": [
+        "619ac013",
+        "04b30035",
+        "fb6435ff",
+        "7d52d967",
+        "14079428"
+      ],
+      "unified_ids": [
+        "619ac013",
+        "04b30035",
+        "fb6435ff",
+        "7d52d967",
+        "a12c651c"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "rust",
+      "legacy_ids": [
+        "03317bfb",
+        "914412a4",
+        "202ea966",
+        "191787dc",
+        "34acd7e2"
+      ],
+      "unified_ids": [
+        "914412a4",
+        "34fde416",
+        "03317bfb",
+        "202ea966",
+        "191787dc"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "python",
+      "legacy_ids": [
+        "4d88fd69",
+        "0d155fbc",
+        "2cfd2dab",
+        "415b349a",
+        "1be63921"
+      ],
+      "unified_ids": [
+        "4d88fd69",
+        "2cfd2dab",
+        "415b349a",
+        "1be63921",
+        "7cd90230"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "graph",
+      "legacy_ids": [
+        "6dfff4fa",
+        "e09183d6",
+        "9af8428f",
+        "bfb54037",
+        "a3e71f74"
+      ],
+      "unified_ids": [
+        "6dfff4fa",
+        "f2e8a3d4",
+        "9af8428f",
+        "e09183d6",
+        "a3e71f74"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "memory",
+      "legacy_ids": [
+        "9f72da84",
+        "0769b32f",
+        "86363b67",
+        "2ddd49aa",
+        "9757171e"
+      ],
+      "unified_ids": [
+        "9f72da84",
+        "0769b32f",
+        "86363b67",
+        "2ddd49aa",
+        "9757171e"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "retrieval",
+      "legacy_ids": [
+        "23143d88",
+        "29447f78",
+        "01f5cdd1",
+        "ccdedb77",
+        "a514d1d5"
+      ],
+      "unified_ids": [
+        "23143d88",
+        "29447f78",
+        "ccdedb77",
+        "01f5cdd1",
+        "3791ef2a"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "embedding",
+      "legacy_ids": [
+        "722580fd",
+        "2c598d06",
+        "e321c502",
+        "15c7bb82",
+        "0a38b696"
+      ],
+      "unified_ids": [
+        "722580fd",
+        "2c598d06",
+        "15c7bb82",
+        "4cbae92c",
+        "f185c205"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.42857142857142855,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "knowledge",
+      "legacy_ids": [
+        "7695e33c",
+        "77a970b7",
+        "fa67b889",
+        "13bbdde6",
+        "b62955bf"
+      ],
+      "unified_ids": [
+        "7695e33c",
+        "fa67b889",
+        "b62955bf",
+        "77a970b7",
+        "13bbdde6"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "vectors",
+      "legacy_ids": [
+        "5d75ae9b",
+        "fb3fc803",
+        "2bc588bf",
+        "49a670bd",
+        "94c81bbe"
+      ],
+      "unified_ids": [
+        "5d75ae9b",
+        "fb3fc803",
+        "2bc588bf",
+        "49a670bd",
+        "94c81bbe"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "gid-rs graph database",
+      "legacy_ids": [
+        "c1953cd4",
+        "03ebc00a",
+        "95d230cf",
+        "e09183d6",
+        "d17122eb"
+      ],
+      "unified_ids": [
+        "c1953cd4",
+        "03ebc00a",
+        "95d230cf",
+        "e09183d6",
+        "d17122eb"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "sqlite storage backend",
+      "legacy_ids": [
+        "15aefd1a",
+        "fd019897",
+        "99df784b",
+        "3612fe2e",
+        "db83c51c"
+      ],
+      "unified_ids": [
+        "fd019897",
+        "15aefd1a",
+        "db83c51c",
+        "99df784b",
+        "3612fe2e"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "rustclaw daemon",
+      "legacy_ids": [
+        "2d1b616a",
+        "9d8f35c8",
+        "d862dbd2",
+        "49cbab8d",
+        "5531a06a"
+      ],
+      "unified_ids": [
+        "2d1b616a",
+        "9d8f35c8",
+        "d862dbd2",
+        "49cbab8d",
+        "5531a06a"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "engram knowledge compiler",
+      "legacy_ids": [
+        "67bfd45b",
+        "63f2d663",
+        "b8ad07d3",
+        "d26fa352",
+        "e4dc8fea"
+      ],
+      "unified_ids": [
+        "67bfd45b",
+        "63f2d663",
+        "eb12e186",
+        "b8ad07d3",
+        "11b31dab"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.42857142857142855,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "knowledge compiler clustering",
+      "legacy_ids": [
+        "a6268543",
+        "b62955bf",
+        "63f2d663",
+        "b8ad07d3",
+        "440aea81"
+      ],
+      "unified_ids": [
+        "a6268543",
+        "b62955bf",
+        "63f2d663",
+        "b8ad07d3",
+        "f46da8ee"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "infomap algorithm",
+      "legacy_ids": [
+        "ddbd07a2",
+        "1066a290",
+        "a7c7b233",
+        "aa0e4075",
+        "4c338591"
+      ],
+      "unified_ids": [
+        "ddbd07a2",
+        "1066a290",
+        "a7c7b233",
+        "aa0e4075",
+        "4c338591"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "hebbian links",
+      "legacy_ids": [
+        "45875309",
+        "559b2e5a",
+        "2c151fe3",
+        "b23817c8",
+        "a705166b"
+      ],
+      "unified_ids": [
+        "559b2e5a",
+        "45875309",
+        "2c151fe3",
+        "b23817c8",
+        "42d00d75"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "namespace isolation",
+      "legacy_ids": [
+        "5ec08c73",
+        "04d7dbb4",
+        "5ccc18c4",
+        "4df4247a",
+        "ac9bb69b"
+      ],
+      "unified_ids": [
+        "5ec08c73",
+        "04d7dbb4",
+        "5ccc18c4",
+        "ac9bb69b",
+        "d39538f6"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "soft delete tombstone",
+      "legacy_ids": [
+        "0868dcb5",
+        "99684032",
+        "07125e7f",
+        "7b9dc802",
+        "860ae51e"
+      ],
+      "unified_ids": [
+        "0868dcb5",
+        "99684032",
+        "7b9dc802",
+        "e31178a0",
+        "07125e7f"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "memory dual write",
+      "legacy_ids": [
+        "547f9c0c",
+        "a1ee8db4",
+        "508d66c3",
+        "90d3ec89",
+        "21272481"
+      ],
+      "unified_ids": [
+        "a1ee8db4",
+        "547f9c0c",
+        "508d66c3",
+        "90d3ec89",
+        "21272481"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "phase b dual write",
+      "legacy_ids": [
+        "508d66c3",
+        "87748439",
+        "e2bef8f3",
+        "ef14e1d1",
+        "f3105d65"
+      ],
+      "unified_ids": [
+        "508d66c3",
+        "87748439",
+        "ef14e1d1",
+        "e2bef8f3",
+        "f3105d65"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "phase c backfill",
+      "legacy_ids": [
+        "daa0e33f",
+        "a1293bb9",
+        "f6f5f49a",
+        "dd205d9f",
+        "ee071682"
+      ],
+      "unified_ids": [
+        "daa0e33f",
+        "a1293bb9",
+        "f6f5f49a",
+        "dd205d9f",
+        "42d00d75"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "unified substrate",
+      "legacy_ids": [
+        "622c85c6",
+        "18ba92f1",
+        "5a478c90",
+        "1e04ca53",
+        "690bdf80"
+      ],
+      "unified_ids": [
+        "622c85c6",
+        "18ba92f1",
+        "5a478c90",
+        "690bdf80",
+        "1e04ca53"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "nodes and edges schema",
+      "legacy_ids": [
+        "2377b8c6",
+        "ef8b08df",
+        "0fb09d43",
+        "2a19717e",
+        "37095602"
+      ],
+      "unified_ids": [
+        "2377b8c6",
+        "ef8b08df",
+        "0fb09d43",
+        "2a19717e",
+        "37095602"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "FTS5 full-text search",
+      "legacy_ids": [
+        "85b05e29",
+        "9bccbb91",
+        "751e315a",
+        "7faf65b6",
+        "baeb8549"
+      ],
+      "unified_ids": [
+        "85b05e29",
+        "9bccbb91",
+        "751e315a",
+        "7faf65b6",
+        "baeb8549"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "anthropic api oauth",
+      "legacy_ids": [
+        "f6c46ff9",
+        "190c94c5",
+        "effad4d0",
+        "7ec6a943",
+        "68f2ae43"
+      ],
+      "unified_ids": [
+        "f6c46ff9",
+        "aa05f4af",
+        "effad4d0",
+        "7ec6a943",
+        "190c94c5"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "embedding provider ollama",
+      "legacy_ids": [
+        "ec973244",
+        "eea63f30",
+        "fd22ee36",
+        "15c7bb82",
+        "1fdcdc34"
+      ],
+      "unified_ids": [
+        "ec973244",
+        "eea63f30",
+        "fd22ee36",
+        "15c7bb82",
+        "4cbae92c"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "session compaction",
+      "legacy_ids": [
+        "55db8d5d",
+        "9f72da84",
+        "468727f6",
+        "f95e27e1",
+        "997a7903"
+      ],
+      "unified_ids": [
+        "55db8d5d",
+        "9f72da84",
+        "468727f6",
+        "f95e27e1",
+        "997a7903"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "loop detector",
+      "legacy_ids": [
+        "52372534",
+        "a6ac62b5",
+        "51c72e20",
+        "07a361ba",
+        "0097d0a2"
+      ],
+      "unified_ids": [
+        "52372534",
+        "b5174b9f",
+        "a6ac62b5",
+        "07a361ba",
+        "51c72e20"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "tool execution batch",
+      "legacy_ids": [
+        "16df52d2",
+        "9d0e43d2",
+        "09dc7aa4",
+        "a318da23",
+        "13b470bb"
+      ],
+      "unified_ids": [
+        "16df52d2",
+        "9d0e43d2",
+        "09dc7aa4",
+        "13b470bb",
+        "a318da23"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "specialist sub-agent",
+      "legacy_ids": [
+        "04766712",
+        "b2fa1d14",
+        "ab3344f7",
+        "77c2473a",
+        "56791c41"
+      ],
+      "unified_ids": [
+        "04766712",
+        "ab3344f7",
+        "77c2473a",
+        "56791c41",
+        "29cbf389"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "design document review",
+      "legacy_ids": [
+        "f92a0f3c",
+        "90ee17f5",
+        "6b2e3fb8",
+        "8bf98c24",
+        "c7087df1"
+      ],
+      "unified_ids": [
+        "f92a0f3c",
+        "90ee17f5",
+        "c7087df1",
+        "6b2e3fb8",
+        "8bf98c24"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "review findings apply workflow",
+      "legacy_ids": [
+        "575aed1a",
+        "db1ddae4",
+        "a1cb4eae",
+        "e056ed10",
+        "cddc64c7"
+      ],
+      "unified_ids": [
+        "575aed1a",
+        "db1ddae4",
+        "a1cb4eae",
+        "e056ed10",
+        "cddc64c7"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "ritual phase gating",
+      "legacy_ids": [
+        "c72ef638",
+        "6a989929",
+        "912ce5c9",
+        "c728a48c",
+        "1ed9e58d"
+      ],
+      "unified_ids": [
+        "c72ef638",
+        "6a989929",
+        "912ce5c9",
+        "c728a48c",
+        "6b98218f"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "task dependency graph",
+      "legacy_ids": [
+        "51111cb2",
+        "2be40628",
+        "dd3b1198",
+        "7d4d4bc0",
+        "2d7a0a11"
+      ],
+      "unified_ids": [
+        "51111cb2",
+        "b2107e7f",
+        "2be40628",
+        "dd3b1198",
+        "2d7a0a11"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 0.6666666666666666,
+      "passes_jaccard_threshold": false
+    },
+    {
+      "query": "GOAL satisfies edge",
+      "legacy_ids": [
+        "932fb878",
+        "1d10d3db",
+        "4a2c5966",
+        "6faf0837",
+        "8b416dba"
+      ],
+      "unified_ids": [
+        "932fb878",
+        "1d10d3db",
+        "4a2c5966",
+        "6faf0837",
+        "8b416dba"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "agentctl orchestrator",
+      "legacy_ids": [
+        "bba897cc",
+        "09615c42",
+        "5e5cb480",
+        "de00cb4c",
+        "be7a1cc7"
+      ],
+      "unified_ids": [
+        "09615c42",
+        "bba897cc",
+        "de00cb4c",
+        "5e5cb480",
+        "be7a1cc7"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "interview prep code",
+      "legacy_ids": [
+        "18fef230",
+        "7425f562",
+        "65b11549",
+        "9397a0bc",
+        "47ecd918"
+      ],
+      "unified_ids": [
+        "18fef230",
+        "7425f562",
+        "65b11549",
+        "9397a0bc",
+        "47ecd918"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "autoalpha trading",
+      "legacy_ids": [
+        "7fb824ee",
+        "3f0573e7",
+        "51c72e20",
+        "8abc9fe9",
+        "317f73e7"
+      ],
+      "unified_ids": [
+        "7fb824ee",
+        "3f0573e7",
+        "51c72e20",
+        "8abc9fe9",
+        "317f73e7"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    },
+    {
+      "query": "xinfluencer scrape",
+      "legacy_ids": [
+        "d2df0160",
+        "057c3e7a",
+        "5b6883fd",
+        "ac6815f9",
+        "1f8faab3"
+      ],
+      "unified_ids": [
+        "d2df0160",
+        "5b6883fd",
+        "057c3e7a",
+        "1f8faab3",
+        "ac6815f9"
+      ],
+      "legacy_error": null,
+      "unified_error": null,
+      "jaccard": 1.0,
+      "passes_jaccard_threshold": true
+    }
+  ]
+}

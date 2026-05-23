@@ -1,0 +1,39 @@
+T30 Phase D backfill runner
+source: /tmp/t30-probe.db
+
+== T19 memories→nodes ==
+  run_id=9bd07009 read=19387 inserted=18882 skipped=505 failed=0 (2.34s)
+
+== T20 embeddings→node_embeddings ==
+  run_id=4b58324e read=19015 inserted=18864 skipped=151 failed=0 (1.36s)
+
+== T21 entities→nodes ==
+  run_id=439362b1 read=2791 inserted=2478 skipped=313 failed=0 (0.12s)
+
+== T22 entity_relations→edges ==
+  run_id=d3ab6180 read=8533 inserted=8533 skipped=0 failed=0 (0.14s)
+
+== T23 memory_entities→edges ==
+  run_id=3348d895 read=10193 inserted=9702 skipped=491 failed=0 (0.15s)
+
+== T24 hebbian_links→edges ==
+  run_id=b15da404 read=43224 inserted=43110 skipped=114 failed=0 (1.04s)
+
+== T25 synthesis_provenance→edges ==
+  run_id=49a56159 read=928 inserted=901 skipped=27 failed=0 (0.02s)
+
+== T26 soft_delete projection ==
+  run_id=cb6eb485 read=6631 inserted=6630 skipped=1 failed=0 (0.11s)
+
+=== Summary ===
+  T19 memories→nodes                  read= 19387 inserted= 18882 skipped=   505 failed=   0   2.34s
+  T20 embeddings→node_embeddings      read= 19015 inserted= 18864 skipped=   151 failed=   0   1.36s
+  T21 entities→nodes                  read=  2791 inserted=  2478 skipped=   313 failed=   0   0.12s
+  T22 entity_relations→edges          read=  8533 inserted=  8533 skipped=     0 failed=   0   0.14s
+  T23 memory_entities→edges           read= 10193 inserted=  9702 skipped=   491 failed=   0   0.15s
+  T24 hebbian_links→edges             read= 43224 inserted= 43110 skipped=   114 failed=   0   1.04s
+  T25 synthesis_provenance→edges      read=   928 inserted=   901 skipped=    27 failed=   0   0.02s
+  T26 soft_delete projection          read=  6631 inserted=  6630 skipped=     1 failed=   0   0.11s
+
+total wall-clock: 5.29s
+OK: all drivers completed cleanly
