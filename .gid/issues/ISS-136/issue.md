@@ -73,6 +73,80 @@ unset ENGRAM_BENCH_UNIFIED_SUBSTRATE
 # expect overall ≈ 0.395 (currently)
 ```
 
+## Bisect strategy
+
+Window: engram master between RUN-0025 (2026-05-06, J=0.559) and RUN-T31
+(2026-05-23, J=0.395). 91 engramai commits in the window; engram-bench
+crate has been frozen since 2026-05-06 (all uncommitted-but-present
+files dated May 2–6), so the regression is engram-side only.
+
+The legacy arm of RUN-T31 used `Storage::with_unified_substrate(_,
+false)`, which means it exercised ONLY the legacy read path. Any
+commit that touched ONLY unified-substrate code (T29.* read switches,
+ISS-12x dual-write fixes for `nodes`/`edges` tables) cannot be the
+culprit, narrowing the suspect list to commits that touched the legacy
+write/read code or the data layout of the legacy tables.
+
+### Prioritised suspect list (highest priority first)
+
+1. **`4163f36` ISS-117 — collapse `hebbian_links` to single canonical
+   row (2026-05-13)**
+   Most suspicious. Changed the writer to drop reverse-direction
+   INSERTs/UPDATEs in `record_coactivation` /
+   `record_coactivation_ns` / `record_cross_namespace_coactivation`.
+   Reader (`get_hebbian_links_weighted`) uses `source_id = ?1 OR
+   target_id = ?1` so a single row matches either direction — query
+   itself is direction-agnostic. But any caller that COUNTed hebbian
+   rows, or that indexed activations per `source_id` separately, would
+   see half the rows post-ISS-117. Worth checking: are there any
+   counting/aggregation queries on `hebbian_links` in the recall
+   path that would be sensitive to row count vs canonical-pair count?
+
+2. **`6f47e66` lock-free store API + consolidation split (2026-05-14)**
+   New `consolidate_db_only()` skips synthesis + triple extraction.
+   Commit claims existing public API unchanged. LoCoMo driver calls
+   the standard `sleep_cycle` path, so this *should* be inert — but
+   "consolidation split" plus the resolution-pipeline namespace
+   threading nearby is exactly the kind of refactor that quietly
+   re-orders a single SQL UPDATE and changes outcomes. Worth verifying
+   the bench driver path.
+
+3. **`5eff26b` ISS-118 — ns-aware canonical row migration (2026-05-13)**
+   Migrated existing namespaced hebbian rows. LoCoMo fresh-DB runs
+   don't trigger migration but the canonical-pair logic added by
+   ISS-118 may have changed.
+
+4. **`aca955b` ISS-131 — clamp working_strength to 1.0 (2026-05-15)**
+   Reward layer clamp. Could affect ranker scores if any path used
+   `working_strength > 1.0` to surface candidates.
+
+5. **`0282d53` ISS-119 — round-trip contradicts/contradicted_by
+   through `nodes.attributes`**
+   Touched supersession semantics. Should only affect unified path,
+   but worth a glance.
+
+### Cheap pre-bisect signals (run before spending LoCoMo $/time)
+
+- Diff conv-26 retrieval candidate lists between
+  `git checkout d61471b` (pre-ISS-117) and current master.
+  `t30_probe_parity.rs` style Jaccard against conv-26 question set.
+  Cheap (no LLM judge) and isolates retrieval-set regressions from
+  LLM-judge regressions.
+- Count `hebbian_links` rows after a clean conv-26 ingest at
+  d61471b vs master. If row counts halve, ISS-117 changed the data
+  population the recall path sees.
+- Diff `MemoryConfig::default()` between RUN-0025 commit and master —
+  any default-value drift (decay coefficients, ranker weights,
+  threshold tweaks) explains regressions without code-path bugs.
+
+### Bisect execution
+
+If pre-bisect signals don't pinpoint the cause, do a 3-step git bisect
+on the suspect commits (revert one at a time on master, run a 152-q
+LoCoMo, observe). Each LoCoMo run costs ~25 min wall-clock + LLM
+credits; the entire bisect should be ≤ 3 runs (≤ 75 min wall) given
+the prioritised list above.
+
 ## Out of scope
 
 - T32 (flip unified_substrate default) — not blocked, since unified ≥
