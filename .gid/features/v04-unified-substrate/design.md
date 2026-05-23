@@ -1066,12 +1066,233 @@ default-on with no quality regression flagged.
 
 ### 5.5 Phase E — stop legacy writes
 
-15. Remove legacy write paths from `store_raw`, ResolutionPipeline,
-    Hebbian, KC, Synthesis. They now only touch unified tables.
-16. Legacy tables become read-only.
+**Entry gate**: Phase D acceptance soak ≥1 week elapsed at
+`unified_substrate=true` default, no quality regression flagged
+against the LoCoMo gate (§5.4), no ISS-136-class regressions traced
+to the cutover. Begin only after potato signs off on the soak.
 
-**Acceptance**: code search confirms zero INSERT/UPDATE/DELETE on
-legacy tables outside of migration helpers.
+**Approach**: Phase B already dual-writes every prod legacy write to
+the unified substrate (T12–T16). Phase E is therefore a *deletion
+job*, not a refactor — each prod legacy SQL statement gets removed
+from its enclosing transaction, leaving the unified-side write that
+was added in Phase B as the sole survivor. There is no behaviour
+change for callers; the public storage API stays byte-identical.
+
+**Audit boundary**: this section is scoped to `crates/engramai/src/`
+prod code only. Test fixtures that seed legacy tables (`graph/store.rs`
+Batch A/B helpers, `bus/subscriptions.rs` test mod, lifecycle/test
+infrastructure) are *not* rewritten in Phase E — they continue to
+write to legacy tables until Phase F (T39) rewrites them to seed
+`nodes`/`edges` directly. Migration helpers (T19–T25 backfill drivers,
+`migrate_hebbian_*`) are also exempt; they exist to populate the
+unified side from pre-cutover legacy data and stay until the legacy
+tables are dropped.
+
+#### 5.5.1 Prod-only legacy-write inventory (81 sites)
+
+Verified 2026-05-22 via AST-strip of `#[cfg(test)]` / `#[test]`
+blocks and comment lines over `crates/engramai/src/`. Counts are
+INSERT/UPDATE/DELETE statements that hit the named legacy table
+from production paths (test helpers excluded).
+
+By table:
+
+- `memories` — 17 writes (1 file)
+- `memories_fts` — 13 writes (1 file)
+- `hebbian_links` — 27 writes (1 file)
+- `memory_entities` — 5 writes (1 file)
+- `memory_embeddings` — 4 writes (1 file)
+- `entities` — 3 writes (1 file)
+- `entity_relations` — 1 write (1 file)
+- `synthesis_provenance` — 3 writes (1 file)
+- `cluster_assignments` — 5 writes (1 file)
+- `knowledge_topics` — 2 writes (`graph/store.rs`)
+- `memories` (graph store) — 1 write (`graph/store.rs`)
+
+Total: **81 prod legacy writes** across exactly **2 files** —
+`crates/engramai/src/storage.rs` (78) and
+`crates/engramai/src/graph/store.rs` (3). The narrow file blast
+radius is what makes Phase E tractable as a deletion pass rather
+than a multi-week refactor.
+
+#### 5.5.2 Deletion pattern — worked example: `Storage::add`
+
+`Storage::add` (`storage.rs:1834`) is the canonical legacy memory
+writer and exercises the full pattern. Pre-Phase-E body, abbreviated:
+
+```rust
+pub fn add(&mut self, record: &MemoryRecord, namespace: &str) -> Result<(), rusqlite::Error> {
+    let tx = self.conn.transaction()?;
+    tx.execute("INSERT INTO memories (...) VALUES (...)", params![...])?;  // ← DELETE in Phase E
+    tx.execute("INSERT INTO access_log (memory_id, accessed_at) VALUES (?, ?)", ...)?;
+    let rowid: i64 = tx.query_row("SELECT rowid FROM memories WHERE id = ?", ...)?;  // ← DELETE
+    tx.execute("INSERT INTO memories_fts(rowid, content) VALUES (?, ?)", ...)?;     // ← DELETE
+    // T12 Phase B dual-write — survives Phase E:
+    Self::insert_memory_node_row(&tx, record, namespace, metadata_json.as_deref())?;
+    tx.commit()?;
+    Ok(())
+}
+```
+
+Post-Phase-E body:
+
+```rust
+pub fn add(&mut self, record: &MemoryRecord, namespace: &str) -> Result<(), rusqlite::Error> {
+    let tx = self.conn.transaction()?;
+    tx.execute("INSERT INTO access_log (memory_id, accessed_at) VALUES (?, ?)", ...)?;
+    Self::insert_memory_node_row(&tx, record, namespace, metadata_json.as_deref())?;
+    tx.commit()?;
+    Ok(())
+}
+```
+
+Five things to note:
+
+1. **`access_log` is retained.** It is an audit/observability table,
+   not a legacy substrate table. It survives all phases (see §3.5).
+2. **The FTS write is deleted, not rewritten.** `nodes_fts` is
+   maintained by SQL triggers `nodes_fts_ai/ad/au` (storage.rs:1011),
+   which fire automatically on `nodes` INSERT/DELETE/UPDATE. The
+   `insert_memory_node_row` call therefore covers FTS as a side
+   effect — no explicit FTS write needed.
+3. **The rowid SELECT goes with the FTS write.** It was only there
+   to feed the legacy `memories_fts(rowid, content)` insert.
+4. **`metadata_json` materialisation is retained** because
+   `insert_memory_node_row` still consumes it.
+5. **The transaction boundary is unchanged.** Atomicity for callers
+   is preserved.
+
+This same pattern — *delete the legacy SQL, keep the Phase-B
+unified-side call* — applies to every site in the inventory. The
+unified-side call already exists in every transaction; Phase E
+removes the now-redundant legacy half.
+
+#### 5.5.3 Per-file refactor plan
+
+Phase E is split into three task batches keyed by file and table
+group. Each batch is independently reviewable, independently
+testable, and independently revertable. Recommended sequencing:
+T34 → T35 → T36 (storage by complexity, low to high), then T37
+(graph/store.rs) last because it touches the knowledge-topic
+read path.
+
+**T34 — `storage.rs` memory core (39 prod writes)**
+
+Drop legacy writes from the memory CRUD surface. Tables touched:
+`memories` (17), `memories_fts` (13), `memory_embeddings` (4),
+`memory_entities` (5 — see note below). Entry points:
+
+- T34a `Storage::add` (L1834) — INSERT memories + INSERT memories_fts
+- T34b `Storage::store_raw` (L6521) — INSERT memories + INSERT memories_fts
+- T34c `Storage::update_inner` (L2703) — UPDATE memories + DELETE/INSERT memories_fts (FTS roundtrip)
+- T34d `Storage::update_content_inner` (L2869) — UPDATE memories + FTS roundtrip
+- T34e `Storage::delete_inner` (L2802) — DELETE memories + DELETE memories_fts
+- T34f `Storage::soft_delete` (L4107) — UPDATE memories.deleted_at
+- T34g `Storage::supersede` / `supersede_bulk` / `unsupersede` (L3566/3632/3674) — UPDATE memories.superseded_by
+- T34h `Storage::merge_memory_into` (L5985, L6000, L6044) + `merge_enriched_into` (L6224) — UPDATE memories importance/content/metadata
+- T34i `Storage::update_importance` (L6488) + `append_merge_provenance` (L6916) + `increment_extraction_attempts` (L7312) — single-column UPDATEs
+- T34j `Storage::hard_delete_cascade` (L4176/4179/4182/4184/4195/4197) — DELETE cascade across memories, memories_fts, memory_embeddings, memory_entities, synthesis_provenance, hebbian_links
+- T34k `Storage::store_embedding` (L3945) — INSERT OR REPLACE memory_embeddings
+- T34l `Storage::delete_embedding` (L4281) + `delete_all_embeddings` (L4302) — DELETE memory_embeddings
+- T34m `Storage::rebuild_fts_if_needed` (L1806/1817) + `rebuild_fts` (L5086) — FTS recovery paths; **delete entirely** because `nodes_fts` is trigger-maintained and never needs explicit rebuild from prod code
+- T34n `Storage::link_memory_entity` (L5251) + `clear_memory_entity_links` (L5879) + `cleanup_orphaned_entity_links` (L7743) — memory_entities INSERT/DELETE (Phase B T23 already dual-writes the structural/subject_of/object_of edges)
+
+Pre-condition for T34: confirm every entry point above has a Phase B
+dual-write counterpart by grepping for `insert_memory_node_row`,
+`insert_structural_edge_row`, `insert_provenance_edge_row`,
+`dual_write_entity_to_nodes`, or the relevant `nodes`/`edges` UPDATE.
+If any entry point lacks a dual-write, file a Phase B gap issue
+*before* touching Phase E — the gap means the data is not actually
+on the unified side yet.
+
+**T35 — `storage.rs` Hebbian (27 prod writes)**
+
+Drop legacy writes from the Hebbian path. Table touched:
+`hebbian_links` (all 27). Entry points:
+
+- T35a `Storage::record_coactivation` (L3202–3230, 4 statements) — UPDATE/INSERT hebbian_links (default namespace)
+- T35b `Storage::record_coactivation_ns` (L4605–4632, 4 statements) — UPDATE/INSERT hebbian_links (namespaced) — Phase B T14 dual-writes these to `edges(edge_kind='associative')`
+- T35c `Storage::decay_hebbian_links` (L3264/3268) + `decay_hebbian_links_differential` (L3459/3468) — bulk UPDATE strength * decay + DELETE strength<0.1; needs equivalent `edges` bulk ops or a Phase B audit confirming decay is already mirrored
+- T35d `Storage::merge_hebbian_links` (L3359/3366/3377) — node-merge consolidation; Phase B T14 already mirrors but the *merge* path may need separate verification
+- T35e Migration helpers (`migrate_hebbian_signals` L1489, `migrate_hebbian_canonical_rows` L1560/1607) — **retained**, these are explicit migration helpers (see audit boundary above)
+- T35f `Storage::hard_delete_cascade` hebbian portion (L4179) — already covered by T34j as part of the cascade
+
+Risk note: the Hebbian decay path (T35c) is the highest-risk site in
+Phase E. The `edges` table does not yet have a `weight < 0.1`
+bulk-DELETE equivalent — adding one is a Phase B follow-up, not a
+Phase E task. **Do not start T35c until decay parity is confirmed
+on the unified side.** If parity is missing, defer T35c to Phase F
+or file a Phase B catch-up ticket.
+
+**T36 — `storage.rs` synthesis + clusters + entities tail (12 prod writes)**
+
+Drop legacy writes from the synthesis/KC surface. Tables touched:
+`entities` (3), `entity_relations` (1), `synthesis_provenance` (3),
+`cluster_assignments` (5). `memory_entities` (5) is covered entirely
+by T34n. Entry points:
+
+- T36a `Storage::upsert_entity` (L5165) + `insert_triple_entity` (L7129/7172) + `delete_entity` (L5843) — entities CRUD; Phase B T21 dual-writes to `nodes(node_kind='entity')`
+- T36b `Storage::upsert_entity_relation` (L5339) — entity_relations INSERT; Phase B T22 dual-writes to `edges(edge_kind='structural')`
+- T36c `Storage::record_provenance` (L6276) + `delete_provenance` (L6439) — synthesis_provenance INSERT/DELETE; Phase B T16 dual-writes to `edges(edge_kind='provenance')`
+- T36d `Storage::assign_to_cluster` (L7389) + `replace_clusters` (L7493/7512) + `save_full_cluster_state` (L7553/7576) — cluster_assignments; Phase B T15 dual-writes containment edges to `edges`
+- T36e `Storage::hard_delete_cascade` synthesis_provenance portion (L4184) — already covered by T34j
+
+**T37 — `graph/store.rs` (3 prod writes)**
+
+- T37a INSERT `knowledge_topics` (L4828) in `persist_cluster` — Phase B T15 dual-writes; delete the legacy INSERT
+- T37b UPDATE `knowledge_topics` (L4947) — topic supersession path; delete the legacy UPDATE after confirming Phase B mirrors `nodes(node_kind='topic').superseded_by`
+- T37c UPDATE `memories` (L5782) `entity_ids`/`edge_ids` in pipeline finalisation — these two columns are denormalised projections of `memory_entities`/`hebbian_links`; check whether the unified-side reads can recompute on demand (preferred) or whether a `nodes.attributes` mirror is required
+
+T37c is the only site in Phase E that may need a small *additive*
+change rather than pure deletion — flag during the T37 review.
+
+#### 5.5.4 Per-task acceptance criteria
+
+Each Tnn task is accepted when ALL of:
+
+1. **Legacy write deleted** — grep over `crates/engramai/src/`
+   (with `#[cfg(test)]` masked) confirms zero matches for the
+   removed statement.
+2. **Unified-side write retained** — the corresponding `nodes` /
+   `edges` / `node_embeddings` write still exists in the same
+   transaction and produces the same row(s).
+3. **Lib tests green** — `cargo test --lib` passes (target: full
+   1910-test suite from T32).
+4. **Phase B parity tests green** — `cargo test --test
+   v04_phase_b_dual_write` and `cargo test --test
+   v04_phase_c_*` continue to pass; they prove the unified side
+   still receives the data.
+5. **Targeted regression test** — a new test under
+   `tests/v04_phase_e_no_legacy_writes.rs` calls the entry point
+   under cutover (`unified_substrate=true`) and asserts the legacy
+   table row count is unchanged from before the call (i.e. nothing
+   landed in the legacy table). For DELETE paths, assert the legacy
+   row is still present (we no longer touch it) but the unified row
+   is gone.
+6. **No public API change** — `cargo public-api diff` (if
+   available) or manual diff over `pub fn` signatures shows zero
+   changes.
+
+#### 5.5.5 Phase-level acceptance
+
+Phase E is complete when:
+
+- **Inventory check passes**: re-running the §5.5.1 AST-strip
+  inventory yields 0 prod hits across all 10 legacy tables in
+  `crates/engramai/src/`.
+- **Full test suite green**: lib (1910) + integration (~2489) +
+  all `v04_phase_*` tests pass.
+- **One-week production soak**: default-on for ≥1 calendar week
+  with no quality regression flagged. (Mirrors the Phase D entry
+  gate; Phase F entry requires *another* week.)
+- **No new ISS-136-class regressions**: master LoCoMo J-score
+  stays within ±1pp of the Phase D baseline (0.4013) across at
+  least two independent runs.
+
+**Acceptance**: AST-strip inventory yields 0, all tests green,
+soak ≥1 week, LoCoMo within ±1pp. Legacy tables are now read-only
+in prod (writers retained only in migration helpers and test
+fixtures).
 
 ### 5.6 Phase F — drop legacy
 
@@ -2027,10 +2248,16 @@ Plus three earlier shim-key fixes (ISS-119 `contradicts`/`contradicted_by` round
 - [ ] **T33** 1-week production observation, log quality issues
 
 ### 8.6 Phase E — stop legacy writes
-- [ ] **T34** Remove legacy write paths from store_raw
-- [ ] **T35** Remove legacy write paths from ResolutionPipeline
-- [ ] **T36** Remove legacy write paths from Hebbian / KC / Synthesis
-- [ ] **T37** Code-search audit: zero legacy INSERT/UPDATE/DELETE outside migration
+
+See §5.5 for the full per-file refactor plan, deletion pattern (worked
+example: `Storage::add`), and per-task acceptance criteria. Each task
+below maps to a numbered sub-section in §5.5.3.
+
+- [ ] **T34** `storage.rs` memory core: delete legacy writes from the memory CRUD surface (`memories`, `memories_fts`, `memory_embeddings`, `memory_entities` from L1834/L1841/L1884/L1806/L1817/L2703/L2734/L2740/L2743/L2750/L2798/L2802/L2869/L2878/L3566/L3632/L3674/L3945/L4107/L4176-L4197/L4281/L4302/L5086/L5251/L5879/L5985/L6000/L6044/L6224/L6488/L6521/L6916/L7312/L7743). Per-entry-point breakdown in §5.5.3 T34a–T34n. Total: ~39 deletes.
+- [ ] **T35** `storage.rs` Hebbian: delete legacy writes from co-activation/decay/merge paths (`hebbian_links` from L3202/L3215/L3221/L3230/L3264/L3268/L3359/L3366/L3377/L3459/L3468/L4179/L4605/L4617/L4623/L4632). Per-entry-point breakdown in §5.5.3 T35a–T35f. **High-risk site**: T35c (decay parity must be confirmed on `edges` side before deletion). Migration helpers (L1489/L1560/L1607) explicitly retained. Total: ~14 deletes (decay sites deferred if parity gap exists).
+- [ ] **T36** `storage.rs` synthesis + clusters + entities tail: delete legacy writes for `entities` (L5165/L5843/L7129/L7172), `entity_relations` (L5339), `synthesis_provenance` (L4184/L6276/L6439), `cluster_assignments` (L7389/L7493/L7512/L7553/L7576). Per-entry-point breakdown in §5.5.3 T36a–T36e. Total: 12 deletes.
+- [ ] **T37** `graph/store.rs` (3 prod writes): delete legacy INSERT/UPDATE `knowledge_topics` (L4828/L4947) and decide UPDATE `memories.entity_ids`/`edge_ids` strategy (L5782 — recompute-on-read preferred over `nodes.attributes` mirror). Per-entry-point breakdown in §5.5.3 T37a–T37c. **Note**: T37c is the only Phase E site that may need a small additive change rather than pure deletion.
+- [ ] **T37x** Phase E exit gate: run §5.5.1 AST-strip inventory on `crates/engramai/src/` (with `#[cfg(test)]` masked) and confirm 0 prod hits across all 10 legacy tables. Full test suite green (lib + integration + all `v04_phase_*`). One-week production soak at `unified_substrate=true` with no quality regression, master LoCoMo within ±1pp of Phase D baseline (0.4013) across ≥2 independent runs. Per §5.5.5.
 
 ### 8.7 Phase F — drop legacy
 - [ ] **T38** ≥2 weeks of unified-only operation logged
