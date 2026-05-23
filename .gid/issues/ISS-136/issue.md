@@ -269,3 +269,74 @@ trade and re-baseline the P0 LoCoMo gate.
 3. **`aca955b` ISS-131 — working_strength clamp (2026-05-15)**
 4. **`ec45c92` ISS-103 — occurred_at separation (~2026-05-09)**
 5. **`6f47e66` lock-free store + consolidation split**
+
+---
+
+## 2026-05-23 — Pre-bisect signal #4 (content-based top-K diff): ISS-105 **FALSIFIED**
+
+Built a retrieval-only probe (`engram-bench/examples/iss136_candidate_histogram.rs`)
+that replays conv-26 (419 episodes / 152 questions) through `graph_query_locked`
+with `--top-k 10` and dumps per-query content fingerprints (first 64 chars of each
+result's `MemoryRecord.content`, lowercased + trimmed). Memory IDs are random
+UUIDs regenerated per ingest so they don't survive across builds — but text
+fingerprints do, since the fixture is identical.
+
+**A/B procedure:**
+1. Current HEAD (`82e26d6`, `engram-bench` HEAD; engramai unchanged) → dump
+   /tmp/iss136-histogram-current.json
+2. `git revert --no-commit 4943aea` in engram (changes only
+   `retrieval/orchestrator.rs` + `retrieval/plans/factual.rs`) → rebuild → dump
+   /tmp/iss136-histogram-pre-iss105.json
+3. Revert the revert, rebuild back to current → re-dump current
+   (deterministic ingest still gives random UUIDs but identical fingerprints,
+   so we re-ran current to confirm steady state)
+
+**Result (content-fingerprint diff over 152 conv-26 queries):**
+
+| metric                | value         |
+| --------------------- | ------------- |
+| identical_rank_order  | **150 / 152** |
+| identical_set @ K=10  | **152 / 152** |
+| jaccard@10 mean       | **1.000**     |
+| jaccard@10 median     | 1.000         |
+| jaccard@10 min        | 1.000         |
+| queries_with_any_diff | 0 / 152       |
+| top1_differs          | 2 / 152       |
+
+The 2 rank-order diffs (q11, q76) are pure tie-break noise — every score is
+**1.000** for all 10 positions, so the underlying ordering is undefined and
+the sort just lands differently across the two builds. Set-Jaccard = 1.000
+confirms the SAME 10 rows reach top-K in both builds for all 152 queries.
+
+**Conclusion:** ISS-105's α=3 overfetch + per-entity cap bump (50→100) does
+NOT alter the top-K@10 result set on conv-26. The expanded candidate pool
+exists but gets thrown away by the truncate step — the rows that survive
+fuse+rank's first 10 are unchanged. Therefore **ISS-105 cannot be the cause
+of the master LoCoMo regression 0.467 → 0.395** observed at the same K=10.
+
+**Suspect list revision:**
+
+1. ~~`4943aea` ISS-105~~ **FALSIFIED** — top-K@10 identical pre/post
+2. **`4163f36` ISS-117 — hebbian canonical row collapse** ← restored to #1
+3. **`aca955b` ISS-131 — working_strength clamp**
+4. **`ec45c92` ISS-103 — occurred_at separation**
+5. **`6f47e66` lock-free store + consolidation split**
+
+Note on ISS-117: earlier I reasoned the absolute-halving was invisible to
+the final score because hebbian_channel_scores normalizes to [0,1]. That
+reasoning still stands for the channel itself, but ISS-117 changed *which
+rows* the channel sees (canonical pair collapse) — that's a set-level change,
+not just a score-magnitude change, and could shift top-K membership. The
+content-diff probe applies cleanly here too: run the A/B with `git revert
+--no-commit 4163f36` and re-diff.
+
+**Files:**
+- `engram-bench/examples/iss136_candidate_histogram.rs` (190+ lines, no LLM, no judge)
+- `/tmp/diff_hist_content.py` (content-fingerprint Jaccard@K diff)
+- Output JSONs (per-query top_content + top_scores) at
+  `/tmp/iss136-histogram-{current,pre-iss105}.json`
+
+**Cost so far:** 2 builds × ~45s engramai + ~20s engram-bench, 4 probe runs ×
+~15s = ~3 min compute, **$0 LLM**. The probe is reusable for the remaining
+4 suspects.
+
