@@ -181,6 +181,31 @@ pub(crate) trait RecordLoader {
     ) -> std::collections::HashMap<String, Vec<f32>> {
         std::collections::HashMap::new()
     }
+
+    /// BM25 scores for the top-N FTS hits of `query` (ISS-147).
+    ///
+    /// Returns `id → normalised_score` in `[0, 1]` (already passed
+    /// through `signals::bm25_score` with `BM25_DEFAULT_SATURATION` —
+    /// adapters consume the map directly without re-normalising).
+    ///
+    /// Only ids that **matched** the FTS query appear in the map.
+    /// Adapter callers look up their candidate ids and fall back to
+    /// `Some(0.0)` for misses (NOT `None`) — design §5.1 / ISS-147
+    /// AC-3: a `None` triggers missing-signal renormalisation, which
+    /// would *upweight* embedding-only candidates and defeat the
+    /// hybrid lexical+semantic intent.
+    ///
+    /// Default impl returns an empty map. Test loaders that don't
+    /// model FTS get `Some(0.0)` for every candidate (BM25 channel
+    /// becomes uniform zero and fusion behaves identically to the
+    /// pre-ISS-147 embed-only path — tests stay deterministic).
+    fn fts_scores(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> std::collections::HashMap<String, f64> {
+        std::collections::HashMap::new()
+    }
 }
 
 /// Production loader — wraps `&Storage` for batched SQL lookups.
@@ -252,6 +277,35 @@ impl RecordLoader for StorageLoader<'_> {
             .get_embeddings_for_ids(ids, &self.model)
             .unwrap_or_default()
     }
+
+    fn fts_scores(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> std::collections::HashMap<String, f64> {
+        if query.trim().is_empty() || limit == 0 {
+            return std::collections::HashMap::new();
+        }
+        // ISS-147 production read of the BM25 channel. SQL errors are
+        // silently swallowed → empty map → adapters fall back to
+        // Some(0.0) per fts_scores doc and the trait's GUARD-9
+        // pattern. We normalise here so adapters don't need to know
+        // about saturation tuning (BM25_DEFAULT_SATURATION = 20.0
+        // per design §5.1's "raw values rarely exceed 20" obs).
+        let raw = match self.storage.search_fts_with_scores(query, limit) {
+            Ok(v) => v,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        raw.into_iter()
+            .map(|(rec, raw_bm25)| {
+                let normed = crate::retrieval::fusion::signals::bm25_score(
+                    raw_bm25,
+                    crate::retrieval::fusion::signals::BM25_DEFAULT_SATURATION,
+                );
+                (rec.id, normed)
+            })
+            .collect()
+    }
 }
 
 /// In-memory loader for tests — preloaded id→record map.
@@ -295,12 +349,15 @@ impl RecordLoader for HashMapLoader {
 
 /// Factual plan adapter: 1-hop traversal rows → ScoredResult.
 ///
-/// **Signals emitted**: `graph_score` only (number of anchors that
-/// surfaced the memory, normalized by `max_anchors`). Recency / actr /
-/// vector are `None` — Factual is a graph-only plan in v0.3.
+/// **Signals emitted**: `graph_score` (number of anchors that
+/// surfaced the memory, normalized by `max_anchors`) and
+/// `bm25_score` (ISS-147 — lexical channel, `Some(0.0)` for non-FTS
+/// hits per §5.1 missing-signal contract). Recency / actr / vector
+/// are `None` — Factual is a graph+text plan in v0.3 onwards.
 pub(crate) fn factual_to_scored(
     result: &crate::retrieval::plans::factual::FactualPlanResult,
     loader: &dyn RecordLoader,
+    bm25_by_id: &HashMap<String, f64>,
 ) -> Vec<ScoredResult> {
     if result.memories.is_empty() {
         return Vec::new();
@@ -329,8 +386,13 @@ pub(crate) fn factual_to_scored(
         .filter_map(|(row, rec)| {
             let record = rec?; // drop missing rows silently
             let graph_score = (row.seen_via.len() as f64) / total_anchors;
+            // ISS-147 AC-3: Some(0.0) for FTS misses (NOT None) —
+            // None triggers missing-signal renormalisation which
+            // would defeat the lexical channel's contribution.
+            let bm25 = bm25_by_id.get(record.id.as_str()).copied().unwrap_or(0.0);
             let sub_scores = SubScores {
                 graph_score: Some(graph_score.clamp(0.0, 1.0)),
+                bm25_score: Some(bm25),
                 ..Default::default()
             };
             let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
@@ -346,13 +408,13 @@ pub(crate) fn factual_to_scored(
 
 /// Episodic plan adapter: time-windowed memory ids → ScoredResult.
 ///
-/// **Signals emitted**: `recency_score` only. The plan does not score
-/// candidates internally — it returns ids inside the window. Recency is
-/// computed adapter-side from the memory's `created_at` against the
-/// window. Vector / graph / actr / affect stay `None`.
+/// **Signals emitted**: `recency_score` (linear ramp inside the
+/// window) and `bm25_score` (ISS-147 — `Some(0.0)` for non-FTS
+/// hits per §5.1). Vector / graph / actr / affect stay `None`.
 pub(crate) fn episodic_to_scored(
     result: &crate::retrieval::plans::episodic::EpisodicPlanResult,
     loader: &dyn RecordLoader,
+    bm25_by_id: &HashMap<String, f64>,
 ) -> Vec<ScoredResult> {
     if result.memories.is_empty() {
         return Vec::new();
@@ -391,8 +453,11 @@ pub(crate) fn episodic_to_scored(
                 }
                 None => 0.0,
             };
+            // ISS-147 AC-3: Some(0.0) for FTS misses.
+            let bm25 = bm25_by_id.get(record.id.as_str()).copied().unwrap_or(0.0);
             let sub_scores = SubScores {
                 recency_score: Some(recency_score),
+                bm25_score: Some(bm25),
                 ..Default::default()
             };
             let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
@@ -482,10 +547,12 @@ pub(crate) fn abstract_to_scored(
 /// Affective plan adapter: mood-congruent candidates → ScoredResult.
 ///
 /// **Signals emitted**: `vector_score` (`text_score`),
-/// `affect_similarity`, `recency_score`. Graph / actr stay `None`.
+/// `affect_similarity`, `recency_score`, `bm25_score` (ISS-147 —
+/// `Some(0.0)` for non-FTS hits per §5.1). Graph / actr stay `None`.
 pub(crate) fn affective_to_scored(
     result: &crate::retrieval::plans::affective::AffectivePlanResult,
     loader: &dyn RecordLoader,
+    bm25_by_id: &HashMap<String, f64>,
 ) -> Vec<ScoredResult> {
     if result.candidates.is_empty() {
         return Vec::new();
@@ -506,10 +573,13 @@ pub(crate) fn affective_to_scored(
         .zip(records.into_iter())
         .filter_map(|(cand, rec)| {
             let record = rec?;
+            // ISS-147 AC-3: Some(0.0) for FTS misses.
+            let bm25 = bm25_by_id.get(record.id.as_str()).copied().unwrap_or(0.0);
             let sub_scores = SubScores {
                 vector_score: Some(cand.text_score.clamp(0.0, 1.0)),
                 recency_score: Some(cand.recency_score.clamp(0.0, 1.0)),
                 affect_similarity: Some(cand.affect_similarity.clamp(0.0, 1.0)),
+                bm25_score: Some(bm25),
                 ..Default::default()
             };
             let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
@@ -897,6 +967,22 @@ pub(crate) fn execute_plan(
         q_log,
     );
 
+    // ISS-147: fetch BM25 scores for the lexical fusion channel
+    // ONCE per query (single SQL round-trip) and pass the resulting
+    // id→score map into every Memory-emitting adapter below. Adapters
+    // fall back to `Some(0.0)` for ids that didn't match the FTS query
+    // (AC-3: must be Some(0.0) not None to preserve weight-mass
+    // semantics). For loaders without an FTS backing (test fakes /
+    // HashMapLoader) the default trait impl returns an empty map and
+    // every candidate gets Some(0.0) → BM25 channel is uniformly zero
+    // and fusion behaves identically to the pre-ISS-147 embed-only
+    // path. K_seed mirrors the Episodic adapter convention
+    // (`limit * 4`, clamped to ≥ 40) — large enough to cover
+    // overfetched candidate pools without ballooning into 1000+ rows
+    // for huge `limit` values.
+    let bm25_pool = (query.limit.saturating_mul(4)).max(40);
+    let bm25_by_id: HashMap<String, f64> = loader.fts_scores(&query.text, bm25_pool);
+
     // Extract the budget controller out of the Arc<Mutex<_>>. Single
     // owner here — Hybrid sub-plans construct their own internally.
     let mut budget = match context.budget.lock() {
@@ -939,7 +1025,7 @@ pub(crate) fn execute_plan(
                 Option<&'static str>,
             ) = match plan.execute(&inputs, resolver, graph, &mut budget) {
                 Ok(result) => {
-                    let scored = factual_to_scored(&result, loader);
+                    let scored = factual_to_scored(&result, loader, &bm25_by_id);
                     let outcome = result
                         .outcome
                         .to_retrieval_outcome(scored.is_empty());
@@ -997,7 +1083,7 @@ pub(crate) fn execute_plan(
                 crate::retrieval::plans::episodic::KnowledgeCutoff::default(),
             );
             let result = plan.execute(inputs, now);
-            let scored = episodic_to_scored(&result, loader);
+            let scored = episodic_to_scored(&result, loader, &bm25_by_id);
             let outcome = result
                 .outcome
                 .to_retrieval_outcome(scored.is_empty());
@@ -1126,7 +1212,7 @@ pub(crate) fn execute_plan(
                 collaborators.affective_recaller,
             );
             let result = plan.execute(inputs);
-            let scored = affective_to_scored(&result, loader);
+            let scored = affective_to_scored(&result, loader, &bm25_by_id);
             let (primary_outcome, fallback_reason): (
                 crate::retrieval::api::RetrievalOutcome,
                 Option<&'static str>,
@@ -1290,8 +1376,13 @@ fn run_factual_fallback_for_hybrid(
     };
     let plan = crate::retrieval::plans::factual::FactualPlan::new();
     let resolver = collaborators.entity_resolver;
+    // ISS-147: fetch BM25 scores for the fallback's own query so the
+    // re-dispatch's adapter populates `bm25_score` consistently with
+    // the main `execute_plan` path.
+    let bm25_pool = (query.limit.saturating_mul(4)).max(40);
+    let bm25_by_id: HashMap<String, f64> = loader.fts_scores(&query.text, bm25_pool);
     let scored = match plan.execute(&inputs, resolver, graph, &mut budget) {
-        Ok(result) => factual_to_scored(&result, loader),
+        Ok(result) => factual_to_scored(&result, loader, &bm25_by_id),
         Err(_) => Vec::new(),
     };
 
