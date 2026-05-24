@@ -387,3 +387,82 @@ not a wasted prerequisite — it pulled +4pp on its own.
 
 **ISS-144 status: L1 done + measured. Issue remains in_progress
 until L1b lands.**
+
+---
+
+## 2026-05-24 update: post-L1 retrieval forensics (deeper than expected)
+
+After the L1-only bench shipped, dug into the actual single-hop
+failures on conv-26 (27 fails post-L1) to find the next lever.
+Findings rewrote the priority stack.
+
+### L1 + MMR combined bench (today)
+
+| config                          | overall | single-hop | multi-hop |
+|---------------------------------|--------:|-----------:|----------:|
+| baseline (no L1, no MMR)        |  0.3947 |     0.0625 |    0.5135 |
+| L1 only                         |  0.4408 |     0.1562 |    0.6216 |
+| MMR λ=0.7 only (no L1)          |  0.4474 |     0.1562 |    0.6216 |
+| **L1 + MMR λ=0.7**              |  **0.4671** | **0.2188** | 0.5676 |
+
+L1 and MMR are partly additive (+7.24pp combined vs +5pp each alone).
+MMR default flipped λ=1.0 → λ=0.7 in commit `b16b243`. Tracked as
+ISS-146.
+
+### Diagnostic findings beyond L1+MMR
+
+Built `iss146-embed-diag.py` — runs query and every conv-26 episode
+through Ollama `nomic-embed-text` directly, computes raw cosine sim,
+ranks gold-evidence episodes. Pure embedding signal, no engram.
+
+Results on 4 single-hop failures from L1-only run:
+
+| qid | question | gold | pure-embedding rank of gold episode |
+|-----|----------|------|-----:|
+| q11 | Where did Caroline move from 4 years ago? | "Sweden" (ep#60) | **319 / 419** |
+| q15 | What activities does Melanie partake in?  | 21 gold eps | only 3 in top-50 |
+| q18 | Where has Melanie camped?                 | 4 gold eps | only 1 in top-10 |
+| q19 | What do Melanie's kids like?              | 2 gold eps | both >100 |
+
+q11 is the smoking gun: "Sweden" appears literally exactly once in
+the entire 419-episode corpus, in ep#60 ("necklace from grandma in
+my home country, Sweden"). Any working BM25 ranks ep#60 #1 with
+overwhelming margin. Pure embedding ranks it 319 — 76th percentile
+worst. The query "Where did Caroline move from..." embeds close to
+generic relocation chatter, not to a necklace-and-grandma anecdote.
+
+**This failure mode cannot be fixed by MMR, re-ranking, or entity
+resolution.** The right episode has to be in the candidate set in
+the first place — which is BM25's job.
+
+### Code audit triggered by diagnostic
+
+Audited the fusion pipeline. Design §5.2 calls for hybrid lexical +
+semantic fusion: `text = max(vector_score, bm25_score)` across 4
+plans (Factual / Episodic / Abstract / Affective), weighted 0.40-0.60.
+
+In production: **`bm25_score` is permanently `None`.** No plan
+adapter populates it. No plan module references FTS. Missing-signal
+renormalization collapses Factual to 100% graph, Episodic to 100%
+recency, etc. The literal sentence "fusion does hybrid lexical+
+semantic retrieval" is design fiction. We've been running
+embedding-only for the entire v0.3 / v0.4 cycle.
+
+Filed as **ISS-147** — P0, estimated 2-4h to fix. Expected
+single-hop lift: 0.0625 → 0.40+ (6×). If the hypothesis holds, this
+is the highest-ROI lever currently identified for LoCoMo accuracy.
+
+### Priority impact on ISS-144
+
+L1 stays as the right intermediate step — it improved multi-hop +10pp
+which BM25 won't directly help (multi-hop needs entity-aware traversal,
+not lexical match). L1b (ISS-145) drops in priority: q11 / q18 / q19
+failures are not entity-resolution problems, they're lexical-match
+problems. Resolver wiring may give a smaller boost on top of BM25 but
+isn't the binding constraint.
+
+**Next move after ISS-147 lands:** rerun the conv-26 / multi-conv bench
+matrix with L1 + MMR λ=0.7 + BM25 channel live. Then decide whether
+L1b is still worth doing or whether the remaining gap shifts to
+query expansion (HyDE) for queries that have neither lexical nor
+embedding overlap with the gold.
