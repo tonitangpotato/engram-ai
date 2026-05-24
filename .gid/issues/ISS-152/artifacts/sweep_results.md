@@ -18,6 +18,23 @@
 | ISS-144 L1-only | `7eee30e` | 0.4408 | 0.1562 | 0.6216 | 0.3077 | 0.5000 | conv-26 |
 | ISS-147 BM25 | `5ed5dc0` | 0.4671 | 0.2188 | 0.5946 | 0.3846 | 0.5286 | conv-26, +BM25 fusion |
 | ISS-150 BM25-Assoc | `3253d49` | 0.4408 | 0.2188 | 0.6216 | 0.3077 | 0.5000 | conv-26, +Associative BM25 (no judge-score movement) |
+| **ISS-152 Run A** | `894dcb1` | **0.3618** | **0.1562** | **0.3243** | **0.3846** | **0.4714** | **same code path as ISS-150 with override=None — but did NOT reproduce.** |
+
+### ⚠ Run A did NOT reproduce ISS-150 — ingest non-determinism
+
+Run A uses identical code (engram `894dcb1` adds override fields defaulted
+`None` → byte-identical call sites) and identical fixture / env to ISS-150.
+But the per-query diff shows:
+
+- 110/152 same score, 13 flipped up, **29 flipped down** vs ISS-150
+- Of the 29 regressions: **13 are HARD (A returned "I don't know" where ISS-150 answered correctly)**, 16 are soft (both answered, judge differed)
+- Both runs had exactly 1 `Dedup: merging` event but on **different memory IDs** (`10f710b1` vs `1241fe04`) at slightly different similarity (0.9535 vs 0.9529)
+
+This means **Ollama embedding output is non-deterministic across runs**, producing different dedup-merge decisions early in ingest, cascading into different graph topology by query time. ISS-137 only stabilised the judge (temp=0); ingest embedding noise is the next stdev source.
+
+**Implication for ISS-152**: comparisons must be **A vs B/C/D/E within this sweep**, NOT against historical ISS-150 numbers. Run A is the only valid baseline for runs B-E because they share the same Ollama session / ingest noise pattern.
+
+**Side-quest noted**: file ISS for ingest embedding determinism — likely needs Ollama `temperature=0` + `seed` if the model supports it, or switching to a deterministic local model. Defer to after sweep — not blocking decision.
 
 **ISS-148 AC-5 target: single-hop ≥ 0.40**
 
