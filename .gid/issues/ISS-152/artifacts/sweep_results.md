@@ -1,6 +1,6 @@
 # ISS-152 sweep results — pool sizing + MMR λ
 
-> **Status: draft skeleton — numbers populated once `/tmp/iss152_sweep.sh` (PID 93487) completes.**
+> **Status: complete — sweep finished 2026-05-24T07:22:19Z, results below.**
 
 ## Setup
 
@@ -50,23 +50,38 @@ This means **Ollama embedding output is non-deterministic across runs**, produci
 
 ## Results
 
-> _Populated by `/tmp/iss152_compare.py` after sweep completes._
+| run | K_seed | bm25_pool | MMR λ | overall | single | multi | open | temporal | Δ single vs A |
+|---|---|---|---|---|---|---|---|---|---|
+| ISS-150 prior baseline | — | — | 0.7 | 0.4408 | 0.2188 | 0.6216 | 0.3077 | 0.5000 | — |
+| **A (sweep baseline)** | unset | unset | 0.7 | **0.3618** | **0.1562** | **0.3243** | 0.3846 | 0.4714 | — |
+| B | 100 | 100 | 0.7 | 0.2895 | 0.1250 | 0.3514 | 0.1538 | 0.3571 | **−0.0312** |
+| C | 200 | 200 | 0.7 | 0.1842 | 0.0312 | 0.1892 | 0.1538 | 0.2571 | **−0.1250** |
+| D | 100 | 100 | 0.5 | 0.2303 | 0.0938 | 0.3243 | 0.0769 | 0.2714 | **−0.0624** |
+| E | 100 | 100 | 0.3 | 0.2039 | 0.0938 | 0.2432 | 0.0769 | 0.2571 | **−0.0624** |
 
-| run | overall | single | multi | open | temporal | Δ single vs A |
-|---|---|---|---|---|---|---|
-| A | — | — | — | — | — | — |
-| B | — | — | — | — | — | — |
-| C | — | — | — | — | — | — |
-| D | — | — | — | — | — | — |
-| E | — | — | — | — | — | — |
+**All four experimental runs are WORSE than Run A on overall and on single-hop.** Pool widening (B, C) monotonically hurt as pool grew — bigger pool = more distractors, MMR didn't recover. Diversity-only sweeps (D, E) also regressed across the board.
+
+Also note Run A itself sits at single-hop 0.1562, well below the ISS-150 baseline of 0.2188 — confirming the ingest non-determinism finding from §Setup. The sweep is internally consistent (same Ollama session) so the cross-run comparison is still valid; only the comparison vs historical ISS-150 is unsafe.
 
 ## Decision
 
-> _Filled in after results populate. Decision tree from ISS-152 issue body:_
+**No threshold met. Per ISS-152 decision tree → ISS-153 (HyDE) is the right next move.**
 
-- **If B or C single-hop ≥ 0.35:** commit wider pool default, deprioritise ISS-153.
-- **If D or E recovers open-domain coverage:** commit lower MMR λ, file ISS-154 anyway.
-- **If nothing moves:** ISS-153 (HyDE) is the right next move.
+- ✗ Run B single-hop 0.1250 < 0.35 threshold
+- ✗ Run C single-hop 0.0312 < 0.35 threshold
+- ✗ Run D open-domain 0.0769 < Run A's 0.3846 (regression, not recovery)
+- ✗ Run E open-domain 0.0769 < Run A's 0.3846 (regression, not recovery)
+
+**Interpretation**: pool size is not the bottleneck. Growing the candidate pool (40 → 100 → 200) without improving the embedding's ability to surface the right gold passage just dilutes the top-K with semantically-close-but-wrong neighbours. MMR diversification only makes this worse when the underlying embedding ranking is noisy.
+
+**The bottleneck is upstream — query→passage embedding semantics.** ISS-153 (HyDE, hallucinated-document expansion) is the correct lever: rewrite the query into a synthetic answer and embed that, rather than rebalancing the existing flawed ranking.
+
+### Actions
+- [x] Sweep complete, results recorded.
+- [ ] Close ISS-152: knob landed and tested, sweep is **decisively negative** — knob can stay (zero-cost, defaults unchanged) but no follow-up commit needed.
+- [ ] Bump ISS-153 (HyDE) to `in_progress`, start design.
+- [ ] File ingest-determinism issue (Ollama embedding non-determinism noted in §Setup) — lower priority, blocks future bench reproducibility but doesn't block ISS-153.
+- [ ] **Skip** Mode-B dump confirmation — no winning config to confirm.
 
 ## Mechanistic confirmation (TBD)
 
