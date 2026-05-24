@@ -1,13 +1,23 @@
 ---
 id: ISS-144
-title: "Classifier NullEntityLookup hardcoded — entity signal永远=0, abstract plan misrouting on factual questions"
+title: Classifier NullEntityLookup hardcoded — entity signal永远=0, abstract plan misrouting on factual questions
 kind: issue
-status: open
+status: in_progress
 priority: P0
 severity: degradation
-tags: [classifier, retrieval, unified-substrate, silent-no-op, root-cause]
+tags:
+- classifier
+- retrieval
+- unified-substrate
+- silent-no-op
+- root-cause
 created: 2026-05-23
-related: [ISS-111, ISS-136, ISS-141, ISS-142, ISS-143]
+related:
+- ISS-111
+- ISS-136
+- ISS-141
+- ISS-142
+- ISS-143
 ---
 
 # ISS-144 — Classifier NullEntityLookup hardcoded (silent no-op)
@@ -265,3 +275,49 @@ This needs to be verified on the same probe after the fix lands.
 - `task:retr-impl-classifier-core` — original ungated task in design docs (presumed still
   open; not verified in this filing)
 - `engram-bench/examples/iss144_introspect_one.rs` — introspection probe used to find this
+
+## 2026-05-23 update — L1 fix landed, L1b discovered
+
+**L1 (entity extraction) is FIXED** in commit `7eee30e` on branch
+`iss144-l1-speaker-prefix-extraction` (merged to main). New `EntityPattern`
+in `crates/engramai/src/entities.rs` with regex `(?m)^(\p{Lu}\p{L}+):`
+extracts the speaker tag in dialogue-style episodes. Plus 4 unit tests
+(multiline, single-turn, single-letter rejection, mid-sentence rejection).
+1946 lib tests green.
+
+Post-fix entity census on conv-26 (re-ran `iss144_entity_resolution_spike`):
+
+```
+total entities: 3
+  "person"             2
+  "technology"         1
+top by usage:
+  [ 210x] "person" "default" :: caroline
+  [ 208x] "person" "default" :: melanie
+  [   7x] "technology" "default" :: go
+```
+
+But `GraphEntityResolver::resolve` STILL returns `n_anchors=0` on all 5
+probes. **L1 was necessary but not sufficient.** Root cause of the residual
+gap (filed as **ISS-145**):
+
+- `ingest_with_stats_at` (memory.rs:7244) writes to `entities` +
+  `memory_entities` via `Storage::upsert_entity`. It does NOT call
+  `ResolutionPipeline`, so no rows land in `graph_entities` /
+  `graph_entity_aliases`.
+- `GraphEntityResolver` reads exclusively from `graph_entity_aliases`.
+- The two table families share a SQLite connection but no writer.
+
+ISS-075's fix (commit `f95480b`) wired the resolution pipeline's
+`stage_persist.rs::build_delta` to emit `AliasUpsert` correctly — but
+the pipeline is never invoked by the ingest path that LoCoMo + every
+default caller uses. ISS-075 is effectively dead code for benchmark
+runs.
+
+**Decision still pending on L1b** (ISS-145 documents 3 options). Until
+L1b lands, Factual anchor resolution remains broken. L1 alone may still
+move LoCoMo numbers via other readers of the `entities` table (dedup's
+`find_entity_overlap`, future classifier `EntityLookup` once wired) —
+isolated impact measurement is the next step.
+
+**Status: in_progress** (L1 done, L1b open as ISS-145).
