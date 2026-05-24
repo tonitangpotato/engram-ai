@@ -1,18 +1,18 @@
 ---
 title: HyDE / hypothetical document expansion for retrieval recall miss
-priority: P2
+priority: P1
 severity: enhancement
 status: open
 tags:
-  - retrieval
-  - query-expansion
-  - hyde
-  - locomo
+- retrieval
+- query-expansion
+- hyde
+- locomo
 relates_to:
-  - ISS-148
-  - ISS-151
-  - ISS-152
-depends_on: ISS-152
+- ISS-148
+- ISS-151
+- ISS-152
+depends_on: ''
 ---
 
 # ISS-153 — HyDE / hypothetical document expansion

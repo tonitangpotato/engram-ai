@@ -2,21 +2,23 @@
 title: Retrieval pool sizing + MMR λ sweep for list-question coverage (cheap first try)
 priority: P1
 severity: degradation
-status: open
+status: resolved
 tags:
-  - retrieval
-  - pool-sizing
-  - mmr
-  - locomo
-  - conv-26
-  - cheap-win
+- retrieval
+- pool-sizing
+- mmr
+- locomo
+- conv-26
+- cheap-win
 relates_to:
-  - ISS-148
-  - ISS-150
-  - ISS-151
-  - ISS-153
-  - ISS-154
-blocks: ISS-148
+- ISS-148
+- ISS-150
+- ISS-151
+- ISS-153
+- ISS-154
+blocks: ''
+fixed_by: 10f2295
+resolution: negative-result
 ---
 
 # ISS-152 — Pool sizing + MMR λ sweep
@@ -107,3 +109,32 @@ After all 5 runs:
 - Does NOT implement list-question sub-query expansion (ISS-154).
 - Does NOT touch the upstream classifier/resolver blindness
   (ISS-149 / ISS-145).
+
+## Resolution (2026-05-24 07:22Z)
+
+Sweep complete (commit `10f2295`). **Negative result — hypothesis falsified.**
+
+Pool widening is *monotonically harmful* across A→B→C:
+- overall 0.36 → 0.29 → 0.18
+- single-hop 0.16 → 0.13 → **0.03**
+
+Lower MMR λ (B→D→E) is also monotonically harmful. Open-domain takes
+the worst hit (0.38 → 0.08–0.15).
+
+The 14 "recall-miss" single-hop failures identified in ISS-151 are NOT
+caused by pool size. Widening the candidate pool just lets short
+conversational reactions ("Wow!", "Cool!") with high embedding cosine
+similarity dilute the top-K. MMR diversity pressure makes it worse by
+pushing noise candidates *into* top-K.
+
+The override fields `k_seed_override` and `bm25_pool_override` remain
+in code (engram `894dcb1` + engram-bench `df3c8d1`) as diagnostic
+levers. **Defaults are unchanged**: `K_seed = query.limit`, `bm25_pool = (limit*4).max(40)`, `MMR λ = 0.7`.
+
+Next move: **ISS-153 (HyDE)** bumped to P1 in_progress. The bottleneck
+is upstream — query→passage embedding semantics. Rewriting the query
+into a hypothetical answer (HyDE) attacks that directly, where pool
+sizing cannot.
+
+See: `.gid/issues/ISS-152/artifacts/sweep_results.md` for full table
++ per-query diff analysis + side-issue (Ollama embed non-determinism).
