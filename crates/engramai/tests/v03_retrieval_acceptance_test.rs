@@ -618,15 +618,17 @@ fn classifier_method_is_observable_for_every_query() {
 
 #[test]
 fn fusion_config_locked_mmr_lambda_defaults_to_one() {
-    // Canonical "MMR off" sentinel. Lowering this in `locked()` would
-    // change the global default for every caller — a deliberate,
-    // separate decision from per-query overrides. This test pins the
-    // current default so a future bump must be explicit.
+    // Canonical MMR default sentinel. ISS-146 flipped the ship
+    // default from 1.0 (MMR off, byte-identity preserved) to 0.7
+    // (Carbonell-Goldstein sweet spot, +6.66pp on conv-26 L1+MMR).
+    // The test name is preserved for git-history continuity but the
+    // pinned value tracks the production default. Bumping in either
+    // direction must be a deliberate explicit decision.
     let cfg = FusionConfig::locked();
     assert_eq!(
-        cfg.mmr_lambda, 1.0,
-        "FusionConfig::locked().mmr_lambda must default to 1.0 (MMR off) \
-         — preserves §5.4 byte-identity for callers who don't opt in"
+        cfg.mmr_lambda, 0.7,
+        "FusionConfig::locked().mmr_lambda must default to 0.7 (ISS-146 \
+         post-flip ship default — see retrieval/fusion/combiner.rs::default_mmr_lambda)"
     );
 }
 
