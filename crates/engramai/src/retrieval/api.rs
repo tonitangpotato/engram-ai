@@ -191,6 +191,56 @@ pub struct GraphQuery {
     /// and reproducibility records that pin the exact λ used. Normal
     /// callers should leave this `None`.
     pub mmr_lambda_override: Option<f32>,
+
+    /// ISS-152 — per-query override for the Associative plan's
+    /// `k_seed` (the number of seed memories the seed-recall step
+    /// surfaces before graph expansion). `None` = use the existing
+    /// `query.limit` default (= top-K).
+    ///
+    /// Motivation: ISS-151 root-caused that 14 of 25 conv-26
+    /// single-hop fails are RETRIEVAL POOL MISSES — the gold-fact
+    /// episode is never in the top-K because the seed-recall pool
+    /// at `k_seed = limit` is too narrow to surface specific-fact
+    /// episodes when the embedding model puts short conversational
+    /// reactions ("Wow!", "Cool!") higher than richer-vocabulary
+    /// evidence episodes for short queries. Widening k_seed (say
+    /// to 100 or 200) lets fusion + MMR pick from a much larger
+    /// pool, recovering recall at no algorithmic cost.
+    ///
+    /// **Range**: any `usize >= 1`. Out-of-range / parsing failures
+    /// upstream should fall through to `None` rather than clamping.
+    /// Very large values (≥ 500) may exceed `AssociativePlan::k_pool`
+    /// (default 100) — see the §4.3 expansion budget commentary in
+    /// `associative.rs`. The plan already clamps internally; nothing
+    /// here panics.
+    ///
+    /// Intended consumers: benchmark drivers running pool-sizing
+    /// sweeps. Normal callers should leave this `None`.
+    pub k_seed_override: Option<usize>,
+
+    /// ISS-152 — per-query override for the BM25 precompute pool size
+    /// in `execute_plan` / `run_associative_fallback` (the `K_seed`
+    /// passed to `loader.fts_scores(...)`). `None` = use the existing
+    /// `(query.limit * 4).max(40)` default.
+    ///
+    /// Motivation: companion knob to [`k_seed_override`]. The
+    /// Associative seed pool and the BM25 precompute pool are two
+    /// independent ceilings on what fusion can rank — widening only
+    /// one leaves the other as a silent bottleneck. The bench sweep
+    /// in ISS-152 varies both together so we can isolate which (if
+    /// either) is the actual recall constraint on conv-26 single-hop
+    /// questions.
+    ///
+    /// **Range**: any `usize >= 1`. Out-of-range / parsing failures
+    /// upstream should fall through to `None` rather than clamping.
+    /// Large values (≥ 1000) cost an extra SQL FTS5 round-trip
+    /// proportional to the pool size — fine for benchmarks, not for
+    /// production. The default of 40 is intentionally cheap.
+    ///
+    /// Intended consumers: same as `k_seed_override` — bench drivers
+    /// running pool-sizing experiments. Production callers should
+    /// leave this `None`.
+    pub bm25_pool_override: Option<usize>,
 }
 
 impl GraphQuery {
@@ -211,6 +261,8 @@ impl GraphQuery {
             self_state_override: None,
             namespace: None,
             mmr_lambda_override: None,
+            k_seed_override: None,
+            bm25_pool_override: None,
         }
     }
 
@@ -275,6 +327,24 @@ impl GraphQuery {
     /// `None` to fall back to `FusionConfig::locked().mmr_lambda`.
     pub fn with_mmr_lambda(mut self, lambda: Option<f32>) -> Self {
         self.mmr_lambda_override = lambda;
+        self
+    }
+
+    /// Builder: per-query Associative `k_seed` override (ISS-152).
+    ///
+    /// See [`GraphQuery::k_seed_override`] for semantics. Pass
+    /// `None` to fall back to `query.limit` (the existing default).
+    pub fn with_k_seed_override(mut self, k_seed: Option<usize>) -> Self {
+        self.k_seed_override = k_seed;
+        self
+    }
+
+    /// Builder: per-query BM25 precompute pool override (ISS-152).
+    ///
+    /// See [`GraphQuery::bm25_pool_override`] for semantics. Pass
+    /// `None` to fall back to `(query.limit * 4).max(40)`.
+    pub fn with_bm25_pool_override(mut self, pool: Option<usize>) -> Self {
+        self.bm25_pool_override = pool;
         self
     }
 }

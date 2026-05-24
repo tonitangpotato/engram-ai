@@ -999,7 +999,12 @@ pub(crate) fn execute_plan(
     // (`limit * 4`, clamped to ≥ 40) — large enough to cover
     // overfetched candidate pools without ballooning into 1000+ rows
     // for huge `limit` values.
-    let bm25_pool = (query.limit.saturating_mul(4)).max(40);
+    // ISS-152: per-query `bm25_pool_override` lets the bench driver
+    // widen the BM25 precompute pool for pool-sizing experiments
+    // without recompiling. `None` falls back to the existing default.
+    let bm25_pool = query
+        .bm25_pool_override
+        .unwrap_or_else(|| (query.limit.saturating_mul(4)).max(40));
     let bm25_by_id: HashMap<String, f64> = loader.fts_scores(&query.text, bm25_pool);
 
     // Extract the budget controller out of the Arc<Mutex<_>>. Single
@@ -1151,10 +1156,13 @@ pub(crate) fn execute_plan(
             // expansion budget; if query.limit > K_pool we don't bother
             // raising the pool — clamping at the existing pool keeps
             // the §7.3 cost caps intact.
+            // ISS-152: `k_seed_override` lets the bench driver widen
+            // the Associative seed pool for pool-sizing experiments.
+            // `None` falls back to `query.limit` (the existing default).
             let plan = crate::retrieval::plans::associative::AssociativePlan::new(
                 collaborators.seed_recaller,
             )
-            .with_k_seed(query.limit);
+            .with_k_seed(query.k_seed_override.unwrap_or(query.limit));
             let result = plan.execute(inputs, graph);
             // ISS-150: thread bm25_by_id (computed once at execute_plan
             // entry) into the Associative adapter so the dispatched
@@ -1401,7 +1409,10 @@ fn run_factual_fallback_for_hybrid(
     // ISS-147: fetch BM25 scores for the fallback's own query so the
     // re-dispatch's adapter populates `bm25_score` consistently with
     // the main `execute_plan` path.
-    let bm25_pool = (query.limit.saturating_mul(4)).max(40);
+    // ISS-152: same per-query override hook as the main path.
+    let bm25_pool = query
+        .bm25_pool_override
+        .unwrap_or_else(|| (query.limit.saturating_mul(4)).max(40));
     let bm25_by_id: HashMap<String, f64> = loader.fts_scores(&query.text, bm25_pool);
     let scored = match plan.execute(&inputs, resolver, graph, &mut budget) {
         Ok(result) => factual_to_scored(&result, loader, &bm25_by_id),
@@ -1485,10 +1496,11 @@ fn run_associative_fallback(
     // ISS-K_SEED-CAP — fallback path. Same reasoning as the primary
     // PlanKind::Associative branch above: surface query.limit as
     // k_seed so the fused pool can actually saturate top-K.
+    // ISS-152: same per-query override hook as the main path.
     let plan = crate::retrieval::plans::associative::AssociativePlan::new(
         collaborators.seed_recaller,
     )
-    .with_k_seed(query.limit);
+    .with_k_seed(query.k_seed_override.unwrap_or(query.limit));
     let result = plan.execute(inputs, graph);
 
     // ISS-150: recompute BM25 here (analogous to
@@ -1496,7 +1508,10 @@ fn run_associative_fallback(
     // outer `bm25_by_id` through 4 fallback call sites is noisier than
     // one extra SQL roundtrip per downgrade. Pool sizing matches the
     // ISS-147 primary-path convention `(K*4).max(40)`.
-    let bm25_pool = (query.limit * 4).max(40);
+    // ISS-152: same per-query override hook as the main path.
+    let bm25_pool = query
+        .bm25_pool_override
+        .unwrap_or_else(|| (query.limit * 4).max(40));
     let bm25_by_id: HashMap<String, f64> = loader.fts_scores(&query.text, bm25_pool);
     let scored = associative_to_scored(&result, loader, &bm25_by_id);
 
