@@ -358,3 +358,75 @@ If the fix doesn't get us to <5% divergence:
 This phase cost ~30 min wall + 2x extractor pass over 419 conv-26
 episodes ≈ 838 Haiku calls. Budget already committed; future reruns
 of Phase 1b for validation are cheap (~$0.50 / run).
+
+## Phase 2 validation (2026-05-24, post-fix Phase 1b rerun)
+
+**Fix landed:** engram `fae6bb7` — added `"temperature": 0` to
+`AnthropicExtractor` request body in `engramai/src/extractor.rs:386`.
+Unit tests (34/34) pass.
+
+**Validation run:** same fixture (conv-26, 419 episodes), same dual
+fresh-substrate ingest, with the patched binary.
+
+```
+Arm A: 456 rows, wall 925.6s
+Arm B: 455 rows, wall 899.6s
+Fully identical content hashes: 417
+A-only: 39 (8.55% of A)
+B-only: 38 (8.35% of B)
+Avg divergence: 8.45%
+Embedding mismatches on shared: 0
+```
+
+### Compare
+
+| Metric | Pre-fix | Post-fix | Δ |
+|---|---|---|---|
+| Total rows (A / B) | 457 / 455 | 456 / 455 | ~stable |
+| A-only / B-only | 196 / 194 | 39 / 38 | −80% |
+| Avg divergence | 42.8% | **8.5%** | **−80.3%** |
+| Embedding mismatch on shared | 0 | 0 | unchanged |
+
+### Verdict
+
+**Partial PASS — major improvement, target not fully met.**
+
+- Divergence dropped from 42.8% → 8.5%. That's an **80% reduction**,
+  enough to lift dedup decisions out of the worst boundary-flip regime
+  driving ISS-150 vs ISS-152-Run-A disagreement.
+- However, the original spec target was **<5%**. At 8.5% we're still
+  above that floor.
+- This matches the prior caveat: temperature=0 on Anthropic is
+  "near-deterministic", not bit-exact.
+
+### Next decision
+
+Two paths:
+
+1. **Ship the fix as-is, defer Phase 3.** Argument: 8.5% paraphrase
+   divergence is probably well below the dedup similarity threshold
+   for most pairs. The remaining wobble is likely *within* dedup
+   tolerance and won't flip cluster membership. We'd need a downstream
+   bench run (RUN-T31-equivalent) to confirm the LoCoMo inter-run
+   stdev has actually fallen from 9.5pp → ≤2.5pp.
+
+2. **Run Phase 3 too.** Raise `dedup` cosine similarity merge
+   threshold from current ~0.85 → 0.92. Targets the boundary-flip
+   mechanism directly: at 8.5% input divergence, raising the threshold
+   means even paraphrase variants need to cosine-match very closely
+   before merging, reducing cluster-membership churn.
+
+**Recommendation:** ship `fae6bb7` now, then run a 3× LoCoMo at temp=0
+to measure new inter-run stdev empirically before deciding on Phase 3.
+That's cheap (3 × ~12min = 36min) and gives us hard numbers instead
+of theoretical reasoning about boundary-flip behavior.
+
+### Cost
+
+Validation rerun: ~30 min wall, ~838 Haiku calls, ~$1.
+
+### Artifacts
+
+- pre-fix diff: `/tmp/iss155_phase1b.json` (42.8% divergence)
+- post-fix diff: `/tmp/iss155_phase1b_validate.json` (8.5% divergence)
+- harness: `engram-bench/examples/iss155_phase1b_ingest_repro.rs`
