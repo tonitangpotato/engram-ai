@@ -156,10 +156,16 @@ pub struct FusionConfig {
     pub version: &'static str,
 }
 
-/// Serde default for [`FusionConfig::mmr_lambda`]. `1.0` = MMR off,
-/// matches pre-ISS-139 behavior.
+/// Serde default for [`FusionConfig::mmr_lambda`]. `0.7` is the
+/// shipped default after ISS-146 validation (L1+MMR conv-26
+/// single-hop 0.0625 → 0.2188, overall 0.3947 → 0.4671). Pre-ISS-146
+/// the default was `1.0` (MMR off, ISS-139 ship gate); the lower
+/// value trades a small amount of relevance for diversity that helps
+/// list-style queries recover gold items spread across near-duplicate
+/// candidates. Callers wanting the legacy no-op behaviour can pass
+/// `GraphQuery::with_mmr_lambda(Some(1.0))`.
 fn default_mmr_lambda() -> f32 {
-    1.0
+    0.7
 }
 
 impl FusionConfig {

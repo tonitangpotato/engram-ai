@@ -176,8 +176,9 @@ pub struct GraphQuery {
     ///
     /// When `Some(λ)`, the post-fusion reranker uses this λ instead of
     /// `FusionConfig::locked().mmr_lambda`. When `None` (default), the
-    /// locked config's value applies (currently `1.0` = MMR off,
-    /// byte-identical to pre-ISS-139 behavior).
+    /// locked config's value applies (currently `0.7` after ISS-146;
+    /// pass `Some(1.0)` to reproduce pre-ISS-146 / pre-ISS-139
+    /// MMR-off behavior).
     ///
     /// **Range**: `λ ∈ [0.0, 1.0]`. `1.0` = pure relevance (no-op);
     /// `0.0` = pure diversity (don't use); literature recommends
