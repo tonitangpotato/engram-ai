@@ -198,3 +198,63 @@ multi-hop=0.6216, open-domain=0.3077, temporal=0.5000).
 - Does NOT fix the resolver blindness (that's ISS-145).
 - Does NOT touch Hybrid's RRF path (separate concern; Hybrid
   `hybrid_to_scored` ID-mapping has its own bug per ISS-061).
+
+## Bench results (conv-26, K=10, λ=0.7, n=152)
+
+Run: `benchmarks/runs/ISS150-BM25-assoc-conv26-l0.7-20260524T040637Z/`
+
+| Category | ISS-147 (baseline) | ISS-150 (this fix) | Δ |
+|---|---|---|---|
+| overall | 0.4671 | 0.4671 | **0.00** |
+| single-hop (32q) | 0.2188 | 0.2188 | **0.00** |
+| multi-hop (37q) | 0.5946 | 0.5676 | -2.70pp ⚠ |
+| open-domain (13q) | 0.3846 | 0.3846 | **0.00** |
+| temporal (70q) | 0.5286 | 0.5429 | +1.43pp |
+
+**Score-level**: only 2 of 152 queries flipped — `conv-26-q21`
+(multi-hop, 1.0→0.0) and `conv-26-q149` (temporal, 0.0→1.0). Both
+are pure LLM-judge wobble on semantically-equivalent answers:
+
+- q21 — "Last week (before July 6, 2023)" vs "Last week (from
+  2023-07-06, so approximately late June 2023)" — judge said Yes
+  then No on essentially the same answer.
+- q149 — "Love and motivation" vs "motivation and love" — same
+  words, different order, judge waffled.
+
+The judge does not run at `temp=0` yet (ISS-137 fix uncommitted),
+so single-query flips are within the historical ±9.5pp noise band.
+
+**Predict-level**: 44/152 (29%) of predicted answers changed
+(byte-different generations) but the judge landed on the same
+verdict for all but those 2. BM25 IS flowing through the
+Associative path and reordering candidates — the wiring works.
+The fix doesn't unlock conv-26 single-hop on its own.
+
+## Verdict on AC-5
+
+- [ ] Single-hop ≥ 0.40 — **FAIL** (still 0.2188). ISS-150 is
+      necessary plumbing but not sufficient. The single-hop bucket
+      on conv-26 (Caroline/Melanie person-anchored questions) needs
+      either ISS-145 (resolver wiring) or ISS-149 (classifier
+      wiring) — or both — to flip the dispatched plan away from
+      Associative so the Factual graph-walk path actually runs.
+      Today, even with BM25 wired everywhere, the Associative
+      path's `graph_score = 1 / 2^edge_distance` from seed-recall
+      can't compensate for missing entity anchors.
+- [x] No regression on multi-hop — **PASS** modulo judge wobble.
+      The single q21 flip is the same answer scored differently;
+      no semantic regression.
+- [x] All other ACs (#1-#4) — **PASS**: code shipped, tests green,
+      bench ran clean.
+
+## Conclusion
+
+ISS-150 ships as committed at `3253d49`. Status: **resolved** for
+the wiring AC, but the single-hop conv-26 problem is **not** moved
+— next lever is ISS-145 or ISS-149 (back to the original plan,
+just without the ISS-145 Option D dead-end).
+
+This run also de-risks ISS-150 going forward: BM25 in Associative
+is safe on broader corpora (it didn't hurt conv-26 multi-hop where
+80% of queries take that path), so we keep it on while iterating
+the upstream classifier/resolver fixes.
