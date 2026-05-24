@@ -181,3 +181,71 @@ ISS-137 (judge temperature=0) cut the *judge-side* variance from
 9.49pp stdev down to 0.66pp. That fix was orthogonal — it pinned
 the LLM grader, not the retrieval input. This issue is the
 *retrieval-input* side of the same variance problem.
+
+## Phase 1 diagnostic results (2026-05-24)
+
+Ran `examples/iss155_ollama_determinism.rs` N=10 per arm, same input
+text (a synthesized LoCoMo-style episode about Caroline & adoption).
+
+```
+Arm A: defaults (no options block) — matches engramai
+  max_pairwise_L2 = 0.000000e0
+  max_coord_diff  = 0.000000e0
+  min_cosine      = 1.000000000
+  → all 10 vectors bit-identical
+
+Arm B: options { temperature: 0, seed: 42 }
+  max_pairwise_L2 = 0.000000e0
+  max_coord_diff  = 0.000000e0
+  min_cosine      = 1.000000000
+  → all 10 vectors bit-identical
+
+Cross-arm: A[0] vs B[0]
+  L2 = 0.000000e0, cosine = 1.000000000
+  → options block has no effect; A and B converge to the same vector
+```
+
+Model: `nomic-embed-text`, dim=768, host `http://localhost:11434`.
+
+### Verdict: **Ollama is deterministic on identical input.**
+
+This **falsifies ISS-155 Phase 2** (the `options{temperature=0,seed=42}`
+hypothesis): even without the block, repeated calls return bit-identical
+vectors. The options block doesn't change anything because the model is
+already at its determinism floor.
+
+Therefore the ~5-10pp inter-run wobble observed in ISS-137 (and at the
+dedup-ID flip between ISS-150 and ISS-152 Run A) **cannot be Ollama
+daemon-level non-determinism on identical inputs**.
+
+### Revised suspect list
+
+1. **Ingest ordering / dedup race condition** — different episode arrival
+   order leads to different merge cascade, which produces different
+   stored memory IDs and therefore different retrieval pools downstream.
+   This is the strongest remaining suspect (matches the ISS-150 vs
+   ISS-152-Run-A symptom: same content, different memory IDs at sim
+   ~0.953 — right at the dedup threshold).
+2. **Anthropic non-determinism in extraction/normalization** — the
+   ingestion pipeline calls Haiku for fact extraction. Even with
+   `temperature=0` upstream calls can still vary; if extracted triples
+   differ across runs, downstream embeddings differ.
+3. **LLM-judge variance** — ISS-137 already fixed Sonnet generator
+   temp=0; need to verify judge step is also pinned.
+4. **Floating-point reductions in dedup similarity** — if cosine is
+   computed by a non-associative sum order (e.g., parallel reduction),
+   threshold-near pairs can flip merge decisions.
+
+### Updated plan
+
+- ❌ Phase 2 (Ollama options block) — **falsified, drop**
+- ✅ Phase 1 (diagnostic) — **done, falsified Phase 2 hypothesis**
+- ⏭ Phase 3 (raise merge threshold) — still valid; sidesteps whichever
+  upstream source causes the boundary flip
+- ⏭ Phase 4 (swap embedding model) — still valid as a last resort
+- 🆕 Phase 1b — diagnose **ingest order / Anthropic-extraction**
+  reproducibility. Re-run identical conv-26 ingestion twice and diff
+  stored memory IDs + embeddings table.
+
+Phase 1b is the cheapest next probe and most likely to find the real
+culprit. Will file separately if symptoms confirm.
