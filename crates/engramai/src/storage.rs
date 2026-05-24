@@ -3002,6 +3002,72 @@ impl Storage {
         rows.collect()
     }
 
+    /// FTS5 search returning `(MemoryRecord, raw_bm25_score)` pairs.
+    ///
+    /// `raw_bm25_score` is the **positive** BM25 magnitude (we negate
+    /// SQLite's `bm25()` which returns negative-better; larger = better
+    /// match here). Callers should pass this through
+    /// [`crate::retrieval::fusion::signals::bm25_score`] with the
+    /// `BM25_DEFAULT_SATURATION` constant to get a `[0, 1]` value
+    /// suitable for [`SubScores::bm25_score`].
+    ///
+    /// Same query parse + nodes-vs-memories fork as [`search_fts`].
+    /// Wired into the per-plan fusion path in ISS-147 (BM25 channel
+    /// was previously dead code; this is the production read).
+    pub fn search_fts_with_scores(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(MemoryRecord, f64)>, rusqlite::Error> {
+        let tokenized = tokenize_cjk_boundaries(query);
+        let words = tokenize_like_unicode61(&tokenized);
+        if words.is_empty() {
+            return Ok(vec![]);
+        }
+        let fts_query = words
+            .iter()
+            .map(|w| format!("\"{}\"", w))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+
+        // SQLite FTS5 bm25() returns a *negative* score where lower
+        // (more negative) = better. We flip the sign so callers see a
+        // monotonically-increasing-is-better magnitude, then they pass
+        // through the saturation helper for [0,1] normalisation.
+        let sql = if self.unified_substrate {
+            r#"
+            SELECT m.*, -bm25(nodes_fts) AS raw_bm25 FROM memories m
+            JOIN nodes n ON n.id = m.id
+            JOIN nodes_fts f ON n.fts_rowid = f.rowid
+            WHERE nodes_fts MATCH ?
+              AND n.node_kind = 'memory'
+              AND m.deleted_at IS NULL
+              AND (m.superseded_by IS NULL OR m.superseded_by = '')
+            ORDER BY rank LIMIT ?
+            "#
+        } else {
+            r#"
+            SELECT m.*, -bm25(memories_fts) AS raw_bm25 FROM memories m
+            JOIN memories_fts f ON m.rowid = f.rowid
+            WHERE memories_fts MATCH ?
+              AND m.deleted_at IS NULL
+              AND (m.superseded_by IS NULL OR m.superseded_by = '')
+            ORDER BY rank LIMIT ?
+            "#
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+            let id: String = row.get("id")?;
+            let access_times = self.get_access_times(&id).unwrap_or_default();
+            let record = self.row_to_record(row, access_times)?;
+            // raw_bm25 is monotonically-better-larger after the sign
+            // flip in the SQL; clamp to >= 0 defensively.
+            let raw: f64 = row.get::<_, f64>("raw_bm25").unwrap_or(0.0).max(0.0);
+            Ok((record, raw))
+        })?;
+        rows.collect()
+    }
+
     /// Search memories by type.
     /// Fetch the N most recently created memories, optionally filtered by namespace.
     ///
