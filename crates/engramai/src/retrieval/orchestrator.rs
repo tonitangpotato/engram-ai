@@ -475,10 +475,23 @@ pub(crate) fn episodic_to_scored(
 ///
 /// **Signals emitted**: `vector_score` (`seed_score`), `graph_score`
 /// (derived from `edge_distance`: distance 0 → 1.0, 1 → 0.5, 2 → 0.25,
-/// …). Recency / actr stay `None`.
+/// …), `bm25_score` (lexical lookup over the dispatched query text;
+/// `Some(0.0)` for FTS misses per ISS-150 AC). Recency / actr stay
+/// `None`.
+///
+/// **ISS-150**: BM25 was originally excluded here on the (incorrect)
+/// assumption that Associative results never went through the
+/// `combine()` fusion path. They do — Associative-as-fallback is
+/// dispatched under the original intent (Factual / Episodic / …)
+/// and `FusionConfig::locked()` gives those intents a non-zero
+/// `text` weight, with `text_score = max(vector, bm25)`. Leaving
+/// `bm25_score = None` silently collapsed the text channel to
+/// `vector` for the ~80% of LoCoMo conv-26 queries that fall back
+/// to Associative — see ISS-150 evidence section.
 pub(crate) fn associative_to_scored(
     result: &crate::retrieval::plans::associative::AssociativePlanResult,
     loader: &dyn RecordLoader,
+    bm25_by_id: &HashMap<String, f64>,
 ) -> Vec<ScoredResult> {
     if result.candidates.is_empty() {
         return Vec::new();
@@ -503,9 +516,15 @@ pub(crate) fn associative_to_scored(
             let record = rec?;
             // Distance → score: 1 / 2^d (0 hops = 1.0, 1 = 0.5, …).
             let graph_score = 1.0 / (1u32 << (cand.edge_distance.min(8) as u32)) as f64;
+            // ISS-150: Some(0.0) for FTS misses (NOT None) — None
+            // would trigger missing-signal renormalisation which
+            // defeats the lexical channel's intent. Mirrors ISS-147
+            // AC-3 on factual/episodic/affective adapters.
+            let bm25 = bm25_by_id.get(record.id.as_str()).copied().unwrap_or(0.0);
             let sub_scores = SubScores {
                 vector_score: Some(cand.seed_score.clamp(0.0, 1.0)),
                 graph_score: Some(graph_score),
+                bm25_score: Some(bm25),
                 ..Default::default()
             };
             let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
@@ -1137,7 +1156,10 @@ pub(crate) fn execute_plan(
             )
             .with_k_seed(query.limit);
             let result = plan.execute(inputs, graph);
-            let scored = associative_to_scored(&result, loader);
+            // ISS-150: thread bm25_by_id (computed once at execute_plan
+            // entry) into the Associative adapter so the dispatched
+            // intent's text-weighted fusion sees the lexical channel.
+            let scored = associative_to_scored(&result, loader, &bm25_by_id);
             // ISS-063: Associative is the terminal plan. If it returns
             // empty, the entire fallback chain is exhausted —
             // `EmptyResultSet`, NOT `Ok`.
@@ -1468,7 +1490,15 @@ fn run_associative_fallback(
     )
     .with_k_seed(query.limit);
     let result = plan.execute(inputs, graph);
-    let scored = associative_to_scored(&result, loader);
+
+    // ISS-150: recompute BM25 here (analogous to
+    // `run_factual_fallback_for_hybrid` at line ~1343). Threading the
+    // outer `bm25_by_id` through 4 fallback call sites is noisier than
+    // one extra SQL roundtrip per downgrade. Pool sizing matches the
+    // ISS-147 primary-path convention `(K*4).max(40)`.
+    let bm25_pool = (query.limit * 4).max(40);
+    let bm25_by_id: HashMap<String, f64> = loader.fts_scores(&query.text, bm25_pool);
+    let scored = associative_to_scored(&result, loader, &bm25_by_id);
 
     let (outcome_label, empty_label) = match &trigger {
         FallbackTrigger::Factual { reason } => (
