@@ -180,3 +180,81 @@ Per ISS-153 decision tree (≥50% recovered → ship): **ship HyDE as opt-in fea
 **Cost.** ~17.7k Haiku output tokens per full 152q run. At Anthropic's published Haiku 4.5 rates this is sub-cent territory. No quota issue observed at this rate.
 
 **Failed-run forensic.** First Haiku attempt (run #2, PID 6836) used `claude-3-haiku-20240307` — that legacy id 404s on OAuth Max Plan. Fixed to `claude-haiku-4-5-20251001` in engram-bench commit `1a73024`. Dir renamed `.FAILED-404-haiku-id` for reference.
+
+## Post-fix substrate re-test (2026-05-24, after ISS-155 fae6bb7)
+
+After ISS-155 fixed extractor non-determinism, ran both HyDE arms back-to-back
+on the post-fix substrate to test whether the multi-hop -8.1pp regression was
+real signal or pre-fix wobble.
+
+### Config
+- conv-26, K=10, MMR λ=0.7
+- Post-fix binary (engram-bench rebuilt against engram fae6bb7)
+- Arm A: HyDE off
+- Arm B: HyDE on (`ENGRAM_BENCH_HYDE=1`, Haiku 4.5)
+
+### Results
+
+| Category    | Arm A (no HyDE) | Arm B (HyDE on) | Δ |
+|-------------|-----------------|-----------------|------|
+| overall     | 0.4605          | 0.4539          | **−0.66pp** |
+| multi-hop   | 0.5405          | 0.4324          | **−10.81pp** |
+| open-domain | 0.3846          | **0.5385**      | **+15.38pp** |
+| single-hop  | 0.2188          | 0.2500          | +3.12pp |
+| temporal    | 0.5429          | 0.5429          | 0 |
+
+### Comparison vs pre-fix
+
+| | pre-fix | post-fix | Δ |
+|---|---|---|---|
+| no-HyDE overall   | 0.3618 | 0.4605 | **+9.87pp** |
+| HyDE overall      | 0.3947 | 0.4539 | +5.92pp |
+| HyDE benefit      | +3.29pp | **−0.66pp** | sign flipped |
+| HyDE multi-hop hit | −8.11pp | **−10.81pp** | regression deepened |
+
+### Findings
+
+1. **Post-fix no-HyDE baseline jumped +9.87pp** (0.3618 → 0.4605). The
+   ISS-155 substrate fix is doing more work at K=10+MMR than at K=5 — cleaner
+   extractions interact better with MMR diversity. This was NOT predicted by
+   the ISS-155 K=5 3× empirical, which showed mean dropping −1.75pp.
+
+2. **HyDE multi-hop regression is REAL signal, not pre-fix noise.** It got
+   *worse* on the clean substrate (−10.81pp vs −8.11pp). Reasoning: HyDE's
+   hypothetical-answer expansion pulls retrieval toward single-fact relevance,
+   pushing out the connecting-evidence chains multi-hop questions need.
+
+3. **HyDE open-domain win exploded** (+15.38pp vs flat pre-fix). On a clean
+   substrate, hypothetical-answer phrasing genuinely surfaces better
+   open-domain candidates.
+
+4. **HyDE is net-negative overall** on the post-fix substrate. The pre-fix
+   +3.29pp ship signal evaporated. **The Phase 3 decision-tree gate
+   (≥50% recall-miss recovery) was measured on the pre-fix substrate; it
+   needs re-measurement before HyDE-default-on can ever be considered.**
+
+5. **ISS-148 AC-5 (single-hop ≥0.40) gets WORSE**, not better, with HyDE on
+   post-fix substrate. 0.3125 (pre-fix) → 0.2500 (post-fix). Single-hop is
+   not the AC-5 lever HyDE was hoped to be.
+
+### Revised disposition
+
+ISS-153 stays shipped as **opt-in** — the right call. But the gating policy
+needs to evolve from "off by default, callers opt in globally" to:
+
+- **HyDE should be gated per-query-type**, not a global on/off knob.
+- **Default policy**: on for open-domain, off for multi-hop, neutral for
+  single-hop / temporal.
+- **Implementation surface**: route at `LocomoDriver` query-classification time;
+  needs a new `ENGRAM_BENCH_HYDE_GATING={off,all,per_category}` env var or
+  a config switch in `GraphQuery`.
+
+This is a follow-up ISS, NOT a ISS-153 reopen. ISS-153's AC was "ship HyDE
+opt-in" — that landed (bf05052) and works as advertised. The new ISS is
+"per-category HyDE gating" / "HyDE multi-hop regression analysis".
+
+### Artifacts
+
+- benchmarks/runs/ISS153-retest-A-k10-conv26-20260524T205943Z/
+- benchmarks/runs/ISS153-retest-B-hyde-k10-conv26-20260524T205943Z/
+- driver: /tmp/iss153_retest.sh

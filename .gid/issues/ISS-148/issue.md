@@ -169,3 +169,31 @@ embedding model — see ISS-155), or (b) per-category HyDE gating that
 keeps the multi-hop -8.1pp from cancelling the single-hop win.
 
 Status: ISS-153 → in_review, ISS-148 AC-5 still **open**.
+
+## Post-ISS-155 re-baseline (2026-05-24)
+
+Re-ran HyDE+no-HyDE on post-fix substrate (ISS-155 fae6bb7). Single-hop
+moved in the wrong direction:
+
+| Run | Substrate | HyDE | Single-hop |
+|---|---|---|---|
+| ISS-152 Run A | pre-fix | off | 0.1562 |
+| ISS-153 r1    | pre-fix | on  | 0.3125 |
+| ISS-153 retest A | post-fix | off | 0.2188 |
+| ISS-153 retest B | post-fix | on  | 0.2500 |
+
+Findings:
+- Post-fix no-HyDE single-hop is HIGHER than pre-fix no-HyDE (+6.3pp)
+- Post-fix HyDE single-hop is LOWER than pre-fix HyDE (−6.3pp)
+- HyDE no longer the AC-5 lever it looked like pre-fix
+- Even the best post-fix single-hop (HyDE on, 0.2500) is well below
+  AC-5 target of ≥0.40
+
+Other levers to consider:
+- Re-ranker stage (cross-encoder after fusion, K=50 → K=10)
+- Stronger embedding (BGE-large vs current nomic-embed-text)
+- Single-hop-specific BM25 weight bump (ISS-150 pattern)
+- Triple-extraction quality lift (currently low yield → fewer fact-grounded
+  candidates for direct single-hop questions)
+
+AC-5 remains open. See also ISS-156 for per-category HyDE gating.

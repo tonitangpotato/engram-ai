@@ -1,0 +1,50 @@
+========================================================
+ ISS-153 HyDE re-test ARM A  HyDE=off
+  K=10 MMR=0.7 conv-26 post-fix-substrate
+  started: 2026-05-24T20:59:43Z
+========================================================
+[arm A] exit=2  finished: 2026-05-24T21:13:54Z
+[arm A] dir=/Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS153-retest-A-k10-conv26-20260524T205943Z  overall=0.4605263157894737
+========================================================
+ ISS-153 HyDE re-test ARM B  HyDE=1
+  K=10 MMR=0.7 conv-26 post-fix-substrate
+  started: 2026-05-24T21:13:54Z
+========================================================
+[arm B] exit=2  finished: 2026-05-24T21:33:02Z
+[arm B] dir=/Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS153-retest-B-hyde-k10-conv26-20260524T205943Z  overall=0.45394736842105265
+
+==== SUMMARY ====
+armA  hyde=off  0.4605263157894737  /Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS153-retest-A-k10-conv26-20260524T205943Z
+armB  hyde=1  0.45394736842105265  /Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS153-retest-B-hyde-k10-conv26-20260524T205943Z
+
+Arm A (no HyDE):  {
+  "overall": 0.4605263157894737,
+  "by_category": {
+    "multi-hop": 0.5405405405405406,
+    "open-domain": 0.38461538461538464,
+    "single-hop": 0.21875,
+    "temporal": 0.5428571428571428
+  },
+  "n_queries": 152
+}
+Arm B (HyDE on):  {
+  "overall": 0.45394736842105265,
+  "by_category": {
+    "multi-hop": 0.43243243243243246,
+    "open-domain": 0.5384615384615384,
+    "single-hop": 0.25,
+    "temporal": 0.5428571428571428
+  },
+  "n_queries": 152
+}
+
+=== Δ (HyDE on - HyDE off, POST-FIX substrate) ===
+overall:     0.4539 - 0.4605 = -0.66pp
+multi-hop      0.4324 - 0.5405 = -10.81pp
+open-domain    0.5385 - 0.3846 = +15.38pp
+single-hop     0.2500 - 0.2188 = +3.12pp
+temporal       0.5429 - 0.5429 = +0.00pp
+
+=== Compare against pre-fix ===
+pre-fix  A=0.3618 B=0.3947  Δoverall=+3.29pp  Δmulti-hop=-8.11pp
+post-fix A=0.4605 B=0.4539  Δoverall=-0.66pp  Δmulti-hop=-10.81pp
