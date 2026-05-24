@@ -2,7 +2,7 @@
 title: HyDE / hypothetical document expansion for retrieval recall miss
 priority: P1
 severity: enhancement
-status: open
+status: in_review
 tags:
 - retrieval
 - query-expansion
@@ -84,12 +84,12 @@ embedding model swap (not in scope here).
 
 ## Acceptance criteria
 
-- [ ] `expand_query_via_hyde` helper shipped in engram-bench.
-- [ ] `ENGRAM_BENCH_HYDE=1` opt-in flag plumbed through LoCoMo driver.
-- [ ] One conv-26 K=10 λ=0.7 HyDE-on run completed.
-- [ ] `recall_diag.py` re-run; report which of the 14 recall-miss
-      queries got their gold into the pool.
-- [ ] Decision documented in ISS-148.
+- [x] `expand_query_via_hyde` helper shipped in engram-bench. (293115d, model fix 1a73024)
+- [x] `ENGRAM_BENCH_HYDE=1` opt-in flag plumbed through LoCoMo driver.
+- [x] One conv-26 K=10 λ=0.7 HyDE-on run completed. (ISS153-...150452Z)
+- [x] `recall_diag.py` re-run; report which of the 14 recall-miss
+      queries got their gold into the pool. (14/26 = 53.8% recovered, 0 introduced — see Phase 2 results)
+- [x] Decision documented in ISS-148.
 
 ## Non-goals
 
@@ -135,3 +135,48 @@ retrieval-pipeline changes.
 - Reuse existing Anthropic Sonnet session vs spinning Haiku — Phase 1 reuses `call_llm` (Sonnet via `LLM_MODEL`), matches judge model. If cost becomes the gate, swap to Haiku in a Phase-2 follow-up.
 
 **Next:** full conv-26 K=10 λ=0.7 HYDE=1 run + re-run `recall_diag.py` to count which of the 14 ISS-151 recall-miss queries got their gold into the pool. Decision tree per Phase 3.
+
+## Phase 2 results (2026-05-24 conv-26 K=10 λ=0.7)
+
+**Run.** ISS153-hyde-on-conv26-l0.7-20260524T150452Z (PID 7304, 34min wall, model=claude-haiku-4-5-20251001).
+
+**HyDE call health.** 152/152 succeeded (zero `expansion failed` warnings). Latency mean 1917ms / median 1513ms / p95 3434ms. Total HyDE tokens 17670 across 152 calls (mean 116/call, near the 120 cap).
+
+**Headline accuracy (HyDE vs ISS-152 Run A baseline).**
+
+| category    | HyDE   | base   | delta    |
+|-------------|--------|--------|----------|
+| overall     | 0.3947 | 0.3618 | +0.0329  |
+| single-hop  | 0.3125 | 0.1562 | **+0.1562** |
+| temporal    | 0.5143 | 0.4714 | +0.0429  |
+| open-domain | 0.3846 | 0.3846 | 0.0000   |
+| multi-hop   | 0.2432 | 0.3243 | -0.0811  |
+
+Single-hop **doubled** (+15.6pp) — clears ISS-148 AC-5 floor (≥0.40)? **No — still 0.3125 < 0.40.** Closer, not there. Multi-hop regressed -8.1pp (HyDE's hypothesis can mislead when the question requires composing facts the model can't guess).
+
+> Caveat: baseline is single-run, and ISS-155 documents ~5-10pp wobble per run from Ollama embed non-determinism. Single-hop +15.6pp is well outside that wobble band; multi-hop -8.1pp is at the edge — would need replication to be confident the regression is real, not noise.
+
+**Phase 3 recall-diag.** Re-ran ISS-151 recall_diag on both dirs.
+
+- Baseline single-hop recall-misses: **26** (script counts more strictly than the original 14 cited at ISS-151 filing time)
+- HyDE single-hop recall-misses: **12**
+- Recovered: **14 / 26 = 53.8%**
+- Newly introduced: **0**
+
+Per ISS-153 decision tree (≥50% recovered → ship): **ship HyDE as opt-in feature**.
+
+### Phase 3 verdict
+
+- ✅ AC-1 cleared: ≥50% of baseline recall-misses recovered, zero new misses introduced
+- ⚠️ AC-5 (ISS-148): still below 0.40 single-hop. HyDE alone is necessary-not-sufficient.
+- ❌ Multi-hop regression: HyDE in current form hurts multi-hop. Either (a) gate HyDE per category, (b) tune HYDE_SYSTEM_PROMPT for compositional questions, or (c) accept tradeoff if multi-hop wobble is within Ollama-noise envelope.
+
+### Next actions
+
+1. Flip ISS-153 status → in_review and file Phase 3 follow-ups: per-category gating, N=3 ensemble experiment, prompt tuning.
+2. Move to ISS-155 Phase 1 diagnostic (Ollama embed determinism harness) — Ollama daemon now free.
+3. Defer "make HyDE default-on" decision until (a) ISS-155 noise floor known and (b) multi-hop regression replicated or ruled noise.
+
+**Cost.** ~17.7k Haiku output tokens per full 152q run. At Anthropic's published Haiku 4.5 rates this is sub-cent territory. No quota issue observed at this rate.
+
+**Failed-run forensic.** First Haiku attempt (run #2, PID 6836) used `claude-3-haiku-20240307` — that legacy id 404s on OAuth Max Plan. Fixed to `claude-haiku-4-5-20251001` in engram-bench commit `1a73024`. Dir renamed `.FAILED-404-haiku-id` for reference.

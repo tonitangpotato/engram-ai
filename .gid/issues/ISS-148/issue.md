@@ -146,3 +146,26 @@ L1b (ISS-145) and L2 (this issue / ISS-149) interlock. Suggested order:
 - `crates/engramai/src/retrieval/dispatch.rs:92` — `(Factual,Assoc)→Associative`
 - `/tmp/iss147-bench-conv26.log` — plan-distribution evidence
 - `benchmarks/runs/ISS147-BM25-conv26-l0.7-20260524T033206Z/` — run dir
+
+## ISS-153 HyDE decision (2026-05-24)
+
+Phase 2 conv-26 K=10 λ=0.7 HyDE-on (haiku-4-5) ran 152/152 clean.
+Results vs ISS-152 Run A baseline (HyDE-off, same env):
+
+- single-hop **0.1562 → 0.3125** (+15.6pp, **doubled**)
+- temporal 0.4714 → 0.5143 (+4.3pp)
+- open-domain unchanged (0.3846)
+- multi-hop 0.3243 → 0.2432 (-8.1pp, **regression**)
+- overall  0.3618 → 0.3947 (+3.3pp)
+
+Recall-diag: 14/26 (53.8%) of baseline single-hop recall-misses recovered,
+0 new misses introduced. Per ISS-153 Phase-3 decision tree, **ship as
+opt-in feature**.
+
+**For AC-5 (single-hop ≥ 0.40)**: HyDE is necessary-but-not-sufficient.
+0.3125 closes ~40% of the gap from 0.1562 → 0.40, but still below the
+floor. Need either (a) HyDE + complementary lever (re-ranker, broader
+embedding model — see ISS-155), or (b) per-category HyDE gating that
+keeps the multi-hop -8.1pp from cancelling the single-hop win.
+
+Status: ISS-153 → in_review, ISS-148 AC-5 still **open**.
