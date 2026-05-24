@@ -249,3 +249,112 @@ daemon-level non-determinism on identical inputs**.
 
 Phase 1b is the cheapest next probe and most likely to find the real
 culprit. Will file separately if symptoms confirm.
+
+## Phase 1b diagnostic results (2026-05-24) — ROOT CAUSE FOUND
+
+Wrote `engram-bench/examples/iss155_phase1b_ingest_repro.rs` (commit
+engram-bench `1f7a9f1`) — re-ingests conv-26 twice into two fresh
+in-memory substrates, snapshots `(id, content_sha256, embedding_sha256)`
+from each, diffs.
+
+### Run summary
+
+- **Arm A**: 968s wall, 457 memory rows, 457 embeddings, 457 distinct
+  content hashes
+- **Arm B**: 887s wall, 455 memory rows, 455 embeddings, 455 distinct
+  content hashes
+- **261 fully identical** (same content_sha256, same embedding_sha256)
+- **196 a-only + 194 b-only content hashes** = **390 divergent rows
+  (42.8% of all stored memories)**
+- **0 embedding mismatches on shared content** — confirms Phase 1:
+  Ollama is bit-deterministic when given identical input
+
+### Root cause
+
+The Anthropic extractor in `engramai/src/extractor.rs` (lines 381–392)
+sends `/v1/messages` requests with **no `temperature` field**:
+
+```rust
+let body = serde_json::json!({
+    "model": self.config.model,
+    "max_tokens": self.config.max_tokens,
+    "messages": [{"role": "user", "content": prompt}]
+});
+```
+
+Anthropic's API default is `temperature = 1.0`. Spot-check of the
+390 divergent rows shows the variance is at the paraphrase level
+(not the semantic / fact level):
+
+| Arm A row | Arm B row | Jaccard |
+|-----------|-----------|---------|
+| `Caroline found transgender stories inspiring and felt happy and thankful for support received` | `Caroline found transgender stories inspiring and felt happy and thankful for the support received` | 0.92 |
+| `Melanie realizes that self-care is important and that looking after herself…` | `Melanie realizes self-care is important and recognizes that looking after herself…` | 0.94 |
+| `Caroline is researching adoption agencies because she dreams of having a family…` | `Caroline is researching adoption agencies as part of pursuing her dream to have a family…` | 0.48 |
+
+This is exactly what temp=1.0 produces: same semantic content, slightly
+different surface form. The cascade:
+
+1. Different surface form → different content hash → different `id`
+2. Different surface form → embeddings differ (different bytes in)
+3. Dedup similarity threshold (currently 0.85?) flips on a subset of
+   pairs → different merge cascade
+4. Different stored memory IDs → different retrieval pool → different
+   top-K → different generated answers → different LLM-judge verdicts
+5. End result: ~5-10pp inter-run accuracy wobble (ISS-137)
+
+### Fix
+
+**Add `"temperature": 0` to the extractor request body in
+`engramai/src/extractor.rs` line ~382.** Two lines of code.
+
+```rust
+let body = serde_json::json!({
+    "model": self.config.model,
+    "max_tokens": self.config.max_tokens,
+    "temperature": 0,                              // <-- ADD
+    "messages": [{"role": "user", "content": prompt}]
+});
+```
+
+(Also check `triple_extractor.rs:251` for the same pattern.)
+
+### Caveats / what this does NOT fully fix
+
+Even at temp=0, the same prompt + same input can still produce slightly
+different output across providers due to:
+
+- Token sampling determinism is not guaranteed on Anthropic's side
+  even at temp=0 (their docs say "temperature=0 produces *near*
+  deterministic output")
+- Batch position / load conditions can change tokenizer paths
+
+So we should not expect Phase 1b after the fix to produce 100%
+identical content. Realistic expectation: **divergence drops from
+~43% to <5%**. That's enough to take the dedup decision out of the
+boundary-flip regime that's been driving the ISS-150 vs ISS-152-Run-A
+disagreement.
+
+If the fix doesn't get us to <5% divergence:
+
+- Phase 3 (raise merge threshold from 0.85 → 0.92 or so) becomes the
+  next lever — fewer pairs near the boundary, fewer flips.
+- Phase 4 (swap embedding model) only kicks in if the *embedding*
+  similarity distribution is the problem; Phase 1+1b show it isn't.
+
+### Updated plan
+
+- ✅ Phase 1 — Ollama deterministic on identical input (committed `dc063ea`)
+- ✅ Phase 1b — extractor is the wobble source (this commit)
+- 🔥 **Phase 2 (new)** — set `temperature=0` on extractor request body.
+  Should be a 5-minute fix. Then re-run Phase 1b to verify divergence
+  drops to <5%.
+- ⏸ Phase 3 (raise merge threshold) — keep as backup if Phase 2
+  doesn't fully close the gap
+- ❌ Phase 4 (swap embedding model) — drop, not the bottleneck
+
+### Cost note
+
+This phase cost ~30 min wall + 2x extractor pass over 419 conv-26
+episodes ≈ 838 Haiku calls. Budget already committed; future reruns
+of Phase 1b for validation are cheap (~$0.50 / run).

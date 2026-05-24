@@ -383,6 +383,7 @@ impl MemoryExtractor for AnthropicExtractor {
         let body = serde_json::json!({
             "model": self.config.model,
             "max_tokens": self.config.max_tokens,
+            "temperature": 0,
             "messages": [
                 {
                     "role": "user",
