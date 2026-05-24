@@ -107,3 +107,31 @@ embedding model swap (not in scope here).
   the hallucination? Mitigation: keep the original query in the
   pool too (concatenate hypothesis + original) so retrieval doesn't
   miss obvious matches.
+
+---
+
+## Implementation log
+
+### 2026-05-24 — Phase 1 shipped
+
+Wired HyDE behind `ENGRAM_BENCH_HYDE=1` in `engram-bench@293115d`.
+
+**engram-bench changes:**
+- `src/llm_client.rs`: `expand_query_via_hyde(question) -> Result<HydeExpansion, LlmError>`, system prompt pinned as `HYDE_SYSTEM_PROMPT` const, `DEFAULT_MAX_TOKENS_HYDE = 120`.
+- `src/drivers/locomo.rs`:
+  - `resolve_hyde_enabled()` strict `matches!("1")` resolver.
+  - `QueryTiming.hyde_ms` + `hyde_tokens` fields (added to `total_ms()`).
+  - Per-query 3a.0 HyDE block before `graph_query_locked` — concatenates `"{hypothesis}\n\n{question}"` for retrieval, preserves bare `q.question` for `generate_answer` / `judge_answer`.
+  - On HyDE failure: stderr warn + bare-question fallback (don't abort the run).
+  - `PerQueryRow` extended with `latency_hyde_ms: Option<f64>` + `tokens_hyde: Option<u64>`, both with `skip_serializing_if = "Option::is_none"` — default-off JSONL is byte-identical to pre-HyDE envelope.
+
+**Engramai changes:** zero. HyDE is purely a query-side concern, no
+retrieval-pipeline changes.
+
+**Tests:** engram-bench `183/183 lib` green; engramai `1946/1946 lib` green.
+
+**Decisions deferred to first run:**
+- Single hypothesis vs N=3 ensemble — Phase 1 ships single, Phase 2 may A/B vs ensemble if recall recovery < 50%.
+- Reuse existing Anthropic Sonnet session vs spinning Haiku — Phase 1 reuses `call_llm` (Sonnet via `LLM_MODEL`), matches judge model. If cost becomes the gate, swap to Haiku in a Phase-2 follow-up.
+
+**Next:** full conv-26 K=10 λ=0.7 HYDE=1 run + re-run `recall_diag.py` to count which of the 14 ISS-151 recall-miss queries got their gold into the pool. Decision tree per Phase 3.
