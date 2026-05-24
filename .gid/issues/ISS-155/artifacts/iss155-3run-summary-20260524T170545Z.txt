@@ -1,0 +1,3 @@
+run1  0.3815789473684211  /Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS155-Phase2-run1-k5-conv26-20260524T170545Z
+run2  0.3881578947368421  /Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS155-Phase2-run2-k5-conv26-20260524T170545Z
+run3  0.3815789473684211  /Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS155-Phase2-run3-k5-conv26-20260524T170545Z
