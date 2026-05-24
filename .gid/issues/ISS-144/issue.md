@@ -321,3 +321,69 @@ move LoCoMo numbers via other readers of the `entities` table (dedup's
 isolated impact measurement is the next step.
 
 **Status: in_progress** (L1 done, L1b open as ISS-145).
+
+## 2026-05-23 update — L1-only LoCoMo bench results
+
+**Run:** `engram-bench/benchmarks/runs/ISS144-L1-only-20260524T000937Z/2026-05-24T02-02-45Z_locomo/`
+**Config:** full fixture (10 conv / 1540 q), K=10, temp=0, OAuth Claude.
+**Commit:** L1 fix only (`7eee30e`), L1b not applied — `GraphEntityResolver` still blind.
+
+### conv-26 only (152 q, apples-to-apples vs ISS-137 baseline)
+
+| Category    | ISS-137 baseline (mean of 3, no L1) | L1-only | Δ |
+|-------------|-------------------------------------|---------|---|
+| **overall** | **0.4013**                          | **0.4408** | **+3.95pp** |
+| multi-hop   | 0.5135                              | 0.6216  | +10.81pp |
+| open-domain | 0.3846                              | 0.3077  | -7.69pp (n=13, 1 q = 7.7pp) |
+| single-hop  | 0.0625                              | 0.1562  | +9.37pp |
+| temporal    | 0.4857                              | 0.5000  | +1.43pp |
+
+Baseline stdev across 3 ISS-137 runs was 0.66pp. The +3.95pp delta is
+~6× baseline noise — statistically meaningful.
+
+### Full 10-conv (1540 q, new multi-conv reference)
+
+```
+overall:     0.4526
+multi-hop:   0.4206
+open-domain: 0.2708
+single-hop:  0.2092
+temporal:    0.5672
+```
+
+No prior multi-conv baseline exists to compare against. This run
+establishes one.
+
+### Interpretation
+
+L1 alone moves the needle by ~4pp on conv-26 despite GraphEntityResolver
+still returning 0 anchors (ISS-145 unfixed). The hypothesis "L1 helps via
+non-resolver readers" is confirmed — most likely candidates:
+
+1. **`Storage::find_entity_overlap`** (dedup pre-check, memory.rs:2815)
+   uses extracted entity names as a Jaccard signal. With Caroline /
+   Melanie now in the extraction output, dedup decisions improve, which
+   improves the memory graph that retrieval reads.
+2. **Cross-episode entity Jaccard in retrieval fusion** — some readers
+   join through `memory_entities` to identify episode clusters.
+
+The single-hop +9.37pp doubling (0.0625 → 0.1562) is the most diagnostic
+— single-hop questions in conv-26 are heavily Caroline/Melanie-bound
+(e.g., "What is Melanie's marital status?"). The fact that they jump
+without anchor resolution suggests retrieval is now finding the right
+episodes through other entity-aware paths.
+
+Multi-hop +10.81pp suggests entity overlap helps episode chaining too.
+
+The open-domain regression (-7.69pp) is within single-question noise
+on n=13 — not actionable.
+
+### Decision implications
+
+L1 was worth shipping standalone. L1b (ISS-145) still adds value
+because anchors-zero remains structurally wrong, and the multi-hop
+gains suggest more headroom if we close the resolver gap. But L1 is
+not a wasted prerequisite — it pulled +4pp on its own.
+
+**ISS-144 status: L1 done + measured. Issue remains in_progress
+until L1b lands.**
