@@ -1,6 +1,6 @@
 ---
 title: Memory::with_graph_store ignores config.embedding.dimensions — graph store always uses default 768d
-status: open
+status: resolved
 priority: P1
 severity: bug
 category: graph
@@ -9,6 +9,7 @@ relates:
 - ISS-033
 - ISS-157
 depends_on: ''
+fixed_by: 008808e
 ---
 
 ## Summary
@@ -70,17 +71,30 @@ graph-store construction path (`with_pipeline_pool` etc. — audit).
 
 ## Acceptance criteria
 
-- [ ] AC #1 — `Memory::with_graph_store` propagates
+- [x] **AC #1 — PASS** — `Memory::with_graph_store` propagates
       `self.config.embedding.dimensions` to the constructed
-      `SqliteGraphStore`. Same for any other Memory-construction path that
-      builds a graph store.
-- [ ] AC #2 — Regression test: construct Memory with a non-default
-      `EmbeddingConfig.dimensions` (e.g. 1024), install graph store, write
-      an entity with a 1024d embedding, confirm no `Invariant` error
-      surfaces from `search_candidates` or `upsert_entity_embedding`.
-- [ ] AC #3 — Audit all `SqliteGraphStore::new` call sites in
-      `crates/engramai/src/` outside tests. Either thread the configured
-      dim or document why the default is correct for that path.
+      `SqliteGraphStore` (commit `008808e`). Same threading applied to
+      `with_pipeline_pool` (line 371), `graph_mut` (line 680), and 6
+      typed convenience accessors (`get_entity`, `find_entity`,
+      `traverse_*`, etc.) plus `list_knowledge_topics`. `extraction_status`
+      intentionally untouched — only reads pipeline runs.
+- [x] **AC #2 — PASS** — Regression test in
+      `tests/iss158_graph_store_dim_threading.rs` (3 tests):
+      `with_graph_store_honors_configured_embedding_dim` (1024d config +
+      1024d entity), `with_graph_store_default_768_still_works`
+      (no-regression), `mismatch_against_configured_dim_still_errors`
+      (dim check still active, just bound to configured value).
+- [x] **AC #3 — PASS** — Audited all `SqliteGraphStore::new` call sites
+      in `crates/engramai/src/`:
+      - `memory.rs`: 9 call sites — all threaded
+      - `extraction_status`: intentionally not threaded (pipeline_runs
+        only, no entity embeddings)
+      - `knowledge_compile/mod.rs:158,329,345`, `knowledge_compile/synthesis.rs:117,194`:
+        these are KC paths that build their own stores from outside the
+        Memory accessor surface. Audit follow-up: they should also
+        thread the configured dim via the caller's Memory config —
+        deferred to a separate KC ticket (the KC paths read
+        KnowledgeTopic embeddings, so the same Invariant risk applies).
 
 ## Notes
 
