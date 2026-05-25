@@ -368,7 +368,11 @@ impl Memory {
             crate::graph::init_graph_tables(&conn)?;
             Box::leak(Box::new(conn))
         };
-        let graph_store = SqliteGraphStore::new(graph_conn);
+        // ISS-158: thread the configured embedding dim into the graph
+        // store so non-default embedders (bge-large 1024d etc.) don't
+        // collide with the default 768d on entity-embedding reads.
+        let graph_store = SqliteGraphStore::new(graph_conn)
+            .with_embedding_dim(self.config.embedding.dimensions);
         let store_arc: Arc<Mutex<SqliteGraphStore<'static>>> = Arc::new(Mutex::new(graph_store));
 
         // (1b) Stash the graph-store Arc on `Memory` so retrieval plans
@@ -528,7 +532,11 @@ impl Memory {
             crate::graph::init_graph_tables(&conn)?;
             Box::leak(Box::new(conn))
         };
-        let store = SqliteGraphStore::new(graph_conn);
+        // ISS-158: thread the configured embedding dim into the graph
+        // store so non-default embedders (bge-large 1024d etc.) don't
+        // collide with the default 768d on entity-embedding reads.
+        let store = SqliteGraphStore::new(graph_conn)
+            .with_embedding_dim(self.config.embedding.dimensions);
         self.graph_store = Some(Arc::new(Mutex::new(store)));
         Ok(self)
     }
@@ -677,7 +685,10 @@ impl Memory {
     /// dim should call `SqliteGraphStore::new(self.storage.connection_mut())`
     /// directly with `.with_namespace(...)` / `.with_embedding_dim(...)`.
     pub fn graph_mut(&mut self) -> crate::graph::store::SqliteGraphStore<'_> {
+        // ISS-158: honor configured embedding dim, not the crate default.
+        let dim = self.config.embedding.dimensions;
         crate::graph::store::SqliteGraphStore::new(self.storage.connection_mut())
+            .with_embedding_dim(dim)
     }
 
     /// Look up an entity by canonical id (design §5 convenience).
@@ -692,7 +703,8 @@ impl Memory {
         id: uuid::Uuid,
     ) -> Result<Option<crate::graph::Entity>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
-        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        let dim = self.config.embedding.dimensions;
+        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim);
         store.get_entity(id)
     }
 
@@ -709,7 +721,8 @@ impl Memory {
         name: &str,
     ) -> Result<Option<uuid::Uuid>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
-        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        let dim = self.config.embedding.dimensions;
+        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim);
         store.resolve_alias(name)
     }
 
@@ -733,7 +746,8 @@ impl Memory {
     ) -> Result<Vec<(uuid::Uuid, crate::graph::Edge)>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
         const DEFAULT_NEIGHBORS_CAP: usize = 10_000;
-        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        let dim = self.config.embedding.dimensions;
+        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim);
         store.traverse(entity, max_depth, DEFAULT_NEIGHBORS_CAP, &[])
     }
 
@@ -751,7 +765,8 @@ impl Memory {
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<crate::graph::Edge>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
-        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        let dim = self.config.embedding.dimensions;
+        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim);
         store.edges_as_of(entity, at)
     }
 
@@ -769,7 +784,8 @@ impl Memory {
         &mut self,
     ) -> Result<Vec<uuid::Uuid>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
-        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        let dim = self.config.embedding.dimensions;
+        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim);
         store.list_failed_episodes(/* unresolved_only = */ true)
     }
 
@@ -807,7 +823,8 @@ impl Memory {
         min_usage: u64,
     ) -> Result<Vec<crate::graph::store::ProposedPredicateStats>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
-        let store = SqliteGraphStore::new(self.storage.connection_mut());
+        let dim = self.config.embedding.dimensions;
+        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim);
         store.list_proposed_predicates(min_usage)
     }
 
@@ -7162,13 +7179,19 @@ impl Memory {
         limit: usize,
     ) -> Result<Vec<crate::graph::topic::KnowledgeTopic>, Box<dyn std::error::Error>> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
+        let dim = self.config.embedding.dimensions;
         let conn = self.storage.connection_mut();
         // Match `extraction_status` precedent: build a per-call store
         // bound to the active namespace so multi-namespace deployments
         // get correct scoping. The default namespace path uses
         // `SqliteGraphStore::new(...)`; explicit namespace is set via
         // the builder.
-        let store = SqliteGraphStore::new(conn).with_namespace(namespace);
+        // ISS-158: also thread the configured embedding dim so non-default
+        // embedders (bge-large 1024d etc.) don't trip the KnowledgeTopic
+        // embedding-dim invariant on read.
+        let store = SqliteGraphStore::new(conn)
+            .with_namespace(namespace)
+            .with_embedding_dim(dim);
         Ok(store.list_topics(namespace, include_superseded, limit)?)
     }
 
