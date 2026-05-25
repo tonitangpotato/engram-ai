@@ -1,0 +1,51 @@
+=== ARM A-nomic: model= dim= ===
+  rc=2, log=/tmp/iss157-A-nomic-20260525T035221Z.log
+  dir=/Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS157-A-nomic-conv26-20260525T035221Z
+  overall = 0.4605
+  multi-hop    = 0.5405
+  open-domain  = 0.5385
+  single-hop   = 0.2188
+  temporal     = 0.5143
+
+=== ARM B-bge: model=bge-large dim=1024 ===
+  rc=2, log=/tmp/iss157-B-bge-20260525T035221Z.log
+  dir=/Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS157-B-bge-conv26-20260525T035221Z
+  overall = 0.4737
+  multi-hop    = 0.5946
+  open-domain  = 0.4615
+  single-hop   = 0.2188
+  temporal     = 0.5286
+
+=== ARM C-mxbai: model=mxbai-embed-large dim=1024 ===
+  rc=2, log=/tmp/iss157-C-mxbai-20260525T035221Z.log
+  dir=/Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS157-C-mxbai-conv26-20260525T035221Z
+  overall = 0.4737
+  multi-hop    = 0.6216
+  open-domain  = 0.4615
+  single-hop   = 0.1875
+  temporal     = 0.5286
+
+
+==============================================================================
+ISS-157 weapon B — embedder swap, conv-26 K=10 MMR 0.7 HyDE=per_category
+==============================================================================
+
+arm            overall   multi-hop   single-hop     open   temporal
+A-nomic         0.4605      0.5405       0.2188   0.5385     0.5143
+B-bge           0.4737      0.5946       0.2188   0.4615     0.5286
+C-mxbai         0.4737      0.6216       0.1875   0.4615     0.5286
+
+ISS-156 PerCategory baseline (nomic, separate run):
+(ref)           0.4737      0.5946       0.2188   0.4615    0.5286
+
+=== ISS-157 weapon B gates ===
+
+--- B-bge ---
+  single-hop ≥ 0.28:               FAIL  (0.2188, Δ -0.00pp vs A-baseline)
+  overall ≥ 0.4737-2pp (0.4537):  PASS  (0.4737)
+  multi-hop ≥ 0.5946-2pp (0.5746): PASS  (0.5946)
+
+--- C-mxbai ---
+  single-hop ≥ 0.28:               FAIL  (0.1875, Δ -3.13pp vs A-baseline)
+  overall ≥ 0.4737-2pp (0.4537):  PASS  (0.4737)
+  multi-hop ≥ 0.5946-2pp (0.5746): PASS  (0.6216)
