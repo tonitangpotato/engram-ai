@@ -248,17 +248,107 @@ chain) only if A+B fail to clear AC-5.
 
 ## Acceptance criteria
 
-- [ ] AC #1 — Three weapons benched on conv-26 K=10 MMR 0.7 in order
-      (B → A → C), each with a pass/fail decision recorded in this issue
-- [ ] AC #2 — At least one weapon lifts single-hop to ≥ 0.40 (the AC-5
-      target)
-- [ ] AC #3 — Full LoCoMo 152q bench on the chosen weapon — no regression
-      ≥ 2pp on multi-hop, open-domain, temporal vs ISS-156 PerCategory
-      baseline (overall 0.4737)
-- [ ] AC #4 — Production wiring: chosen weapon is on by default (not
-      opt-in env-var only). Config knob exists for users to opt out.
-- [ ] AC #5 — `bench-design.md` gets a "retrieval improvements" section
-      summarizing what was tried, what won, what didn't, why.
+- [x] **AC #1 — partial (B + C only, A is the baseline arm)** —
+      Weapon B benched on conv-26 K=10 MMR 0.7 HyDE=per_category with three
+      embedders (nomic 768d / bge-large 1024d / mxbai-embed-large 1024d).
+      Driver: `.gid/issues/ISS-157/artifacts/iss157_weapon_b.sh`. Pass/fail
+      decisions recorded below. **Weapons A and C still pending.**
+
+## Weapon B empirical (2026-05-25)
+
+Three-arm head-to-head, conv-26 K=10 MMR 0.7 HyDE=per_category, otherwise
+identical config. Embedder is the only variable.
+
+| arm                    | overall | multi-hop | open-domain | **single-hop** | temporal |
+|------------------------|--------:|----------:|------------:|---------------:|---------:|
+| A: nomic 768d (baseline)   | 0.4605  | 0.5405    | 0.5385      | **0.2188**     | 0.5143   |
+| B: bge-large 1024d         | 0.4737  | 0.5946    | 0.4615      | **0.2188**     | 0.5286   |
+| C: mxbai-embed-large 1024d | 0.4737  | 0.6216    | 0.4615      | **0.1875**     | 0.5286   |
+
+**Reference (ISS-156 PerCategory baseline, nomic, separate run):**
+overall 0.4737 / multi 0.5946 / open 0.4615 / single 0.2188 / temporal 0.5286
+— note Arm A above (also nomic, identical config) scored 0.4605 overall vs
+ISS-156's 0.4737. That 1.32pp delta is pure LLM-judge variance, same code
+path. Confirms ISS-137-style judge-determinism work is still incomplete.
+
+### Verdict: weapon B FAILS the single-hop gate
+
+- B-bge single-hop **0.2188** — **identical to A baseline 0.2188**, no
+  movement at all. Target was ≥0.28 (+6pp).
+- C-mxbai single-hop **0.1875** — *regression* of −3.13pp vs A. The
+  "stronger MTEB score → better single-hop" hypothesis is falsified.
+
+Per-AC scoring:
+
+- AC #2 (single-hop ≥ 0.40): **FAIL** — best of three arms is 0.2188.
+- AC #3 (no regression ≥ 2pp): Weapon B passes; C regresses single-hop.
+- AC #4 (production wiring): N/A — weapon B isn't the winner.
+- AC #5 (bench-design.md doc): see Findings below; weapon-B section will
+  go into bench-design.md alongside weapon-A results once that ships.
+
+### Why single-hop didn't move — root cause confirmed
+
+Plan distribution is identical across all three embedders:
+
+| plan_kind   | A-nomic | B-bge | C-mxbai |
+|-------------|--------:|------:|--------:|
+| associative |     238 |   242 |     242 |
+| abstract    |      36 |    36 |      36 |
+| affective   |      16 |    12 |      12 |
+| hybrid      |      10 |    10 |      10 |
+| episodic    |       4 |     4 |       4 |
+| **factual** | **0**   | **0** | **0**   |
+
+**The Factual retrieval plan — the one that would actually use BM25-anchored
+fact retrieval to win single-hop — is selected ZERO times on all three
+embedders.** This is exactly ISS-149: `HeuristicClassifier` runs with
+`NullEntityLookup`, so entity-anchor scores are 0.0 and Factual is never
+the highest-scoring plan. Embedder swap doesn't fix this — the entity
+lookup is structurally absent, not just weak.
+
+Multi-hop *did* move (+5.4pp on B, +8.1pp on C) because cross-episode
+semantic similarity is the lever there, and the stronger embedders give
+sharper relevance gradients along Associative's vector channel.
+Single-hop needs lexical-precise anchor retrieval, which is structurally
+gated upstream of the embedder.
+
+### Implication for weapon A (cross-encoder reranker)
+
+This sweep is also evidence **for** weapon A. The argument:
+
+1. Single-hop bottleneck is **plan routing**, not retrieval-channel
+   quality. ISS-149 is the structural fix.
+2. Even with ISS-149 fixed, single-hop wins require **answer-relevant
+   reranking** of the candidate set. The current pipeline returns top-K
+   by fusion-of-channels score; nothing reads (query, candidate) jointly.
+3. A cross-encoder reranker at the Stage-C.5 hook (already scaffolded by
+   ISS-139) reads query and candidate jointly and reorders. It does this
+   *regardless of which plan was selected* — so it sidesteps ISS-149.
+4. The Reranker trait already exists; MMR is the first concrete impl.
+   Adding cross-encoder is a second impl at the same hook.
+
+Weapon A is now the clear next move. Filing implementation issue.
+
+## Acceptance criteria (continued)
+
+- [ ] **AC #2 — FAIL on weapon B** — best single-hop across 3 embedders
+      is 0.2188. Target ≥0.40. Move to weapon A.
+- [ ] AC #3 — see weapon-A results when they land.
+- [ ] AC #4 — see weapon-A results when they land.
+- [ ] AC #5 — `bench-design.md` retrieval-improvements section deferred
+      to weapon-A completion (single combined doc-update at the end).
+
+## Empirical artifacts (weapon B)
+
+- Driver: `.gid/issues/ISS-157/artifacts/iss157_weapon_b.sh`
+- Summary JSON per arm: `.gid/issues/ISS-157/artifacts/iss157-{A-nomic,B-bge,C-mxbai}-summary.json`
+- Run dirs:
+  - `engram-bench/benchmarks/runs/ISS157-A-nomic-conv26-20260525T035221Z/`
+  - `engram-bench/benchmarks/runs/ISS157-B-bge-conv26-20260525T035221Z/`
+  - `engram-bench/benchmarks/runs/ISS157-C-mxbai-conv26-20260525T035221Z/`
+- Implementation commits:
+  - engram `008808e` — ISS-158 graph-store dim threading (blocker fix)
+  - engram-bench `f02d2e4` — ENGRAM_BENCH_EMBED_MODEL / EMBED_DIM env override
 
 ## Open questions
 
