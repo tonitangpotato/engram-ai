@@ -1,7 +1,7 @@
 ---
 title: L2 — Production retrieval classifier uses NullEntityLookup, never selects Factual plan
 status: open
-priority: P1
+priority: P2
 severity: bug
 category: retrieval
 created: 2026-05-24
@@ -164,3 +164,48 @@ won't change. ISS-145 must land first.
 - `crates/engramai/src/retrieval/api.rs:496` — the offending call
 - `crates/engramai/src/retrieval/classifier/heuristic.rs:121-135` — trait + Null impl
 - `crates/engramai/src/retrieval/adapters/graph_entity_resolver.rs` — reader to mirror
+
+---
+
+## 2026-05-25 update — DE-PRIORITISED from AC-5 blocker
+
+Forced-intent probe via `GraphQuery::with_intent(Intent::Factual)`
+on conv-26 K=10 MMR=0.7 HyDE=per_category:
+
+| arm | overall | single-hop | multi-hop |
+|---|---|---|---|
+| natural classifier (control) | 0.4671 | 0.2188 | 0.5405 |
+| force Factual | 0.5132 | **0.1875** (-3.13pp) | 0.5946 |
+
+Pass-flip count: A-pass→B-fail = 1, B-pass→A-fail = 0.
+**Forcing Factual passed ZERO new single-hop questions.** Factual plan
+on conv-26's high-density chat corpus is net-negative for single-hop
+vs Associative.
+
+Why: conv-26 is two-person dense chat. Every episode is "Caroline:..."
+or "Melanie:...". The Person entities Factual would anchor on are
+ubiquitous in the corpus — they're noise, not signal. BM25 weighting
+on these high-frequency entities hurts retrieval rather than helping.
+
+This is a **classifier correctness** issue (the trait should not run
+on a Null impl in production), but it is no longer believed to be the
+lever for ISS-148 AC-5. De-prioritising P1 → P2 (correctness work, not
+quality gate).
+
+Real AC-5 levers now believed to be:
+- **ISS-159** weapon A (cross-encoder reranker) — targets single-fact
+  retrieval misses (9 of 32 conv-26 single-hop questions).
+- **ISS-160** list-question generation/judge — targets list-shaped
+  answer enumeration (16 of 32 conv-26 single-hop questions).
+
+See ISS-148 "ISS-149 probe + K-expansion probe (2026-05-25)" section
+for the full per-bucket analysis.
+
+### Artifacts
+- `.gid/issues/ISS-149/artifacts/iss149_probe.sh`
+- `.gid/issues/ISS-149/artifacts/probe-A-natural-summary.json`
+- `.gid/issues/ISS-149/artifacts/probe-B-factual-summary.json`
+- `.gid/issues/ISS-149/artifacts/probe-A-natural-per-query.jsonl`
+- `.gid/issues/ISS-149/artifacts/iss149_K30.sh`
+- `.gid/issues/ISS-149/artifacts/K30-summary.json`
+- `.gid/issues/ISS-149/artifacts/K30-per-query.jsonl`

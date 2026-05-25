@@ -197,3 +197,115 @@ Other levers to consider:
   candidates for direct single-hop questions)
 
 AC-5 remains open. See also ISS-156 for per-category HyDE gating.
+
+---
+
+## ISS-149 probe + K-expansion probe (2026-05-25) — AC-5 is mis-specified
+
+After ISS-157 weapon B (embedder swap) failed (single-hop unchanged
+across 3 embedders), ran two follow-up probes on conv-26 K=10/30 MMR=0.7
+HyDE=per_category to triage **before** committing 3-5 days to weapon A
+(cross-encoder reranker):
+
+### Probe 1: force `Intent::Factual` via `GraphQuery::with_intent` (ISS-149 simulation)
+
+| arm | overall | single-hop | multi-hop |
+|---|---|---|---|
+| natural classifier | 0.4671 | **0.2188** | 0.5405 |
+| force Factual | 0.5132 | **0.1875** (-3.13pp) | 0.5946 |
+
+Pass-flip count: A pass→B fail = 1, B pass→A fail = 0. **Forcing Factual
+passed ZERO new questions.** ISS-149 is real but not the lever — Factual
+plan on conv-26's high-density chat corpus is not actually better than
+Associative for single-hop.
+
+### Probe 2: K=30 (vs K=10 baseline), natural classifier
+
+| arm | overall | single-hop | multi-hop |
+|---|---|---|---|
+| K=10 | 0.4671 | 0.2188 | 0.5405 |
+| K=30 | 0.5066 | **0.2812** (+6.2pp) | 0.5946 |
+
+### Per-query deep read — bucketed by failure mode
+
+Hand-classified all 25 single-hop failures from the K=10 run, then
+verified against K=30:
+
+| sub-bucket | K=10 | K=30 | Δ |
+|---|---|---|---|
+| **list questions** (gold = multi-item, e.g. "pottery, camping, painting, swimming") | 4/20 = 0.200 | 4/20 = 0.200 | **0.0pp** |
+| **single-fact** (gold = one specific value) | 3/12 = 0.250 | 5/12 = **0.417** | **+16.7pp** |
+
+### Why list questions don't move with K (or any retrieval improvement)
+
+Two failure modes inside the list-question bucket:
+
+**(a) Gold items live in 1-of-419 episodes ("Bailey" pet, "swimming"
+activity).** No amount of K expansion or reranking pulls a single
+needle-in-haystack episode reliably enough to enumerate all gold items.
+For q52 ("pets" = Oliver/Luna/Bailey), Bailey appears in episode 256 of
+419, and the predicted answer correctly gets Oliver+Luna (2/3) but misses
+Bailey → judge marks the entire answer wrong.
+
+**(b) Gold list is not unique — multiple valid lists exist.** For q15
+("activities Melanie partakes in" = pottery/camping/painting/swimming),
+the model returned "hiking, pottery, running" — all three ARE Melanie's
+real activities in the corpus, just a different valid subset than the
+annotator chose. This is a dataset / judge problem, not a retrieval one.
+
+### Why single-fact DID move with K (and will move with weapon A)
+
+The 2 single-fact questions K=30 saved (q40 beach-trip count, q55 common
+painted subject) both required surfacing a 2nd corroborating episode that
+was ranked outside K=10 in fusion but inside K=30. **Cross-encoder
+reranker (weapon A) targets exactly this pattern** — pushing semantically
+relevant low-fusion-score candidates up.
+
+### Math: can AC-5 be reached at all?
+
+- single-fact bucket optimistic ceiling (weapon A): 10/12 = 0.83
+- list bucket realistic ceiling (no retrieval fix possible): 4-6/20 = 0.20-0.30
+- conv-26 single-hop total: **(10 + 6) / 32 = 0.50** at best, more likely 0.42-0.45
+
+**AC-5 (≥0.40) is *barely* reachable, but only via list-question changes
+in generation/judge, NOT retrieval.** Retrieval improvements alone cap
+out around 0.32-0.35.
+
+### Proposed AC redefinition
+
+AC-5 as written collapses two unrelated failure modes (retrieval miss vs
+list-enumeration / annotation subjectivity) into one bucket. Replacing
+with two independent gates:
+
+- **AC-5a (retrieval gate):** single-fact sub-bucket of conv-26
+  single-hop ≥ 0.60. Currently 5/12 = 0.42 at K=30; weapon A target
+  8-10/12 = 0.67-0.83. **This is the gate ISS-148's L1b/L2/weapon-A
+  work actually controls.**
+- **AC-5b (generation/dataset gate):** list sub-bucket of conv-26
+  single-hop ≥ 0.30. Currently 4/20 = 0.20. Levers: (i) generation
+  prompt change ("enumerate all items you can find"), (ii) judge
+  partial-credit scoring (currently strict-equality), (iii) K=100+
+  for list-detected queries. **Out of scope for ISS-148; file separately.**
+- Aggregate AC-5 (single-hop ≥ 0.40) stays as an informational
+  combined metric, not a gate.
+
+### Decision summary
+
+- ISS-149 (NullEntityLookup wiring) — **not the lever for AC-5**.
+  Forced-Factual probe showed Factual plan loses 1 question, gains 0.
+  Keep ISS-149 open as correctness work (caller-override path works,
+  but auto-routing to Factual on conv-26 is net-negative). De-prioritise
+  from "AC-5 blocker" to "future correctness".
+- ISS-159 (weapon A cross-encoder reranker) — **stays the right next move**
+  for AC-5a (retrieval gate). Targets the 9 single-fact misses; realistic
+  +20-30pp on that sub-bucket.
+- New ticket needed for AC-5b (list-question / generation / judge work).
+
+### Artifacts
+
+- `.gid/issues/ISS-149/artifacts/probe-A-natural.json`,
+  `probe-B-factual.json` (ISS-149 probe, K=10 force-intent sweep)
+- `benchmarks/runs/ISS149-K30-conv26-20260525T122829Z/locomo_summary.json`
+  (K-expansion probe)
+- `/tmp/iss149_probe.sh`, `/tmp/iss149_K30.sh` (sweep drivers — pin to
+  ISS-149 artifacts/ on close)
