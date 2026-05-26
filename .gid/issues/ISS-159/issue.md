@@ -298,16 +298,60 @@ mid-sweep). Arm C cannot rescue AC-5a — Arm B alone proves CE has no
 single-hop signal, and composition with MMR cannot manufacture signal
 that doesn't exist in the underlying reranker.
 
+### Sub-bucket breakdown — the actual AC-5a gate
+
+ISS-148 redefined AC-5a as the **single-fact** sub-bucket (12 of 32
+single-hop questions; the other 20 are "list" questions that retrieval
+fundamentally can't fix per ISS-148 / ISS-160).
+
+Hand-classifying conv-26 single-hop into sub-buckets (single-fact =
+gold is one specific value; list = gold is a multi-item enumeration):
+
+| Sub-bucket | Arm A (no CE) | Arm B (CE k_in=50) | ISS-148 K=30 anchor |
+|---|---|---|---|
+| **single-fact (AC-5a, target ≥0.60)** | 3/12 = **0.250** | **3/12 = 0.250** | 5/12 = 0.417 |
+| list (AC-5b, not retrieval gate) | 3/20 = 0.150 | 3/20 = 0.150 | 4/20 = 0.200 |
+
+**Single-fact B-A delta = 0 questions (zero)**. The exact AC-5a target
+bucket showed **no improvement** with CE. Furthermore, plain K=30
+expansion (no CE, no extra logic) at the ISS-148 anchor saved **2 more
+single-fact questions** than CE@K_seed=50 here — meaning CE is not
+just inert, it's measurably **worse than naive K expansion** on this
+bucket.
+
+### Why this is a robust falsification (not noise)
+
+Three independent signals say CE inert on AC-5a:
+
+1. **Single-fact delta = 0 questions** (not 0.0pp — literally zero
+   queries flipped in either direction within the AC-5a bucket).
+2. **Total flips A→B = 12** distribute as multi-hop +4, single-hop
+   +0 net, temporal −2, open 0. CE pattern is consistent with its
+   trained regime (multi-hop / semantic-matching) and absent from the
+   target regime (single-fact / lexical-keyword).
+3. **K=30 outperforms CE@K_seed=50** on single-fact (+16.7pp) at
+   the ISS-148 anchor, despite CE having strictly more information
+   (50 candidates + cross-attention scoring vs 30 candidates + fusion
+   ranking). If CE had any signal on this bucket, it would at minimum
+   tie K=30.
+
+Caveat acknowledged: list sub-bucket dropped 1 question vs ISS-148
+K=10 baseline (4/20 → 3/20), suggesting ~1-question/bucket ingestion
+drift between sweeps. But single-fact sub-bucket itself reproduced
+the K=10 baseline exactly (3/12 = 0.250), so single-fact delta of
+zero is real, not noise-masked.
+
 ### Query-level diagnostic
 
-12 queries flipped score A → B. Breakdown:
+12 queries flipped score A → B (aggregate single-hop). Breakdown:
 
 - 7 went up (CE helped), 5 went down (CE hurt)
-- single-hop: 4 flips (2 up + 2 down → **net 0**, both downs were
-  judge wobble on semantically-correct answers)
+- single-hop **aggregate**: 4 flips (2 up + 2 down → net 0)
 - multi-hop: +4 (CE's only meaningful contribution: +10.8pp)
 - temporal: −2 (CE slight hurt)
 - open: 0
+- **single-fact sub-bucket: 0 flips** (q40, q71, q75, q76 etc. all
+  unchanged — these are the questions CE was bought to fix)
 
 CE loaded correctly (109ms cold, k_in=50). Not a wiring bug; CE
 genuinely has no signal on conv-26 single-fact queries.
