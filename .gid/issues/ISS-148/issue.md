@@ -12,6 +12,10 @@ relates:
 - ISS-147
 - ISS-149
 depends_on: .gid/issues/ISS-149/issue.md
+blocked_by:
+- .gid/issues/ISS-162/issue.md
+- .gid/issues/ISS-163/issue.md
+- .gid/issues/ISS-164/issue.md
 ---
 
 ## Summary

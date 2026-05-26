@@ -1,6 +1,6 @@
 ---
 title: AC-5a next lever — single-fact sub-bucket ≥0.60 on conv-26 (post-weapon-A)
-status: open
+status: resolved
 priority: P1
 severity: planning
 category: retrieval
@@ -264,3 +264,234 @@ substrate-level changes (entity resolution, multi-episode composition).
 - ISS-155 — extractor temp=0 determinism (related extraction-side fix)
 - ISS-160 — list-question generation/judge (AC-5b sibling)
 - `benchmarks/runs/ISS159v2-A-conv26-20260526T040634Z/locomo_per_query.jsonl` — source for failing-question list
+
+## Verdict 2026-05-26 (cont.) — Lever 3 falsified (extraction enrichment, two attempts)
+
+Lever 3 was the last remaining prompt-engineering lever. Two attempts,
+both falsified. Final state: **all prompt-level levers exhausted on
+AC-5a; remaining gap requires architectural changes, not prompt
+changes.**
+
+### L3 v1 — meta-instruction extractor prompt (uncommitted, falsified)
+
+Approach: extend EXTRACTION_PROMPT with explicit meta-instructions
+("preserve all proper nouns", "biggest failure mode is dropping
+specific names", "MUST keep noun phrases verbatim").
+
+Result on conv-26 K=10 HyDE=per_category temp=0:
+
+| Arm | overall | single-hop | single-fact (n=26) | parse fails | persona escapes |
+|---|---|---|---|---|---|
+| F — V1 control | 0.362 | 9/32 | 8/26 | 0 | 0 |
+| G — V1 + meta-lecture | 0.342 | 5/32 | 5/26 | 159 | 48 |
+
+Meta-instructions ("do not do it", "biggest failure mode", "MUST")
+triggered Claude Haiku into alignment-escape mode: 48 explicit
+"I'm Claude, an AI assistant..." outputs + 159 "No JSON array found"
+parse failures. Ingestion partially broke; extractor returned empty
+on ~30% of episodes.
+
+Conclusion: meta-instructions are not a usable mechanism for steering
+Claude Haiku extraction behaviour. Reverted.
+
+### L3 v2 — example-only redesign (committed working tree, falsified)
+
+Approach: keep Rules block byte-identical to V1, add 3 new example
+pairs (Lisbon / Pragmatic Programmer / Brooklyn Botanic Garden)
+demonstrating noun-phrase preservation by example. Zero
+meta-instructions. Forbidden-phrase tests assert no "do not" / "must
+preserve" / "biggest failure" leaks. Eval gold strings ("adoption
+agencies", "Becoming Nicole") explicitly excluded from examples.
+
+8 structural-parity unit tests pass:
+- Rules block byte-equality with V1
+- ≥2 new example pairs added
+- No meta-lecture phrase from V1's forbidden list
+- No eval gold strings in examples
+
+Result on conv-26 K=10 HyDE=per_category temp=0 (sweep PID 85271):
+
+| Arm | overall | single-hop | single-fact (n=26) | list (n=6) | parse fails | persona escapes |
+|---|---|---|---|---|---|---|
+| F — V1 control | 0.362 | 9/32 | **8/26** | 1/6 | 0 | 0 |
+| G — V2 example-only | 0.349 | 4/32 | **3/26** | 1/6 | **206** | 34 |
+
+Single-fact regressed from 8/26 → 3/26 (**-19.2pp**, -5 questions).
+V2 failed worse than V1 — adding examples on top of byte-identical
+rules made Claude switch register from "JSON fact extractor" to
+"therapist asking follow-up questions" on conv-26's emotional /
+trans-identity content. Sample failure outputs:
+
+```
+[WARN] No JSON array found in extraction response: That sounds like
+a meaningful experience. What made it stand out for you?
+
+[WARN] No JSON array found in extraction response: I appreciate the
+greeting, but I should clarify: I'm Claude, an AI assistant made by
+Anthropic. I'm not Mel...
+```
+
+Per-question diff (Arm F → Arm G single-fact):
+- Lost (8): q13 career, q32 LGBTQ events, q39 LGBTQ participation,
+  q47 negative-experience support, q48 pottery, q55 sunsets, q70
+  transgender events
+- Gained: 0
+
+**Why example-only also failed.** The new examples (Lisbon /
+Pragmatic Programmer / Brooklyn Botanic Garden) are all gentle
+personal-experience descriptions. Stacked on top of each other with
+no contrast example ("here is something to extract" vs "here is
+something to NOT extract"), they read to Claude Haiku as "be an
+empathetic listener capturing personal stories" rather than "be a
+structured fact extractor". Combined with conv-26's
+emotionally-charged content (trans identity, family support, mental
+health), Claude's alignment fine-tuning drove the register switch.
+
+The Rules block was untouched. The Rules block alone is sufficient
+in V1. Adding the wrong examples destroyed it.
+
+Reverted via `git checkout HEAD` on extractor.rs (commit fae6bb7
+state restored, 34/34 extractor tests pass at baseline).
+
+### Aggregate verdict across all attempted AC-5a levers
+
+| Lever | single-fact (n=26 or n=27) | Status |
+|---|---|---|
+| L2 PerCategoryV2 HyDE (Arm B) | 8/27 | partial, ship-rule-met, AC-5a-blocked |
+| L3 v1 meta-lecture extractor | 5/26 | broken (alignment escape) |
+| L3 v2 example-only extractor | **3/26** | broken (worse than v1) |
+| L7 v2 generation prompt | 6/27 | regression vs L2 |
+| L9 cross-encoder reranker (ISS-159) | 3/12 = same as A | no movement |
+
+Best measured single-fact: **8/27 = 0.296** at Arm B (L2). Gap to
+AC-5a 0.60 = **9 questions short**.
+
+No prompt-engineering lever has lifted single-fact by more than 3
+questions over baseline. The architecture is the binding constraint.
+
+### Root-cause investigation (engramai code layer)
+
+Code-layer audit performed 2026-05-26 to verify whether the
+"architectural changes" required by AC-5a are net-new work or
+re-wiring of existing-but-disconnected components. Findings:
+
+**Finding 1 — Single-message extraction window (no context).**
+`crates/engramai/src/extractor.rs:480` calls `extract(text: &str)`
+with the raw single-turn content. `ingest_with_stats_at` →
+`store_raw` → `extractor.extract(content)` passes one episode at a
+time. LoCoMo fixture builder (`engram-bench/scripts/build_locomo_fixture.py:99`)
+emits one episode per conversation turn (`f"{speaker}: {text}"`).
+
+**Compared to Mem0 (Chhikara et al., 2025-04, arXiv:2504.19413):**
+Mem0 extractor sees `(m_{t-1}, m_t, S, recent_m)` — current
+message-pair + global session summary + local window of recent
+messages. This is why Mem0 captures noun phrases from `m_{t-1}` that
+`m_t` references implicitly (e.g., "Adoption agencies" answer
+preserves the question's noun "research").
+
+Q3 conv-26 ("What did Caroline research?") gold = "Adoption
+agencies". The relevant exchange is:
+- Melanie: "What are you researching?"
+- Caroline: "Adoption agencies, mainly..."
+
+Our extractor sees only Caroline's reply in isolation; the question
+context ("researching") is gone. Extracted episode becomes "Caroline
+went to do some research" — noun phrase lost.
+
+This is **not a prompt bug**. No prompt change can recover a noun
+phrase from data that isn't in the input.
+
+**Finding 2 — Semantic dedup at cosine ≥ 0.95, not Mem0-style
+UPDATE.** `crates/engramai/src/memory.rs:2839` checks `sim >=
+dedup_threshold` (default 0.95 from `config.rs:351`). Above
+threshold = merge into existing memory (entity-aware Phase A or
+embedding-only Phase B). Below threshold = both kept as separate
+memories.
+
+**Compared to Mem0:** Mem0 has a semantic-reconcile UPDATE phase
+where (a) new fact with overlapping entity-set triggers compare with
+all related existing memories, (b) LLM-based decision among ADD /
+UPDATE / DELETE / NOOP, (c) more-specific later version replaces
+less-specific earlier version even at cosine ~0.85-0.92.
+
+Our 0.95 threshold means "I went to research" and "I researched
+adoption agencies" stay as two separate memories. The narrow first
+version dilutes retrieval against the specific second version. Q11
+("Where did Caroline move from 4 years ago?" → "Sweden") is the
+canonical example: Caroline says "I moved here 4 years ago" and
+"home country was Sweden" in different turns; we keep both,
+neither alone answers the question.
+
+**Finding 3 — GraphEntityResolver wired but classifier never
+routes to Factual plan.**
+`crates/engramai/src/retrieval/adapters/graph_entity_resolver.rs`
+implements alias-match → graph-traversal entity resolution.
+`crates/engramai/src/retrieval/plans/factual.rs` Factual plan
+consumes it. Both have unit tests.
+
+But `crates/engramai/src/retrieval/dispatch.rs:92`:
+```rust
+(Intent::Factual, DowngradeHint::Associative) => PlanKind::Associative,
+(Intent::Factual, DowngradeHint::None) => PlanKind::Factual,
+```
+
+And classifier (`src/retrieval/classifier/mod.rs:245`) emits
+`DowngradeHint::Associative` whenever Entity signal is below
+`τ_high = 0.7`. Conv-26 questions ("What did Caroline research?",
+"What is Caroline's relationship status?") trigger no strong entity
+signal — they are natural-language references, not literal alias
+matches.
+
+Empirical: 0 of 152 conv-26 queries route to Factual plan in any
+sweep. Breakdown (Arm F V1 control):
+- associative: 120
+- abstract: 18
+- affective: 7
+- hybrid: 5
+- episodic: 2
+- **factual: 0**
+
+GraphEntityResolver has never been called during any AC-5a
+measurement. The "entity-aware retrieval" capability exists in code
+but is fully bypassed at runtime.
+
+### Conclusion — AC-5a unreachable via prompt; three architecture gaps identified
+
+All four attempted prompt-engineering levers (L2/L3v1/L3v2/L7) have
+been falsified or shown to plateau at 8/27 single-fact = 0.296. The
+gap to AC-5a 0.60 (17/27 = 0.629) is 9 questions, none of which can
+be saved by prompt changes given the Finding 1-3 architecture gaps:
+
+- ~5 of the 9 missing questions (q3, q7, q11, q43, q71) fail because
+  the right noun phrase is never extracted (Finding 1) or never
+  consolidated (Finding 2).
+- ~3 of the 9 missing questions (q40, q75, q76) need multi-episode
+  composition that requires entity-graph traversal (Finding 3).
+- ~1 (q37 sunset) is plausibly a generation or reranker issue but
+  blocked behind the others.
+
+**Recommendation: Lever 6 — redefine ISS-148 AC-5a.** Filing three
+new ISS to make the architecture gaps explicit:
+
+- **ISS-NNN (Finding 1):** `Ingest path missing conversation context
+  window` — extractor sees one turn at a time; needs `(prev, curr,
+  summary)` shape per Mem0 paradigm.
+- **ISS-NNN (Finding 2):** `Dedup at 0.95 cosine is not semantic
+  UPDATE` — needs Mem0-style ADD/UPDATE/DELETE/NOOP phase with LLM
+  reconciliation for cosine 0.80-0.95 band.
+- **ISS-NNN (Finding 3):** `GraphEntityResolver wired but classifier
+  never routes to Factual plan` — needs classifier threshold review
+  or alternative entity-aware adapter wired into Associative plan.
+
+ISS-148 AC-5a should be marked `blocked-by` these three. Either
+ship v0.3 with a redefined AC-5a (~0.42, matching current best at
+Arm C with L2+K30), or accept that v0.3 release blocks on the three
+new ISS (4-8 weeks of architecture work).
+
+### Status flip
+
+This ticket (ISS-161) flips to **resolved-falsified**. All proposed
+levers within ISS-161 scope (prompt-engineering) have been
+investigated. Architectural follow-ups are filed as separate ISS,
+not nested under ISS-161.
+
