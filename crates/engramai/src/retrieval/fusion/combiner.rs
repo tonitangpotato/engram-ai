@@ -152,6 +152,26 @@ pub struct FusionConfig {
     /// without this field still deserialize to the legacy behavior.
     #[serde(default = "default_mmr_lambda")]
     pub mmr_lambda: f32,
+    /// ISS-164 — Associative plan always-on entity channel.
+    ///
+    /// When `true`, the Associative plan calls
+    /// [`EntityResolver::resolve(query.text)`] alongside its
+    /// seed-recall step and unions the resolved anchor entities into
+    /// `seed_entities` before 1-hop edge expansion. This recovers the
+    /// retrieval signal of an entity-anchored "Factual mini-pass"
+    /// even when the classifier (ISS-149) misroutes the query to
+    /// Associative — the documented root cause of 0/152 Factual
+    /// dispatches on LoCoMo conv-26 and the AC-5a single-fact gap.
+    ///
+    /// When `false` (default), AssociativePlan executes the v0.3
+    /// §4.3 pipeline byte-identically — no resolver call, no
+    /// `seed_entities` injection. This preserves the §5.4 locked
+    /// envelope until the bench validates the lift.
+    ///
+    /// Serde-defaults to `false` so older reproducibility records
+    /// still deserialize to the legacy behavior.
+    #[serde(default = "default_entity_channel_enabled")]
+    pub entity_channel_enabled: bool,
     /// Semantic version pin — bumped on weight changes.
     pub version: &'static str,
 }
@@ -166,6 +186,16 @@ pub struct FusionConfig {
 /// `GraphQuery::with_mmr_lambda(Some(1.0))`.
 fn default_mmr_lambda() -> f32 {
     0.7
+}
+
+/// Serde default for [`FusionConfig::entity_channel_enabled`] (ISS-164).
+///
+/// Defaults to `false` — Associative plan stays byte-identical to the
+/// §4.3 pipeline. The bench harness flips this via
+/// `GraphQuery::entity_channel_override` to A/B against the
+/// always-on entity channel without re-baking `FusionConfig::locked()`.
+fn default_entity_channel_enabled() -> bool {
+    false
 }
 
 impl FusionConfig {
@@ -237,6 +267,7 @@ impl FusionConfig {
             rrf_k: RRF_DEFAULT_K,
             min_fused_score: 0.0,
             mmr_lambda: default_mmr_lambda(),
+            entity_channel_enabled: default_entity_channel_enabled(),
             version: "v0.3.0-locked-r3",
         }
     }
@@ -504,6 +535,34 @@ mod tests {
         let a = FusionConfig::locked();
         let b = FusionConfig::locked();
         assert_eq!(a, b);
+    }
+
+    /// ISS-164 — `entity_channel_enabled` default and serde default.
+    ///
+    /// Locked default is `false` so the v0.3 §5.4 reproducibility
+    /// envelope is preserved until the bench validates the lift on
+    /// conv-26.
+    #[test]
+    fn locked_entity_channel_enabled_defaults_to_false() {
+        let cfg = FusionConfig::locked();
+        assert!(
+            !cfg.entity_channel_enabled,
+            "FusionConfig::locked().entity_channel_enabled must default \
+             to false until ISS-164 bench validates the lift"
+        );
+    }
+
+    /// ISS-164 — the `#[serde(default)]` helper itself.
+    ///
+    /// We can't round-trip through serde_json on this struct because
+    /// `FusionConfig::version: &'static str` forces a `'static`
+    /// deserializer lifetime that the JSON deserializer can't provide.
+    /// Instead we test the default-function directly — it's the source
+    /// of truth that `#[serde(default = "...")]` calls when the field
+    /// is absent.
+    #[test]
+    fn default_entity_channel_enabled_helper_returns_false() {
+        assert!(!default_entity_channel_enabled());
     }
 
     #[test]

@@ -263,6 +263,31 @@ pub struct GraphQuery {
     /// proves out on conv-26 + conv-44 (ISS-159 D7).
     pub cross_encoder_override:
         Option<std::sync::Arc<dyn crate::retrieval::fusion::Reranker + Send + Sync>>,
+
+    /// ISS-164 — per-query override for the Associative plan's
+    /// always-on entity channel.
+    ///
+    /// When `Some(true)`, the Associative plan's Step 2 (extract seed
+    /// entities) is augmented with a call to
+    /// `EntityResolver::resolve(query.text)` and unions the resolved
+    /// anchors into `seed_entities` before the 1-hop edge expansion.
+    /// This recovers the retrieval signal of an entity-anchored
+    /// "Factual mini-pass" even when the classifier (ISS-149)
+    /// misroutes the query to Associative — the documented root
+    /// cause of 0/152 Factual dispatches on LoCoMo conv-26 and the
+    /// AC-5a single-fact gap.
+    ///
+    /// When `None` (default), the value falls back to
+    /// `FusionConfig::locked().entity_channel_enabled` (currently
+    /// `false` — pre-ISS-164 byte-identical behavior). When
+    /// `Some(false)`, the channel is explicitly off (useful for A/B
+    /// arms that pin the off side regardless of any future locked
+    /// default flip).
+    ///
+    /// Intended consumers: bench drivers running ISS-164 A/B sweeps
+    /// (entity_channel on vs off on conv-26). Normal callers should
+    /// leave this `None`.
+    pub entity_channel_override: Option<bool>,
 }
 
 impl std::fmt::Debug for GraphQuery {
@@ -290,6 +315,7 @@ impl std::fmt::Debug for GraphQuery {
                 "cross_encoder_override",
                 &self.cross_encoder_override.as_ref().map(|_| "<dyn Reranker>"),
             )
+            .field("entity_channel_override", &self.entity_channel_override)
             .finish()
     }
 }
@@ -315,6 +341,7 @@ impl GraphQuery {
             k_seed_override: None,
             bm25_pool_override: None,
             cross_encoder_override: None,
+            entity_channel_override: None,
         }
     }
 
@@ -417,6 +444,18 @@ impl GraphQuery {
         ce: Option<std::sync::Arc<dyn crate::retrieval::fusion::Reranker + Send + Sync>>,
     ) -> Self {
         self.cross_encoder_override = ce;
+        self
+    }
+
+    /// Builder: per-query override for the Associative plan's
+    /// always-on entity channel (ISS-164).
+    ///
+    /// See [`GraphQuery::entity_channel_override`] for semantics.
+    /// Pass `None` to fall back to
+    /// `FusionConfig::locked().entity_channel_enabled` (currently
+    /// `false` — pre-ISS-164 byte-identical behavior).
+    pub fn with_entity_channel(mut self, enabled: Option<bool>) -> Self {
+        self.entity_channel_override = enabled;
         self
     }
 }

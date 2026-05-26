@@ -208,3 +208,38 @@ becomes reachable for the first time.
 | + ISS-159 cross-encoder (already shipped) | ~17/27 = 0.63 | **+0** (PASS) |
 
 Projection. Real measurements pending implementation of each lever.
+
+---
+
+## 2026-05-26 — Phase 1 (code layer) shipped
+
+### Changes
+- `crates/engramai/src/retrieval/fusion/combiner.rs` — added `FusionConfig.entity_channel_enabled: bool` field (`#[serde(default = "default_entity_channel_enabled")]` → `false`). Wired into `FusionConfig::locked()`. Default-helper test pinned.
+- `crates/engramai/src/retrieval/api.rs` — added `GraphQuery.entity_channel_override: Option<bool>` field + `with_entity_channel(Option<bool>)` builder. Mirrors the `mmr_lambda_override` / `cross_encoder_override` pattern verbatim. `None` defaults via `FusionConfig::locked().entity_channel_enabled`.
+- `crates/engramai/src/retrieval/plans/associative.rs` — added `AssociativePlanInputs.entity_channel_enabled: bool` and `AssociativePlanInputs.entity_resolver: Option<&'a dyn EntityResolver>`. Imported `EntityResolver` from `plans::factual`.
+- `AssociativePlan::execute` — Step 2b (inside `Stage::EntityExtract` budget block) injects `EntityResolver::resolve(query.text)` anchors into `seed_entities` with `seed_score = match_strength as f64`. Tracks them separately in `injected_anchors`.
+- `AssociativePlan::execute` — Step 3b' (inside `Stage::MemoryLookup` budget block, right after Step 3b) calls `memories_mentioning_entity` directly on each injected anchor, surfacing the anchor's mentioned memories at `edge_distance = 1` (mirrors Factual's path — the high-value channel for proper-noun queries where the gold-fact mentions the anchor directly).
+- `crates/engramai/src/retrieval/orchestrator.rs` — both `PlanKind::Associative` (line ~1162) and `run_associative_fallback` (line ~1500) read `query.entity_channel_override.unwrap_or_else(|| FusionConfig::locked().entity_channel_enabled)` and pass `Some(collaborators.entity_resolver)`. Fallback mirrors primary path so downgrade→Associative behaves identically.
+
+### Byte-identity contract
+Default off → §4.3 pipeline executes byte-for-byte identically to pre-ISS-164. When `entity_channel_enabled = true` but resolver returns zero anchors, byte-identity is also preserved. Both pinned by tests.
+
+### Tests added (5)
+- `plans::associative::tests::iss164_channel_off_preserves_byte_identity` — channel off, resolver wired with anchors, candidate set must match the no-resolver baseline.
+- `plans::associative::tests::iss164_channel_on_zero_anchors_preserves_byte_identity` — channel on, resolver returns empty Vec, must equal channel-off result.
+- `plans::associative::tests::iss164_channel_on_anchors_expand_seed_entities` — channel on with one anchor pointing at an isolated memory; baseline off-path does NOT surface it; on-path does, at `edge_distance = 1`.
+- `fusion::combiner::tests::locked_entity_channel_enabled_defaults_to_false` — locked config default pinned.
+- `fusion::combiner::tests::default_entity_channel_enabled_helper_returns_false` — serde default helper pinned.
+- `tests/v03_retrieval_acceptance_test.rs::graph_query_new_defaults_entity_channel_override_to_none` — GraphQuery constructor default.
+- `tests/v03_retrieval_acceptance_test.rs::graph_query_with_entity_channel_stores_the_override` — builder semantics + composition with other `with_*` setters.
+
+### Suite results
+- `cargo test -p engramai --lib` → **1956 passed, 0 failed, 4 ignored** (was 1954 pre-ISS-164).
+- `cargo test -p engramai --test v03_retrieval_acceptance_test` → **11 passed, 0 failed** (was 9 pre-ISS-164).
+- No warnings introduced.
+
+### Phase 2 (bench validation) — pending
+- Wire `ENGRAM_BENCH_ENTITY_CHANNEL=on|off` env var in engram-bench → `GraphQuery::with_entity_channel(Some(bool))`.
+- A/B sweep on conv-26, K=10, temp=0, HyDE=off (isolation envelope). Two arms only — no λ sweep.
+- AC-5a projection: single-fact 8/27 → 11/27 (+3). Falsification rule: measured lift <50% of projection (i.e. <+1.5 single-fact) → STOP, re-plan before ISS-162.
+- Decision dependence: pass → keep ISS-164 enabled and move to ISS-162. Fail → file root-cause issue and re-scope ISS-148 unblock sequence.

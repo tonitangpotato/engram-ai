@@ -665,3 +665,44 @@ fn graph_query_with_mmr_lambda_stores_the_override() {
     assert_eq!(q3.namespace.as_deref(), Some("tenant-a"));
 }
 
+// ---------------------------------------------------------------------------
+// ISS-164 — GraphQuery entity_channel override (acceptance pin)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn graph_query_new_defaults_entity_channel_override_to_none() {
+    // `GraphQuery::new("text")` is the zero-config entry point.
+    // Default of `None` means "use FusionConfig::locked().entity_channel_enabled"
+    // — which is `false` — which means the channel doesn't fire.
+    let q = GraphQuery::new("anything");
+    assert!(
+        q.entity_channel_override.is_none(),
+        "GraphQuery::new must default entity_channel_override to None"
+    );
+}
+
+#[test]
+fn graph_query_with_entity_channel_stores_the_override() {
+    // Builder smoke: the value flows from `with_entity_channel` to
+    // the field that the orchestrator reads at execute_plan time.
+    let q = GraphQuery::new("Caroline").with_entity_channel(Some(true));
+    assert_eq!(q.entity_channel_override, Some(true));
+
+    // Explicit off — useful for A/B sweep arms that pin the off side.
+    let q_off = GraphQuery::new("q").with_entity_channel(Some(false));
+    assert_eq!(q_off.entity_channel_override, Some(false));
+
+    // Roundtrip None → None (explicit fall-back to locked default).
+    let q_none = GraphQuery::new("q").with_entity_channel(None);
+    assert!(q_none.entity_channel_override.is_none());
+
+    // Builder composes with other `with_*` setters without clobbering.
+    let q3 = GraphQuery::new("q")
+        .with_limit(10)
+        .with_entity_channel(Some(true))
+        .with_namespace("tenant-a");
+    assert_eq!(q3.entity_channel_override, Some(true));
+    assert_eq!(q3.limit, 10);
+    assert_eq!(q3.namespace.as_deref(), Some("tenant-a"));
+}
+

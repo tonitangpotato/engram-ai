@@ -1142,9 +1142,21 @@ pub(crate) fn execute_plan(
             }
         }
         PlanKind::Associative => {
+            // ISS-164 — resolve the always-on entity channel flag.
+            // Per-query override wins, else fall back to
+            // FusionConfig::locked().entity_channel_enabled (default
+            // false → byte-identical to pre-ISS-164 §4.3 pipeline).
+            let entity_channel_enabled = query
+                .entity_channel_override
+                .unwrap_or_else(|| {
+                    crate::retrieval::fusion::FusionConfig::locked()
+                        .entity_channel_enabled
+                });
             let inputs = crate::retrieval::plans::associative::AssociativePlanInputs {
                 query: &query,
                 budget,
+                entity_channel_enabled,
+                entity_resolver: Some(collaborators.entity_resolver),
             };
             // ISS-K_SEED-CAP (2026-05-06): K_seed default = 10 silently
             // caps the fused candidate pool at ~10 even when the driver
@@ -1489,9 +1501,23 @@ fn run_associative_fallback(
     // budget envelope; surfacing 0 candidates would be a worse contract
     // violation than a slightly larger budget.
     let budget = crate::retrieval::budget::BudgetController::with_defaults();
+    // ISS-164 — same resolution as the primary Associative branch:
+    // per-query override wins, else FusionConfig::locked() default
+    // (currently false). Fallback paths must mirror the main path so
+    // an A/B sweep produces the same on/off semantics whether the
+    // primary plan dispatched Associative directly or downgraded into
+    // it.
+    let entity_channel_enabled = query
+        .entity_channel_override
+        .unwrap_or_else(|| {
+            crate::retrieval::fusion::FusionConfig::locked()
+                .entity_channel_enabled
+        });
     let inputs = crate::retrieval::plans::associative::AssociativePlanInputs {
         query,
         budget,
+        entity_channel_enabled,
+        entity_resolver: Some(collaborators.entity_resolver),
     };
     // ISS-K_SEED-CAP — fallback path. Same reasoning as the primary
     // PlanKind::Associative branch above: surface query.limit as

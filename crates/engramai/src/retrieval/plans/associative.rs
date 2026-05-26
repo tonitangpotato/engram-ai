@@ -50,6 +50,7 @@ use crate::graph::store::GraphRead;
 use crate::graph::EdgeEnd;
 use crate::retrieval::api::{EntityId, GraphQuery};
 use crate::retrieval::budget::{BudgetController, Stage};
+use crate::retrieval::plans::factual::EntityResolver;
 use crate::store_api::MemoryId;
 
 // ---------------------------------------------------------------------------
@@ -186,6 +187,31 @@ pub struct AssociativePlanInputs<'a> {
     /// Per-stage cost controller. Plan never panics on exhaustion — it
     /// short-circuits with whatever it has so far.
     pub budget: BudgetController,
+
+    /// ISS-164 — always-on entity channel toggle.
+    ///
+    /// When `true` AND `entity_resolver` is `Some`, the plan calls
+    /// `EntityResolver::resolve(query.text)` during Step 2 (extract
+    /// seed entities) and unions the resolved anchor entities into
+    /// `seed_entities` before the 1-hop edge expansion. When
+    /// `false`, the plan executes the §4.3 pipeline byte-identically
+    /// (no resolver call, no `seed_entities` injection).
+    ///
+    /// Defaults to `false` via the orchestrator — flipped on by
+    /// callers that opt in via
+    /// `GraphQuery::entity_channel_override` or
+    /// `FusionConfig::entity_channel_enabled`.
+    pub entity_channel_enabled: bool,
+
+    /// ISS-164 — entity resolver borrowed from `PlanCollaborators`.
+    ///
+    /// `Some` when the orchestrator wires the real
+    /// `GraphEntityResolver`; `None` when the plan is invoked from
+    /// unit tests that do not exercise the entity channel. The plan
+    /// only calls `.resolve` when both this is `Some` AND
+    /// `entity_channel_enabled` is `true` — either gate being off
+    /// preserves byte-identity with the pre-ISS-164 pipeline.
+    pub entity_resolver: Option<&'a dyn EntityResolver>,
 }
 
 /// Typed outcome (§6.4). The plan never returns scored rows; fusion
@@ -353,6 +379,75 @@ where
                     .or_insert(hit.score);
             }
         }
+
+        // -------- Step 2b — ISS-164 always-on entity channel -----------
+        // When opted in (Q.entity_channel_override or
+        // FusionConfig.entity_channel_enabled), resolve the raw query
+        // text to entity anchors. The resolved anchors flow into the
+        // pipeline through TWO channels (mirrors Factual §4.1):
+        //
+        //   1. **Direct memory recovery** at edge distance 1 — same
+        //      semantics as Factual's
+        //      `memories_mentioning_entity(anchor.entity_id, ...)`
+        //      step. This is the high-value path: the gold-fact
+        //      memory typically mentions the anchor entity directly
+        //      (e.g. "Caroline" → caroline_fact_mem), not via an
+        //      intermediate edge hop.
+        //   2. **Edge-hop bridging** — by unioning the anchor into
+        //      `seed_entities`, Step 3 also fans out through any
+        //      1-hop edges from the anchor, recovering memories
+        //      mentioning related entities. Cheap extra signal.
+        //
+        // Byte-identity contract: when `entity_channel_enabled =
+        // false` OR `entity_resolver = None` OR resolver returns 0
+        // anchors, neither channel fires and the plan behaves
+        // byte-identically to the pre-ISS-164 §4.3 pipeline. Tests
+        // pin all three preservation cases.
+        //
+        // `seed_score` for injected anchors uses
+        // `ResolvedAnchor.match_strength` (f32 → f64): 1.0 exact /
+        // 0.8 alias / 0.5 fuzzy per `factual.rs` convention. Merge
+        // policy matches the seeds-derived loop above — keep the
+        // **max** when an entity surfaces from both channels (§4.3
+        // step 5 "max not sum").
+        //
+        // `injected_anchors` is the subset of `seed_entities` that
+        // came from the resolver (not from seed memories). Step 3b
+        // uses it to recover the anchor's mentioned memories
+        // directly, in addition to whatever Step 3 expansion finds.
+        let mut injected_anchors: HashMap<EntityId, f64> = HashMap::new();
+        if inputs.entity_channel_enabled {
+            if let Some(resolver) = inputs.entity_resolver {
+                // Resolver returns an empty Vec on error / no match;
+                // the trait does not surface failures (factual.rs:114).
+                // Either way the loop below is a no-op when empty,
+                // preserving byte-identity with the pre-ISS-164 path.
+                let anchors = resolver.resolve(&inputs.query.text);
+                for anchor in anchors {
+                    let score = anchor.match_strength as f64;
+                    seed_entities
+                        .entry(anchor.entity_id)
+                        .and_modify(|s| {
+                            if score > *s {
+                                *s = score;
+                            }
+                        })
+                        .or_insert(score);
+                    // Track separately so Step 3b can call
+                    // `memories_mentioning_entity` directly on the
+                    // anchor. We keep the max if the same anchor was
+                    // resolved twice with different strengths.
+                    injected_anchors
+                        .entry(anchor.entity_id)
+                        .and_modify(|s| {
+                            if score > *s {
+                                *s = score;
+                            }
+                        })
+                        .or_insert(score);
+                }
+            }
+        }
         inputs.budget.end_stage();
 
         // -------- Step 3 — 1-hop edge expansion ------------------------
@@ -418,6 +513,50 @@ where
                     *seed_score,
                     1,
                     Some(*via),
+                    self.k_pool,
+                );
+                if pool.len() >= self.k_pool {
+                    break;
+                }
+            }
+        }
+
+        // -------- Step 3b' — ISS-164 direct anchor memory recovery -----
+        // The injected anchors from Step 2b also surface their OWN
+        // mentioned memories at distance 1 — mirrors Factual's
+        // `memories_mentioning_entity(anchor.entity_id, ...)` path
+        // (factual.rs §4.1). Without this, anchors that have no
+        // outgoing 1-hop edges would never contribute candidates,
+        // defeating the channel's purpose for proper-noun queries
+        // where the gold-fact memory mentions the anchor directly
+        // (the documented LoCoMo conv-26 pattern).
+        //
+        // No-op when `injected_anchors` is empty — i.e., when the
+        // channel was off or the resolver returned zero anchors,
+        // which preserves byte-identity with the pre-ISS-164
+        // pipeline (tests pin both cases).
+        //
+        // `via` is set to the anchor itself (`Some(*entity)`) to
+        // record the provenance — the candidate was reached because
+        // the resolver picked this entity from the query text. This
+        // mirrors the §4.3 step-3 convention of recording the bridge
+        // entity that surfaced the memory.
+        for (entity, seed_score) in &injected_anchors {
+            if pool.len() >= self.k_pool {
+                break;
+            }
+            let Ok(mems) =
+                graph.memories_mentioning_entity(*entity, PER_ENTITY_MEMORY_CAP)
+            else {
+                continue;
+            };
+            for mid in mems {
+                upsert_candidate(
+                    &mut pool,
+                    mid,
+                    *seed_score,
+                    1,
+                    Some(*entity),
                     self.k_pool,
                 );
                 if pool.len() >= self.k_pool {
@@ -734,6 +873,7 @@ mod tests {
 
     /// Deterministic seed recaller — returns a fixed list regardless of
     /// `query`.
+    #[derive(Clone)]
     struct StubSeeds {
         hits: Vec<SeedHit>,
         status: SeedRecallStatus,
@@ -765,6 +905,8 @@ mod tests {
             AssociativePlanInputs {
                 query: &query(),
                 budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
             },
             &graph,
         );
@@ -784,6 +926,8 @@ mod tests {
             AssociativePlanInputs {
                 query: &query(),
                 budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
             },
             &graph,
         );
@@ -813,6 +957,8 @@ mod tests {
             AssociativePlanInputs {
                 query: &query(),
                 budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
             },
             &graph,
         );
@@ -842,6 +988,8 @@ mod tests {
             AssociativePlanInputs {
                 query: &query(),
                 budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
             },
             &graph,
         );
@@ -879,6 +1027,8 @@ mod tests {
             AssociativePlanInputs {
                 query: &q,
                 budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
             },
             &graph,
         );
@@ -919,6 +1069,8 @@ mod tests {
             AssociativePlanInputs {
                 query: &query(),
                 budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
             },
             &graph,
         );
@@ -953,6 +1105,8 @@ mod tests {
             AssociativePlanInputs {
                 query: &query(),
                 budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
             },
             // Need at least one outgoing edge to trigger expansion.
             // Without an edge, expanded_entities is empty and only the
@@ -966,5 +1120,248 @@ mod tests {
             },
         );
         assert!(res.candidates.len() <= 3);
+    }
+
+    // ---------------------------------------------------------------
+    // ISS-164 — always-on entity channel
+    // ---------------------------------------------------------------
+
+    /// Stub [`EntityResolver`] for ISS-164 unit tests. Returns whatever
+    /// anchor list it was constructed with, regardless of the query
+    /// text — pure-function contract is preserved (deterministic on
+    /// the bound `(state, query)`).
+    struct StubResolver {
+        anchors: Vec<crate::retrieval::plans::factual::ResolvedAnchor>,
+    }
+
+    impl crate::retrieval::plans::factual::EntityResolver for StubResolver {
+        fn resolve(
+            &self,
+            _query: &str,
+        ) -> Vec<crate::retrieval::plans::factual::ResolvedAnchor> {
+            self.anchors.clone()
+        }
+    }
+
+    /// ISS-164 byte-identity #1 — channel off, resolver wired with
+    /// anchors.
+    ///
+    /// When `entity_channel_enabled = false`, the resolver is never
+    /// called and the plan's output is bit-for-bit identical to the
+    /// pre-ISS-164 §4.3 pipeline. This is the production default and
+    /// the locked-config baseline.
+    #[test]
+    fn iss164_channel_off_preserves_byte_identity() {
+        let e1 = Uuid::new_v4();
+        let e_anchor = Uuid::new_v4();
+        let mut graph = FakeGraph::default();
+        graph.link_mem("seed1", &[e1]);
+        graph.add_edge(e1, Uuid::new_v4(), 0.9);
+        graph.entity_mems(e_anchor, &["anchor_only_mem"]);
+
+        let seeds = StubSeeds {
+            hits: vec![SeedHit {
+                memory_id: "seed1".into(),
+                score: 0.8,
+            }],
+            status: SeedRecallStatus::Ok,
+        };
+        let resolver = StubResolver {
+            anchors: vec![
+                crate::retrieval::plans::factual::ResolvedAnchor {
+                    entity_id: e_anchor,
+                    canonical_name: "Caroline".into(),
+                    match_strength: 1.0,
+                },
+            ],
+        };
+
+        let plan_off = AssociativePlan::new(seeds.clone());
+        let res_off = plan_off.execute(
+            AssociativePlanInputs {
+                query: &query(),
+                budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: Some(&resolver),
+            },
+            &graph,
+        );
+
+        let plan_baseline = AssociativePlan::new(seeds);
+        let res_baseline = plan_baseline.execute(
+            AssociativePlanInputs {
+                query: &query(),
+                budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
+            },
+            &graph,
+        );
+
+        // The only differences expected between the two `Result`s are
+        // `elapsed` (wall-clock). Candidate set + outcome must match
+        // byte-for-byte. Compare the candidate vectors as sets of
+        // `(memory_id, edge_distance)` since insertion-order is
+        // HashMap-defined.
+        let key = |r: &AssociativePlanResult| -> Vec<(MemoryId, u8)> {
+            let mut v: Vec<_> = r
+                .candidates
+                .iter()
+                .map(|c| (c.memory_id.clone(), c.edge_distance))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(res_off.outcome, res_baseline.outcome);
+        assert_eq!(key(&res_off), key(&res_baseline));
+        // Critically: `anchor_only_mem` must NOT appear — the
+        // resolver was provided but the channel was off.
+        assert!(
+            !res_off
+                .candidates
+                .iter()
+                .any(|c| c.memory_id.as_str() == "anchor_only_mem"),
+            "channel-off plan must not surface anchor-only memories"
+        );
+    }
+
+    /// ISS-164 byte-identity #2 — channel on, resolver returns zero
+    /// anchors.
+    ///
+    /// This is the LoCoMo "Caroline mentioned no proper noun in the
+    /// query" case. Channel is enabled but the resolver finds no
+    /// match — the plan must behave identically to the channel-off
+    /// path. Confirms the `if !anchors.is_empty()` branch protects
+    /// the §5.4 envelope when the resolver is a no-op.
+    #[test]
+    fn iss164_channel_on_zero_anchors_preserves_byte_identity() {
+        let e1 = Uuid::new_v4();
+        let mut graph = FakeGraph::default();
+        graph.link_mem("seed1", &[e1]);
+
+        let seeds = StubSeeds {
+            hits: vec![SeedHit {
+                memory_id: "seed1".into(),
+                score: 0.8,
+            }],
+            status: SeedRecallStatus::Ok,
+        };
+        let empty_resolver = StubResolver { anchors: vec![] };
+
+        let plan_on = AssociativePlan::new(seeds.clone());
+        let res_on = plan_on.execute(
+            AssociativePlanInputs {
+                query: &query(),
+                budget: budget(),
+                entity_channel_enabled: true,
+                entity_resolver: Some(&empty_resolver),
+            },
+            &graph,
+        );
+
+        let plan_off = AssociativePlan::new(seeds);
+        let res_off = plan_off.execute(
+            AssociativePlanInputs {
+                query: &query(),
+                budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: None,
+            },
+            &graph,
+        );
+
+        let key = |r: &AssociativePlanResult| -> Vec<(MemoryId, u8)> {
+            let mut v: Vec<_> = r
+                .candidates
+                .iter()
+                .map(|c| (c.memory_id.clone(), c.edge_distance))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(res_on.outcome, res_off.outcome);
+        assert_eq!(key(&res_on), key(&res_off));
+    }
+
+    /// ISS-164 effect test — channel on, resolver returns one anchor
+    /// not surfaced by the seed memories. The anchor's mentioned
+    /// memories must appear in the candidate pool at edge distance 1,
+    /// proving the entity channel actually feeds the §4.3 expansion.
+    ///
+    /// This is the LoCoMo "Caroline who?" case — the query mentions
+    /// a person whose mentions are NOT in any seed memory, so the
+    /// pre-ISS-164 plan would never expand to them.
+    #[test]
+    fn iss164_channel_on_anchors_expand_seed_entities() {
+        let e_seed = Uuid::new_v4();
+        let e_anchor = Uuid::new_v4();
+        let mut graph = FakeGraph::default();
+        graph.link_mem("seed1", &[e_seed]);
+        // The seed entity has NO edges and NO mentioned memories
+        // beyond the seed itself.
+        graph.entity_mems(e_seed, &["seed1"]);
+        // The anchor entity points at a memory the seeds can NEVER
+        // reach via the pre-ISS-164 pipeline.
+        graph.entity_mems(e_anchor, &["caroline_fact_mem"]);
+
+        let seeds = StubSeeds {
+            hits: vec![SeedHit {
+                memory_id: "seed1".into(),
+                score: 0.8,
+            }],
+            status: SeedRecallStatus::Ok,
+        };
+        let resolver = StubResolver {
+            anchors: vec![
+                crate::retrieval::plans::factual::ResolvedAnchor {
+                    entity_id: e_anchor,
+                    canonical_name: "Caroline".into(),
+                    match_strength: 1.0,
+                },
+            ],
+        };
+
+        // Baseline: channel off — the anchor's memories must NOT
+        // appear (the pre-ISS-164 contract).
+        let plan_off = AssociativePlan::new(seeds.clone());
+        let res_off = plan_off.execute(
+            AssociativePlanInputs {
+                query: &query(),
+                budget: budget(),
+                entity_channel_enabled: false,
+                entity_resolver: Some(&resolver),
+            },
+            &graph,
+        );
+        assert!(
+            !res_off
+                .candidates
+                .iter()
+                .any(|c| c.memory_id.as_str() == "caroline_fact_mem"),
+            "baseline (channel off) must not reach anchor-only memories"
+        );
+
+        // Channel on — the anchor's memories MUST appear at edge
+        // distance 1 (the §4.3 step 3 distance for entity-discovered
+        // memories not at distance 0).
+        let plan_on = AssociativePlan::new(seeds);
+        let res_on = plan_on.execute(
+            AssociativePlanInputs {
+                query: &query(),
+                budget: budget(),
+                entity_channel_enabled: true,
+                entity_resolver: Some(&resolver),
+            },
+            &graph,
+        );
+        let caroline = res_on
+            .candidates
+            .iter()
+            .find(|c| c.memory_id.as_str() == "caroline_fact_mem")
+            .expect("channel-on plan must surface anchor-discovered memories");
+        // §4.3 step 3 — entities discovered via the channel feed into
+        // `memories_mentioning_entity` at distance 1 (not 0; seeds
+        // own distance 0).
+        assert_eq!(caroline.edge_distance, 1);
     }
 }
