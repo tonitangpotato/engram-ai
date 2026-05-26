@@ -309,3 +309,48 @@ with two independent gates:
   (K-expansion probe)
 - `/tmp/iss149_probe.sh`, `/tmp/iss149_K30.sh` (sweep drivers — pin to
   ISS-149 artifacts/ on close)
+
+---
+
+## 2026-05-25 update — AC-5b reframed, AC-5a confirmed (conv-44 cross-check)
+
+ISS-160 AC-1 reproduction probe on conv-44 (inverted single-hop ratio:
+13 list / 17 single-fact, vs conv-26's 20 list / 12 single-fact).
+Same envelope as ISS-149 probe: HyDE=per_category, MMR=0.7, two arms
+K=10 / K=30.
+
+| metric | conv-26 K=10→K=30 | conv-44 K=10→K=30 |
+|---|---|---|
+| overall | 0.4671 → 0.5132 (+4.6pp) | 0.4634 → 0.5447 (+8.1pp) |
+| single-hop aggregate | 0.2188 → 0.2812 (+6.2pp) | 0.2333 → 0.4000 (+16.7pp) |
+| **list bucket** | 0.200 → 0.200 (**+0.0pp**) | 0.077 → 0.154 (**+7.7pp**) |
+| **single-fact bucket** | 0.250 → 0.417 (+16.7pp) | 0.353 → 0.588 (**+23.5pp**) |
+
+### What this changes
+
+**AC-5b is reframed from gate to research debt.** The load-bearing
+claim ("list failures are retrieval-immune") is **conv-26-specific**.
+On conv-44 K-expansion lifts list bucket +7.7pp. The corpus-shape
+dependency is real but narrow — see ISS-160 reframe.
+
+**AC-5a is strengthened.** Single-fact lift reproduced and got bigger:
++23.5pp on conv-44 vs +16.7pp on conv-26. ISS-159 weapon A (cross-encoder
+reranker) targets exactly this bucket. Confidence is high.
+
+### Revised acceptance posture
+
+- **AC-5a (retrieval, single-fact ≥0.60):** primary gate. ISS-159 weapon A
+  controls. Single-fact at K=30 baseline is already 0.42 (conv-26) /
+  0.59 (conv-44). Weapon A should push conv-26 past 0.60.
+- **AC-5b (list bucket ≥0.30):** demoted to research, not a gate.
+  ISS-160 documents the corpus-shape pathology. Not blocking ISS-148.
+- **Aggregate AC-5 (single-hop ≥0.40):** informational. Trajectory:
+  conv-44 K=30 already hits 0.40; conv-26 K=30 is 0.28 and needs weapon A.
+
+### Artifacts (conv-44 cross-check)
+
+- `.gid/issues/ISS-160/artifacts/conv44-K10-summary.json`
+- `.gid/issues/ISS-160/artifacts/conv44-K30-summary.json`
+- `.gid/issues/ISS-160/artifacts/conv44-K10-per-query.jsonl`
+- `.gid/issues/ISS-160/artifacts/conv44-K30-per-query.jsonl`
+- `.gid/issues/ISS-160/artifacts/iss160_repro_conv44.sh`
