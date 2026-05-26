@@ -67,6 +67,13 @@ hnsw = "0.11"
 space = "0.17"
 rand_core = "0.6"
 
+# Cross-encoder reranker (ISS-159 weapon A) — optional deps,
+# gated behind `cross_encoder` feature. Default build does not pull
+# these. See `retrieval/fusion/cross_encoder.rs` for the impl.
+ort = { version = "2.0.0-rc.12", features = ["ndarray"], optional = true }
+tokenizers = { version = "0.23", optional = true }
+ndarray = { version = "0.17", optional = true }
+
 [dev-dependencies]
 tempfile = "3.13"
 proptest = "1.5"
@@ -74,6 +81,11 @@ env_logger = "0.11"
 
 [features]
 default = []
+
+# ISS-159 — enables CrossEncoderReranker (ort + MiniLM-L-6-v2). Off by
+# default because it pulls ~50MB of native ORT runtime. Bench harness
+# enables this explicitly; production wiring is opt-in via config.
+cross_encoder = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
 
 [[example]]
 name = "basic_usage"
