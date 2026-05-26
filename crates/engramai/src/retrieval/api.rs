@@ -96,7 +96,7 @@ pub enum TimeWindow {
 ///
 /// Construct with [`GraphQuery::new`] and the builder-style `with_*` setters
 /// for ergonomics, or use `GraphQuery { text: "...".into(), ..Default::default() }`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GraphQuery {
     /// Free-text user query. Required.
     pub text: String,
@@ -241,6 +241,57 @@ pub struct GraphQuery {
     /// running pool-sizing experiments. Production callers should
     /// leave this `None`.
     pub bm25_pool_override: Option<usize>,
+
+    /// Optional cross-encoder (or any [`Reranker`]) override that runs
+    /// at Stage C.5 **before** MMR when both are wired (ISS-159 D5:
+    /// CE first reorders by quality, then MMR diversifies the
+    /// quality-sorted head — running MMR on raw fusion picks "diverse
+    /// mediocre" instead of "diverse top").
+    ///
+    /// Stored as `Arc<dyn Reranker + Send + Sync>` so the API surface
+    /// stays feature-agnostic — the heavy `CrossEncoderReranker` lives
+    /// behind the `cross_encoder` feature flag, but `GraphQuery` itself
+    /// compiles either way. Bench harness owns the construction.
+    ///
+    /// `None` (default) means skip the CE stage — preserves the §5.4
+    /// reproducibility envelope and the ISS-100 cross-validate scores.
+    /// `Some(_)` runs the reranker on the fused candidate pool head
+    /// (size capped by the reranker's own `k_in` config).
+    ///
+    /// Intended consumers: bench drivers running weapon-A experiments.
+    /// Production callers should leave this `None` until weapon A
+    /// proves out on conv-26 + conv-44 (ISS-159 D7).
+    pub cross_encoder_override:
+        Option<std::sync::Arc<dyn crate::retrieval::fusion::Reranker + Send + Sync>>,
+}
+
+impl std::fmt::Debug for GraphQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphQuery")
+            .field("text", &self.text)
+            .field("intent", &self.intent)
+            .field("limit", &self.limit)
+            .field("time_window", &self.time_window)
+            .field("as_of", &self.as_of)
+            .field("include_superseded", &self.include_superseded)
+            .field("entity_filter", &self.entity_filter)
+            .field("min_confidence", &self.min_confidence)
+            .field("tier", &self.tier)
+            .field("query_time", &self.query_time)
+            .field("explain", &self.explain)
+            .field("self_state_override", &self.self_state_override)
+            .field("namespace", &self.namespace)
+            .field("mmr_lambda_override", &self.mmr_lambda_override)
+            .field("k_seed_override", &self.k_seed_override)
+            .field("bm25_pool_override", &self.bm25_pool_override)
+            // `cross_encoder_override` skipped — `dyn Reranker` is not
+            // `Debug`. Surface presence/absence instead.
+            .field(
+                "cross_encoder_override",
+                &self.cross_encoder_override.as_ref().map(|_| "<dyn Reranker>"),
+            )
+            .finish()
+    }
 }
 
 impl GraphQuery {
@@ -263,6 +314,7 @@ impl GraphQuery {
             mmr_lambda_override: None,
             k_seed_override: None,
             bm25_pool_override: None,
+            cross_encoder_override: None,
         }
     }
 
@@ -345,6 +397,26 @@ impl GraphQuery {
     /// `None` to fall back to `(query.limit * 4).max(40)`.
     pub fn with_bm25_pool_override(mut self, pool: Option<usize>) -> Self {
         self.bm25_pool_override = pool;
+        self
+    }
+
+    /// Builder: wire a [`Reranker`] (typically a
+    /// `CrossEncoderReranker`) into Stage C.5.
+    ///
+    /// See [`GraphQuery::cross_encoder_override`] for semantics. The
+    /// reranker runs **before** MMR when both are set (ISS-159 D5).
+    /// Pass `None` (default) to skip the CE stage entirely.
+    ///
+    /// Accepting `Arc<dyn Reranker + Send + Sync>` keeps the API
+    /// surface decoupled from the feature-gated
+    /// `CrossEncoderReranker` type — bench harness constructs the
+    /// concrete reranker behind `#[cfg(feature = "cross_encoder")]`
+    /// and hands the `Arc` over.
+    pub fn with_cross_encoder(
+        mut self,
+        ce: Option<std::sync::Arc<dyn crate::retrieval::fusion::Reranker + Send + Sync>>,
+    ) -> Self {
+        self.cross_encoder_override = ce;
         self
     }
 }
@@ -570,6 +642,7 @@ impl Memory {
         // (None → use `FusionConfig::locked().mmr_lambda`).
         let query_text = query.text.clone();
         let mmr_lambda_override = query.mmr_lambda_override;
+        let cross_encoder_override = query.cross_encoder_override.clone();
         let dispatched = crate::retrieval::dispatch::dispatch(query, &classifier);
         let plan_kind = dispatched.plan_kind;
         let intent = dispatched.intent;
@@ -676,6 +749,28 @@ impl Memory {
             crate::retrieval::dispatch::PlanKind::Hybrid => candidates,
             _ => crate::retrieval::fusion::fuse_and_rank(intent, &cfg, candidates),
         };
+
+        // Stage C.5a (ISS-159 weapon A): optional cross-encoder
+        // reranker, run **before** MMR (D5). The cross-encoder
+        // replaces fusion ordering on the head of the pool with a
+        // true cross-attention relevance signal. MMR then diversifies
+        // that quality-sorted head — running MMR on raw fusion picks
+        // "diverse mediocre" instead of "diverse top".
+        //
+        // `None` (default) skips this stage entirely, preserving the
+        // §5.4 reproducibility envelope. `Some(_)` runs the reranker;
+        // the reranker's own `k_in` config caps how many head
+        // candidates get scored (tail is passed through with fusion
+        // scores untouched).
+        //
+        // Score-preservation note: the cross-encoder REPLACES head
+        // scores with sigmoid(logit) — this is correct per the §5.3
+        // contract (still in `[0, 1]`, never NaN) and intentional
+        // (the whole point of weapon A is that cross-attention beats
+        // fusion on the head). Tail scores stay on the fusion scale.
+        if let Some(ce) = cross_encoder_override.as_ref() {
+            ranked = ce.rerank(&query_text, &ranked)?;
+        }
 
         // Stage C.5 (ISS-139): optional post-fusion MMR reranker.
         //
@@ -1310,5 +1405,90 @@ mod tests {
             resp.outcome
         );
         assert!(resp.results.is_empty(), "no sub-plans → no candidates");
+    }
+
+    // -----------------------------------------------------------------
+    // ISS-159: cross-encoder builder + override surface
+    // -----------------------------------------------------------------
+
+    /// A trivial reranker that flips the input. Used to prove the
+    /// override is actually consulted (full end-to-end is exercised by
+    /// the bench harness against a real Memory).
+    #[derive(Default)]
+    struct ReverseReranker;
+
+    impl crate::retrieval::fusion::Reranker for ReverseReranker {
+        fn rerank(
+            &self,
+            _q: &str,
+            cs: &[ScoredResult],
+        ) -> Result<Vec<ScoredResult>, RetrievalError> {
+            let mut v = cs.to_vec();
+            v.reverse();
+            Ok(v)
+        }
+    }
+
+    #[test]
+    fn graph_query_cross_encoder_default_is_none() {
+        let q = GraphQuery::new("hello");
+        assert!(q.cross_encoder_override.is_none());
+    }
+
+    #[test]
+    fn graph_query_with_cross_encoder_sets_field() {
+        let ce: std::sync::Arc<dyn crate::retrieval::fusion::Reranker + Send + Sync> =
+            std::sync::Arc::new(ReverseReranker);
+        let q = GraphQuery::new("hello").with_cross_encoder(Some(ce));
+        assert!(q.cross_encoder_override.is_some());
+    }
+
+    #[test]
+    fn graph_query_with_cross_encoder_none_clears_field() {
+        let ce: std::sync::Arc<dyn crate::retrieval::fusion::Reranker + Send + Sync> =
+            std::sync::Arc::new(ReverseReranker);
+        let q = GraphQuery::new("hello")
+            .with_cross_encoder(Some(ce))
+            .with_cross_encoder(None);
+        assert!(q.cross_encoder_override.is_none());
+    }
+
+    #[test]
+    fn graph_query_debug_redacts_cross_encoder() {
+        // The `dyn Reranker` field can't derive Debug. Manual Debug
+        // impl must surface presence ("<dyn Reranker>") without
+        // attempting to format the trait object itself.
+        let ce: std::sync::Arc<dyn crate::retrieval::fusion::Reranker + Send + Sync> =
+            std::sync::Arc::new(ReverseReranker);
+        let q = GraphQuery::new("hello").with_cross_encoder(Some(ce));
+        let dbg = format!("{:?}", q);
+        assert!(
+            dbg.contains("<dyn Reranker>"),
+            "Debug should mark presence of dyn Reranker: {dbg}"
+        );
+
+        let q_none = GraphQuery::new("hello");
+        let dbg_none = format!("{:?}", q_none);
+        assert!(
+            dbg_none.contains("cross_encoder_override: None"),
+            "Debug should mark absence: {dbg_none}"
+        );
+    }
+
+    #[test]
+    fn graph_query_clone_shares_cross_encoder_arc() {
+        // Arc semantics: clone bumps the refcount, doesn't duplicate
+        // the underlying reranker (which could be very expensive —
+        // CrossEncoderReranker holds 87MB ONNX session).
+        let ce: std::sync::Arc<dyn crate::retrieval::fusion::Reranker + Send + Sync> =
+            std::sync::Arc::new(ReverseReranker);
+        let strong_before = std::sync::Arc::strong_count(&ce);
+        let q1 = GraphQuery::new("hello").with_cross_encoder(Some(ce.clone()));
+        let _q2 = q1.clone();
+        // q1 + q2 + original ce = 3 strong references.
+        assert!(
+            std::sync::Arc::strong_count(&ce) >= strong_before + 2,
+            "GraphQuery::clone should share the Arc, not deep-copy"
+        );
     }
 }
