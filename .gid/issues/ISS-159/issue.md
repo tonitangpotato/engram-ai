@@ -1,11 +1,11 @@
 ---
 title: Weapon A — cross-encoder reranker at Stage C.5 (ISS-157 next step)
-status: open
+status: falsified
 priority: P1
 severity: feature
 category: retrieval
 created: 2026-05-25
-updated: 2026-05-25
+updated: 2026-05-26
 relates:
 - ISS-148
 - ISS-157
@@ -272,3 +272,89 @@ escalate to bge / ISS-149 if it doesn't.
   encoder NOT expected to help that bucket — out of scope for AC-5a.
 - ISS-152 — k_seed/bm25_pool sweep proved more candidates without a
   second-stage reranker don't help. Weapon A is the missing reranker.
+
+---
+
+## 2026-05-26: Weapon A FALSIFIED on AC-5a
+
+**Verdict:** Cross-encoder reranker has **no effect** on conv-26
+single-hop bucket. AC-5a (single-hop ≥ 0.60) is unreachable via this
+weapon and the entire weapon-A approach is wrong-shaped for the
+problem.
+
+### Empirical evidence (Step 5 v2 sweep, STAMP=20260526T040634Z)
+
+Within-sweep within-extraction comparison on conv-26, K=10,
+HyDE=per_category, temp=0:
+
+| Arm | overall | single-hop | multi-hop | open | temporal |
+|-----|---------|------------|-----------|------|----------|
+| A control (no CE, MMR=0.7) | 0.349 | **0.1875** | 0.324 | 0.154 | 0.471 |
+| B CE-only K=50, MMR off    | 0.362 | **0.1875** | 0.432 | 0.154 | 0.443 |
+| C CE+MMR K=50              | —     | —          | —     | —    | —    |
+
+Arm C aborted with OAuth 401 at ~67min in (keychain token expired
+mid-sweep). Arm C cannot rescue AC-5a — Arm B alone proves CE has no
+single-hop signal, and composition with MMR cannot manufacture signal
+that doesn't exist in the underlying reranker.
+
+### Query-level diagnostic
+
+12 queries flipped score A → B. Breakdown:
+
+- 7 went up (CE helped), 5 went down (CE hurt)
+- single-hop: 4 flips (2 up + 2 down → **net 0**, both downs were
+  judge wobble on semantically-correct answers)
+- multi-hop: +4 (CE's only meaningful contribution: +10.8pp)
+- temporal: −2 (CE slight hurt)
+- open: 0
+
+CE loaded correctly (109ms cold, k_in=50). Not a wiring bug; CE
+genuinely has no signal on conv-26 single-fact queries.
+
+### Why "wider pool" cannot rescue this
+
+ISS-152 evidence + this run = the pool is not the bottleneck.
+single-hop net delta is **exactly 0** — widening k_in to 100 or 200
+cannot move a delta of 0 into a delta of +38pp. Step 6 (explicit
+`fusion_pool_size_override` knob) is therefore NOT pursued.
+
+### Why D2 fallback (`bge-reranker-base`) cannot rescue this
+
+Swapping to a larger cross-encoder model addresses **score quality
+within the candidate set**, not **whether the right memory is in
+the candidate set**. The flip distribution shows CE's MiniLM was
+already making correct relative judgments where it could (multi-hop
++10.8pp). The failure mode is upstream: single-hop's correct memory
+is not reaching Stage C.5 in the first place.
+
+### Probable upstream root causes (ranked by suspicion)
+
+1. **ISS-149 classifier death** — Factual plan never selects on
+   conv-26 (NullEntityLookup). Factual is the single-fact plan; CE
+   reranks whatever plan ran, but the wrong plan ran. CE cannot
+   manufacture the keyword/entity-anchored retrieval Factual would
+   have done.
+2. **Extraction-time corpus shape (ISS-155 class)** — the right
+   atomic fact may never have been extracted as a discrete memory
+   from the conversation. CE can rerank only what was indexed.
+3. **ISS-147 BM25 wiring depth** — single-fact queries benefit most
+   from lexical anchoring. If BM25 channel weight in fusion is too
+   low, the lexical candidate never makes it into the K_seed pool
+   to be reranked.
+
+### Decision: ABANDON weapon A, escalate to ISS-149
+
+ISS-159 status flips to **falsified / closed**. Next move per the
+ISS-159 risk register (R3 "CE inert"): direct attack on ISS-149
+classifier — fix NullEntityLookup so Factual plan is actually
+selectable on dense chat corpora, then re-evaluate the AC-5a bucket
+without any reranker.
+
+### Artifacts pinned
+
+- `artifacts/step5-v2-AUTORUN-RESULT.md` — full comparative table
+- `artifacts/step5-v2-A-summary.json` / `step5-v2-B-summary.json`
+- `artifacts/step5-v2-A-per_query.jsonl` / `step5-v2-B-per_query.jsonl`
+- `artifacts/step5-v2-master.log`
+- `artifacts/step5-sweep-v2.sh` / `step5-autorun-v2.sh`

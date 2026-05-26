@@ -1,0 +1,20 @@
+=== ARM A → /Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS159v2-A-conv26-20260526T040634Z ===
+    log: /tmp/iss159-step5-v2/iss159v2-A.log
+    moved 2026-05-26T04-35-07Z_locomo → ISS159v2-A-conv26-20260526T040634Z
+    overall: 0.34868421052631576
+    multi-hop: 0.32432432432432434
+    open-domain: 0.15384615384615385
+    single-hop: 0.1875
+    temporal: 0.4714285714285714
+    bench exit code: 2 (non-zero is OK if just a ship-gate fail)
+=== ARM B → /Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS159v2-B-conv26-20260526T040634Z ===
+    log: /tmp/iss159-step5-v2/iss159v2-B.log
+    moved 2026-05-26T05-09-41Z_locomo → ISS159v2-B-conv26-20260526T040634Z
+    overall: 0.3618421052631579
+    multi-hop: 0.43243243243243246
+    open-domain: 0.15384615384615385
+    single-hop: 0.1875
+    temporal: 0.44285714285714284
+    bench exit code: 2 (non-zero is OK if just a ship-gate fail)
+=== ARM C → /Users/potato/clawd/projects/engram-bench/benchmarks/runs/ISS159v2-C-conv26-20260526T040634Z ===
+    log: /tmp/iss159-step5-v2/iss159v2-C.log
