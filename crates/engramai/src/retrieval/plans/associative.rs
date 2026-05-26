@@ -422,7 +422,22 @@ where
                 // the trait does not surface failures (factual.rs:114).
                 // Either way the loop below is a no-op when empty,
                 // preserving byte-identity with the pre-ISS-164 path.
-                let anchors = resolver.resolve(&inputs.query.text);
+                let mut anchors = resolver.resolve(&inputs.query.text);
+                // ISS-164 self-review (2026-05-26): mirror Factual's
+                // `min_confidence` filter (factual.rs:408). Without
+                // this, fuzzy `match_strength = 0.5` anchors would
+                // injection-flood the channel — every weak anchor
+                // burns one slot of `PER_ENTITY_MEMORY_CAP=16` in
+                // Step 3b' regardless of relevance. The cast is
+                // `f32 ← f64` to match `ResolvedAnchor.match_strength`
+                // and is identical to how Factual reads the same field
+                // (orchestrator.rs:771 / :1035 / :1410). `None` ⇒ no
+                // filter, identical pre-fix behavior; a fast-path
+                // skip on `None` avoids touching the Vec.
+                if let Some(floor) = inputs.query.min_confidence {
+                    let floor = floor as f32;
+                    anchors.retain(|a| a.match_strength >= floor);
+                }
                 for anchor in anchors {
                     let score = anchor.match_strength as f64;
                     seed_entities
@@ -1363,5 +1378,78 @@ mod tests {
         // `memories_mentioning_entity` at distance 1 (not 0; seeds
         // own distance 0).
         assert_eq!(caroline.edge_distance, 1);
+    }
+
+    /// ISS-164 self-review (2026-05-26) — `min_confidence` floor must
+    /// drop weak anchors before they reach Step 2b injection.
+    ///
+    /// Without this filter, fuzzy `match_strength = 0.5` anchors flood
+    /// the channel — each weak anchor burns one `PER_ENTITY_MEMORY_CAP`
+    /// slot in Step 3b' regardless of relevance. Mirrors Factual's
+    /// `factual.rs:408` filter, sourced from `GraphQuery.min_confidence`
+    /// (same field; `f64 → f32` cast matches `orchestrator.rs:771`).
+    ///
+    /// Setup: one strong anchor (1.0) + one weak (0.4). Floor = 0.5.
+    /// Expected: only the strong anchor's memory surfaces; the weak
+    /// anchor's memory must NOT appear, proving the filter ran before
+    /// `memories_mentioning_entity` was called on the weak anchor.
+    #[test]
+    fn iss164_min_confidence_drops_weak_anchors() {
+        let e_strong = Uuid::new_v4();
+        let e_weak = Uuid::new_v4();
+        let mut graph = FakeGraph::default();
+        graph.link_mem("seed1", &[Uuid::new_v4()]);
+        graph.entity_mems(e_strong, &["strong_mem"]);
+        graph.entity_mems(e_weak, &["weak_mem"]);
+
+        let seeds = StubSeeds {
+            hits: vec![SeedHit {
+                memory_id: "seed1".into(),
+                score: 0.8,
+            }],
+            status: SeedRecallStatus::Ok,
+        };
+        let resolver = StubResolver {
+            anchors: vec![
+                crate::retrieval::plans::factual::ResolvedAnchor {
+                    entity_id: e_strong,
+                    canonical_name: "Strong".into(),
+                    match_strength: 1.0,
+                },
+                crate::retrieval::plans::factual::ResolvedAnchor {
+                    entity_id: e_weak,
+                    canonical_name: "Weak".into(),
+                    match_strength: 0.4,
+                },
+            ],
+        };
+
+        let mut q = query();
+        q.min_confidence = Some(0.5);
+
+        let plan = AssociativePlan::new(seeds);
+        let res = plan.execute(
+            AssociativePlanInputs {
+                query: &q,
+                budget: budget(),
+                entity_channel_enabled: true,
+                entity_resolver: Some(&resolver),
+            },
+            &graph,
+        );
+
+        assert!(
+            res.candidates
+                .iter()
+                .any(|c| c.memory_id.as_str() == "strong_mem"),
+            "strong anchor (match_strength=1.0 ≥ floor 0.5) must survive"
+        );
+        assert!(
+            !res.candidates
+                .iter()
+                .any(|c| c.memory_id.as_str() == "weak_mem"),
+            "weak anchor (match_strength=0.4 < floor 0.5) must be dropped \
+             before memories_mentioning_entity is called"
+        );
     }
 }
