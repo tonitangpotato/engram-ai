@@ -20,7 +20,7 @@ If the AGPL-3.0 terms don't work for your use case — for example:
 
 A commercial license is available. Contact us:
 
-📧 **tonitang273@gmail.com**
+- GitHub: [@tonitangpotato](https://github.com/tonitangpotato)
 
 Commercial licenses include:
 - Permission to use engram in closed-source products

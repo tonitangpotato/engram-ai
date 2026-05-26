@@ -504,14 +504,14 @@ mod tests {
     fn test_extract_at_mentions() {
         let config = EntityConfig::default();
         let extractor = EntityExtractor::new(&config);
-        let entities = extractor.extract("Thanks @potatosoupup for the help");
+        let entities = extractor.extract("Thanks @example_user for the help");
 
         let person = entities
             .iter()
             .find(|e| e.entity_type == EntityType::Person)
             .expect("should extract a person");
-        assert_eq!(person.name, "@potatosoupup");
-        assert_eq!(person.normalized, "potatosoupup");
+        assert_eq!(person.name, "@example_user");
+        assert_eq!(person.normalized, "example_user");
     }
 
     // ISS-144 L1 fix: dialogue-style speaker prefixes.

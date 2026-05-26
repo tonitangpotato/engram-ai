@@ -464,7 +464,7 @@ ResolutionPipeline (async, post-write) extracts triples → creates
 ### 4.2 Entity resolution (currently `resolution/pipeline.rs`)
 
 **Current**: writes `graph_entities` rows with no resolution between
-surface forms. "potato" and "@horseonedragon" are two unrelated rows.
+surface forms. "alice" and "@alice_w" are two unrelated rows.
 
 **Unified** (per §7.2): every entity surface form is a `nodes` row of
 `node_kind='entity'` carrying its surface text in `content` (so it
@@ -2146,7 +2146,7 @@ just break atomicity.
 
 ### 7.2 ✅ Q2 — Entity surface forms are nodes
 
-**Decision**: every surface form ("potato", "@horseonedragon", "potatosoupup",
+**Decision**: every surface form ("alice", "@alice_w", "alice_wonder",
 "oneB") is a `node_kind='entity'` row. Surface forms that refer to the same
 real-world referent are linked by `edge_kind='structural', predicate='same_as'`
 to a canonical entity node (or, equivalently, form a same_as clique with no
@@ -2154,8 +2154,8 @@ designated canonical — see §7.2.1).
 
 **Reasoning** (first principle):
 - The real problem is **entity resolution**, not "where do aliases live".
-  Currently engram stores 2312 entities with no resolution: "potato" and
-  "@horseonedragon" are two unrelated rows, and a query that surfaces one
+  Currently engram stores 2312 entities with no resolution: "alice" and
+  "@alice_w" are two unrelated rows, and a query that surfaces one
   cannot reach memories about the other.
 - In cortex, lexical surface forms (Wernicke's area) and concept representations
   (semantic memory) are **separate populations of cells with edges between them**.

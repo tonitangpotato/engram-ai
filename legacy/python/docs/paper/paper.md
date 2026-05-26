@@ -1,7 +1,7 @@
 # Beyond Vector Search: Cognitive Memory Dynamics for Language Model Agents
 
 **Status**: Draft v2 (2026-02-03)
-**Package**: `engramai` (PyPI) | `@tonipotatonpm/engramai` (npm)
+**Package**: `engramai` (PyPI) | `neuromemory-ai` (npm)
 **Repository**: https://github.com/potatouniverse/engram
 
 ---
@@ -423,7 +423,7 @@ The key insight is the division of labor: **LLMs provide semantic understanding;
 
 Engram is available at:
 - PyPI: `pip install engramai`
-- npm: `npm install @tonipotatonpm/engramai`
+- npm: `npm install neuromemory-ai`
 - GitHub: https://github.com/potatouniverse/engram
 
 ---

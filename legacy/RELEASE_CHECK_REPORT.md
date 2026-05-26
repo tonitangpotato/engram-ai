@@ -11,10 +11,10 @@
 
 ## 📦 npm Status
 - ✅ **Published**: Version 0.1.1
-- ✅ **Published**: 20 hours ago by tonipotatonpm
+- ✅ **Published**: 20 hours ago (maintainer redacted)
 - ✅ **Installation**: `npm install neuromemory-ai` ✓
 - ✅ **Dependencies**: better-sqlite3 ^11.8.1
-- ✅ **Maintainer**: tonipotatonpm <tonitang273@gmail.com>
+- ✅ **Maintainer**: (redacted)
 
 ## 🔄 Version Consistency
 - ✅ **pyproject.toml**: 0.1.1

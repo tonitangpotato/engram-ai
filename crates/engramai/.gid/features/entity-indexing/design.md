@@ -67,7 +67,7 @@ struct EntityPattern {
 |---|---|---|
 | `project` | Known project names (configurable list) | rustclaw, engramai, gid-core, gid-rs, agentctl |
 | `project` | Cargo crate names: `\b[a-z][a-z0-9_-]*-rs\b`, `\b[a-z][a-z0-9_]*ai\b` | infomap-rs, engramai |
-| `person` | `@\w+`, known names list | @potatosoupup, potato |
+| `person` | `@\w+`, known names list | @example_user, alice |
 | `technology` | Known tech terms (configurable) | Rust, SQLite, Telegram, Claude, Anthropic |
 | `concept` | `ISS-\d+`, `GOAL-\d+`, `GUARD-\d+` | ISS-009, GOAL-1 |
 | `file` | Path patterns: `src/\S+\.rs`, `\S+\.(rs\|py\|ts\|md)` | src/memory.rs |
