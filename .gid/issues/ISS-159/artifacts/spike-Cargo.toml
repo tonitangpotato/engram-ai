@@ -1,0 +1,11 @@
+[package]
+name = "ce_spike"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+ndarray = "0.17"
+tokenizers = "0.23"
+anyhow = "1"
+dirs = "5"

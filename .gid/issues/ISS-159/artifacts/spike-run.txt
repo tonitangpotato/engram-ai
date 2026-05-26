@@ -1,0 +1,19 @@
+# Spike output (2026-05-25, M1, ort 2.0.0-rc.12, MiniLM-L-6 fp32)
+loading tokenizer from ~/.cache/engram/models/ms-marco-MiniLM-L-6-v2/tokenizer.json
+loading ONNX session from ~/.cache/engram/models/ms-marco-MiniLM-L-6-v2/model.onnx
+  loaded in 70.766125ms
+
+inputs:
+  - input_ids
+  - attention_mask
+  - token_type_ids
+outputs:
+  - logits
+
+query: "What is the capital of France?"
+  [ highly relevant] score= +7.6135  (2.281292ms)  doc="Paris is the capital and most populous city of France."
+  [      irrelevant] score=-11.1293  (1.638041ms)  doc="The mitochondrion is the powerhouse of the cell."
+  [         partial] score= -0.5790  (1.589167ms)  doc="France is a country in Western Europe with many beautiful cities."
+
+latency probe: 50 pairs at K_fusion=50
+  total=76.168958ms  per-pair=1.523379ms

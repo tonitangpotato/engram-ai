@@ -47,6 +47,25 @@ signal weapon A targets.
 After ISS-160 cross-check + read of `retrieval/fusion/reranker.rs` +
 `retrieval/api.rs:670-710` + `retrieval/budget.rs` (k_seed default = 10).
 
+### Spike verified 2026-05-25
+
+Freestanding spike (`/tmp/ce_spike/`) built and run end-to-end:
+ort 2.0.0-rc.12 + tokenizers 0.23 + ndarray 0.17 + MiniLM-L-6-v2 ONNX
+(87MB from Xenova HF mirror) on M1.
+
+```
+[ highly relevant] score= +7.6135  (1.5ms)
+[      irrelevant] score=-11.1293  (1.6ms)
+[         partial] score= -0.5790  (1.6ms)
+50-pair batch: 76ms total = 1.5ms per pair
+model load: 71ms
+```
+
+Ranking sane (relevant >> partial >> irrelevant). Latency 20× better
+than the 30ms/pair design assumption (probably because Xenova's ONNX
+export is already fused for inference). No system `onnxruntime` install
+needed — ort downloads prebuilts at `cargo build` time on first run.
+
 ### D1. Runtime: **`ort`** (ONNX Runtime via `ort` crate)
 
 - HF cross-encoder models ship as ONNX directly. No format conversion
@@ -220,10 +239,13 @@ escalate to bge / ISS-149 if it doesn't.
 
 ## Risk register
 
-- **R1 — Inference latency**: 50 candidates × 30ms = 1.5s per query.
-  conv-26 has 152 queries → +4 min wall added per bench run.
-  Acceptable for offline bench. Production p99 may need batching —
-  defer until production wiring (AC #7).
+- **R1 — Inference latency** ✅ **MUCH BETTER THAN PLANNED.** Spike
+  measured (M1, ort 2.0.0-rc.12, MiniLM-L-6 fp32, single-thread): **1.5ms
+  per (query, doc) pair**, not 30ms. At K_fusion=50: 76ms/query = +11.4s
+  overhead per 152-query bench (not 3.8min). At K_fusion=100: ~23s. This
+  is an **order-of-magnitude better** than the design assumption, leaving
+  headroom to expand K_fusion if AC-5a is borderline. Production p99 fine
+  even single-pair.
 - **R2 — Model size in repo**: Don't commit the model file. Lazy
   download on first use into `~/.cache/engram/models/` (similar to
   HF cache). Document deploy-time setup step.
