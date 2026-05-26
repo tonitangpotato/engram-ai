@@ -1,6 +1,6 @@
 <div align="center">
 
-# Engram — 基于认知科学的 AI 智能体记忆系统
+# Engram — 为 AI 智能体打造的认知基底
 
 [![crates.io](https://img.shields.io/crates/v/engramai.svg)](https://crates.io/crates/engramai)
 [![docs.rs](https://docs.rs/engramai/badge.svg)](https://docs.rs/engramai)
@@ -10,21 +10,29 @@
 
 <br>
 
-<img src="docs/brain-overlay.png" alt="Engram 大脑启发式记忆架构" width="720">
+<img src="docs/brain-overlay.png" alt="Engram 认知基底架构" width="720">
 
 <br>
 
-*18,000+ 行 Rust · 309 个测试 · 零 unsafe*
+*基于神经科学的认知基底 — 记忆、情绪、内感受、洞察*
+
+*纯 Rust · 单 SQLite 文件 · 无外部服务*
 
 </div>
 
 ---
 
-Engram 是一个**为 AI 智能体构建的记忆系统**，基于认知科学模型而非向量相似度。它实现了让生物记忆运作的核心机制：激活衰减（ACT-R）、遗忘曲线（Ebbinghaus）、关联强化（Hebbian/STDP）、睡眠整合，以及从记忆聚类中自动提炼洞察。
+Engram 是一个为 AI 智能体打造的**认知基底（cognitive substrate）** — 让 LLM 拥有「记得住、感受得到、能成长」的底层机器。不是向量数据库的包装。不是 RAG 库。而是一个建模生物认知运作方式的统一存储与计算层。
 
-最终效果：一个真正能**记住**的智能体 — 高频使用的知识保持可及，不用的记忆自然淡忘，相关概念互相强化，跨经验的模式自动浮现为洞察。
+**记忆是基础。** 基于已发表的认知科学模型（ACT-R 激活、Ebbinghaus 遗忘曲线、Hebbian + STDP 关联学习、双轨整合）—— 而不是向量相似度。最终效果：高频使用的知识保持可及，不用的记忆自然淡忘，相关概念互相强化，跨经验的模式自动浮现为洞察。
 
-所有这些，都在一个 SQLite 文件里，纯 Rust，零外部依赖。
+**记忆只是基底上的一个子系统。** 在同一个基底上，Engram 还承载了：
+
+- 🧠 **Memory（记忆）** — ACT-R 激活、Ebbinghaus 衰减、Hebbian + STDP 关联学习、双轨整合
+- 💚 **Emotional bus（情绪总线）** — 按领域的情感效价追踪、驱动对齐评分、行为反馈、跨智能体订阅
+- 🧬 **Interoceptive hub（内感受中枢）** — 异稳态负荷、能量预算、身体状态调节信号
+- ✨ **Synthesis engine（合成引擎）** — 从记忆聚类中自动提炼洞察，全程可追溯
+- 🤝 **多智能体协作** — 共享基底 + 命名空间隔离
 
 ---
 
@@ -87,21 +95,6 @@ Engram 不是「受神经科学启发」— 它实现了具体的、已发表的
     └────────────────┘          │ "顿悟"洞察     │
                                 └────────────────┘
 ```
-
----
-
-## 为什么不只用向量数据库？
-
-| | **向量数据库** | **Engram** |
-|--|--------------|-----------|
-| 存储 | 嵌入 + 插入 | 嵌入 + 插入 + 实体抽取 + 类型分类 |
-| 检索 | 余弦相似度 | **三信号融合**：FTS5 + 向量 + ACT-R 激活度 |
-| 高频记忆 | 每次分数一样 | **更强** — ACT-R 按访问模式增强 |
-| 不用的记忆 | 永远不变 | **淡忘** — Ebbinghaus 指数衰减 |
-| 相关记忆 | 互相独立 | **互相强化** — Hebbian + STDP |
-| 随时间 | 数据库无限增长 | **整合** — "睡眠"修剪弱记忆，保留强记忆 |
-| 跨记忆模式 | 自己写代码 | **自动** — 带溯源的合成引擎 |
-| 情绪上下文 | 无 | **按领域情感效价追踪** |
 
 ---
 
@@ -249,20 +242,24 @@ mem.undo_synthesis(insight_id)?;
 
 ## 横向对比
 
-| | **Engram** | **Mem0** | **Zep** | **Letta** |
-|--|-----------|---------|--------|----------|
-| **核心方法** | 认知科学模型 | 向量 + 图 | 向量 + 知识图谱 | LLM OS / 有状态智能体 |
-| **遗忘** | ✅ Ebbinghaus 曲线 | ❌ | ❌ | ❌ |
-| **激活建模** | ✅ ACT-R | ❌ | ❌ | ❌ |
-| **关联学习** | ✅ Hebbian + STDP | ❌ | 部分（图） | ❌ |
-| **整合** | ✅ 双轨 | ❌ | ❌ | ❌ |
-| **洞察合成** | ✅ 聚类 → 门控 → 溯源 | ❌ | ❌ | ❌ |
-| **情绪追踪** | ✅ 按领域 | ❌ | ❌ | ❌ |
-| **内感受** | ✅ 异稳态负荷 | ❌ | ❌ | ❌ |
-| **搜索** | FTS5 + 向量 + ACT-R | 向量 + 图 | 向量 + MMR | 向量 |
-| **需要嵌入？** | 可选 | 必须 | 必须 | 必须 |
-| **基础设施** | 仅 SQLite | Redis/Postgres + API | Postgres + API | Postgres + API |
-| **语言** | Rust | Python | Python | Python |
+大多数「AI 记忆」工具都是同一类：向量数据库的包装 —— 存 embedding、按相似度检索、加点 metadata。Engram 是另一个范畴 —— **多子系统的认知基底**，记忆只是其中一个子系统。
+
+| | **向量记忆类工具**（Mem0, Zep, Letta） | **Engram** |
+|--|---|---|
+| **类别** | 记忆后端 / RAG 层 | 认知基底 |
+| **记忆原语** | 向量 + metadata | 激活 × 衰减 × 关联 |
+| **遗忘** | 手动 TTL / 永不 | Ebbinghaus 曲线（内建） |
+| **激活建模** | ❌ | ACT-R（频率 × 近因） |
+| **关联学习** | 部分（Zep 有图） | Hebbian + STDP |
+| **整合** | ❌ | 双轨（重播 + 衰减） |
+| **洞察合成** | ❌ | 聚类 → 门控 → LLM → 溯源 |
+| **记忆以外** | — | 情绪总线、内感受、多智能体订阅 |
+| **搜索** | 向量（+ 图） | FTS5 + 向量 + ACT-R 融合 |
+| **需要嵌入？** | 必须 | 可选 |
+| **基础设施** | Redis/Postgres + API 服务 | 单 SQLite 文件 |
+| **语言** | Python | Rust |
+
+在「向量检索」这一维度上对比并不公平 —— Engram 不打算做更快的向量数据库。重点是：对一个需要长期存在、不断演化的智能体来说，单纯的向量检索是错的抽象。
 
 ---
 
@@ -302,6 +299,23 @@ mem.undo_synthesis(insight_id)?;
               │(WAL 模式) │
               └──────────┘
 ```
+
+---
+
+## 基底现状（v0.4）
+
+Engram 正在统一到单一的图结构存储基底 —— 所有子系统都通过 `nodes` + `edges` 表读写。这是「认知基底」这个定位从概念变成具体实现的关键。
+
+**当前状态（v0.4）：**
+
+- ✅ **统一基底读路径默认开启。** 所有检索路径（recall、FTS、图遍历、embeddings、synthesis 溯源）都走新的 node/edge 层。
+- ✅ **双写中。** 每次写入同时落到旧表和新基底，在 soak 期间一个 config flag 就能回滚。
+- ⏳ **Phase E（停止旧表写入）** —— 待办。旧表在 production 验证 parity 期间作为 fallback 保留。
+- ⏳ **Phase F（删除旧 schema）** —— 待办。Phase E soak 完成后移除旧表。
+
+**对用户的影响：** 公开 API 没有变化。`Memory::new(...)`、`mem.add(...)`、`mem.recall(...)` 行为完全一致。基底迁移是内部的 —— 你自动获得统一的读路径，遇到回归可以通过 `MemoryConfig { unified_substrate: false, .. }` 临时回退。
+
+设计细节见仓库的 [v0.4 substrate 设计文档](https://github.com/tonitangpotato/engram-ai/blob/main/.gid/features/v04-unified-substrate/design.md)。
 
 ---
 
@@ -469,7 +483,7 @@ AGPL-3.0-or-later。详见 [LICENSE](LICENSE)。
 
 ```bibtex
 @software{engramai,
-  title  = {Engram: Neuroscience-Grounded Memory for AI Agents},
+  title  = {Engram: A Cognitive Substrate for AI Agents},
   author = {Toni Tang},
   year   = {2026},
   url    = {https://github.com/tonitangpotato/engram-ai},

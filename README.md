@@ -1,6 +1,6 @@
 <div align="center">
 
-# Engram — Neuroscience-Grounded Memory for AI Agents
+# Engram — A Cognitive Substrate for AI Agents
 
 [![crates.io](https://img.shields.io/crates/v/engramai.svg)](https://crates.io/crates/engramai)
 [![docs.rs](https://docs.rs/engramai/badge.svg)](https://docs.rs/engramai)
@@ -10,21 +10,29 @@
 
 <br>
 
-<img src="docs/brain-overlay-en.png" alt="Engram Brain-Inspired Memory Architecture" width="720">
+<img src="docs/brain-overlay-en.png" alt="Engram Cognitive Substrate Architecture" width="720">
 
 <br>
 
-*18,000+ lines of Rust · 309 tests · Zero unsafe*
+*Neuroscience-grounded substrate — memory, emotion, interoception, insight*
+
+*Pure Rust · Single SQLite file · No external services*
 
 </div>
 
 ---
 
-Engram is a **memory system for AI agents** built on cognitive science models — not vector similarity. It implements the mechanisms that make biological memory work: activation decay (ACT-R), forgetting curves (Ebbinghaus), associative strengthening (Hebbian/STDP), sleep consolidation, and automatic insight synthesis from memory clusters.
+Engram is a **cognitive substrate** for AI agents — the underlying machinery that turns an LLM into something that *remembers, feels, and learns* over time. Not a vector DB wrapper. Not a RAG library. A unified storage and computation layer modelled on how biological cognition actually works.
 
-The result: an agent that *remembers* — where frequently-used knowledge stays accessible, unused memories naturally fade, related concepts strengthen each other, and patterns across experiences surface as insights.
+**Memory is the foundation.** Built on published cognitive science models (ACT-R activation, Ebbinghaus forgetting curves, Hebbian + STDP associative learning, dual-trace consolidation) — not vector similarity. The result: frequently-used knowledge stays accessible, unused memories naturally fade, related concepts strengthen each other, and patterns surface as insights.
 
-All in a single SQLite file, pure Rust, zero external dependencies.
+**And memory is just one subsystem.** On the same substrate, Engram provides:
+
+- 🧠 **Memory** — ACT-R activation, Ebbinghaus decay, Hebbian + STDP associative learning, dual-trace consolidation
+- 💚 **Emotional bus** — per-domain valence tracking, drive alignment scoring, behavior feedback, cross-agent subscriptions
+- 🧬 **Interoceptive hub** — allostatic load, energy budget, body-state regulation signals
+- ✨ **Synthesis engine** — automatic insight extraction from memory clusters with full provenance
+- 🤝 **Multi-agent coordination** — shared substrate with namespace isolation
 
 ---
 
@@ -87,21 +95,6 @@ Engram isn't "inspired by" neuroscience — it implements specific, published mo
     └────────────────┘          │ "Aha!" insight │
                                 └────────────────┘
 ```
-
----
-
-## Why Not Just a Vector DB?
-
-| | **Vector DB** | **Engram** |
-|--|--------------|-----------|
-| Store | Embed + insert | Embed + insert + extract entities + type-classify |
-| Retrieve | Cosine similarity | **3-signal fusion**: FTS5 + vector + ACT-R activation |
-| Frequently used memories | Same score every time | **Stronger** — ACT-R boosts by access pattern |
-| Unused memories | Same score forever | **Fade** — Ebbinghaus exponential decay |
-| Related memories | Independent | **Strengthen each other** — Hebbian + STDP |
-| Over time | Database grows forever | **Consolidation** — "sleep" prunes weak, keeps strong |
-| Patterns across memories | You write the code | **Automatic** — synthesis engine with provenance |
-| Emotional context | None | **Per-domain valence tracking** |
 
 ---
 
@@ -249,20 +242,24 @@ Memories → Cluster Discovery → Gate Check → LLM Insight → Provenance →
 
 ## How Engram Compares
 
-| | **Engram** | **Mem0** | **Zep** | **Letta** |
-|--|-----------|---------|--------|----------|
-| **Core approach** | Cognitive science models | Vector + graph | Vector + knowledge graph | LLM OS / stateful agents |
-| **Forgetting** | ✅ Ebbinghaus curves | ❌ | ❌ | ❌ |
-| **Activation modeling** | ✅ ACT-R | ❌ | ❌ | ❌ |
-| **Associative learning** | ✅ Hebbian + STDP | ❌ | Partial (graph) | ❌ |
-| **Consolidation** | ✅ Dual-trace | ❌ | ❌ | ❌ |
-| **Insight synthesis** | ✅ Cluster → gate → prove | ❌ | ❌ | ❌ |
-| **Emotional tracking** | ✅ Per-domain | ❌ | ❌ | ❌ |
-| **Interoception** | ✅ Allostatic load | ❌ | ❌ | ❌ |
-| **Search** | FTS5 + vector + ACT-R | Vector + graph | Vector + MMR | Vector |
-| **Embeddings required?** | Optional | Required | Required | Required |
-| **Infrastructure** | SQLite only | Redis/Postgres + API | Postgres + API | Postgres + API |
-| **Language** | Rust | Python | Python | Python |
+Most "AI memory" tools are vector DB wrappers in the same category: store embeddings, retrieve by similarity, add metadata. Engram is in a different category — a **multi-system cognitive substrate** with memory as one of its subsystems.
+
+| | **Vector memory tools** (Mem0, Zep, Letta) | **Engram** |
+|--|---|---|
+| **Category** | Memory backend / RAG layer | Cognitive substrate |
+| **Memory primitive** | Vector + metadata | Activation × decay × association |
+| **Forgetting** | Manual TTL / never | Ebbinghaus curves (built-in) |
+| **Activation modeling** | ❌ | ACT-R (frequency × recency) |
+| **Associative learning** | Partial (graph in Zep) | Hebbian + STDP |
+| **Consolidation** | ❌ | Dual-trace (replay + decay) |
+| **Insight synthesis** | ❌ | Cluster → gate → LLM → provenance |
+| **Beyond memory** | — | Emotional bus, interoception, multi-agent subscriptions |
+| **Search** | Vector (+ graph) | FTS5 + vector + ACT-R fusion |
+| **Embeddings required?** | Required | Optional |
+| **Infrastructure** | Redis/Postgres + API service | Single SQLite file |
+| **Language** | Python | Rust |
+
+Not a fair comparison on the "vector retrieval" axis — Engram doesn't try to be a faster vector DB. The point is that vector retrieval alone is the wrong abstraction for an agent that needs to live and evolve over time.
 
 ---
 
@@ -301,6 +298,23 @@ Memories → Cluster Discovery → Gate Check → LLM Insight → Provenance →
               │(WAL mode) │
               └──────────┘
 ```
+
+---
+
+## Substrate Status (v0.4)
+
+Engram is being unified onto a single graph-structured storage substrate — `nodes` + `edges` tables that all subsystems read and write through. This is what makes the "cognitive substrate" framing concrete rather than aspirational.
+
+**Current state (v0.4):**
+
+- ✅ **Unified-substrate reads are default-on.** All retrieval paths (recall, FTS, graph traversal, embeddings, synthesis provenance) go through the new node/edge layer.
+- ✅ **Dual-write live.** Every write lands in both legacy tables and the new substrate, so rollback is one config flag away during the soak.
+- ⏳ **Phase E (stop legacy writes)** — pending. Legacy tables remain as a fallback while parity is validated in production.
+- ⏳ **Phase F (drop legacy schema)** — pending. The legacy tables get removed once Phase E has soaked.
+
+**What this means for you as a user:** the public API hasn't changed. `Memory::new(...)`, `mem.add(...)`, `mem.recall(...)` all work identically. The substrate migration is internal — you get the unified reads automatically, and you can opt out via `MemoryConfig { unified_substrate: false, .. }` if you hit a regression.
+
+For the design details, see the [v0.4 substrate design doc](https://github.com/tonitangpotato/engram-ai/blob/main/.gid/features/v04-unified-substrate/design.md) in the repo.
 
 ---
 
@@ -468,7 +482,7 @@ AGPL-3.0-or-later. See [LICENSE](LICENSE) for details.
 
 ```bibtex
 @software{engramai,
-  title  = {Engram: Neuroscience-Grounded Memory for AI Agents},
+  title  = {Engram: A Cognitive Substrate for AI Agents},
   author = {Toni Tang},
   year   = {2026},
   url    = {https://github.com/tonitangpotato/engram-ai},
