@@ -182,6 +182,78 @@ This is the "honesty option" if Levers 1-5 are all dead.
 - Variance bracketing of ISS-159 falsification: ISS-159 is closed-out
   on its own evidence; no re-litigation here.
 
+## Verdict 2026-05-26 — Levers 2 + 7 both falsified
+
+After AC-1 diagnostic (Lever 2, paper-only, commit 26947d8) and Lever 7
+(generation-prompt v2, in-flight working tree) both ran on conv-26 K=10
+HyDE=per_category temp=0:
+
+**Corrected denominator.** Earlier ISS-161 evidence used n=12 ("single-fact
+sub-bucket"). The real single-fact denominator after stripping list-shaped
+questions from the 32 single-hop bucket is **n=27**. AC-5a 0.60 = **17/27**
+(not 8/12). All numbers below are over n=27.
+
+| Arm | overall | single-hop | single-fact (n=27) | list (n=5) |
+|---|---|---|---|---|
+| A — baseline (per_category HyDE, K=10) | 0.362 | 6/32 | **5/27** | 1/5 |
+| B — Lever 2 PerCategoryV2 (open+sh), K=10 | 0.382 | 9/32 | **8/27** | 1/5 |
+| C — Lever 2 + K=30 | 0.441 | 11/32 | **8/27** | 3/5 |
+| D — Lever 7 v2 generation prompt + K=10 | 0.375 | 7/32 | **6/27** | 1/5 |
+| E — Lever 7 v2 prompt + K=30 | — | — | — | — |
+
+Arm E aborted: Anthropic API hiccup at conv-26 ingestion ep 360
+(`Quarantined(ExtractorError)`), no real run captured. Sweep script
+mis-labelled a stale 2026-05-22 run dir as Arm E output. Not re-run:
+Arm E projected ceiling = 8/27 (= C), below the 17/27 gate, so the
+result cannot change the verdict.
+
+**Per-question single-fact diff (n=27 base set):**
+
+- Lever 2 (Arm B) net: +3 vs A (-1 loss at q39/q55, +4 gain at q32/q40/q43/q78)
+- Lever 7 (Arm D) net: +1 vs A (+1 at q70; lost q47 vs A no — actually
+  +q70, net regression vs B/C losing q32/q40/q43/q78)
+
+**L2 ship verdict:** B = 8/27 ≥ ship rule of 5/27, but **AC-5a 17/27
+not reached**. C confirms K=30 stacking doesn't push sf higher (still
+8/27, only list went up). Lever 2 is a real-but-small lift. Decision:
+keep `HydePolicy::PerCategoryV2` code (commit 5acf83e) on branch as
+opt-in — do not flip default until paired with a sf-lifting lever.
+
+**L7 ship verdict:** D = 6/27, regresses vs B/C (lost q32, q40, q43,
+q78 — the v2 "scan ALL memories" instruction makes the LLM mis-select
+in a narrow K=10 pool). Reverted from working tree, stashed for
+possible reuse after extraction enrichment.
+
+**Where the 7 hard-misses sit (carry-over from AC-1 diagnostic):**
+
+- q3 / q37 / q71 — gold fact partially present in top-K, generation
+  failure mode (single LLM call doesn't synthesise across candidates)
+- q7 / q11 / q75 / q76 — gold fact **absent** from top-30 (pool-recall)
+
+L7 attacked the generation failures and helped at most 2 of them while
+breaking 4 others. The 4 pool-recall misses are immune to any
+generation-side fix.
+
+**Distance to AC-5a 0.60:** best measured = 8/27 = 0.296. Gate = 0.629
+(17/27). Need **+9 single-fact questions** to pass. No prompt/reranker
+lever on the table has lifted sf by more than 3 questions.
+
+**Next lever: L3 — extraction-time enrichment.** Of the 4 pool-recall
+misses, q11 (Sweden) is the cleanest test case — the gold fact is split
+across 2 sentences in conv-26 raw ("moved from home country" + "home
+country=Sweden"), and our extractor never merges them. If a richer
+extraction prompt produces a single episode containing "Sweden" as
+Caroline's home country, q11 becomes retrievable. Run shape: re-ingest
+conv-26 with a fact-density-tuned extractor prompt, re-run Arm A/B
+side-by-side at K=10. ETA: ~$8, ~45min wall.
+
+**Honest projection of L3:** even if L3 lifts pool-recall on q7/q11/q75/q76
+(best case +4 sf), best achievable is 12/27 = 0.444. Still below AC-5a
+0.629 by 5 questions. If L3 also falsifies (≤+2 sf), recommend
+**Lever 6 (redefine ISS-148)** rather than chase L4/L5. AC-5a 0.60 on
+conv-26 single-fact appears unreachable in current architecture without
+substrate-level changes (entity resolution, multi-episode composition).
+
 ## References
 
 - ISS-148 — root AC-5a definition (single-fact sub-bucket ≥0.60)
