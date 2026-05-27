@@ -673,8 +673,30 @@ impl Memory {
         }
 
         // Stage A: dispatch.
-        let classifier =
-            crate::retrieval::classifier::HeuristicClassifier::with_null_lookup();
+        //
+        // ISS-171: build the classifier with a graph-backed `EntityLookup`
+        // when a v0.3 graph store is installed. Prior to this wiring the
+        // classifier used `NullEntityLookup`, which made `score_entity`
+        // always 0.0 and the `Factual` intent architecturally
+        // unreachable (`route_stage1` always took the `strong.len()==0`
+        // branch → Associative). When no graph is installed (legacy v0.2
+        // databases, fresh DBs before `with_pipeline_pool` is called) we
+        // fall back to the null lookup — those paths can't have entities
+        // to lookup against anyway.
+        let classifier = match self.graph_store_arc() {
+            Some(g) => {
+                let lookup: std::sync::Arc<
+                    dyn crate::retrieval::classifier::heuristic::EntityLookup,
+                > = std::sync::Arc::new(
+                    crate::retrieval::adapters::GraphEntityLookup::new(g),
+                );
+                crate::retrieval::classifier::HeuristicClassifier::new(
+                    lookup,
+                    crate::retrieval::classifier::SignalThresholds::default(),
+                )
+            }
+            None => crate::retrieval::classifier::HeuristicClassifier::with_null_lookup(),
+        };
         // Capture the user text + MMR override before `dispatch()` takes
         // ownership of `query`. The text is needed by the MMR reranker
         // hook (Stage C.5) for trace honesty; the override picks the λ

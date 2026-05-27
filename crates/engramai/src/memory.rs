@@ -541,6 +541,25 @@ impl Memory {
         Ok(self)
     }
 
+    /// ISS-171: clone the installed graph-store `Arc<Mutex>` so callers
+    /// (currently `retrieval::api::graph_query`) can wrap it in
+    /// adapters like
+    /// [`GraphEntityLookup`](crate::retrieval::adapters::GraphEntityLookup)
+    /// without holding a borrow tied to `&self`. Returns `None` when
+    /// no graph store has been installed (`with_pipeline_pool` /
+    /// `with_graph_store` not called yet).
+    ///
+    /// Read-only accessor — the `Arc<Mutex>` itself is shared with
+    /// the pipeline and `with_graph_read`, so all lockers serialize
+    /// on the same inner `Mutex`.
+    pub fn graph_store_arc(
+        &self,
+    ) -> Option<
+        std::sync::Arc<std::sync::Mutex<crate::graph::store::SqliteGraphStore<'static>>>,
+    > {
+        self.graph_store.as_ref().map(std::sync::Arc::clone)
+    }
+
     /// Borrow the installed graph store as `&dyn GraphRead` for the
     /// duration of `f`.
     ///
