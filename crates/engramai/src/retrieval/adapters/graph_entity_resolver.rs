@@ -2,8 +2,33 @@
 //! v0.3 graph layer.
 //!
 //! Resolves a free-form query string to a set of candidate
-//! [`ResolvedAnchor`]s by running [`GraphRead::search_candidates`] across
-//! every namespace the graph knows about.
+//! [`ResolvedAnchor`]s by:
+//!
+//! 1. Extracting candidate **mentions** from the query — token n-grams
+//!    of length 1..=`MAX_NGRAM_N` after Unicode-tokenization
+//!    (see [`extract_mentions`]).
+//! 2. Looking up each mention against
+//!    [`GraphRead::search_candidates`] across every namespace the
+//!    graph knows about.
+//! 3. Deduplicating by `entity_id`, keeping the highest match strength.
+//!
+//! ## Why mention extraction (ISS-165)
+//!
+//! `search_candidates` does **exact-equality** alias matching against
+//! `graph_entity_aliases.normalized` (`WHERE normalized = ?`). Without
+//! a mention-extraction step, the resolver passes the entire query
+//! string as the alias key — e.g. `"Where did Caroline move from
+//! before settling down?"` is normalized as a single 50-char alias
+//! and never matches any entity alias. This silently disabled the
+//! Factual plan for every natural-language LoCoMo query (root cause
+//! of ISS-164 entity-channel falsification — see ISS-165).
+//!
+//! The fix is intentionally cheap and deterministic: slide an n-gram
+//! window over query tokens, call `search_candidates` once per
+//! mention. Each call is two indexed point-lookups (alias hit +
+//! entity row), microseconds. For a 10-token question with n ∈ 1..=4
+//! this is ~34 lookups per namespace — well below the per-query
+//! retrieval budget (design §5.4).
 //!
 //! ## Why scan all namespaces
 //!
@@ -45,18 +70,124 @@ use chrono::Utc;
 use crate::graph::store::{CandidateQuery, GraphRead};
 use crate::retrieval::plans::factual::{EntityResolver, ResolvedAnchor};
 
-/// Hard ceiling on entries returned per namespace before merging.
-/// `FactualPlanInputs::max_anchors` defaults to 5 (factual.rs line ≈140);
-/// over-fetching here lets the per-namespace top-K be merged by score
-/// before truncation.
+/// Per-namespace cap for a single mention lookup. Each n-gram pulls
+/// at most this many candidates from `search_candidates`. Multiple
+/// mentions can resolve to overlapping anchors; dedupe runs at the
+/// resolver level. `FactualPlanInputs::max_anchors` defaults to 5
+/// (factual.rs ≈ line 140); over-fetching here lets the per-namespace
+/// top-K be merged by score before truncation.
 const PER_NAMESPACE_TOP_K: usize = 8;
 
-/// Hard ceiling on namespaces scanned. Bounded out of paranoia — a
-/// pathological graph with thousands of namespaces should not turn a
-/// single query into a thousand SQL roundtrips. Realistic graphs have
-/// O(1) namespaces (engramai typically uses `default` plus a handful of
-/// project namespaces).
+/// Maximum number of namespaces we'll scan in one `resolve` call.
+/// Bounds latency on graphs with pathological namespace fan-out.
 const MAX_NAMESPACES_SCANNED: usize = 32;
+
+/// Maximum n-gram length when extracting mentions from a query.
+/// Covers entity names up to 4 tokens like
+/// `"adoption advice assistance group"` while keeping the scan
+/// O(tokens × MAX_NGRAM_N) bounded.
+const MAX_NGRAM_N: usize = 4;
+
+/// Hard cap on total candidate mentions emitted per query. Defends
+/// against pathologically long queries; for normal LoCoMo questions
+/// (10–20 tokens) the natural count is well below this.
+const MAX_MENTIONS: usize = 64;
+
+/// Minimum character length for a 1-gram mention. Filters
+/// near-universal single-char tokens like `"a"` / `"I"` / `"1"`
+/// that would otherwise generate per-query alias-lookup noise.
+/// Multi-token n-grams have no per-token length floor (a bigram
+/// like `"is_a"` or `"to_do"` could legitimately be an alias).
+const MIN_UNIGRAM_CHARS: usize = 2;
+
+/// Extract candidate mentions from a query as token n-grams.
+///
+/// Tokenization: split on Unicode whitespace and ASCII punctuation
+/// (`,`, `.`, `?`, `!`, `:`, `;`, `(`, `)`, `[`, `]`, `{`, `}`,
+/// `"`, `\``). Apostrophes are preserved inside tokens but stripped
+/// at token end (`"Caroline's"` → `"Caroline"`) because possessive
+/// `'s` is rarely part of an entity alias. NFKC-folding and
+/// lowercasing happen later inside `search_candidates`'s
+/// `normalize_alias` call — we keep the original case here so unit
+/// tests can read naturally.
+///
+/// Emits n-grams of length `1..=MAX_NGRAM_N` in order
+/// (length-ascending, then left-to-right) for determinism. Stops
+/// emitting once `MAX_MENTIONS` is reached.
+///
+/// Pure function: no I/O, no clock, no allocation reuse — safe for
+/// the `EntityResolver` determinism contract.
+fn extract_mentions(query: &str) -> Vec<String> {
+    // Tokenize. We use `char::is_alphanumeric` as the "in-token"
+    // predicate plus the apostrophe (U+0027) so contractions stay
+    // together; everything else is a separator. This sidesteps the
+    // unicode-segmentation dep — `is_alphanumeric` already handles
+    // CJK + Latin + Cyrillic etc. via Unicode classification.
+    let mut tokens: Vec<&str> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, ch) in query.char_indices() {
+        let is_word = ch.is_alphanumeric() || ch == '\'';
+        match (start, is_word) {
+            (None, true) => start = Some(i),
+            (Some(s), false) => {
+                tokens.push(&query[s..i]);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        tokens.push(&query[s..]);
+    }
+
+    // Trim trailing/leading apostrophes; drop tokens that become
+    // empty after trim, and strip possessive `'s` / `'S`.
+    let cleaned: Vec<String> = tokens
+        .into_iter()
+        .filter_map(|t| {
+            let trimmed = t.trim_matches('\'');
+            if trimmed.is_empty() {
+                return None;
+            }
+            // Strip possessive `'s` / `'S`.
+            let stripped = trimmed
+                .strip_suffix("'s")
+                .or_else(|| trimmed.strip_suffix("'S"))
+                .unwrap_or(trimmed);
+            if stripped.is_empty() {
+                None
+            } else {
+                Some(stripped.to_string())
+            }
+        })
+        .collect();
+
+    let n_tokens = cleaned.len();
+    if n_tokens == 0 {
+        return Vec::new();
+    }
+
+    // Emit n-grams length-ascending so 1-grams (cheapest, highest hit
+    // rate for person names) come first. This ordering is part of
+    // the determinism contract — callers may observe via test logs.
+    let mut out: Vec<String> = Vec::new();
+    for n in 1..=MAX_NGRAM_N {
+        if n > n_tokens {
+            break;
+        }
+        for window in cleaned.windows(n) {
+            if out.len() >= MAX_MENTIONS {
+                return out;
+            }
+            // 1-gram length filter — see MIN_UNIGRAM_CHARS doc.
+            if n == 1 && window[0].chars().count() < MIN_UNIGRAM_CHARS {
+                continue;
+            }
+            out.push(window.join(" "));
+        }
+    }
+    out
+}
 
 /// Graph-backed [`EntityResolver`] for the Factual plan.
 ///
@@ -95,55 +226,68 @@ impl<'a> EntityResolver for GraphEntityResolver<'a> {
         // anchor candidates and is reproducible *given* the same now.
         let now = Utc::now().timestamp() as f64;
 
+        // ISS-165 fix: extract candidate mentions (token n-grams)
+        // from the query, then look up each mention separately.
+        // `search_candidates` does exact-equality matching on
+        // `graph_entity_aliases.normalized`, so feeding it the whole
+        // question (the pre-ISS-165 behaviour) cannot hit any alias
+        // for natural-language queries.
+        let mentions = extract_mentions(query);
+        if mentions.is_empty() {
+            return Vec::new();
+        }
+
         let mut hits: Vec<ResolvedAnchor> = Vec::new();
         for ns in namespaces.into_iter().take(MAX_NAMESPACES_SCANNED) {
-            let candidate_query = CandidateQuery {
-                mention_text: query.to_string(),
-                mention_embedding: None,
-                kind_filter: None,
-                namespace: ns,
-                top_k: PER_NAMESPACE_TOP_K,
-                recency_window: None,
-                now,
-            };
+            for mention in &mentions {
+                let candidate_query = CandidateQuery {
+                    mention_text: mention.clone(),
+                    mention_embedding: None,
+                    kind_filter: None,
+                    namespace: ns.clone(),
+                    top_k: PER_NAMESPACE_TOP_K,
+                    recency_window: None,
+                    now,
+                };
 
-            let matches = match self.graph.search_candidates(&candidate_query) {
-                Ok(rows) => rows,
-                // Per-namespace failure is non-fatal — keep scanning
-                // others. A namespace that errors is observably
-                // identical to "no candidates here".
-                Err(_) => continue,
-            };
+                let matches = match self.graph.search_candidates(&candidate_query) {
+                    Ok(rows) => rows,
+                    // Per-namespace / per-mention failure is non-fatal —
+                    // keep scanning. An erroring lookup is observably
+                    // identical to "no candidates here".
+                    Err(_) => continue,
+                };
 
-            for m in matches {
-                // Score combines alias match (binary boost) + embedding
-                // (none here) + recency. We don't have embedding so the
-                // alias bit is dominant — this is fine for the Factual
-                // plan (it's a name-resolution step, not vector
-                // retrieval; see `HybridSeedRecaller` for the embedding
-                // path).
-                let alias_boost: f32 = if m.alias_match { 0.7 } else { 0.0 };
-                let recency_score = m.recency_score; // [0.0, 1.0]
-                // Final strength in [0.0, 1.0]: weight alias 70%, recency
-                // 30%. Tuned to keep alias-only hits above 0.5 (so the
-                // default `min_confidence` filter in Factual keeps them)
-                // while letting recency break ties between two equally
-                // alias-matched candidates.
-                let match_strength = alias_boost + 0.3 * recency_score;
+                for m in matches {
+                    // Score combines alias match (binary boost) +
+                    // embedding (none here) + recency. We don't have
+                    // embedding so the alias bit is dominant — this is
+                    // fine for the Factual plan (it's a name-resolution
+                    // step, not vector retrieval; see
+                    // `HybridSeedRecaller` for the embedding path).
+                    let alias_boost: f32 = if m.alias_match { 0.7 } else { 0.0 };
+                    let recency_score = m.recency_score; // [0.0, 1.0]
+                    // Final strength in [0.0, 1.0]: weight alias 70%,
+                    // recency 30%. Tuned to keep alias-only hits above
+                    // 0.5 (so the default `min_confidence` filter in
+                    // Factual keeps them) while letting recency break
+                    // ties between two equally alias-matched candidates.
+                    let match_strength = alias_boost + 0.3 * recency_score;
 
-                // Skip candidates with neither signal — they're an
-                // artifact of search_candidates returning embedding-only
-                // hits we can't use here. (No embedding was sent → no
-                // embedding score → skip.)
-                if !m.alias_match && match_strength == 0.0 {
-                    continue;
+                    // Skip candidates with neither signal — they're an
+                    // artifact of search_candidates returning
+                    // embedding-only hits we can't use here. (No
+                    // embedding was sent → no embedding score → skip.)
+                    if !m.alias_match && match_strength == 0.0 {
+                        continue;
+                    }
+
+                    hits.push(ResolvedAnchor {
+                        entity_id: m.entity_id,
+                        canonical_name: m.canonical_name,
+                        match_strength,
+                    });
                 }
-
-                hits.push(ResolvedAnchor {
-                    entity_id: m.entity_id,
-                    canonical_name: m.canonical_name,
-                    match_strength,
-                });
             }
         }
 
@@ -247,5 +391,195 @@ mod tests {
                 "results must be sorted by match_strength desc"
             );
         }
+    }
+
+    // ---------------------------------------------------------------
+    // ISS-165: mention extraction regression tests.
+    //
+    // These tests cover the core failure mode: before the fix, the
+    // resolver passed the entire natural-language query as a single
+    // alias key, so multi-word questions never matched any entity.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn natural_language_query_resolves_person_entity() {
+        // Repro of ISS-165 AC-1 (conv-26 q3 shape).
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let cid = write_entity(&mut store, "Caroline", "default");
+        let resolver = GraphEntityResolver::new(&store);
+        let hits = resolver.resolve("What did Caroline research?");
+        assert!(
+            hits.iter().any(|h| h.entity_id == cid),
+            "expected to anchor on Caroline; got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn possessive_apostrophe_strips_correctly() {
+        // Repro of ISS-165 AC-1 (conv-26 q7 / q71 shape).
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let cid = write_entity(&mut store, "Caroline", "default");
+        let resolver = GraphEntityResolver::new(&store);
+        let hits = resolver.resolve("What is Caroline's relationship status?");
+        assert!(
+            hits.iter().any(|h| h.entity_id == cid),
+            "expected to anchor on Caroline after stripping 's; got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn multi_word_entity_resolves_via_bigram() {
+        // Repro of ISS-165 AC-1 (conv-26 q71 — "Becoming Nicole").
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let bid = write_entity(&mut store, "Becoming Nicole", "default");
+        let resolver = GraphEntityResolver::new(&store);
+        let hits = resolver.resolve("Did she like Becoming Nicole?");
+        assert!(
+            hits.iter().any(|h| h.entity_id == bid),
+            "expected to anchor on Becoming Nicole via bigram; got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_entities_in_one_query_all_resolve() {
+        // Repro of ISS-165 AC-1 (conv-26 q11 — Caroline + Sweden).
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let cid = write_entity(&mut store, "Caroline", "default");
+        let sid = write_entity(&mut store, "Sweden", "default");
+        let resolver = GraphEntityResolver::new(&store);
+        let hits = resolver.resolve("Where did Caroline move from before settling down in Sweden?");
+        assert!(
+            hits.iter().any(|h| h.entity_id == cid),
+            "expected Caroline anchor; got {hits:?}"
+        );
+        assert!(
+            hits.iter().any(|h| h.entity_id == sid),
+            "expected Sweden anchor; got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn single_char_token_filtered() {
+        // Defensive: "I" / "a" / "1" must not generate alias-lookup
+        // noise. If someone writes an entity literally called "a",
+        // this test will start failing — that's the right time to
+        // revisit `MIN_UNIGRAM_CHARS`.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let aid = write_entity(&mut store, "a", "default");
+        let resolver = GraphEntityResolver::new(&store);
+        let hits = resolver.resolve("I went to a place yesterday");
+        assert!(
+            !hits.iter().any(|h| h.entity_id == aid),
+            "expected NOT to anchor on single-char alias 'a'; got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_natural_language_query_returns_empty() {
+        // Negative: no relevant entities → still empty after the fix.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let _ = write_entity(&mut store, "Caroline", "default");
+        let resolver = GraphEntityResolver::new(&store);
+        let hits = resolver.resolve("What is the price of bread in 2026?");
+        assert!(
+            hits.is_empty(),
+            "expected empty result for query naming no known entity; got {hits:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Pure mention-extraction tests (no graph layer).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn extract_mentions_simple_sentence() {
+        let m = extract_mentions("What did Caroline research?");
+        // 1-grams: What, did, Caroline, research
+        // 2-grams: "What did", "did Caroline", "Caroline research"
+        // 3-grams: "What did Caroline", "did Caroline research"
+        // 4-grams: "What did Caroline research"
+        assert!(m.contains(&"Caroline".to_string()));
+        assert!(m.contains(&"What did".to_string()));
+        assert!(m.contains(&"Caroline research".to_string()));
+        assert!(m.contains(&"What did Caroline research".to_string()));
+    }
+
+    #[test]
+    fn extract_mentions_strips_possessive() {
+        let m = extract_mentions("Caroline's hat");
+        assert!(m.contains(&"Caroline".to_string()), "got: {m:?}");
+        assert!(m.contains(&"hat".to_string()), "got: {m:?}");
+        assert!(
+            !m.iter().any(|s| s.contains("'s")),
+            "possessive should be stripped; got: {m:?}"
+        );
+    }
+
+    #[test]
+    fn extract_mentions_filters_single_chars() {
+        let m = extract_mentions("I a 1");
+        // Each 1-gram is below MIN_UNIGRAM_CHARS=2, so all dropped.
+        // The 2-gram "I a" / "a 1" / "I a 1" survive because the
+        // length filter is only on n=1.
+        assert!(
+            !m.contains(&"I".to_string()),
+            "single-char 1-gram should be filtered; got: {m:?}"
+        );
+        assert!(
+            !m.contains(&"a".to_string()),
+            "single-char 1-gram should be filtered; got: {m:?}"
+        );
+    }
+
+    #[test]
+    fn extract_mentions_empty_input() {
+        assert!(extract_mentions("").is_empty());
+        assert!(extract_mentions("   ").is_empty());
+        assert!(extract_mentions("?!.,").is_empty());
+    }
+
+    #[test]
+    fn extract_mentions_deterministic_order() {
+        // Length-ascending, left-to-right — part of the
+        // EntityResolver determinism contract.
+        let m1 = extract_mentions("Alice met Bob");
+        let m2 = extract_mentions("Alice met Bob");
+        assert_eq!(m1, m2, "extract_mentions must be deterministic");
+        // First 3 entries should be the 1-grams in input order.
+        assert_eq!(m1[0], "Alice");
+        assert_eq!(m1[1], "met");
+        assert_eq!(m1[2], "Bob");
+    }
+
+    #[test]
+    fn extract_mentions_respects_max_cap() {
+        // Build a 200-token query; should cap at MAX_MENTIONS=64.
+        let q: String = (0..200)
+            .map(|i| format!("word{i} "))
+            .collect();
+        let m = extract_mentions(&q);
+        assert!(
+            m.len() <= MAX_MENTIONS,
+            "expected ≤{MAX_MENTIONS} mentions, got {}",
+            m.len()
+        );
+    }
+
+    #[test]
+    fn extract_mentions_unicode_alphanumeric() {
+        // CJK / non-ASCII tokens should tokenize too (alphanumeric
+        // is Unicode-aware).
+        let m = extract_mentions("Caroline 去 Sweden");
+        assert!(m.contains(&"Caroline".to_string()));
+        // 去 is a single CJK char — passes is_alphanumeric, but is
+        // single-char so filtered by MIN_UNIGRAM_CHARS.
+        // Sweden is 6 chars, passes filter.
+        assert!(m.contains(&"Sweden".to_string()));
     }
 }
