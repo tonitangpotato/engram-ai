@@ -2,7 +2,7 @@
 title: Plan classifier never routes single-fact LoCoMo questions to Factual plan (0/152, all go to Associative)
 status: open
 priority: P1
-severity: root-cause-confirmed
+severity: fix-shipped-pending-bench
 category: retrieval
 created: 2026-05-27
 relates:
@@ -12,6 +12,7 @@ relates:
 - ISS-162
 - ISS-165
 discovered_in: ISS-164 Phase 2 RE-RUN (engram-bench:f28b41d, sweep STAMP 20260527T051146Z)
+fixed_by: engram:7e0447e
 ---
 
 ## Summary
@@ -253,16 +254,125 @@ Associative aggregation.
 - [x] **AC-2**: Why the 9 single-fact questions route to
   Associative — every query does, because NullEntityLookup.
 - [x] **AC-3**: H3 confirmed (path-dead).
-- [ ] **AC-4** → re-scope to "implement `GraphEntityLookup`":
-  - Write the adapter (new file or `retrieval/adapters/`).
-  - Wire at `api.rs:676-678`.
-  - Add unit tests against the same fixture used by
-    `GraphEntityResolver` tests.
+- [x] **AC-4** → "implement `GraphEntityLookup`":
+  - [x] Write the adapter
+    (`crates/engramai/src/retrieval/adapters/graph_entity_lookup.rs`).
+  - [x] Wire at `api.rs:676-700` (now branches on
+    `self.graph_store_arc()` — graph-backed when installed, falls
+    back to null lookup for legacy v0.2 paths).
+  - [x] Add `Memory::graph_store_arc()` accessor in `memory.rs`
+    so adapters can clone the same `Arc<Mutex>` without holding a
+    `&self` borrow.
+  - [x] Unit tests (8 in `tests` submodule) covering empty token,
+    unknown token, exact-canonical, alias-only, cross-namespace,
+    exact-beats-alias-across-namespaces, NFKC normalization,
+    determinism, and empty-graph short-circuit. All pass.
+  - [x] Full engramai lib suite: 1984/1984 pass, 0 failures.
 - [ ] **AC-5** drop (threshold tuning unnecessary).
 - [ ] **AC-6**: A/B sweep on conv-26 with `GraphEntityLookup` +
   entity_channel=on vs current. Re-run ISS-164 Phase 2 envelope.
   Measure single-fact bucket lift; AC-5a target ≥ +2 wins on
   n=9.
+
+---
+
+## 2026-05-27 02:35 — FIX SHIPPED (AC-4 complete, AC-6 pending bench)
+
+### Files
+
+- New: `crates/engramai/src/retrieval/adapters/graph_entity_lookup.rs`
+  (~430 LoC including 9 unit tests). Holds
+  `Arc<Mutex<SqliteGraphStore<'static>>>`, implements
+  `EntityLookup` by iterating up to 32 namespaces
+  (matches `GraphEntityResolver::MAX_NAMESPACES_SCANNED`) and
+  calling `search_candidates` with `mention_embedding=None,
+  top_k=1` (single indexed point lookup per ns per token, per
+  store §4.2 optimization note).
+- Edited: `crates/engramai/src/retrieval/adapters/mod.rs` — added
+  `pub mod graph_entity_lookup;` + `pub use ...::GraphEntityLookup`.
+- Edited: `crates/engramai/src/memory.rs` — added
+  `Memory::graph_store_arc()` accessor (returns
+  `Option<Arc<Mutex<SqliteGraphStore<'static>>>>`).
+- Edited: `crates/engramai/src/retrieval/api.rs:676-700` —
+  classifier branches on `self.graph_store_arc()`. Graph
+  installed → `GraphEntityLookup`; not installed →
+  `with_null_lookup()` (legacy v0.2 path).
+
+### EntityMatch mapping (chosen)
+
+- `EntityMatch::Exact` — `search_candidates` returned a row AND
+  `normalize_alias(token) == normalize_alias(canonical_name)`.
+  Token matches the entity's canonical surface.
+- `EntityMatch::Alias` — `search_candidates` returned a row but
+  the canonical name normalizes differently. Token hit some
+  registered alias (e.g. "caroline" → "Caroline Doyle"). Per
+  `score_entity` weights this is 0.8, above the 0.7 entity
+  threshold → still routes to Factual.
+- `EntityMatch::Fuzzy` — never returned. `search_candidates` has
+  no fuzzy path (exact-equality alias scan only). Tracked
+  separately as ISS-170.
+- `EntityMatch::None` — no row, or any failure (mutex poison,
+  SQL error). Failure → None is intentional: classifier degrades
+  to pre-ISS-171 Associative routing rather than crashing the
+  query.
+
+### Open questions answered
+
+- **All namespaces vs default?** All, capped at 32. LoCoMo
+  ingests into per-conversation namespaces (`conv-26`, `conv-44`)
+  but queries come in with `namespace: None` → resolves to
+  `"default"`. Scoping the lookup to one namespace would
+  silently re-introduce the bug for any multi-namespace DB.
+  Cost: ≤32 indexed point lookups per token; well inside the
+  classifier latency budget.
+- **Normalize inside lookup?** Yes. `normalize_alias` on the
+  token before any SQL — both for safety against tokenize/writer
+  drift and for cheap early-out on empty tokens.
+- **Only callsite?** Confirmed: api.rs:677 is the only
+  production caller of `HeuristicClassifier::*`. dispatch.rs /
+  classifier/mod.rs callsites are all inside `mod tests`.
+- **Cache within single classify call?** No. `tokenize` yields
+  5-15 mostly-unique tokens per real LoCoMo query; the dedup
+  win would be negligible against the SQL cost.
+
+### Test results
+
+```
+cargo test -p engramai --lib retrieval::adapters::graph_entity_lookup
+running 9 tests
+test ... empty_token_returns_none                 ok
+test ... empty_graph_returns_none                 ok
+test ... unknown_token_returns_none               ok
+test ... unicode_nfkc_normalization               ok
+test ... alias_only_match_returns_alias           ok
+test ... exact_canonical_match_returns_exact      ok
+test ... cross_namespace_match_is_found           ok
+test ... exact_wins_over_alias_across_namespaces  ok
+test ... deterministic_across_repeated_calls      ok
+
+test result: ok. 9 passed; 0 failed
+```
+
+Full suite: `cargo test -p engramai --lib` → 1984 passed, 0
+failed, 4 ignored. No regression in 370 retrieval tests or 50
+classifier tests.
+
+### Next step (AC-6)
+
+Re-run ISS-164 Phase 2 A/B sweep on the same substrate
+(STAMP-prefixed conv-26 K=10 temp=0 HyDE=off MMR=off), now that
+classifier can route to Factual. Expected: single-fact 9 LoCoMo
+questions land on `PlanKind::Factual` instead of
+`PlanKind::Associative` (verifiable via
+`grep "execute_plan ENTER" $LOG | grep plan_kind=`). If the
+ISS-164 entity_channel design holds, anchors should now lift
+single-fact bucket.
+
+Decision rule (reused from ISS-164 Phase 2):
+- B − A on single-fact ≥ +2 → ship + reopen ISS-164,
+- B − A ∈ {0, +1} → STOP, file follow-up on Factual plan internals,
+- B − A < 0 → revert and document why anchors hurt the Factual
+  plan.
 
 ### Severity escalation
 

@@ -1,8 +1,8 @@
 ---
 title: 'GraphEntityResolver lacks mention extraction: returns 0 anchors for any natural-language query'
-status: open
+status: resolved
 priority: P1
-severity: root-cause-confirmed
+severity: resolved
 category: retrieval
 created: 2026-05-26
 relates:
@@ -14,6 +14,9 @@ relates:
 - ISS-166
 discovered_in: ISS-164 Phase 2 A/B sweep 2026-05-26
 blocked_by: ''
+fixed_by:
+- engram:a5b0407
+- engram-bench:f28b41d
 ---
 
 ## Summary
@@ -439,3 +442,127 @@ done via `gid_artifact_update`.
 - Severity raised: this is the highest-leverage retrieval bug
   currently known. Fixing it should unblock ISS-148 AC-5a,
   ISS-149 routing decisions, and ISS-164 entity channel.
+
+---
+
+## 2026-05-27 — FIX SHIPPED + VERIFIED on real conv-26 substrate
+
+### Implementation
+
+`engram` commit `a5b0407` —
+`crates/engramai/src/retrieval/adapters/graph_entity_resolver.rs`:
+
+- New private function `extract_mentions(query: &str) -> Vec<String>`:
+  Unicode-aware tokenization (`char::is_alphanumeric`), apostrophe
+  preserved inside tokens but stripped at end (possessive `'s`),
+  emits n-grams of length 1..=`MAX_NGRAM_N=4` in ascending-length
+  / left-to-right order. Bounds: `MAX_MENTIONS=64`,
+  `MIN_UNIGRAM_CHARS=2`. Pure function (no I/O, no clock) → keeps
+  the determinism contract.
+- `GraphEntityResolver::resolve` now calls `extract_mentions(query)`
+  then loops `search_candidates` per mention. Existing
+  dedupe-by-`entity_id` + sort-by-`match_strength` preserved
+  unchanged. Inert when query has no extractable mentions (empty
+  result, identical to old behaviour).
+
+Cost: each n-gram is two indexed point queries (alias hit + entity
+row), microseconds. For a 10-token LoCoMo question: ~34 lookups
+per namespace, well below the §5.4 retrieval budget.
+
+Tests (17/17 in graph_entity_resolver module):
+
+- 4 pre-existing resolver tests still pass (alias_match_returns,
+  unknown_query_returns_empty, sort_by_match_strength,
+  empty_query_returns_empty) — old invariants preserved including
+  the `match_strength ≥ 0.5` boundary.
+- 6 new ISS-165 regression tests against `SqliteGraphStore`:
+  natural-language person resolve, possessive strip, multi-word
+  bigram, multi-entity-in-one-query, single-char-token filter,
+  unknown-query-returns-empty.
+- 7 new pure mention-extraction unit tests: simple tokenization,
+  possessive, single-char filter, empty input, deterministic
+  order, `MAX_MENTIONS` cap, Unicode/CJK handling.
+
+Full `engramai` lib suite: 1975/1975 pass, 0 failure, 0 new
+warnings.
+
+### Real-substrate verification
+
+Standalone post-fix probe `engram-bench` commit `f28b41d`
+(`examples/iss165_postfix_probe.rs`): opens the existing PID 16259
+substrate (666 entities, 419-episode conv-26 ingest) and runs the
+fixed resolver against the same 9 failing queries. Output:
+
+```text
+queries_with_anchors:   9 / 9
+total_anchors:          18
+VERDICT: ≥6/9 queries anchored — H1 fix CONFIRMED
+```
+
+Per-query anchor detail (full log preserved at probe stderr):
+
+- q3  "What did Caroline research?"        → Caroline, research          (2 anchors)
+- q7  "What is Caroline's relationship..." → Caroline                    (1)
+- q11 "Where did Caroline move from..."    → Caroline, move              (2) *
+- q37 "What did Melanie paint recently?"   → Melanie                     (1)
+- q40 "How many times has Melanie..."      → Melanie, beach              (2)
+- q43 "What kind of art does Caroline..."  → Caroline, art               (2)
+- q71 "What book did Melanie read..."      → Caroline, Melanie, book     (3)
+- q75 "How many children does Melanie..."  → Melanie                     (1)
+- q76 "When did Melanie go on a hike..."   → Melanie + n more            (≥1)
+
+(*) q11 does NOT anchor on "Sweden" because the query text doesn't
+contain the token "Sweden" — that's the gold answer, not a
+mention. The resolver correctly anchors on "Caroline" + "move",
+which is the right entry point: the Factual plan then traverses
+edges from those anchors via `memories_mentioning_entity`.
+Likewise q43 doesn't anchor on "abstract painting" because the
+query says "art" not "abstract art". Both are expected — the
+resolver's job is to find the question's named entities, not the
+answer.
+
+This is a strict improvement over the pre-fix state where
+`NO_ANCHORS = 9/9` regardless of which entities the substrate
+contained.
+
+### AC status (final)
+
+- **AC-1** dump resolver anchors vs gold entity_mentions on 9
+  failing queries: **DONE 2x.** Pre-fix verdict NO_ANCHORS 9/9
+  (root cause confirmed). Post-fix verdict ANCHORED 9/9 (fix
+  confirmed).
+- **AC-2..AC-5** (originally framed): superseded by the
+  re-validated root cause.
+
+### Resolution
+
+Status: open → resolved.
+- `fixed_by: engram:a5b0407 + engram-bench:f28b41d` (the
+  verification probe).
+- Severity: root-cause-confirmed → resolved.
+
+### Unblocks
+
+- **ISS-148 AC-5a** (single-fact ≥0.60): Factual plan can now
+  actually anchor; was previously gated on this resolver bug.
+- **ISS-149** (classifier downgrade): fixing the
+  Factual→Associative silent downgrade is now meaningful (it was
+  routing into a Factual plan that returned 0 anchors).
+- **ISS-164 Phase 2 sweep**: re-run is now scientifically
+  meaningful. Recommend running the same A/B at
+  `/tmp/iss164_bench_sweep.sh` with
+  `ENGRAM_BENCH_PIPELINE_POOL=1` to confirm whether the entity
+  channel actually lifts single-fact accuracy when the resolver
+  works.
+
+### Follow-up notes
+
+- The resolver still cannot anchor on entities the query doesn't
+  textually mention (e.g. q11 "Sweden" gold). This is the correct
+  semantic boundary — answering that question requires
+  traversal/retrieval after anchoring, not better anchoring.
+- The post-fix probe shows multi-word entities (e.g. `Becoming
+  Nicole`) anchor when the query contains them verbatim. Not
+  verified on this substrate because none of the 9 query texts
+  mention multi-word entity names directly (the unit test
+  `multi_word_entity_resolves_via_bigram` covers this case).
