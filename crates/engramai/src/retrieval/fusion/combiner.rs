@@ -387,6 +387,13 @@ pub fn fuse_and_rank(
         })
     });
 
+    // ISS-175 diagnostic dump (env-gated, default no-op).
+    // Hook lands here — post-sort, pre-return — so the dumped pool
+    // reflects what callers will actually see, including
+    // `min_fused_score` cutoff. See `crate::retrieval::fusion::dump`
+    // for the activation contract (env vars + thread-local label).
+    crate::retrieval::fusion::dump::maybe_dump_fused_pool(intent, &candidates);
+
     candidates
 }
 

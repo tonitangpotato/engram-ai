@@ -14,6 +14,7 @@
 pub mod combiner;
 #[cfg(feature = "cross_encoder")]
 pub mod cross_encoder;
+pub mod dump;
 pub mod mmr;
 pub mod reranker;
 pub mod signals;
@@ -24,6 +25,7 @@ pub use combiner::{
 };
 #[cfg(feature = "cross_encoder")]
 pub use cross_encoder::{CrossEncoderConfig, CrossEncoderReranker};
+pub use dump::{clear_dump_label, set_dump_label};
 pub use mmr::MmrReranker;
 pub use reranker::{
     assert_reranker_contract, ContractCheck, NullReranker, Reranker,
