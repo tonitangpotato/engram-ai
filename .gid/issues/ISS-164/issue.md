@@ -1,17 +1,21 @@
 ---
-title: "GraphEntityResolver wired but classifier never routes to Factual plan (0/152 on conv-26)"
-status: open
+title: GraphEntityResolver wired but classifier never routes to Factual plan (0/152 on conv-26)
+status: in_question
 priority: P1
 severity: architecture-gap
 category: retrieval
 created: 2026-05-26
 relates:
-  - ISS-148
-  - ISS-149
-  - ISS-161
-  - ISS-162
-  - ISS-163
+- ISS-148
+- ISS-149
+- ISS-161
+- ISS-162
+- ISS-163
+- ISS-165
+- ISS-166
 discovered_in: ISS-161 root-cause audit 2026-05-26
+falsified_by: ISS-165
+blocked_by: ISS-165
 ---
 
 ## Summary
@@ -243,3 +247,117 @@ Default off → §4.3 pipeline executes byte-for-byte identically to pre-ISS-164
 - A/B sweep on conv-26, K=10, temp=0, HyDE=off (isolation envelope). Two arms only — no λ sweep.
 - AC-5a projection: single-fact 8/27 → 11/27 (+3). Falsification rule: measured lift <50% of projection (i.e. <+1.5 single-fact) → STOP, re-plan before ISS-162.
 - Decision dependence: pass → keep ISS-164 enabled and move to ISS-162. Fail → file root-cause issue and re-scope ISS-148 unblock sequence.
+
+---
+
+## Phase 2 — falsified 2026-05-26
+
+A/B sweep on conv-26 (K=10, temp=0, HyDE=off, MMR=off):
+
+| Metric              | A (off)  | B (on)   | Δ           |
+|---------------------|----------|----------|-------------|
+| overall             | 0.3947   | 0.3618   | **−3.29pp** |
+| **single-fact**     | **3/12** | **3/12** | **0**       |
+| list                | 3/20     | 5/20     | +2          |
+| multi-hop           | 17/37    | 13/37    | −10.81pp    |
+| temporal            | 33/70    | 30/70    | −4.29pp     |
+
+Zero lift on the target metric (single-fact), with a multi-hop
+regression. The hypothesis that surfacing entity-resolver anchors
+into the Associative pipeline would close the AC-5a gap is
+**falsified for conv-26 single-fact**.
+
+Phase 1 code (commits 77ef3f3 + ebc9adf in engram, 908a83d in
+engram-bench) is **NOT reverted** — `FusionConfig::locked()`
+default `false` keeps the wiring inert in production, and the
+existing instrumentation is needed for the root-cause probes
+filed as **ISS-165**.
+
+Status flipped to `falsified`; see ISS-165 for next steps.
+
+---
+
+## 2026-05-27 UPDATE — falsification verdict in question; blocked on ISS-166
+
+Investigating ISS-165 AC-1 surfaced a P0 confounder: **engram-bench's
+`fresh_in_memory_db` never calls `Memory::with_pipeline_pool(...)`**, so
+the v0.3 graph subsystem (ResolutionPipeline → `apply_graph_delta`) is
+the only production writer of `graph_entities`, and it never runs under
+LoCoMo benchmarks.
+
+Direct sqlite verification on the fresh in-memory DB after a full
+419-episode conv-26 ingest (956s real Haiku extractor):
+- `entities` = 3 rows
+- `nodes` = 456 rows
+- `graph_entities` = **0 rows**
+
+`GraphEntityResolver::resolve()` reads `graph_entities` via
+`GraphRead::list_namespaces` → returns `Vec::new()` for **every** query.
+
+**Implication for this issue**: Phase 2 Arm A (`entity_channel=off`) and
+Arm B (`entity_channel=on`) were both running on an empty
+`graph_entities` table. Arm B's entity channel injected 0 anchors per
+query. The A/B was effectively "channel-off vs channel-off + a tiny bit
+of extra dead code", not the intended isolation. The observed Phase 2
+deltas (overall −3.29pp, multi-hop −10.81pp, list +2/20) cannot be
+attributed to the entity channel design itself; they are noise from
+LLM-judge wobble and/or fusion path side-effects.
+
+Falsification verdict on conv-26 single-fact is therefore **not safe**.
+Status flipped from `falsified` → `in_question`. Blocked on **ISS-166**
+(harness wiring fix). After ISS-166 lands, re-run the same A/B sweep on
+the fixed substrate per Phase 2 protocol and re-evaluate.
+
+Phase 1 code (commits 77ef3f3 + ebc9adf engram, 908a83d engram-bench) is
+not reverted — `FusionConfig::locked().entity_channel_enabled = false`
+remains the default and keeps it inert; ISS-166 + future re-test need
+the instrumentation in place.
+
+Artifacts:
+- `/Users/potato/clawd/projects/engram/.gid/issues/ISS-166/issue.md`
+- ISS-165 AC-1 probe logs (`/tmp/iss165-ac1-probe-v{3,4-unified}.log`)
+
+---
+
+## 2026-05-27 — status remains `in_question`; root cause moved to ISS-165
+
+ISS-166 (harness wiring) and ISS-167 (parser tolerance) shipped
+and validated end-to-end. The conv-26 substrate now contains 666
+`graph_entities` after a full ingest, with all gold-fact
+entities present (Sweden, sunsets, abstract painting, Becoming
+Nicole, adoption agencies, …).
+
+But the ISS-165 AC-1 re-validation probe on the fixed substrate
+still returned **NO_ANCHORS 9/9** across the same 9 failing
+single-fact queries. The root cause is now confirmed (see ISS-165
+2026-05-27 update): `GraphEntityResolver` lacks a mention
+extraction step — it passes the entire question string as a
+single `mention_text` to `search_candidates`, which does exact
+alias matching, which never matches a long natural-language
+question.
+
+### Implication for ISS-164 Phase 2 re-run
+
+**Do NOT re-run the Phase 2 A/B sweep on the current
+substrate.** Re-running would once again measure
+"entity-channel-off vs entity-channel-on-but-receiving-0-anchors"
+— the same A/B/A confound that produced the falsified Phase 2
+delta, with a different surface explanation.
+
+The Phase 2 sweep can be meaningfully re-evaluated only after
+ISS-165 ships a real mention extraction step (token n-gram scan,
+FTS5 alias index, or LLM NER). Until then, ISS-164 stays
+`in_question`.
+
+### Status path
+
+- `in_question` (2026-05-26, after Phase 2 falsification)
+- `in_question` + `blocked_by: ISS-166` (2026-05-26, harness
+  confounder discovered)
+- `in_question` + `blocked_by: ISS-165` (2026-05-27, current —
+  harness fixed but resolver root cause now known and pending fix)
+
+Phase 1 code (commits 77ef3f3 + ebc9adf engram, 908a83d
+engram-bench) **remains unreverted** — `FusionConfig::locked()`
+default `false` keeps it inert; we need the instrumentation in
+place for the post-ISS-165-fix re-run.

@@ -11,8 +11,10 @@ relates_to:
 - ISS-164
 - ISS-165
 - ISS-166
+- .gid/issues/ISS-168/issue.md
 severity: blocker
-status: open
+status: resolved
+fixed_by: engram:89d5ac9
 ---
 
 # ISS-167: triple extractor parser rejects 100% of Haiku responses
@@ -136,3 +138,64 @@ grep -c "Failed to parse" /tmp/iss167-repro.log
 ## Provenance
 
 Discovered during ISS-166 Plan A validation (engram-bench commit `bfb1115`), 2026-05-27.
+
+---
+
+## 2026-05-27 — RESOLVED
+
+Parser tolerance fix shipped and validated end-to-end against the
+real Haiku output distribution in LoCoMo conv-26 ingest.
+
+### Implementation
+
+`engram` commit `89d5ac9` — `crates/engramai/src/triple_extractor.rs`:
+
+- `parse_triple_response` now goes through `serde_json::Value`
+  intermediate, then `serde_json::from_value` per-element.
+- Duplicate JSON keys: `serde_json::Value` takes the last value
+  (matches `JSON.parse` semantics in JavaScript). This handles
+  Haiku's frequent `object_kind: "X", object_kind: "Y"` pattern.
+- Malformed individual triples are dropped with a WARN log and the
+  remainder of the array continues. Previously a single bad
+  element rejected the whole array → 0 triples persisted.
+- 6 new regression tests cover: duplicate `object_kind`,
+  duplicate `subject_kind`, missing required field per-element
+  drop, mixed valid/invalid array, trailing prose, empty array.
+- All 1962 engramai lib tests green.
+
+### Validation evidence
+
+Same probe run as ISS-166 (PID 16259, 2026-05-27 23:48 EDT,
+419 episodes conv-26):
+
+- `WorkerPoolStatsSnapshot { jobs_processed: 456, jobs_failed: 0,
+  jobs_in_flight: 0, jobs_dropped_inbox_full: 0 }`
+- 666 entities persisted (would be ~0 without this fix; pre-fix
+  3/3 Haiku calls failed parse in 2.5min probe v1 PID 11296).
+- One observed remaining failure mode during validation:
+  trailing prose after JSON array (`[...] \n Wait, let me
+  reconsider...`). The drop-and-continue path handled it: that
+  one episode logged a parse WARN, the rest of the ingest
+  continued, and the next batches' triples were persisted
+  normally. Filed as ISS-168 for the small follow-up of slicing
+  the JSON array out before parsing (current rate ≈ 5% of Haiku
+  calls based on probe sampling).
+
+### AC status
+
+- **AC-1** parser tolerates duplicate keys: done
+- **AC-2** drop-bad-element-continue semantics: done
+- **AC-3** regression tests: done (6 added)
+- **AC-4** end-to-end validation (graph_entities populated): done
+  (666 entities persisted vs 0 pre-fix)
+- **AC-5** ISS-166 unblocked: done (ISS-166 resolved)
+- **AC-6** investigate prompt tightening as defensive layer:
+  deferred to ISS-162 work. Tightening the prompt could reduce
+  Haiku's tendency to emit duplicate keys / multi-array
+  responses, but is orthogonal to parser robustness. Parser
+  robustness must hold regardless of prompt.
+
+### Resolution
+
+Status: open → resolved. ISS-168 filed as a small follow-up for
+the multi-array CoT response pattern (~5% loss rate).
