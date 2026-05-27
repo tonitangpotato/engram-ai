@@ -211,3 +211,118 @@ ENGRAM_BENCH_DUMP_CANDIDATES=1 ENGRAM_BENCH_QUERY_FILTER=conv-26-q3 \
 
 inspect candidate pool + ranks. ~30 minutes, no API spend, points
 directly at H1 vs H2 vs H3.
+
+## 2026-05-27 09:35 — AC-1/AC-2 verdict from code-layer probe
+
+**Root cause confirmed: H1 + H3 fused. Factual plan never emits `vector_score`.**
+
+Signal table from `crates/engramai/src/retrieval/orchestrator.rs::factual_to_scored`
+(line 357) and sibling functions:
+
+| Plan         | vector_score | graph_score      | bm25_score | recency |
+|--------------|--------------|------------------|------------|---------|
+| **Factual**  | **None**     | anchor-fraction  | FTS        | none    |
+| Associative  | seed_score   | 1 / 2^edge_hops  | FTS        | none    |
+| Episodic     | none         | none             | FTS        | yes     |
+| Affective    | text_score   | none             | FTS        | yes     |
+
+`factual_to_scored` (line ~393) emits only:
+```rust
+let sub_scores = SubScores {
+    graph_score: Some(graph_score.clamp(0.0, 1.0)),   // anchor-fraction
+    bm25_score:  Some(bm25),                           // ISS-147
+    ..Default::default()                               // vector_score = None
+};
+```
+
+Where `graph_score = seen_via.len() / total_anchors` — every memory
+that mentions any anchor gets at least 1/N; memories that mention
+ALL anchors get 1.0. For "What did Caroline research?" with 1 anchor
+(Caroline), **every Caroline-mentioning memory has graph_score = 1.0**.
+That gives 100–180 tied candidates and only BM25 (lexical) is left
+to distinguish them. Embedding similarity to the question text — the
+strongest semantic signal — is **never computed**.
+
+This is the H1+H3 combined bug:
+- **H1 ranker mismatch**: Associative emits `vector_score` from its
+  seed_recaller (provider.embed(query.text)). Factual emits nothing.
+- **H3 missing semantic leg**: same as H1 from a different angle —
+  there's no per-candidate cosine(query_embedding, memory_embedding)
+  pass in the Factual scoring stage.
+
+H2 (over-expansion) is ALSO true (100–180 candidates per query) but
+it's a *consequence* of H1+H3: the count would be fine if there were
+a strong ranker to surface the gold passage. The flat graph_score
+across all candidates is what makes the over-large pool catastrophic.
+
+## Wiring inspection (where the fix goes)
+
+`factual_to_scored` already calls `loader.load_embeddings(&id_strs)`
+at line 380 (ISS-139 Strategy A — MMR diversity hook). So
+`embeddings_by_id: HashMap<&str, Vec<f32>>` is already in scope per
+candidate. What's missing is the **query embedding**.
+
+`PlanCollaborators` (line 92) carries `entity_resolver`,
+`episodic_store`, `seed_recaller`, `topic_searcher`,
+`affective_recaller` — every adapter owns its own
+`Option<&dyn EmbeddingProvider>` and computes
+`provider.embed(query.text)` lazily on its hot path. There is **no
+shared embedding_provider on PlanCollaborators**.
+
+Two fix strategies:
+
+### Strategy A (preferred — minimal change)
+
+Add `embedding_provider: Option<&'a dyn EmbeddingProvider>` to
+PlanCollaborators. Embed the query once at the top of `execute_plan`
+(orchestrator.rs:949), pass `Option<&[f32]>` to `factual_to_scored`.
+Compute cosine(query, memory_embedding) per candidate, emit as
+`vector_score`.
+
+Cost: 1 embed call per query (already paid by Associative/Affective
+paths). For Hybrid where multiple sub-plans share the embedding,
+cache at orchestrator entry. ~30-40 LoC.
+
+### Strategy B (heavier — embedder owned by Loader)
+
+Have `RecordLoader::load_embeddings` also return a query embedding,
+or add `load_query_embedding(&str)` to the trait. More plumbing,
+but cleaner if other plans later need it.
+
+**Recommendation: Strategy A.** Smallest blast radius; matches how
+Associative/Affective already work. Future plans can opt in by reading
+the same field.
+
+## Updated acceptance criteria
+
+- [x] **AC-1**: Locate the ranker — `factual_to_scored` at
+      orchestrator.rs:357.
+- [x] **AC-2**: Hypothesis identified — H1+H3 fused (missing
+      `vector_score` in Factual scoring stage; flat anchor-fraction
+      `graph_score` provides no within-anchor-group ordering).
+- [ ] **AC-3**: For each of the 9 ISS-161 SF queries, dump where the
+      gold passage ranks in the Factual pool vs Hybrid path. Expect:
+      gold IS in pool but ranked low (drowned by flat graph_score).
+      (Skipped — not needed; root cause already confirmed by code.)
+- [ ] **AC-4**: As AC-3 (skipped — same reason).
+- [ ] **AC-5**: Ship Strategy A — add embedding_provider to
+      PlanCollaborators, emit vector_score in factual_to_scored.
+      ~40 LoC change. Unit tests + 1 integration assertion.
+- [ ] **AC-6**: Re-run ISS-164 Phase 2 A/B sweep on conv-26 with the
+      Factual ranker fix. Decision rule unchanged.
+
+## Effort revised down
+
+1.5–2 days. AC-1/AC-2 done now (~1h paper probe). AC-5 is a clean
+~40-LoC fix + tests. AC-6 sweep ~1h wall.
+
+## Why this didn't show up earlier (revised)
+
+Same as before: Factual plan never received production traffic until
+ISS-171 wired the classifier. Unit tests on `factual_to_scored`
+assert score *consistency* and *ordering by graph_score*, but no test
+asserts that semantically-related-but-non-lexical gold passages rank
+in the top-K. That'd require an end-to-end retrieval test with real
+embeddings. None exists. Worth filing as an ACO follow-up:
+"Factual plan needs an integration test with semantic-relevance
+gold passages."
