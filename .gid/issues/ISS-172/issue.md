@@ -1,6 +1,6 @@
 ---
 title: Factual plan ranking floor — 75% routing + 0.063 single-hop pre-channel, Factual subplan ranks worse than Hybrid fallback
-status: open
+status: resolved
 priority: P1
 severity: ranking-floor-too-low
 category: retrieval
@@ -15,6 +15,7 @@ relates_to: engram:ISS-171
 blocks:
 - engram:ISS-164
 - engram:ISS-148
+fixed_by: engram:ae4a2be
 ---
 
 ## Summary
@@ -326,3 +327,81 @@ in the top-K. That'd require an end-to-end retrieval test with real
 embeddings. None exists. Worth filing as an ACO follow-up:
 "Factual plan needs an integration test with semantic-relevance
 gold passages."
+
+---
+
+## AC-5 SHIPPED (commit engram:ae4a2be, 2026-05-27)
+
+Strategy A landed: `PlanCollaborators.embedding_provider`, single-shot
+query embed in both `execute_plan` and `run_factual_fallback_for_hybrid`,
+`factual_to_scored(query_embedding: Option<&[f32]>)` emits per-candidate
+`vector_score = Some(cosine(q, mem_emb))`, falling back to `Some(0.0)`
+for memories without embeddings (matching ISS-147 BM25-miss convention).
+
+3 ISS-172 regression tests pinned the contract:
+- `query_embedding_none_emits_none_vector_score`
+- `query_embedding_some_emits_cosine_vector_score`
+- `vector_score_breaks_ties_when_graph_scores_equal` (models the
+  LoCoMo failure mode — same anchor-fraction graph_score, differentiated
+  only by semantic similarity)
+
+1987/1987 lib tests + 11/11 v03 acceptance tests pass.
+
+## AC-6 RESULT: FIX SHIPPED BUT FLAT (STAMP 20260527T134341Z)
+
+Re-ran ISS-164 Phase 2 sweep (conv-26 K=10 temp=0 HyDE=off, A/B on
+entity_channel) against the fixed binary:
+
+| metric        | pre-ISS-171 baseline | post-ISS-172 Arm A | Δ vs baseline | post-ISS-172 Arm B | Δ vs A |
+|---------------|----------------------|--------------------|---------------|--------------------|--------|
+| overall       | 0.362                | **0.230**          | −13.2pp       | 0.224              | −0.6pp |
+| single-hop    | 0.219                | 0.125              | −9.4pp        | 0.031              | −9.4pp |
+| multi-hop     | 0.351                | 0.189              | −16.2pp       | 0.216              | +2.7pp |
+| open-domain   | 0.385                | 0.154              | −23.1pp       | 0.308              | +15.4pp|
+| temporal      | 0.443                | 0.314              | −12.9pp       | 0.300              | −1.4pp |
+
+Plan routing healthy (same as pre-fix): 113 factual / 30 hybrid /
+8 associative / 1 abstract — ISS-171 routing fix still works.
+
+**9 ISS-161 SF qids: A=0/9, B=0/9** (worse than pre-fix B=1/9).
+
+**55% of Arm A predictions are "I don't know"** — the LLM is getting
+candidates but the gold memory is not in the top-K. This is NOT just
+a ranker issue; the candidate pool itself is missing the right memories.
+
+### Verdict
+
+- AC-5 (ship vector_score signal): **DONE** — code is correct,
+  tests pin contract, no regression in test suite.
+- AC-6 (recover overall ≥ 0.34): **FAILED** — overall stays at 0.230.
+
+The vector_score signal alone is insufficient. The Factual plan's
+*candidate generation* (anchor-mention expansion + BM25 + embedding seed)
+is surfacing the wrong memories, regardless of how they're then ranked.
+
+### Downstream issue to file (ISS-173 candidate)
+
+ISS-172 fix shipped its intended scope, but the *next layer* — Factual
+plan's candidate generation strategy — needs to be the new target. Two
+sub-hypotheses to test:
+
+- **H4**: Anchor-mention expansion (Step 3b/3b' direct-anchor recovery
+  in the Associative channel — but Factual has its own analogue via
+  `memories_mentioning_entity`) returns the right anchors but the wrong
+  *mentioned-memories window*. Gold memory exists in the corpus but
+  isn't reachable through anchor→memory edges.
+- **H5**: The 100-180 candidate pool is dominated by anchor-rich but
+  semantically-irrelevant memories. Even with vector_score, the
+  graph_score floor (~0.15-0.3 per shared anchor) drowns out the gold
+  candidate's lone cosine ≈ 0.7 win.
+
+Empirical next step: for the same 9 SF qids, dump *whether the gold
+memory id appears in candidates at all* (before scoring). If miss →
+H4 (retrieval-side); if present-but-ranked-low → H5 (scoring-side,
+needs reweighting toward vector_score).
+
+### Status
+
+- ISS-172 → **resolved** (scope was AC-5 vector_score wiring; shipped)
+- ISS-164 → stays **falsified** (entity_channel still doesn't help SF)
+- New downstream issue needs filing for Factual candidate-generation
