@@ -1,8 +1,8 @@
 ---
 title: Plan classifier never routes single-fact LoCoMo questions to Factual plan (0/152, all go to Associative)
-status: open
+status: resolved
 priority: P1
-severity: fix-shipped-pending-bench
+severity: fix-shipped-validated
 category: retrieval
 created: 2026-05-27
 relates:
@@ -381,3 +381,29 @@ The single bug — `NullEntityLookup` in production — silently
 disables Factual plan routing for every query in every corpus,
 not just LoCoMo. Priority kept at P1; fix is mechanical and
 small.
+
+## 2026-05-27 09:30 — VERDICT: AC-6 PASSED, status=resolved
+
+ISS-164 Phase 2 A/B sweep (STAMP `20260527T112718Z`) ran on conv-26
+K=10 temp=0 HyDE=off with the ISS-171 fix in place.
+
+**plan_kind histogram (both arms identical)**:
+```
+114 factual    ← was 0/152 across all prior ISS-164 benches
+ 30 hybrid
+  7 associative
+  1 abstract
+```
+
+**ISS-171 AC-6 = PASSED.** Factual plan is reachable. The
+classifier routes to it on 75% of conv-26 queries — exactly what
+§3.1 specified. The architectural bug is fixed.
+
+**However**, the sweep also exposed a *downstream* bug:
+post-fix overall regressed −15pp vs the pre-ISS-171 Hybrid-fallback
+baseline. Filed as **ISS-172** (Factual plan ranking floor). That
+work is sequenced AFTER ISS-171 closes — ISS-171's responsibility
+ends with "Factual is reachable", which it is.
+
+`fixed_by = engram:7e0447e` (GraphEntityLookup adapter +
+api.rs:676 wire-up + memory.rs::graph_store_arc()).

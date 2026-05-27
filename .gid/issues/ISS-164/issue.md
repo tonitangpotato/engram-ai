@@ -458,3 +458,31 @@ don't help single-fact.
 - Consider whether `memories_mentioning_entity` edges, now
   populated, are being ranked correctly (BM25 vs embedding vs
   pure-anchor)
+
+## 2026-05-27 09:30 — Post-ISS-171 re-run: still falsified
+
+After ISS-171 unblocked Factual routing (114/152 conv-26 queries
+now hit Factual; was 0/152), re-ran Phase 2 A/B on STAMP
+`20260527T112718Z`:
+
+- SF (9 ISS-161 qids): A=0/9 → B=1/9, Δ=+1 — **STOP band** per
+  pre-reg rule (≥+2 ship / 0–1 STOP / <0 revert).
+- Single-hop category: A=2/32 → B=5/32, Δ=+3
+- Multi-hop: A=7/37 → B=8/37, Δ=+1
+- Open-domain: A=3/13 → B=3/13, Δ=0
+- Temporal: A=19/70 → B=19/70, Δ=0
+- Overall: 0.204 → 0.230, Δ=+2.6pp
+
+entity_channel produces a measurable lift (+3 single-hop, +1 SF
+on the ISS-161 set), but **both arms regressed −15pp vs the
+pre-ISS-171 Hybrid-fallback baseline (0.362)**. The channel is
+mildly helping a much-lowered floor — not enough signal to ship.
+
+**Final verdict: stays falsified, blocked on ISS-172.** Once
+Factual plan's internal ranking is fixed (ISS-172), re-run this
+sweep. Decision rule then becomes: if post-fix Arm A overall ≥ 0.34
+AND B−A SF ≥ +2 → ship Phase 1, reopen with corroborated verdict.
+
+Phase 1 code (entity_channel scaffolding) stays merged and
+locked-off (`FusionConfig::default().entity_channel_enabled =
+false`). No revert.
