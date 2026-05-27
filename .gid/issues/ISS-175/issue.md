@@ -136,6 +136,99 @@ flipping the default.
 - [ ] AC-5: Add ENGRAM_BENCH_FUSION_CONFIG env var to engram-bench so
       future weight changes are A/B-able without redeploy.
 
+## Probe verification (2026-05-27)
+
+Empirical probe on conv-26, all 4 Factual-routed SF qids (q40/q43/q71/q75).
+Full findings: `artifacts/probe-conv26-findings.md`. Highlights:
+
+### `graph_score` distribution per qid (confirms Bug 1)
+
+| qid | n   | g=1.0     | g=0.67 | g=0.5     | g=0.33    |
+|-----|-----|-----------|--------|-----------|-----------|
+| q40 | 161 | 30 (19%)  | —      | 131 (81%) | —         |
+| q43 | 249 | 110 (44%) | —      | 139 (56%) | —         |
+| q71 | 268 | 18 (7%)   | 84 (31%) | —     | 166 (62%) |
+| q75 | 192 | **192 (100%)** | — | —     | —         |
+
+q75 is the textbook 1-anchor collapse case predicted by Bug 1. q40/q43
+saturate the upper half. Only q71 has natural spread.
+
+### Aggregate signal separation (5 gold rows, 865 non-gold)
+
+| field         | gold mean | non mean | Δ      | sep ratio |
+|---------------|-----------|----------|--------|-----------|
+| graph_score   | 0.79      | 0.79     | +0.00  | **0× — dead signal** |
+| bm25_score    | 0.10      | 0.013    | +0.09  | **7.5× — strongest predictor** |
+| vector_score  | 0.57      | 0.52     | +0.05  | mild |
+
+bm25_score is the **strongest gold discriminator** but the `max(vec,bm25)`
+operator silently discards it: when vec > bm25 (true for all 4 gold rows
+where vec=0.55-0.68 vs bm25=0.0-0.30), bm25's contribution is **zero**.
+
+This adds a **Bug 3** to the analysis:
+
+### Bug 3: `text = max(vector, bm25)` discards the discriminating signal
+
+`combiner.rs:~150` (factual fusion):
+```rust
+let text = max_or_zero(scores.vector_score, scores.bm25_score);
+```
+On gold candidates for q40/q71, the rare lexical hit ("beach",
+"Nicole") fires bm25 to 0.25-0.30 — well above the non-gold noise
+floor of 0.013. But because the gold's vector_score is also high
+(0.62), `max()` returns vector and the +7.5× bm25 signal is erased.
+
+This compounds with Bug 1 (graph saturated) and Bug 2 (vector has no
+own channel): the only signal that genuinely separates gold from
+noise is gated behind an aggregation that throws it away.
+
+### Recommendation update
+
+Option A (reweight) **alone** addresses Bugs 1+2 but not Bug 3. Recommend
+extending it to also replace `text = max(vec, bm25)` with a
+sum-with-evidence-bonus aggregate for Factual:
+
+```rust
+fn factual_text_score(vec: Option<f64>, bm25: Option<f64>) -> f64 {
+    let v = vec.unwrap_or(0.0);
+    let b = bm25.unwrap_or(0.0);
+    let base = 0.7 * v + 0.3 * b;
+    let bonus = if b > 0.05 { 0.15 } else { 0.0 };  // rare-hit signal
+    (base + bonus).min(1.0)
+}
+```
+
+This preserves the §5.2 "avoid double-counting correlated signals"
+intent in the dense case (when bm25 < 0.05, behaves like 0.7×vec),
+but adds an evidence bonus when bm25 fires on rare query tokens.
+
+Predicted lifts under combined fix (reweight + new text aggregate):
+- q40: ~35% relative score deficit reduction (rank ~32 → ~20)
+- q71: ~18% deficit reduction (rank ~107 → ~80) — still drowned
+- q43: 0% (gold and top-1 both have g=1.0, both have bm25=0; needs ISS-174)
+- q75: 0% (no episode states "three kids" — generator failure, not fusion)
+
+**Conclusion: ISS-175 alone won't hit AC-5a.** Must stack with:
+- ISS-174 (reranker for q43-style intra-cluster ties)
+- Entity-channel re-enable (ISS-164 was inert in default-off mode)
+- Possibly bm25_pool expansion (ISS-152 sweep was negative pre-Bug 3 fix)
+
+### ISS-174 architecture decision (option b)
+
+Probe confirms reweighting belongs in `combiner::fuse_factual()`, not
+upstream (would affect all plans) or downstream (would re-fuse already-
+fused output). File ISS-174 with scope:
+
+1. `FusionConfig.factual_reweight: bool` (serde-default false → byte-
+   identity preserved)
+2. `combiner::fuse_factual_v2()` with new weights AND new text aggregate
+3. 3 unit tests: byte-identity at flag=false, lift verification at flag=true
+4. Engram-bench `ENGRAM_BENCH_FUSION_CONFIG=iss175` env var
+
 ## Status
 
-Filed. P1 because it directly blocks ISS-148 AC-5a recovery.
+Probe complete (2026-05-27). Findings filed at `artifacts/probe-conv26-findings.md`.
+Issue extended with Bug 3 + revised recommendation.
+P1 because it directly blocks ISS-148 AC-5a recovery.
+Next: file ISS-174 (architecture scaffolding), then ISS-175 ships the
+formula.
