@@ -8,6 +8,180 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::error::Error;
 use std::time::Duration;
 
+// ============================================================================
+// ISS-176: Retry / backoff for transient extractor HTTP failures
+// ============================================================================
+//
+// Why this lives here, not in `Memory::store_raw`:
+// By the time the error reaches `store_raw` it has been wrapped in
+// `Quarantined(ExtractorError(...))` which has discarded the response
+// status code — we can't classify retryability after the fact. The
+// retry must happen inside the HTTP call site.
+//
+// Why not pull in `wiremock` / `httpmock`:
+// We don't want a dev-dependency on an HTTP mock server just to test
+// "did we retry?". Instead we extract the retry *decision* into a pure
+// function (`classify_retry`) that is exhaustively unit-tested, and
+// leave the I/O loop thin. Empirical validation of the real network
+// path is AC-8 (ISS-175 probe re-run), not a unit test.
+
+/// Tunable retry policy shared by the Anthropic and Ollama extractors.
+///
+/// Defaults (per ISS-176 design):
+/// - `max_retries = 3`         → 4 total attempts before giving up
+/// - `initial_backoff_ms = 500`
+/// - `backoff_multiplier = 3.0`
+/// - `max_backoff_ms = 10000`  → caps the third retry
+/// - `enable_jitter = true`    → +/- 50% uniform jitter on every backoff
+///
+/// Setting `max_retries = 0` preserves pre-ISS-176 fail-fast behaviour
+/// byte-identically (used by tests that need to assert specific failure
+/// semantics).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    pub max_retries: u8,
+    pub initial_backoff_ms: u64,
+    pub backoff_multiplier: f64,
+    pub max_backoff_ms: u64,
+    pub enable_jitter: bool,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            initial_backoff_ms: 500,
+            backoff_multiplier: 3.0,
+            max_backoff_ms: 10_000,
+            enable_jitter: true,
+        }
+    }
+}
+
+impl RetryConfig {
+    /// Disable retries entirely. Used by tests that need to observe
+    /// the raw (single-attempt) failure path.
+    pub fn off() -> Self {
+        Self {
+            max_retries: 0,
+            ..Self::default()
+        }
+    }
+}
+
+/// Decision returned by `classify_retry` for a single attempt.
+///
+/// `RetryAfter(Duration)` carries the *exact* sleep duration the caller
+/// should observe before the next attempt. The caller does not need
+/// to compute jitter or check `max_backoff_ms` again — those are
+/// applied here.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RetryDecision {
+    /// Sleep this long, then try again. `attempt` is already incremented
+    /// for the next call.
+    RetryAfter(Duration),
+    /// Give up. Either the status is non-retryable, or we've exhausted
+    /// `max_retries`. The caller should return the underlying error.
+    GiveUp,
+}
+
+/// Failure category. `None` for `status` means a transport-level failure
+/// (TCP/TLS/DNS — no HTTP response was received).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FailureKind {
+    /// `reqwest::Error` with no status — DNS, TCP, TLS, connection-reset.
+    Transport,
+    /// HTTP response with a non-2xx status code.
+    HttpStatus(u16),
+}
+
+/// Pure retry classifier. No I/O, no clock, no RNG — fully unit-testable.
+///
+/// `attempt` is 1-indexed: `attempt = 1` means the call just failed once.
+/// Returns `GiveUp` when `attempt > max_retries` or when the failure is
+/// permanent (4xx that isn't 408/429/auth).
+///
+/// Retryability rules (per ISS-176 Design table):
+/// - Transport error                       → retryable
+/// - 5xx (500/502/503/504)                 → retryable
+/// - 429 (rate-limited)                    → retryable
+/// - 408 (request timeout)                 → retryable
+/// - 401/403 (auth)                        → retryable but capped (observed
+///                                           empirically transient on OAuth;
+///                                           we let the normal max_retries
+///                                           handle the cap)
+/// - Any other 4xx (400, 404, 422, …)      → permanent, give up immediately
+pub fn classify_retry(
+    failure: FailureKind,
+    attempt: u8,
+    cfg: &RetryConfig,
+) -> RetryDecision {
+    // Exhausted budget?
+    if attempt > cfg.max_retries {
+        return RetryDecision::GiveUp;
+    }
+
+    let retryable = match failure {
+        FailureKind::Transport => true,
+        FailureKind::HttpStatus(code) => match code {
+            408 | 429 => true,                  // timeout / rate-limited
+            500..=599 => true,                  // upstream brown-out
+            401 | 403 => true,                  // observed transient on OAuth
+            _ => false,                         // 400, 404, 422, … permanent
+        },
+    };
+
+    if !retryable {
+        return RetryDecision::GiveUp;
+    }
+
+    RetryDecision::RetryAfter(compute_backoff(attempt, cfg))
+}
+
+/// Pure backoff calculator. Exponential growth, capped, optional jitter.
+///
+/// Schedule with defaults (initial=500ms, multiplier=3.0, cap=10s):
+///   attempt 1 → 500ms   (+ 0..250 jitter)
+///   attempt 2 → 1500ms  (+ 0..750 jitter)
+///   attempt 3 → 4500ms  (+ 0..2250 jitter)
+///   attempt 4 → 10000ms (capped, + 0..5000 jitter)
+///
+/// Jitter is *additive uniform* in [0, base/2). We don't use symmetric
+/// jitter because we never want to shrink the backoff below the
+/// exponential floor — quota windows reset on absolute time, not
+/// relative.
+fn compute_backoff(attempt: u8, cfg: &RetryConfig) -> Duration {
+    // attempt is 1-indexed; first retry uses initial_backoff_ms unscaled.
+    let exp = (attempt as i32).saturating_sub(1).max(0);
+    let raw = (cfg.initial_backoff_ms as f64) * cfg.backoff_multiplier.powi(exp);
+    let capped = raw.min(cfg.max_backoff_ms as f64);
+
+    let base_ms = capped as u64;
+    let jitter_ms = if cfg.enable_jitter {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        rng.gen_range(0..=(base_ms / 2).max(1))
+    } else {
+        0
+    };
+    Duration::from_millis(base_ms + jitter_ms)
+}
+
+/// Classify a `reqwest::Error` into a `FailureKind` for the retry layer.
+///
+/// `reqwest::Error::status()` returns `None` for transport-level errors
+/// (DNS, TCP, TLS, connection-reset) and `Some(code)` only when the
+/// error came from a non-2xx response — but in our code path we only
+/// hit `?` on `send()` which fails for transport reasons. Status-based
+/// errors are surfaced by the explicit `response.status().is_success()`
+/// check after `send()` returns Ok.
+pub(crate) fn classify_reqwest_error(err: &reqwest::Error) -> FailureKind {
+    match err.status() {
+        Some(s) => FailureKind::HttpStatus(s.as_u16()),
+        None => FailureKind::Transport,
+    }
+}
+
 /// Deserializer for dimensional fields that tolerates LLM output variance.
 ///
 /// LLMs occasionally express "empty dimension" as `[]`, `null`, or `""`
@@ -281,6 +455,11 @@ pub struct AnthropicExtractorConfig {
     pub max_tokens: usize,
     /// Request timeout in seconds (default: 30)
     pub timeout_secs: u64,
+    /// Retry / backoff policy for transient HTTP failures (ISS-176).
+    /// Defaults retry up to 3 times on transport errors, 5xx, 429, and
+    /// transient auth errors. Set to `RetryConfig::off()` to disable.
+    #[serde(default)]
+    pub retry: RetryConfig,
 }
 
 impl Default for AnthropicExtractorConfig {
@@ -290,6 +469,7 @@ impl Default for AnthropicExtractorConfig {
             api_url: "https://api.anthropic.com".to_string(),
             max_tokens: 1024,
             timeout_secs: 30,
+            retry: RetryConfig::default(),
         }
     }
 }
@@ -393,19 +573,79 @@ impl MemoryExtractor for AnthropicExtractor {
         });
         
         let url = format!("{}/v1/messages", self.config.api_url);
-        
-        let response = self.client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body)
-            .send()?;
-        
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            return Err(format!("Anthropic API error {}: {}", status, body).into());
-        }
-        
+
+        // ISS-176: retry loop. `attempt` is 1-indexed and counts attempts
+        // that have already FAILED — we sleep and increment between
+        // attempts. Loop exits via:
+        //   - Ok(response) with 2xx → fall through to parse
+        //   - Ok(response) with retryable status → log, sleep, retry
+        //   - Ok(response) with permanent status → return Err immediately
+        //   - Err(transport) retryable → log, sleep, retry
+        //   - GiveUp on either path → return the last error
+        let response = {
+            let mut attempt: u8 = 0;
+            loop {
+                let headers = self.build_headers()?;
+                let send_result = self.client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send();
+
+                match send_result {
+                    Ok(resp) if resp.status().is_success() => break resp,
+                    Ok(resp) => {
+                        let status_code = resp.status().as_u16();
+                        attempt = attempt.saturating_add(1);
+                        match classify_retry(
+                            FailureKind::HttpStatus(status_code),
+                            attempt,
+                            &self.config.retry,
+                        ) {
+                            RetryDecision::RetryAfter(delay) => {
+                                log::warn!(
+                                    "Anthropic API HTTP {} (attempt {}/{}), retrying in {}ms",
+                                    status_code,
+                                    attempt,
+                                    self.config.retry.max_retries,
+                                    delay.as_millis()
+                                );
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            RetryDecision::GiveUp => {
+                                let status = resp.status();
+                                let body = resp.text().unwrap_or_default();
+                                return Err(format!(
+                                    "Anthropic API error {}: {}",
+                                    status, body
+                                )
+                                .into());
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        let failure = classify_reqwest_error(&err);
+                        attempt = attempt.saturating_add(1);
+                        match classify_retry(failure, attempt, &self.config.retry) {
+                            RetryDecision::RetryAfter(delay) => {
+                                log::warn!(
+                                    "Anthropic transport error (attempt {}/{}): {} — retrying in {}ms",
+                                    attempt,
+                                    self.config.retry.max_retries,
+                                    err,
+                                    delay.as_millis()
+                                );
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            RetryDecision::GiveUp => return Err(err.into()),
+                        }
+                    }
+                }
+            }
+        };
+
         let response_json: serde_json::Value = response.json()?;
         
         // Extract the text content from the response
@@ -430,6 +670,12 @@ pub struct OllamaExtractorConfig {
     pub model: String,
     /// Request timeout in seconds (default: 60)
     pub timeout_secs: u64,
+    /// Retry / backoff policy for transient HTTP failures (ISS-176).
+    /// Ollama is local so failures are rarer, but the contract is
+    /// uniform with Anthropic. Defaults to the standard 3-retry
+    /// exponential schedule.
+    #[serde(default)]
+    pub retry: RetryConfig,
 }
 
 impl Default for OllamaExtractorConfig {
@@ -438,6 +684,7 @@ impl Default for OllamaExtractorConfig {
             host: "http://localhost:11434".to_string(),
             model: "llama3.2:3b".to_string(),
             timeout_secs: 60,
+            retry: RetryConfig::default(),
         }
     }
 }
@@ -495,19 +742,74 @@ impl MemoryExtractor for OllamaExtractor {
         });
         
         let url = format!("{}/api/chat", self.config.host);
-        
-        let response = self.client
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()?;
-        
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            return Err(format!("Ollama API error {}: {}", status, body).into());
-        }
-        
+
+        // ISS-176: retry loop. Mirrors AnthropicExtractor::extract — see
+        // there for the loop contract. Ollama is local so transport
+        // failures are rare, but the uniform retry policy means a
+        // momentary `ollama serve` blip doesn't kill a bench run.
+        let response = {
+            let mut attempt: u8 = 0;
+            loop {
+                let send_result = self.client
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send();
+
+                match send_result {
+                    Ok(resp) if resp.status().is_success() => break resp,
+                    Ok(resp) => {
+                        let status_code = resp.status().as_u16();
+                        attempt = attempt.saturating_add(1);
+                        match classify_retry(
+                            FailureKind::HttpStatus(status_code),
+                            attempt,
+                            &self.config.retry,
+                        ) {
+                            RetryDecision::RetryAfter(delay) => {
+                                log::warn!(
+                                    "Ollama API HTTP {} (attempt {}/{}), retrying in {}ms",
+                                    status_code,
+                                    attempt,
+                                    self.config.retry.max_retries,
+                                    delay.as_millis()
+                                );
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            RetryDecision::GiveUp => {
+                                let status = resp.status();
+                                let body = resp.text().unwrap_or_default();
+                                return Err(format!(
+                                    "Ollama API error {}: {}",
+                                    status, body
+                                )
+                                .into());
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        let failure = classify_reqwest_error(&err);
+                        attempt = attempt.saturating_add(1);
+                        match classify_retry(failure, attempt, &self.config.retry) {
+                            RetryDecision::RetryAfter(delay) => {
+                                log::warn!(
+                                    "Ollama transport error (attempt {}/{}): {} — retrying in {}ms",
+                                    attempt,
+                                    self.config.retry.max_retries,
+                                    err,
+                                    delay.as_millis()
+                                );
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            RetryDecision::GiveUp => return Err(err.into()),
+                        }
+                    }
+                }
+            }
+        };
+
         let response_json: serde_json::Value = response.json()?;
         
         // Extract the message content from Ollama response
@@ -886,5 +1188,178 @@ Hope this helps!"#;
         let extractor = AnthropicExtractor::new(&api_key, false);
         let facts = extractor.extract("我昨天和小明一起去吃了火锅，很好吃。小明说他下周要去上海出差。").unwrap();
         println!("Extracted facts: {:?}", facts);
+    }
+
+    // ----------------------------------------------------------------------
+    // ISS-176 retry classifier tests — pure-function coverage of the retry
+    // decision matrix. No HTTP / sleeps involved; the I/O loop that consumes
+    // these decisions is exercised empirically by the ISS-175 probe re-run
+    // (AC-8).
+    // ----------------------------------------------------------------------
+
+    fn assert_retry(decision: &RetryDecision, expected_base_ms: u64, jitter_max_ms: u64) {
+        match decision {
+            RetryDecision::RetryAfter(d) => {
+                let actual = d.as_millis() as u64;
+                let max_allowed = expected_base_ms + jitter_max_ms;
+                assert!(
+                    actual >= expected_base_ms && actual <= max_allowed,
+                    "expected retry delay in [{expected_base_ms}, {max_allowed}] ms, got {actual}"
+                );
+            }
+            RetryDecision::GiveUp => panic!("expected RetryAfter, got GiveUp"),
+        }
+    }
+
+    fn assert_give_up(decision: &RetryDecision) {
+        assert!(
+            matches!(decision, RetryDecision::GiveUp),
+            "expected GiveUp, got {decision:?}"
+        );
+    }
+
+    #[test]
+    fn iss176_transport_error_retries_with_default_config() {
+        let cfg = RetryConfig::default();
+        // attempt 1 just failed → next backoff is initial_backoff_ms (500)
+        // jitter is [0, base/2] = [0, 250]
+        let decision = classify_retry(FailureKind::Transport, 1, &cfg);
+        assert_retry(&decision, 500, 250);
+    }
+
+    #[test]
+    fn iss176_backoff_grows_exponentially() {
+        let cfg = RetryConfig {
+            enable_jitter: false,
+            ..RetryConfig::default()
+        };
+        // Without jitter, exact values are deterministic.
+        assert_eq!(
+            classify_retry(FailureKind::Transport, 1, &cfg),
+            RetryDecision::RetryAfter(Duration::from_millis(500))
+        );
+        assert_eq!(
+            classify_retry(FailureKind::Transport, 2, &cfg),
+            RetryDecision::RetryAfter(Duration::from_millis(1500))
+        );
+        assert_eq!(
+            classify_retry(FailureKind::Transport, 3, &cfg),
+            RetryDecision::RetryAfter(Duration::from_millis(4500))
+        );
+    }
+
+    #[test]
+    fn iss176_backoff_capped_at_max() {
+        let cfg = RetryConfig {
+            enable_jitter: false,
+            max_retries: 10,
+            ..RetryConfig::default()
+        };
+        // attempt 4 → 500 * 3^3 = 13500ms, but capped at 10000ms
+        assert_eq!(
+            classify_retry(FailureKind::Transport, 4, &cfg),
+            RetryDecision::RetryAfter(Duration::from_millis(10_000))
+        );
+        // attempt 5 → still capped
+        assert_eq!(
+            classify_retry(FailureKind::Transport, 5, &cfg),
+            RetryDecision::RetryAfter(Duration::from_millis(10_000))
+        );
+    }
+
+    #[test]
+    fn iss176_exhausted_budget_gives_up() {
+        let cfg = RetryConfig {
+            max_retries: 3,
+            ..RetryConfig::default()
+        };
+        // attempt 4 = one past max_retries → give up
+        assert_give_up(&classify_retry(FailureKind::Transport, 4, &cfg));
+        assert_give_up(&classify_retry(FailureKind::HttpStatus(503), 4, &cfg));
+        assert_give_up(&classify_retry(FailureKind::HttpStatus(429), 4, &cfg));
+    }
+
+    #[test]
+    fn iss176_retries_disabled_gives_up_immediately() {
+        let cfg = RetryConfig::off();
+        // Even on attempt 1, max_retries=0 means we already exhausted budget.
+        assert_give_up(&classify_retry(FailureKind::Transport, 1, &cfg));
+        assert_give_up(&classify_retry(FailureKind::HttpStatus(503), 1, &cfg));
+    }
+
+    #[test]
+    fn iss176_5xx_statuses_retry() {
+        let cfg = RetryConfig::default();
+        for status in [500_u16, 502, 503, 504, 599] {
+            let decision = classify_retry(FailureKind::HttpStatus(status), 1, &cfg);
+            assert!(
+                matches!(decision, RetryDecision::RetryAfter(_)),
+                "expected retry on {status}, got {decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn iss176_429_and_408_retry() {
+        let cfg = RetryConfig::default();
+        assert!(matches!(
+            classify_retry(FailureKind::HttpStatus(429), 1, &cfg),
+            RetryDecision::RetryAfter(_)
+        ));
+        assert!(matches!(
+            classify_retry(FailureKind::HttpStatus(408), 1, &cfg),
+            RetryDecision::RetryAfter(_)
+        ));
+    }
+
+    #[test]
+    fn iss176_auth_errors_retry_within_budget() {
+        let cfg = RetryConfig::default();
+        // 401 and 403 are observed transient on OAuth — retry within budget.
+        assert!(matches!(
+            classify_retry(FailureKind::HttpStatus(401), 1, &cfg),
+            RetryDecision::RetryAfter(_)
+        ));
+        assert!(matches!(
+            classify_retry(FailureKind::HttpStatus(403), 1, &cfg),
+            RetryDecision::RetryAfter(_)
+        ));
+        // But still bounded by max_retries.
+        assert_give_up(&classify_retry(FailureKind::HttpStatus(401), 4, &cfg));
+    }
+
+    #[test]
+    fn iss176_permanent_4xx_gives_up_immediately() {
+        let cfg = RetryConfig::default();
+        // 400 bad request, 404 model not found, 422 unprocessable → no point retrying.
+        for status in [400_u16, 404, 405, 410, 422, 451] {
+            assert_give_up(&classify_retry(FailureKind::HttpStatus(status), 1, &cfg));
+        }
+    }
+
+    #[test]
+    fn iss176_jitter_stays_within_bounds() {
+        let cfg = RetryConfig::default();
+        // Sample many times; every sample must be within [base, base + base/2].
+        for _ in 0..100 {
+            let d = classify_retry(FailureKind::Transport, 1, &cfg);
+            assert_retry(&d, 500, 250);
+        }
+    }
+
+    #[test]
+    fn iss176_retry_config_off_preserves_pre_fix_behaviour() {
+        let cfg = RetryConfig::off();
+        assert_eq!(cfg.max_retries, 0);
+        // Every attempt → GiveUp, regardless of failure kind.
+        for failure in [
+            FailureKind::Transport,
+            FailureKind::HttpStatus(500),
+            FailureKind::HttpStatus(429),
+            FailureKind::HttpStatus(401),
+            FailureKind::HttpStatus(400),
+        ] {
+            assert_give_up(&classify_retry(failure, 1, &cfg));
+        }
     }
 }
