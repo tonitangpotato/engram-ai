@@ -98,6 +98,16 @@ fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + S
         }
     };
 
+    // ISS-167: parse via `serde_json::Value` first, then convert per-element.
+    // The strict `Deserialize` derive on `RawTriple` rejected duplicate fields,
+    // which Haiku reliably emits when a single noun fits two `EntityKind`s
+    // (e.g. `{"object_kind": "Artifact", "object_kind": "Concept"}`). Going
+    // through `Value` silently takes the LAST value on duplicate keys
+    // (matches JSON.parse + every permissive JSON impl) and lets us recover
+    // 100% of these previously-dropped triples.
+    //
+    // Cost: one extra allocation per triple (the intermediate `Value::Object`).
+    // Acceptable — extractor runs at ~1 call per episode, not per query.
     #[derive(serde::Deserialize)]
     struct RawTriple {
         subject: String,
@@ -110,33 +120,70 @@ fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + S
         object_kind: Option<String>,
     }
 
-    match serde_json::from_str::<Vec<RawTriple>>(json_to_parse) {
-        Ok(raw_triples) => {
-            let triples = raw_triples
-                .into_iter()
-                .filter(|t| !t.subject.is_empty() && !t.object.is_empty())
-                .map(|t| {
-                    let subject_kind_hint = parse_kind_hint(t.subject_kind.as_deref());
-                    let object_kind_hint = parse_kind_hint(t.object_kind.as_deref());
-                    let mut triple = Triple::new(
-                        t.subject,
-                        Predicate::from_str_lossy(&t.predicate),
-                        t.object,
-                        t.confidence,
-                    );
-                    triple.source = TripleSource::Llm;
-                    triple.subject_kind_hint = subject_kind_hint;
-                    triple.object_kind_hint = object_kind_hint;
-                    triple
-                })
-                .collect();
-            Ok(triples)
-        }
+    let value: serde_json::Value = match serde_json::from_str(json_to_parse) {
+        Ok(v) => v,
         Err(e) => {
-            log::warn!("Failed to parse triple extraction JSON: {} - content: {}", e, json_to_parse);
-            Ok(vec![])
+            log::warn!(
+                "Failed to parse triple extraction JSON (not valid JSON): {} - content: {}",
+                e,
+                json_to_parse
+            );
+            return Ok(vec![]);
+        }
+    };
+
+    let array = match value {
+        serde_json::Value::Array(a) => a,
+        other => {
+            log::warn!(
+                "Triple extraction response was valid JSON but not an array: {:?}",
+                other
+            );
+            return Ok(vec![]);
+        }
+    };
+
+    let mut raw_triples: Vec<RawTriple> = Vec::with_capacity(array.len());
+    let mut decode_errors: usize = 0;
+    for v in array {
+        match serde_json::from_value::<RawTriple>(v) {
+            Ok(rt) => raw_triples.push(rt),
+            Err(e) => {
+                decode_errors += 1;
+                log::warn!(
+                    "Triple extraction: dropping malformed element ({}); continuing with the rest",
+                    e
+                );
+            }
         }
     }
+    if decode_errors > 0 {
+        log::warn!(
+            "Triple extraction: {} element(s) dropped due to decode errors out of {} total",
+            decode_errors,
+            decode_errors + raw_triples.len()
+        );
+    }
+
+    let triples = raw_triples
+        .into_iter()
+        .filter(|t| !t.subject.is_empty() && !t.object.is_empty())
+        .map(|t| {
+            let subject_kind_hint = parse_kind_hint(t.subject_kind.as_deref());
+            let object_kind_hint = parse_kind_hint(t.object_kind.as_deref());
+            let mut triple = Triple::new(
+                t.subject,
+                Predicate::from_str_lossy(&t.predicate),
+                t.object,
+                t.confidence,
+            );
+            triple.source = TripleSource::Llm;
+            triple.subject_kind_hint = subject_kind_hint;
+            triple.object_kind_hint = object_kind_hint;
+            triple
+        })
+        .collect();
+    Ok(triples)
 }
 
 /// Map the LLM's `subject_kind` / `object_kind` string (from `RawTriple`) to
@@ -471,5 +518,108 @@ mod tests {
         let triples = parse_triple_response(response).unwrap();
         assert_eq!(triples.len(), 1);
         assert_eq!(triples[0].subject_kind_hint, None); // "Animal" dropped
+    }
+
+    // ISS-167: parser tolerance for duplicate keys ---------------------------
+    //
+    // Haiku reliably emits duplicate `object_kind` (and occasionally
+    // `subject_kind`) keys when a single noun fits two `EntityKind`s
+    // simultaneously (e.g. "necklace" = Artifact AND Concept). Before
+    // ISS-167 the strict `Deserialize` impl rejected the entire array on
+    // first duplicate, dropping 100% of real Haiku output in production.
+    // Parser now goes through `serde_json::Value`, which takes the LAST
+    // value on duplicate keys (JSON.parse semantics).
+
+    #[test]
+    fn parse_triple_response_tolerates_duplicate_object_kind() {
+        // Verbatim Haiku payload from /tmp/iss166-probe-validate.log.
+        let response = r#"[
+            {
+                "subject": "organization",
+                "predicate": "implements",
+                "object": "inclusivity",
+                "confidence": 0.85,
+                "object_kind": "Organization",
+                "object_kind": "Concept"
+            }
+        ]"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(triples.len(), 1, "expected 1 triple, got: {triples:?}");
+        // Last value wins → "Concept".
+        assert_eq!(triples[0].object_kind_hint, Some(EntityKind::Concept));
+        assert_eq!(triples[0].subject, "organization");
+        assert_eq!(triples[0].object, "inclusivity");
+    }
+
+    #[test]
+    fn parse_triple_response_tolerates_duplicate_subject_kind() {
+        // Symmetric case: duplicate `subject_kind`.
+        let response = r#"[
+            {
+                "subject": "necklace",
+                "predicate": "related_to",
+                "object": "family",
+                "confidence": 0.8,
+                "subject_kind": "Artifact",
+                "subject_kind": "Concept",
+                "object_kind": "Concept"
+            }
+        ]"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].subject_kind_hint, Some(EntityKind::Concept));
+        assert_eq!(triples[0].object_kind_hint, Some(EntityKind::Concept));
+    }
+
+    #[test]
+    fn parse_triple_response_tolerates_duplicate_core_fields() {
+        // If the LLM duplicates a core field (subject/predicate/object/
+        // confidence), take the last — consistent with the kind-field
+        // policy. We don't want a single duplicate to nuke the whole array.
+        let response = r#"[
+            {
+                "subject": "wrong",
+                "subject": "right",
+                "predicate": "uses",
+                "object": "X",
+                "confidence": 0.5,
+                "confidence": 0.9
+            }
+        ]"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].subject, "right");
+        assert!((triples[0].confidence - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_triple_response_mixed_valid_and_malformed_elements_keeps_valid() {
+        // Real Haiku output sometimes mixes well-formed triples with one
+        // truly malformed element (e.g. missing `predicate`). Old parser
+        // failed the whole array; new parser drops only the bad element.
+        let response = r#"[
+            {"subject": "A", "predicate": "uses", "object": "B", "confidence": 0.9},
+            {"subject": "C", "object": "D", "confidence": 0.8},
+            {"subject": "E", "predicate": "leads_to", "object": "F", "confidence": 0.7, "object_kind": "Concept", "object_kind": "Topic"}
+        ]"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(triples.len(), 2, "valid + tolerated = 2; bad one dropped");
+        assert_eq!(triples[0].subject, "A");
+        assert_eq!(triples[1].subject, "E");
+        assert_eq!(triples[1].object_kind_hint, Some(EntityKind::Topic));
+    }
+
+    #[test]
+    fn parse_triple_response_not_an_array_returns_empty() {
+        // Defensive: if Haiku ever responds with a non-array top-level value
+        // that contains no `[...]` substring at all, we log + return empty
+        // rather than panic. (Note: the upstream `find('[')..rfind(']')`
+        // slice in `parse_triple_response` will *extract* an array embedded
+        // inside a wrapping object — that's intentional permissive
+        // behaviour, not what this test guards. This guards the truly-no-
+        // array case.)
+        let response = r#"{"error": "no triples found"}"#;
+        let triples = parse_triple_response(response).expect("must not error");
+        assert!(triples.is_empty());
     }
 }
