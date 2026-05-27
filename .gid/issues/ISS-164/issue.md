@@ -1,6 +1,6 @@
 ---
 title: GraphEntityResolver wired but classifier never routes to Factual plan (0/152 on conv-26)
-status: in_question
+status: falsified
 priority: P1
 severity: architecture-gap
 category: retrieval
@@ -15,7 +15,7 @@ relates:
 - ISS-166
 discovered_in: ISS-161 root-cause audit 2026-05-26
 falsified_by: ISS-165
-blocked_by: ISS-165
+blocked_by: ''
 ---
 
 ## Summary
@@ -361,3 +361,100 @@ Phase 1 code (commits 77ef3f3 + ebc9adf engram, 908a83d
 engram-bench) **remains unreverted** — `FusionConfig::locked()`
 default `false` keeps it inert; we need the instrumentation in
 place for the post-ISS-165-fix re-run.
+
+## 2026-05-27 — Phase 2 RE-RUN VERDICT (post-ISS-165 fix, falsified)
+
+### Run
+
+- **Sweep STAMP**: `20260527T051146Z`
+- **Substrate**: `ENGRAM_BENCH_PIPELINE_POOL=1` (engram-bench:bfb1115)
+  → 666 graph_entities populated per arm
+- **Resolver**: token n-gram mention extractor (engram:a5b0407) →
+  postfix probe confirms 9/9 single-fact queries anchor on real
+  entities (Caroline, Melanie, art, book, etc., 18 total anchors)
+- **Envelope**: conv-26, K=10, temp=0, HyDE=off, MMR=off,
+  cross-encoder=off — single-axis A/B on `ENGRAM_BENCH_ENTITY_CHANNEL`
+- **Bench commit**: engram-bench:f28b41d
+- **Engram commit**: engram:a5b0407
+
+### Results
+
+Aggregate (n=152):
+
+| metric       | A (off)  | B (on)   | Δ       |
+|--------------|----------|----------|---------|
+| overall      | 0.3289   | 0.3289   | +0.00pp |
+| single-hop   | 0.2188   | 0.2188   | +0.00pp |
+| multi-hop    | 0.3243   | 0.3514   | +2.70pp |
+| open-domain  | 0.3077   | 0.2308   | −7.69pp |
+| temporal     | 0.3857   | 0.3857   | +0.00pp |
+
+Single-fact n=9 sub-bucket (ISS-161 set: q3 q7 q11 q37 q40 q43 q71 q75 q76):
+
+| arm | single-fact |
+|-----|-------------|
+| A (channel=off) | 0/9 |
+| B (channel=on)  | 0/9 |
+| Δ               | +0  |
+
+Score flips overall (n=152): 5 A-only correct, 5 B-only correct.
+Symmetric noise — no signal.
+
+### Decision (per script header decision rule)
+
+`B − A single-fact ∈ {0, +1}` → **STOP, file root-cause**.
+ISS-164 entity_channel direction is **falsified** in the
+single-fact bucket where it was supposed to help.
+
+### What this means
+
+The resolver fix (ISS-165) and the harness fix (ISS-166) are both
+real and correct — anchors are populated, anchors are found. But
+**finding the right anchors does not by itself convert
+single-fact questions** in the current Factual / Associative plan
+pipeline. The bottleneck is somewhere downstream of anchor
+resolution:
+
+- Possibly Factual plan's anchor-to-fact traversal
+  (`memories_mentioning_entity` ranking, edge weighting)
+- Possibly generation: the retrieved candidates may contain the
+  right episode but the LLM doesn't extract the right answer
+- Possibly category misrouting: single-fact questions are still
+  going through Associative plan (every single execute_plan log
+  line says `plan_kind=associative`), not Factual, so anchors
+  feed an associative aggregation that washes out the single fact
+
+The aggregate also shows a non-zero substrate-level effect of
+turning the pipeline pool ON: vs the broken-pool baseline
+20260526T213218Z, overall dropped from 0.395 → 0.329. Triple
+extraction adds nodes/edges that participate in graph-traversal
+queries; this is a separate confounder worth tracking but
+orthogonal to entity_channel.
+
+### Status path (continued)
+
+- `in_question` + `blocked_by: ISS-165` (2026-05-27 morning)
+- **`falsified`** (2026-05-27 02:13 — this entry, Phase 2 re-run
+  delta = 0 on single-fact)
+
+### Phase 1 code disposition
+
+Phase 1 instrumentation stays in tree because (a) `locked()`
+default is `false` (inert), (b) it's still useful as a
+post-classifier-routing experiment after Factual plan is fixed.
+**Do NOT flip the default to true.** Do NOT revert 77ef3f3 +
+ebc9adf yet — pending root-cause investigation of why anchors
+don't help single-fact.
+
+### Next investigations
+
+- **All single-fact queries route to `associative`, not
+  `factual`** (per execute_plan log). File an issue: the
+  classifier is mis-routing single-fact questions. This is
+  probably the actual ISS-148 AC-5a bottleneck — entity_channel
+  was a wrong-layer fix.
+- Audit Factual plan's anchor consumption — if/when classifier is
+  fixed, does Factual plan with entity_channel=on lift?
+- Consider whether `memories_mentioning_entity` edges, now
+  populated, are being ranked correctly (BM25 vs embedding vs
+  pure-anchor)
