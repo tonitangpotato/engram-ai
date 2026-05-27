@@ -792,6 +792,16 @@ impl Memory {
                     seed_recaller: &seed_recaller,
                     topic_searcher: &topic_searcher,
                     affective_recaller: &affective_recaller,
+                    // ISS-172: provide the embedder so Factual's
+                    // `factual_to_scored` can compute
+                    // `cosine(query_embedding, memory_embedding)` —
+                    // the semantic signal Factual was missing pre-
+                    // ISS-172 (graph_score + bm25 only, drowning gold
+                    // when a single anchor produced 100+ tied
+                    // candidates). `None` when no embedder is wired
+                    // (test fakes) → Factual degrades to legacy
+                    // graph + BM25 behaviour.
+                    embedding_provider: embedding,
                 };
             crate::retrieval::orchestrator::execute_plan(
                 dispatched,

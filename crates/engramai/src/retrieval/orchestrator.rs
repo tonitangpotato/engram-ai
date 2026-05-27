@@ -113,6 +113,18 @@ pub(crate) struct PlanCollaborators<'a> {
     /// Hybrid Affective sub-plan).
     pub affective_recaller:
         &'a dyn crate::retrieval::plans::affective::AffectiveSeedRecaller,
+
+    /// Optional embedder for query→memory cosine in plans that don't
+    /// otherwise emit a `vector_score`. ISS-172: Factual plan
+    /// previously ranked candidates by anchor-fraction + BM25 only,
+    /// drowning the gold passage when a single anchor produced 100+
+    /// tied `graph_score == 1.0` candidates. Wiring the embedder
+    /// through PlanCollaborators lets `factual_to_scored` (and any
+    /// future plan that needs it) compute
+    /// `cosine(query_embedding, memory_embedding)` once embeddings
+    /// are batch-loaded for MMR (ISS-139 Strategy A). `None` ⇒ plan
+    /// degrades to graph + BM25 (legacy pre-ISS-172 behaviour).
+    pub embedding_provider: Option<&'a crate::embeddings::EmbeddingProvider>,
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +370,7 @@ pub(crate) fn factual_to_scored(
     result: &crate::retrieval::plans::factual::FactualPlanResult,
     loader: &dyn RecordLoader,
     bm25_by_id: &HashMap<String, f64>,
+    query_embedding: Option<&[f32]>,
 ) -> Vec<ScoredResult> {
     if result.memories.is_empty() {
         return Vec::new();
@@ -390,12 +403,32 @@ pub(crate) fn factual_to_scored(
             // None triggers missing-signal renormalisation which
             // would defeat the lexical channel's contribution.
             let bm25 = bm25_by_id.get(record.id.as_str()).copied().unwrap_or(0.0);
+            let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
+            // ISS-172: per-candidate cosine(query, memory_embedding)
+            // — the semantic signal Factual was missing. Same
+            // Some(0.0) convention as BM25: emit 0 when the memory
+            // has no embedding row (rare; happens for legacy rows
+            // pre-ISS-139 or when load_embeddings can't find the
+            // model). `None` query_embedding (no provider wired)
+            // keeps `vector_score = None` so fusion renormalizes
+            // exactly as it did pre-ISS-172.
+            let vector_score: Option<f64> = query_embedding.map(|qv| {
+                let cosine = embedding
+                    .as_ref()
+                    .map(|mv| {
+                        crate::embeddings::EmbeddingProvider::cosine_similarity(
+                            qv, mv,
+                        ) as f64
+                    })
+                    .unwrap_or(0.0);
+                cosine.clamp(0.0, 1.0)
+            });
             let sub_scores = SubScores {
                 graph_score: Some(graph_score.clamp(0.0, 1.0)),
                 bm25_score: Some(bm25),
+                vector_score,
                 ..Default::default()
             };
-            let embedding = embeddings_by_id.get(record.id.as_str()).cloned();
             Some(ScoredResult::Memory {
                 record,
                 score: 0.0, // overwritten by fusion::combine
@@ -1007,6 +1040,23 @@ pub(crate) fn execute_plan(
         .unwrap_or_else(|| (query.limit.saturating_mul(4)).max(40));
     let bm25_by_id: HashMap<String, f64> = loader.fts_scores(&query.text, bm25_pool);
 
+    // ISS-172: embed query ONCE per execute_plan call so plans whose
+    // scoring stage previously emitted no `vector_score` (Factual is
+    // the dominant case) can compute `cosine(query, memory_embedding)`
+    // against the embeddings already batch-loaded for MMR (ISS-139
+    // Strategy A). Plans that already emit a semantic score from
+    // their own seed_recaller (Associative, Affective) are unaffected
+    // — they read from PlanCollaborators directly.
+    //
+    // Cost: one `provider.embed(query.text)` per query, matching what
+    // HybridSeedRecaller / HybridAffectiveSeedRecaller already pay on
+    // their hot paths. `None` when no embedder is wired (test fakes,
+    // HashMapLoader paths) → factual_to_scored falls back to
+    // graph + BM25 only (legacy pre-ISS-172 behaviour).
+    let query_embedding: Option<Vec<f32>> = collaborators
+        .embedding_provider
+        .and_then(|p| p.embed(&query.text).ok());
+
     // Extract the budget controller out of the Arc<Mutex<_>>. Single
     // owner here — Hybrid sub-plans construct their own internally.
     let mut budget = match context.budget.lock() {
@@ -1049,7 +1099,12 @@ pub(crate) fn execute_plan(
                 Option<&'static str>,
             ) = match plan.execute(&inputs, resolver, graph, &mut budget) {
                 Ok(result) => {
-                    let scored = factual_to_scored(&result, loader, &bm25_by_id);
+                    let scored = factual_to_scored(
+                        &result,
+                        loader,
+                        &bm25_by_id,
+                        query_embedding.as_deref(),
+                    );
                     let outcome = result
                         .outcome
                         .to_retrieval_outcome(scored.is_empty());
@@ -1426,8 +1481,19 @@ fn run_factual_fallback_for_hybrid(
         .bm25_pool_override
         .unwrap_or_else(|| (query.limit.saturating_mul(4)).max(40));
     let bm25_by_id: HashMap<String, f64> = loader.fts_scores(&query.text, bm25_pool);
+    // ISS-172: embed the fallback's query so the recovered factual
+    // pool gets the same semantic ranking as the main `execute_plan`
+    // path. Same Option-degrades-to-None convention.
+    let query_embedding: Option<Vec<f32>> = collaborators
+        .embedding_provider
+        .and_then(|p| p.embed(&query.text).ok());
     let scored = match plan.execute(&inputs, resolver, graph, &mut budget) {
-        Ok(result) => factual_to_scored(&result, loader, &bm25_by_id),
+        Ok(result) => factual_to_scored(
+            &result,
+            loader,
+            &bm25_by_id,
+            query_embedding.as_deref(),
+        ),
         Err(_) => Vec::new(),
     };
 
@@ -1698,5 +1764,138 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out.contains_key("m1"));
         assert!(!out.contains_key("missing"));
+    }
+
+    // ----- ISS-172 regression: factual_to_scored must emit vector_score
+    // when a query embedding is provided. Pre-ISS-172 it was always
+    // None, drowning the gold passage among 100+ flat-graph_score
+    // candidates. -----
+
+    fn fake_factual_result(
+        anchors: usize,
+        memories: &[(&str, usize)],
+    ) -> crate::retrieval::plans::factual::FactualPlanResult {
+        use crate::retrieval::plans::factual as f;
+        use std::collections::BTreeSet;
+        // Build `anchors` anchors with deterministic UUIDs so seen_via
+        // sets line up.
+        let anchor_ids: Vec<uuid::Uuid> = (0..anchors)
+            .map(|i| uuid::Uuid::from_u128(0x0a00_0000_0000_0000_0000_0000_0000_0000 + i as u128))
+            .collect();
+        let resolved: Vec<f::ResolvedAnchor> = anchor_ids
+            .iter()
+            .map(|id| f::ResolvedAnchor {
+                entity_id: *id,
+                canonical_name: format!("anchor-{id}"),
+                match_strength: 1.0,
+            })
+            .collect();
+        let mem_rows: Vec<f::FactualMemoryRow> = memories
+            .iter()
+            .map(|(mid, n_anchors_seen)| f::FactualMemoryRow {
+                memory_id: mid.to_string(),
+                seen_via: anchor_ids
+                    .iter()
+                    .take(*n_anchors_seen)
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+            })
+            .collect();
+        f::FactualPlanResult {
+            anchors: resolved,
+            edges: Vec::new(),
+            linked_entities: BTreeSet::new(),
+            memories: mem_rows,
+            outcome: f::FactualOutcome::Ok,
+        }
+    }
+
+    #[test]
+    fn iss172_factual_to_scored_emits_none_vector_score_when_no_query_embedding() {
+        // Legacy pre-ISS-172 behaviour: caller passes None → no
+        // vector_score is emitted → fusion sees only graph + bm25.
+        let (_dir, mut storage) = open_storage();
+        seed_embedding(&mut storage, "m1", &[0.1, 0.2]);
+        let loader = StorageLoader::new(&storage, MODEL);
+        let result = fake_factual_result(1, &[("m1", 1)]);
+        let bm25 = HashMap::new();
+        let scored = factual_to_scored(&result, &loader, &bm25, None);
+        assert_eq!(scored.len(), 1, "one memory in, one scored out");
+        match &scored[0] {
+            ScoredResult::Memory { sub_scores, .. } => {
+                assert_eq!(
+                    sub_scores.vector_score, None,
+                    "no query embedding → vector_score must stay None"
+                );
+                assert!(sub_scores.graph_score.is_some());
+                assert!(sub_scores.bm25_score.is_some());
+            }
+            _ => panic!("expected Memory variant"),
+        }
+    }
+
+    #[test]
+    fn iss172_factual_to_scored_emits_some_vector_score_with_query_embedding() {
+        let (_dir, mut storage) = open_storage();
+        // Memory embedding [1.0, 0.0]: identical to the query → cosine 1.0.
+        seed_embedding(&mut storage, "m1", &[1.0, 0.0]);
+        let loader = StorageLoader::new(&storage, MODEL);
+        let result = fake_factual_result(1, &[("m1", 1)]);
+        let bm25 = HashMap::new();
+        let q = [1.0_f32, 0.0_f32];
+        let scored = factual_to_scored(&result, &loader, &bm25, Some(&q));
+        assert_eq!(scored.len(), 1);
+        match &scored[0] {
+            ScoredResult::Memory { sub_scores, .. } => {
+                let v = sub_scores
+                    .vector_score
+                    .expect("vector_score must be Some when query_embedding is Some");
+                // Identical vectors → cosine 1.0 (within float epsilon).
+                assert!(
+                    (v - 1.0).abs() < 1e-5,
+                    "cosine(q, m) should be 1.0 for identical unit vectors, got {v}"
+                );
+            }
+            _ => panic!("expected Memory variant"),
+        }
+    }
+
+    #[test]
+    fn iss172_factual_to_scored_breaks_graph_score_tie_via_cosine() {
+        // The core LoCoMo failure mode: 2 candidates with identical
+        // graph_score (both seen via the single anchor), one
+        // semantically relevant, one not. Pre-ISS-172 the order
+        // depended entirely on BM25 / id-ordering. Post-fix, the
+        // semantically relevant one ranks first.
+        let (_dir, mut storage) = open_storage();
+        // m1 = relevant (cosine 1.0 with query)
+        seed_embedding(&mut storage, "m1", &[1.0, 0.0]);
+        // m2 = irrelevant (orthogonal → cosine 0.0)
+        seed_embedding(&mut storage, "m2", &[0.0, 1.0]);
+        let loader = StorageLoader::new(&storage, MODEL);
+        // Both memories seen via the single anchor → graph_score == 1.0
+        // for both (the tie that drowns gold on LoCoMo SF queries).
+        let result = fake_factual_result(1, &[("m1", 1), ("m2", 1)]);
+        let bm25 = HashMap::new();
+        let q = [1.0_f32, 0.0_f32];
+        let scored = factual_to_scored(&result, &loader, &bm25, Some(&q));
+        assert_eq!(scored.len(), 2);
+        let by_id: HashMap<&str, f64> = scored
+            .iter()
+            .filter_map(|s| match s {
+                ScoredResult::Memory { record, sub_scores, .. } => {
+                    Some((record.id.as_str(), sub_scores.vector_score.unwrap()))
+                }
+                _ => None,
+            })
+            .collect();
+        let v_m1 = by_id["m1"];
+        let v_m2 = by_id["m2"];
+        assert!(
+            v_m1 > v_m2,
+            "relevant memory must have higher vector_score (m1={v_m1}, m2={v_m2})"
+        );
+        assert!((v_m1 - 1.0).abs() < 1e-5);
+        assert!(v_m2.abs() < 1e-5);
     }
 }
