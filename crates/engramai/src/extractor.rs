@@ -642,6 +642,38 @@ impl AnthropicExtractor {
     }
 }
 
+/// Build the user-message body for an extraction LLM call (ISS-178).
+///
+/// When `ctx.has_prev()` is false → returns `EXTRACTION_PROMPT + ctx.current`,
+/// byte-identical to the pre-ISS-178 single-text path.
+///
+/// When `ctx.has_prev()` is true → returns the same prompt plus a
+/// "previous turn for disambiguation only, do NOT extract from it" guard
+/// block followed by both turns. This is the only place that knows about
+/// prev-turn enrichment; both Anthropic and Ollama paths funnel through here
+/// so the prompt format stays consistent.
+fn build_extraction_user_message(ctx: &ExtractionContext) -> String {
+    if !ctx.has_prev() {
+        // Pre-ISS-178 byte-identity. Must match line 647/817 historical
+        // `format!("{}{}", EXTRACTION_PROMPT, text)` exactly.
+        return format!("{}{}", EXTRACTION_PROMPT, ctx.current);
+    }
+
+    // Prev present: append a disambiguation block. The "do NOT extract"
+    // guard is critical — without it, the LLM happily extracts facts from
+    // the prev turn and doubles them up downstream. Wording matched in
+    // unit test `iss178_build_user_message_with_prev_contains_both`.
+    let prev = ctx.prev.as_deref().unwrap_or("");
+    format!(
+        "{}\n\nCONTEXT NOTE: A previous conversational turn is provided below ONLY to help \
+you disambiguate noun phrases and anchor entities in the current turn. Do NOT \
+extract facts from the previous turn — only from the current turn.\n\n\
+Previous turn (context only, do NOT extract):\n{}\n\n\
+Current turn (extract facts from THIS):\n{}",
+        EXTRACTION_PROMPT, prev, ctx.current
+    )
+}
+
 impl MemoryExtractor for AnthropicExtractor {
     fn extract(&self, text: &str) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
         let prompt = format!("{}{}", EXTRACTION_PROMPT, text);
@@ -743,6 +775,119 @@ impl MemoryExtractor for AnthropicExtractor {
             .and_then(|t| t.as_str())
             .ok_or("Invalid response structure from Anthropic API")?;
         
+        parse_extraction_response(content_text)
+    }
+
+    /// ISS-178: override that uses `ctx.prev` when available.
+    ///
+    /// When `ctx.has_prev() == false` → defers to `self.extract(&ctx.current)`
+    /// for byte-identical pre-ISS-178 behaviour.
+    /// When `ctx.has_prev() == true` → reuses the same HTTP/retry/parse path
+    /// as `extract()` but sends the augmented prompt produced by
+    /// `build_extraction_user_message(ctx)`. This is the only behavioural
+    /// difference; auth, retry policy, error wrapping, and response parsing
+    /// are all unchanged.
+    fn extract_with_context(
+        &self,
+        ctx: &ExtractionContext,
+    ) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
+        if !ctx.has_prev() {
+            return self.extract(&ctx.current);
+        }
+
+        let prompt = build_extraction_user_message(ctx);
+
+        let body = serde_json::json!({
+            "model": self.config.model,
+            "max_tokens": self.config.max_tokens,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        });
+
+        let url = format!("{}/v1/messages", self.config.api_url);
+
+        // Retry loop identical to extract(): same classify_retry, same
+        // backoff, same error wrapping. Only the request body differs.
+        let response = {
+            let mut attempt: u8 = 0;
+            loop {
+                let headers = self.build_headers()?;
+                let send_result = self.client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send();
+
+                match send_result {
+                    Ok(resp) if resp.status().is_success() => break resp,
+                    Ok(resp) => {
+                        let status_code = resp.status().as_u16();
+                        attempt = attempt.saturating_add(1);
+                        match classify_retry(
+                            FailureKind::HttpStatus(status_code),
+                            attempt,
+                            &self.config.retry,
+                        ) {
+                            RetryDecision::RetryAfter(delay) => {
+                                log::warn!(
+                                    "Anthropic API HTTP {} (attempt {}/{}, with prev-turn ctx), retrying in {}ms",
+                                    status_code,
+                                    attempt,
+                                    self.config.retry.max_retries,
+                                    delay.as_millis(),
+                                );
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            RetryDecision::GiveUp => {
+                                let body_text = resp.text().unwrap_or_default();
+                                return Err(format!(
+                                    "Anthropic API HTTP {} after {} attempts (prev-turn ctx): {}",
+                                    status_code, attempt, body_text
+                                )
+                                .into());
+                            }
+                        }
+                    }
+                    Err(transport_err) => {
+                        attempt = attempt.saturating_add(1);
+                        match classify_retry(
+                            FailureKind::Transport,
+                            attempt,
+                            &self.config.retry,
+                        ) {
+                            RetryDecision::RetryAfter(delay) => {
+                                log::warn!(
+                                    "Anthropic API transport error (attempt {}/{}, with prev-turn ctx): {}, retrying in {}ms",
+                                    attempt,
+                                    self.config.retry.max_retries,
+                                    transport_err,
+                                    delay.as_millis(),
+                                );
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            RetryDecision::GiveUp => return Err(transport_err.into()),
+                        }
+                    }
+                }
+            }
+        };
+
+        let response_json: serde_json::Value = response.json()?;
+        let content_text = response_json
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|item| item.get("text"))
+            .and_then(|t| t.as_str())
+            .ok_or("Invalid response structure from Anthropic API")?;
+
         parse_extraction_response(content_text)
     }
 }
@@ -905,6 +1050,109 @@ impl MemoryExtractor for OllamaExtractor {
             .and_then(|c| c.as_str())
             .ok_or("Invalid response structure from Ollama API")?;
         
+        parse_extraction_response(content_text)
+    }
+
+    /// ISS-178: override that uses `ctx.prev` when available.
+    ///
+    /// When `ctx.has_prev() == false` → defers to `self.extract(&ctx.current)`
+    /// for byte-identical pre-ISS-178 behaviour.
+    /// When `ctx.has_prev() == true` → reuses the same HTTP/retry/parse path
+    /// but with the augmented prompt from `build_extraction_user_message(ctx)`.
+    fn extract_with_context(
+        &self,
+        ctx: &ExtractionContext,
+    ) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
+        if !ctx.has_prev() {
+            return self.extract(&ctx.current);
+        }
+
+        let prompt = build_extraction_user_message(ctx);
+
+        let body = serde_json::json!({
+            "model": self.config.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "stream": false
+        });
+
+        let url = format!("{}/api/chat", self.config.host);
+
+        let response = {
+            let mut attempt: u8 = 0;
+            loop {
+                let send_result = self.client
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send();
+
+                match send_result {
+                    Ok(resp) if resp.status().is_success() => break resp,
+                    Ok(resp) => {
+                        let status_code = resp.status().as_u16();
+                        attempt = attempt.saturating_add(1);
+                        match classify_retry(
+                            FailureKind::HttpStatus(status_code),
+                            attempt,
+                            &self.config.retry,
+                        ) {
+                            RetryDecision::RetryAfter(delay) => {
+                                log::warn!(
+                                    "Ollama API HTTP {} (attempt {}/{}, with prev-turn ctx), retrying in {}ms",
+                                    status_code,
+                                    attempt,
+                                    self.config.retry.max_retries,
+                                    delay.as_millis()
+                                );
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            RetryDecision::GiveUp => {
+                                let status = resp.status();
+                                let body = resp.text().unwrap_or_default();
+                                return Err(format!(
+                                    "Ollama API error {} (prev-turn ctx): {}",
+                                    status, body
+                                )
+                                .into());
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        let failure = classify_reqwest_error(&err);
+                        attempt = attempt.saturating_add(1);
+                        match classify_retry(failure, attempt, &self.config.retry) {
+                            RetryDecision::RetryAfter(delay) => {
+                                log::warn!(
+                                    "Ollama transport error (attempt {}/{}, with prev-turn ctx): {} — retrying in {}ms",
+                                    attempt,
+                                    self.config.retry.max_retries,
+                                    err,
+                                    delay.as_millis()
+                                );
+                                std::thread::sleep(delay);
+                                continue;
+                            }
+                            RetryDecision::GiveUp => return Err(err.into()),
+                        }
+                    }
+                }
+            }
+        };
+
+        let response_json: serde_json::Value = response.json()?;
+
+        let content_text = response_json
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .ok_or("Invalid response structure from Ollama API")?;
+
         parse_extraction_response(content_text)
     }
 }
@@ -1600,5 +1848,73 @@ Hope this helps!"#;
         let received = ext.last().expect("override should have recorded ctx");
         assert_eq!(received.current, "current");
         assert_eq!(received.prev.as_deref(), Some("prior"));
+    }
+
+    // ========================================================================
+    // ISS-178 Step 2/3: build_extraction_user_message helper contract
+    // ========================================================================
+
+    #[test]
+    fn iss178_build_user_message_no_prev_returns_pre_iss178_byte_identical() {
+        // The no-prev case MUST be byte-identical to the historical
+        // `format!("{}{}", EXTRACTION_PROMPT, text)` at lines 647/977
+        // (pre-ISS-178). Any drift here breaks the no-context default path
+        // for both AnthropicExtractor and OllamaExtractor.
+        let ctx = ExtractionContext::single("Researching adoption agencies");
+        let msg = build_extraction_user_message(&ctx);
+        let expected = format!("{}{}", EXTRACTION_PROMPT, "Researching adoption agencies");
+        assert_eq!(msg, expected);
+    }
+
+    #[test]
+    fn iss178_build_user_message_whitespace_prev_falls_through_to_no_prev() {
+        // has_prev() rejects whitespace-only prev, so a Some("   ") should
+        // produce the no-prev (byte-identical) message, not the augmented one.
+        let ctx =
+            ExtractionContext::with_prev("current".to_string(), Some("   ".to_string()));
+        let msg = build_extraction_user_message(&ctx);
+        let expected = format!("{}{}", EXTRACTION_PROMPT, "current");
+        assert_eq!(msg, expected);
+        // No augmentation markers should appear.
+        assert!(!msg.contains("Previous turn"));
+        assert!(!msg.contains("CONTEXT NOTE"));
+    }
+
+    #[test]
+    fn iss178_build_user_message_with_prev_contains_both_turns_and_guard() {
+        // The augmented form must:
+        // - contain both prev and current text
+        // - carry an unambiguous "do NOT extract from prev" guard so the LLM
+        //   doesn't double-count facts
+        // - mark Previous turn / Current turn explicitly
+        let ctx = ExtractionContext::with_prev(
+            "Researching adoption agencies".to_string(),
+            Some("What were you looking into yesterday?".to_string()),
+        );
+        let msg = build_extraction_user_message(&ctx);
+
+        assert!(
+            msg.contains("Researching adoption agencies"),
+            "current turn text must appear: {msg}"
+        );
+        assert!(
+            msg.contains("What were you looking into yesterday?"),
+            "prev turn text must appear: {msg}"
+        );
+        assert!(
+            msg.contains("do NOT extract"),
+            "guard phrase 'do NOT extract' missing — LLM will double-count: {msg}"
+        );
+        assert!(
+            msg.contains("Previous turn"),
+            "explicit 'Previous turn' marker missing: {msg}"
+        );
+        assert!(
+            msg.contains("Current turn"),
+            "explicit 'Current turn' marker missing: {msg}"
+        );
+        // EXTRACTION_PROMPT itself must still be present so the dimensional
+        // format rules apply to the augmented message.
+        assert!(msg.contains("core_fact"), "EXTRACTION_PROMPT body missing: {msg}");
     }
 }
