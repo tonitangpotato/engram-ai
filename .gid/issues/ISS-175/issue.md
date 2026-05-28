@@ -225,10 +225,124 @@ fused output). File ISS-174 with scope:
 3. 3 unit tests: byte-identity at flag=false, lift verification at flag=true
 4. Engram-bench `ENGRAM_BENCH_FUSION_CONFIG=iss175` env var
 
+## Implementation plan (single PR, ISS-175 scope)
+
+> Scaffolding flag + formula ship together in one ticket. ISS-174 is
+> a separate already-filed issue about Hybrid sub-plan vector_score
+> threading — unrelated to this reweighting work.
+
+### Files touched
+
+1. `crates/engramai/src/retrieval/fusion/combiner.rs`
+   - Add `FusionConfig.factual_reweight: bool` (serde-default false)
+   - Add `combine_factual_v2(sub, weights) -> f64` (new fn, NOT a modification of `combine`)
+   - Branch in `fuse_and_rank` (or in the Factual call site): if
+     `cfg.factual_reweight && intent == Intent::Factual` → call v2,
+     else current `combine`
+   - Bump `version` field on FusionConfig when flag is on
+     (e.g. `"v0.3.0-locked-r3-iss175"`)
+
+2. `crates/engramai/src/retrieval/orchestrator.rs`
+   - `GraphQuery::with_factual_reweight(Option<bool>)` builder (mirrors
+     `with_mmr_lambda` and `with_entity_channel` pattern)
+   - Plumb override into the FusionConfig used by Factual standalone path
+
+3. `engram-bench` (separate commit)
+   - `ENGRAM_BENCH_FACTUAL_REWEIGHT=on` env var → sets the override
+
+### `combine_factual_v2` formula
+
+```rust
+/// ISS-175 — Factual-only reweighted fusion (gated by
+/// `FusionConfig.factual_reweight`).
+///
+/// Three changes from `combine` for Factual:
+/// 1. New text aggregate: sum-with-evidence-bonus instead of max.
+///    Preserves §5.2 "avoid double-counting" intent in the dense case
+///    (when both signals are similar) but rescues rare-lexical-hit
+///    cases (when bm25 fires high on gold tokens absent from query).
+/// 2. Rebalanced weights: graph 0.30 (was 0.45, curbs saturation),
+///    text 0.25 (was 0.40, freed by giving vector its own channel),
+///    vector 0.30 (was 0.0), recency 0.15 (unchanged).
+/// 3. Renormalization unchanged (existing logic in combine handles
+///    missing-signal redistribution).
+fn combine_factual_v2(sub: &SubScores) -> f64 {
+    // New weights (sum to 1.0):
+    const W_TEXT: f64 = 0.25;
+    const W_VECTOR: f64 = 0.30;
+    const W_GRAPH: f64 = 0.30;
+    const W_RECENCY: f64 = 0.15;
+
+    // New text aggregate: 0.7×vec + 0.3×bm25 + 0.15 bonus if bm25>0.05
+    let text_score: Option<f64> = match (sub.vector_score, sub.bm25_score) {
+        (None, None) => None,
+        (v, b) => {
+            let v = v.unwrap_or(0.0);
+            let b = b.unwrap_or(0.0);
+            let base = 0.7 * v + 0.3 * b;
+            let bonus = if b > 0.05 { 0.15 } else { 0.0 };
+            Some((base + bonus).min(1.0))
+        }
+    };
+
+    // ... same renormalization loop as combine(), with components:
+    //   (W_TEXT, text_score),
+    //   (W_VECTOR, sub.vector_score),
+    //   (W_GRAPH, sub.graph_score),
+    //   (W_RECENCY, sub.recency_score)
+}
+```
+
+### Tests (unit, in combiner.rs)
+
+1. `factual_reweight_default_off_byte_identical_to_combine`
+   — pin: with `factual_reweight=false`, fuse_and_rank produces
+   bit-identical output to current path on a 5-candidate fixture.
+
+2. `factual_reweight_on_lifts_gold_with_rare_bm25_hit`
+   — fixture: 3 candidates, gold has vec=0.62 bm25=0.25, leader has
+   vec=0.77 bm25=0.0. Assert gold ranks above leader under v2 (vs
+   below under current).
+
+3. `factual_reweight_on_lifts_gold_with_low_graph_score`
+   — fixture: gold has graph=0.33 vec=0.65 bm25=0.25, leader has
+   graph=1.0 vec=0.55 bm25=0.0. Assert gold climbs (specific
+   delta numbers from probe q71 case).
+
+4. `factual_reweight_renormalizes_when_recency_missing`
+   — fixture: candidate with recency=None. Assert score = weighted
+   sum / (W_TEXT + W_VECTOR + W_GRAPH) = 0.85-normalised.
+
+5. `factual_reweight_does_not_affect_other_intents`
+   — fixture: Episodic candidate. Assert fuse_and_rank with
+   `factual_reweight=true` produces same output as `false`.
+
+### Bench validation (after code lands)
+
+1. Re-run conv-26 with flag on, same envelope as ISS-161 Arm A
+   (entity_channel off, mmr=0.7, k=10). Compare SF pass rate:
+   - Baseline (ISS-161 Arm A): SF 5/27
+   - This probe run (single, w/ dump hook overhead): SF 1/13
+   - Target with flag on: SF ≥7/27 (≥+2 from Arm A baseline)
+2. Cross-validate on conv-44 (no regression on multi-hop ≥0.39).
+3. If lift confirmed: flip `factual_reweight` default to true,
+   bump `version` permanently, document in §5.2.
+
+### Stacking gates
+
+ISS-175 lifts Factual SF modestly. To hit AC-5a (≥0.60), need:
+- ISS-175 alone: expected SF ~7-9/27 (rough; probe predicts q40+q71 climb but stay outside top-10)
+- + ISS-164 entity-channel: separate enable test
+- + reranker (cross-encoder, separate ticket): for q43-style intra-cluster ties
+
+ISS-175 is **one of three required pieces**, not the silver bullet.
+
 ## Status
 
-Probe complete (2026-05-27). Findings filed at `artifacts/probe-conv26-findings.md`.
-Issue extended with Bug 3 + revised recommendation.
+Probe complete (2026-05-27, commit 785fb34). Findings at
+`artifacts/probe-conv26-findings.md`. Issue extended with Bug 3 +
+revised recommendation + implementation plan.
+
 P1 because it directly blocks ISS-148 AC-5a recovery.
-Next: file ISS-174 (architecture scaffolding), then ISS-175 ships the
-formula.
+
+Next: implementation per plan above (single PR, ~150 LoC + 5 tests).
