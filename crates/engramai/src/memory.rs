@@ -983,6 +983,7 @@ impl Memory {
             occurred_at: ep.when,
             emotion: None,
             domain: None,
+            prev_turn: None,
         };
 
         // Admit the row. store_raw consumes `pending_caller_id` on the
@@ -2697,6 +2698,7 @@ impl Memory {
             occurred_at: None,
             emotion: None,
             domain: None,
+            prev_turn: None,
         };
 
         let outcome = self.store_raw(content, meta).map_err(|e| match e {
@@ -3229,6 +3231,7 @@ impl Memory {
             occurred_at,
             emotion: Some(emotion),
             domain: Some(domain.to_string()),
+            prev_turn: None,
         };
 
         let outcome = self.store_raw(content, meta).map_err(|e| match e {
@@ -3398,7 +3401,15 @@ impl Memory {
 
         // Path A: extractor present.
         if let Some(ref extractor) = self.extractor {
-            match extractor.extract(content) {
+            // ISS-178: thread caller-supplied prev_turn (if any) into the
+            // extractor via ExtractionContext. When meta.prev_turn is None
+            // the extractor's default impl path falls through to plain
+            // extract(content), byte-identical to pre-ISS-178.
+            let extraction_ctx = crate::extractor::ExtractionContext::with_prev(
+                content.to_string(),
+                meta.prev_turn.clone(),
+            );
+            match extractor.extract_with_context(&extraction_ctx) {
                 Ok(facts) if facts.is_empty() => {
                     // ISS-068: the extractor produced zero facts, but
                     // we still admit the raw content into memory so
@@ -3905,6 +3916,7 @@ impl Memory {
                 occurred_at: None,
                 emotion: None,
                 domain: None,
+                prev_turn: None,
             };
 
             // Re-run store_raw on the preserved content.
@@ -7320,6 +7332,58 @@ impl Memory {
             .into()),
             RawStoreOutcome::Quarantined { reason, .. } => Err(format!(
                 "ingest_with_stats_at: store_raw returned Quarantined({reason:?})"
+            )
+            .into()),
+        }
+    }
+
+    /// Ingest with caller-controlled `StorageMeta` (ISS-178).
+    ///
+    /// The fully-general variant of `ingest_with_stats` / `ingest_with_stats_at`.
+    /// Use this when the caller needs to pass any `StorageMeta` field —
+    /// in particular `prev_turn` for prev-turn-aware extraction (ISS-178)
+    /// or `domain`/`emotion` priors that the simpler ingest APIs do not
+    /// expose.
+    ///
+    /// Live ingestion paths should keep using `ingest_with_stats` (no meta)
+    /// or `ingest_with_stats_at` (only `occurred_at`). This API is intended
+    /// for replay/backfill drivers (LoCoMo, migration tools) that have
+    /// richer contextual information available at ingest time.
+    ///
+    /// All error semantics match `ingest_with_stats`.
+    pub fn ingest_with_meta(
+        &mut self,
+        content: &str,
+        meta: crate::store_api::StorageMeta,
+    ) -> Result<
+        (crate::store_api::MemoryId, crate::resolution::ResolutionStats),
+        Box<dyn std::error::Error>,
+    > {
+        use crate::store_api::RawStoreOutcome;
+
+        let outcome = self
+            .store_raw(content, meta)
+            .map_err(|e| -> Box<dyn std::error::Error> { format!("{e}").into() })?;
+
+        match outcome {
+            RawStoreOutcome::Stored(outcomes) => {
+                let id = outcomes
+                    .first()
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "ingest_with_meta: store_raw returned Stored([]) — invariant violated"
+                            .into()
+                    })?
+                    .id()
+                    .clone();
+                let stats = crate::resolution::ResolutionStats::default();
+                Ok((id, stats))
+            }
+            RawStoreOutcome::Skipped { reason, .. } => Err(format!(
+                "ingest_with_meta: store_raw returned Skipped({reason:?})"
+            )
+            .into()),
+            RawStoreOutcome::Quarantined { reason, .. } => Err(format!(
+                "ingest_with_meta: store_raw returned Quarantined({reason:?})"
             )
             .into()),
         }
