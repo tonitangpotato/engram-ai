@@ -152,3 +152,94 @@ endorses the approach.
 - engram-bench/benchmarks/runs/ISS180-{Bprime,D}-conv26-20260528T155831Z/locomo_{summary,per_query}.{json,jsonl}
 - /tmp/iss180_stacktest_sweep.sh
 - /tmp/iss180-stacktest/{master,iss180-Bprime,iss180-D}.log
+
+---
+
+## Addendum 2026-05-28 — mechanism re-analysis (per-prediction text inspection)
+
+Spot-checked the predicted-answer text for all 7 D-losses and all 10 D-gains.
+The original "temporal" framing in this findings file was **wrong about the
+mechanism** (right about the category aggregates, wrong about why).
+
+### Loss/gain decomposition
+
+| Question | gold | mis-labeled as "temporal" but actually... |
+|---|---|---|
+| q86 | "LGBTQ+ individuals" | who/why question about adoption agency choice |
+| q87 | "because of their inclusivity..." | why question |
+| q88 | "creating a family for kids..." | what question |
+| q120 | "Melanie's daughter" | who question |
+| q129 | "Brave by Sara Bareilles" | what (song title) |
+| q142 | "An ongoing adventure of..." | summary question |
+| q3 | "Adoption agencies" | what (single-hop, NOT temporal) |
+
+The 6 "temporal" losses are **all about Caroline / Melanie / adoption** —
+not actual date-grounding questions. They get the temporal label from the
+LoCoMo dataset because they sit in time-stamped conversation; the gold is
+not a date.
+
+### "I don't know" frequency tells the real story
+
+|              | Losses (7q) | Gains (10q) |
+|--------------|-------------|-------------|
+| B' says IDK  | **0/7**     | 4/10        |
+| D says IDK   | **6/7**     | 0/10        |
+
+- **Losses**: B' answered all 7 confidently with the right answer. D had the
+  same retrieval pool widened by entity_channel and **the LLM couldn't find
+  the answer in the candidate set** — said "I don't know" 6 times.
+- **Gains**: B' said IDK 4 times (insufficient recall). D's wider pool gave
+  the LLM enough context to answer — 0 IDKs.
+
+### Real mechanism
+
+**It's a recall-vs-precision tradeoff at the LLM-judge generation stage,
+not a retrieval-quality difference.** K=10 is fixed in both arms:
+
+- Where B' top-10 misses the answer-bearing memory → entity_channel
+  recovers it → D wins (gains: q2, q6, q10, q15, q35, q50, q57, q63, q67, q70).
+- Where B' top-10 already has the precise answer-bearing memory cleanly →
+  entity_channel dilutes the top-10 with entity-overlap candidates → the
+  precise memory drops out of top-K *or* drops to a low rank where the
+  generation LLM gets confused → D's LLM hallucinates "I don't know"
+  (losses: q3, q86, q87, q88, q120, q129, q142).
+
+The "temporal" aggregate Δ = -8.6pp is a coincidence of which questions
+fall on which side of this recall/precision boundary, not a property of
+temporal questions specifically.
+
+### Implications for ISS-180 options
+
+This **changes the recommendation**:
+
+- **Option 1 (plan-kind gating) is now WEAKER** — plan-kind almost
+  certainly doesn't separate the gains and losses, because the failure
+  mode is generation-stage, not plan-routing. Both wins and losses are
+  likely Factual-plan. Would need plan-kind histogram to confirm, but
+  the per-prediction text already disproves the "temporal questions are
+  different" narrative.
+- **Option 4 (root-cause via higher K or reranker) is now STRONGER** —
+  the right fix is either (a) raising K for entity_channel-on so the
+  precise memory survives the dilution, or (b) running a reranker
+  (ISS-159 cross-encoder) so the right memory floats back to the top.
+  Both directly target the generation-confusion failure mode.
+
+### Specifically for ISS-159 (cross-encoder reranker)
+
+This finding is **strong evidence to prioritize ISS-159 Step 5 full bench**:
+the failure mode here (right memory in candidate set, wrong rank order,
+LLM gives up) is exactly what cross-encoder reranking is supposed to fix.
+ISS-159 cross-encoder + ISS-164 entity_channel + ISS-175 combine_factual_v2
+could be the ship-band stack — wider recall, then precise re-ranking.
+
+### Suggested next step (still requires potato direction)
+
+Run a 3-arm sweep:
+- Arm B': FACTUAL_REWEIGHT=on, ENTITY_CHANNEL=off (today's baseline)
+- Arm D : FACTUAL_REWEIGHT=on, ENTITY_CHANNEL=on (today's stack arm)
+- Arm E : FACTUAL_REWEIGHT=on, ENTITY_CHANNEL=on, CROSS_ENCODER=on (the
+  hypothesis-test arm — if E recovers the temporal losses without losing
+  the multi-hop gains, the stack story is confirmed)
+
+This is a new ticket (ISS-181 stack-test with cross-encoder).
+

@@ -68,30 +68,57 @@ Harness: `/tmp/iss180_stacktest_sweep.sh`.
 
 Per-query ledger: 10 D gains / 7 D regressions / 135 ties on 152 q.
 
-**Mechanism hypothesis**: entity_channel widens the candidate pool with
-entity-anchored memories that help multi-hop / open-domain context-rich
-questions, but crowd out date-bearing memories at K=10 for temporal
-questions. Gains and losses don't overlap across categories.
+### Mechanism (corrected via per-prediction text inspection)
 
-**This is not "no additive lift"** — it's **category-conditional lift**
-that the original decision rule didn't anticipate.
+Initial framing was "category-conditional" — true at the headline, **wrong
+at the mechanism**. The 6 "temporal" losses are actually all about
+Caroline/Melanie/adoption (mis-labeled as temporal because they sit in
+time-stamped conversation; gold is not a date). The real failure mode is:
+
+| | Losses (7q) | Gains (10q) |
+|---|---|---|
+| B' says "I don't know" | **0/7** | 4/10 |
+| D says "I don't know"  | **6/7** | 0/10 |
+
+- **Losses**: B' has the precise answer cleanly in top-10, answers all 7
+  confidently. D's entity_channel dilutes top-10 with entity-overlap
+  candidates, the precise memory drops out or falls to low rank, LLM
+  gives up with "I don't know".
+- **Gains**: B' top-10 missed the answer-bearing memory (4 IDKs). D's
+  wider entity-anchored pool recovered it (0 IDKs).
+
+**It's a recall-vs-precision tradeoff at the LLM-generation stage**, not
+a retrieval-quality difference. K=10 is fixed; entity_channel changes
+which 10 candidates the LLM sees, and the LLM is intolerant of
+near-miss top-K when the precise memory drops below rank ~5.
 
 ## Options (potato decision)
 
-1. **Plan-kind-gated entity_channel** — enable for Factual/Multi-hop plans,
-   disable for Temporal. Estimated net would be +9 wins without -6 losses
-   = ~+5.9pp overall (firmly in "ship" band). Medium scope.
-2. **Document opt-in trade-off** — README note about multi-hop boost at
-   temporal cost. Low scope, no real consumer.
-3. **Remove entity_channel code** — strict-rule reading; standalone falsified
-   + stack nets temporal regression. Lowest maintenance, discards real signal.
-4. **Root-cause temporal regression** — K=15-20 for temporal queries, or
-   recency boost in fusion weighting. Largest scope, biggest payoff.
+1. ~~**Plan-kind-gated entity_channel**~~ — **DOWNGRADED**. Plan-kind
+   almost certainly doesn't separate gains/losses, because failure mode
+   is generation-stage not plan-routing. Needs plan-kind histogram to
+   confirm, but per-prediction text analysis already disproves the
+   "temporal questions are different" narrative.
+2. **Document opt-in trade-off** — README note about which workloads
+   benefit. Low scope, no clear consumer of the doc.
+3. **Remove entity_channel code** — strict-rule reading. Now weaker as
+   a case since the +1.9pp overall and +16/+15 category gains are real
+   retrieval signal even if generation-stage drops some of it.
+4. **Run higher K with entity_channel** — give the generation LLM more
+   candidates so the precise memory survives the dilution. Medium scope.
+5. **Stack with cross-encoder reranker (ISS-159)** — **NEW, STRONGEST
+   OPTION**. The failure mode (right memory in candidate set, wrong rank
+   order, LLM gives up) is exactly what cross-encoder reranking is
+   designed to fix. Run a 3-arm sweep B' / D / D+cross-encoder; if E
+   recovers the 7 losses without losing the 10 gains, the stack story
+   is confirmed. File as ISS-181.
 
-**Recommendation**: Option 1, but as a separate ticket (ISS-181?) since
-it needs design work to verify plan-kind is the right gating signal.
+**Recommendation**: option 5 (ISS-181 cross-encoder stack-test) over the
+original option 1. The data points to a generation-stage failure that
+plan-kind can't see but a reranker should be able to.
 
-Status flipped open → resolved-with-asymmetric-result.
+Status flipped open → resolved-with-asymmetric-result. Mechanism re-analysis
+addendum at `.gid/issues/ISS-180/artifacts/stacktest-conv26-20260528-findings.md`.
 
 ## Why this matters
 
