@@ -12,6 +12,11 @@ relates:
 - ISS-175
 - ISS-177
 - ISS-180
+- ISS-071
+- ISS-182
+- ISS-183
+- ISS-184
+- ISS-185
 depends_on: ''
 updated: 2026-05-28
 ---
@@ -128,9 +133,17 @@ its own decision before re-running.
   README "Cognitive substrate" section. *(Done 2026-05-28 — README
   "Cognitive feature coverage matrix" subsection added under "Substrate
   Status (v0.4)", links here.)*
-- [ ] AC-2: For each B-bucket feature, an issue exists describing what
+- [x] AC-2: For each B-bucket feature, an issue exists describing what
   it would take to make the feature active (consumer wiring +
-  bench harness change). Link from this issue.
+  bench harness change). Link from this issue. *(Done 2026-05-28 —
+  5 B-bucket activation issues filed:*
+  - *Emotional bus → ISS-182*
+  - *Interoceptive hub → ISS-071 (already filed pre-this-audit)*
+  - *Dimensions → ISS-183*
+  - *Bitemporal plan → ISS-184*
+  - *Metacognition → ISS-185*
+  *Each issue carries Path A/B activation paths, AC for activation,
+  and "why P3 now" hold criteria.)*
 - [x] AC-3: For each C-bucket feature, the falsification commit is
   pinned in the matrix row. *(Done — verified 2026-05-28: ISS-159
   `b48ba46`, ISS-164 `77ef3f3`+`ebc9adf`, ISS-175 `da17c11` (was typo
