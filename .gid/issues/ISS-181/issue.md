@@ -1,12 +1,19 @@
 ---
 title: Cognitive feature E2E coverage matrix — audit which features are production-active vs wired-but-inert vs falsified
-status: open
+status: in_progress
 priority: P2
 severity: feature
 category: observability
 created: 2026-05-28
-relates: [ISS-148, ISS-159, ISS-164, ISS-175, ISS-177, ISS-180]
-depends_on:
+relates:
+- ISS-148
+- ISS-159
+- ISS-164
+- ISS-175
+- ISS-177
+- ISS-180
+depends_on: ''
+updated: 2026-05-28
 ---
 
 ## Summary
@@ -78,10 +85,11 @@ between buckets.
 |---|---|---|
 | Cross-encoder reranker | ISS-159 | Falsified `b48ba46`. conv-26 single-hop B-A delta = 0 (literal). Multi-hop +10.8pp = its trained regime. Stage C.5 wired, default OFF. |
 | Entity channel | ISS-164 | Shipped `77ef3f3`+`ebc9adf`, default OFF. ISS-180 stack-test corrected mechanism: recall/precision tradeoff at generation (IDK 0/7 → 6/7 on losses). Cannot default-ON. |
-| Factual reweighting (combine_factual_v2) | ISS-175 / ISS-177 | Shipped `da11171`, default OFF. conv-26 SF NOT met ship gate (5/27 vs 7/27 target). conv-44 corpus-general WIN (+7.3pp overall). Eligible to default-ON pending AC-2 full-LoCoMo. |
+| Factual reweighting (combine_factual_v2) | ISS-175 / ISS-177 | Shipped `da17c11`, default OFF. conv-26 SF NOT met ship gate (5/27 vs 7/27 target). conv-44 corpus-general WIN (+7.3pp overall). Eligible to default-ON pending AC-2 full-LoCoMo. |
 | HyDE per_category | ISS-156 | Per-category gating revealed multi-hop -10.81pp on clean substrate. Default OFF. |
 | Embedder swap (bge / mxbai) | ISS-157 | Falsified — single-hop unchanged across nomic/bge/mxbai. Stayed on nomic. |
 | Extractor prompt v2 | ISS-161 | Falsified L7 (v2 prompt regression in K=10) and L3 (V2 example-driven marginal). Stayed on V1. |
+| Slim prev-turn ExtractionContext | ISS-178 | Shipped + REVERTED 2026-05-28. conv-26 A/B: overall −1.97pp, single-hop 4/32→2/32, open-domain −15.38pp, reg rate 11.2% (AC-4 ≤10% FAIL). q3 (PRIMARY target) no-flip. Mechanism: slim context prunes co-occurring entities the long-window extractor keeps. All 5 commits reverted (`0123b1c` `76faa8c` `aff3868` `645be52` + bench `ac193ca`). ISS-162 P1→P3 in `fcab1d1`. |
 
 ### D. Designed but not implemented (per design v04)
 
@@ -91,7 +99,7 @@ between buckets.
 | WmState cold_start \| warm | §4.13 / §4.14 / §6.1 | Design only |
 | Anomaly event persistence (tier 2) | §4.11 | Stub exists, no substrate writer |
 | SOUL drive feedback closure | §4.12 | Bus has drive scoring read path; no SOUL.md write-back |
-| Prev-turn ExtractionContext | ISS-178 (filed) | Not started |
+| Prev-turn ExtractionContext | ISS-178 (filed 2026-05-28) | **Moved to bucket C (falsified + reverted 2026-05-28)** |
 | Mem0-style semantic UPDATE | ISS-163 (filed) | Not started |
 
 ## Decision rule for bucket transitions
@@ -116,13 +124,18 @@ its own decision before re-running.
 
 ## Acceptance criteria
 
-- [ ] AC-1: This matrix is committed to the issue body and linked from
-  README "Cognitive substrate" section.
+- [x] AC-1: This matrix is committed to the issue body and linked from
+  README "Cognitive substrate" section. *(Done 2026-05-28 — README
+  "Cognitive feature coverage matrix" subsection added under "Substrate
+  Status (v0.4)", links here.)*
 - [ ] AC-2: For each B-bucket feature, an issue exists describing what
   it would take to make the feature active (consumer wiring +
   bench harness change). Link from this issue.
-- [ ] AC-3: For each C-bucket feature, the falsification commit is
-  pinned in the matrix row (already done above).
+- [x] AC-3: For each C-bucket feature, the falsification commit is
+  pinned in the matrix row. *(Done — verified 2026-05-28: ISS-159
+  `b48ba46`, ISS-164 `77ef3f3`+`ebc9adf`, ISS-175 `da17c11` (was typo
+  `da11171`, fixed), ISS-156/157/161 reference their own issue artifacts.
+  ISS-178 row added with full revert chain.)*
 - [ ] AC-4: A 1-line CI check (or a script under `.gid/scripts/`)
   that fails when README mentions a feature not in bucket A.
   Prevents drift between marketing copy and reality.

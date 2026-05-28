@@ -316,6 +316,10 @@ Engram is being unified onto a single graph-structured storage substrate — `no
 
 For the design details, see the [v0.4 substrate design doc](https://github.com/tonitangpotato/engram-ai/blob/main/.gid/features/v04-unified-substrate/design.md) in the repo.
 
+### Cognitive feature coverage matrix
+
+The substrate ships ~18 cognitive subsystems (memory, ACT-R, Ebbinghaus, Hebbian/STDP, dual-trace consolidation, emotional bus, interoceptive hub, synthesis, dimensions, bitemporal, metacognition, …). Not all are equally load-bearing at the system level. A living audit — which features are production-active vs wired-but-inert vs falsified-and-default-off — is maintained at [ISS-181](.gid/issues/ISS-181/issue.md). README marketing claims must reference bucket A (production-active) only.
+
 ---
 
 ## Memory Types
