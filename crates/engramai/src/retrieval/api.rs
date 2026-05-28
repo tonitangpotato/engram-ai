@@ -288,6 +288,22 @@ pub struct GraphQuery {
     /// (entity_channel on vs off on conv-26). Normal callers should
     /// leave this `None`.
     pub entity_channel_override: Option<bool>,
+
+    /// ISS-175 — per-query override for
+    /// `FusionConfig.factual_reweight`.
+    ///
+    /// When `None` (default), falls back to
+    /// `FusionConfig::locked().factual_reweight` (currently `false`
+    /// — locked v0.3.0-r3 byte-identity). When `Some(true)`, forces
+    /// the Factual fusion path to use `combine_factual_v2`
+    /// (rebalanced weights + sum-with-evidence-bonus text aggregate).
+    /// When `Some(false)`, explicitly pins v1 even if a future locked
+    /// default flips (useful for A/B arms that need to pin the off side).
+    ///
+    /// Intended consumers: bench drivers running ISS-175 A/B sweeps
+    /// on conv-26 (factual_reweight on vs off). Normal callers should
+    /// leave this `None`.
+    pub factual_reweight_override: Option<bool>,
 }
 
 impl std::fmt::Debug for GraphQuery {
@@ -316,6 +332,7 @@ impl std::fmt::Debug for GraphQuery {
                 &self.cross_encoder_override.as_ref().map(|_| "<dyn Reranker>"),
             )
             .field("entity_channel_override", &self.entity_channel_override)
+            .field("factual_reweight_override", &self.factual_reweight_override)
             .finish()
     }
 }
@@ -342,6 +359,7 @@ impl GraphQuery {
             bm25_pool_override: None,
             cross_encoder_override: None,
             entity_channel_override: None,
+            factual_reweight_override: None,
         }
     }
 
@@ -456,6 +474,18 @@ impl GraphQuery {
     /// `false` — pre-ISS-164 byte-identical behavior).
     pub fn with_entity_channel(mut self, enabled: Option<bool>) -> Self {
         self.entity_channel_override = enabled;
+        self
+    }
+
+    /// Builder: per-query override for the Factual fusion reweighting
+    /// (ISS-175).
+    ///
+    /// See [`GraphQuery::factual_reweight_override`] for semantics.
+    /// Pass `None` to fall back to
+    /// `FusionConfig::locked().factual_reweight` (currently `false`
+    /// — locked v0.3.0-r3 byte-identity).
+    pub fn with_factual_reweight(mut self, enabled: Option<bool>) -> Self {
+        self.factual_reweight_override = enabled;
         self
     }
 }
@@ -704,6 +734,7 @@ impl Memory {
         let query_text = query.text.clone();
         let mmr_lambda_override = query.mmr_lambda_override;
         let cross_encoder_override = query.cross_encoder_override.clone();
+        let factual_reweight_override = query.factual_reweight_override;
         let dispatched = crate::retrieval::dispatch::dispatch(query, &classifier);
         let plan_kind = dispatched.plan_kind;
         let intent = dispatched.intent;
@@ -815,7 +846,14 @@ impl Memory {
         // Stage C: fusion + ranking. Hybrid bypasses `fuse_and_rank`
         // because RRF already produced a fused score (§5.2). Other
         // plans flow through the per-intent weighted combine.
-        let cfg = crate::retrieval::fusion::FusionConfig::locked();
+        //
+        // ISS-175 — apply per-query factual_reweight override before
+        // fuse_and_rank (the flag flows INTO scoring, unlike mmr_lambda
+        // which flows out at C.5). `None` keeps the locked default.
+        let mut cfg = crate::retrieval::fusion::FusionConfig::locked();
+        if let Some(enabled) = factual_reweight_override {
+            cfg.factual_reweight = enabled;
+        }
         let mut ranked = match plan_kind {
             crate::retrieval::dispatch::PlanKind::Hybrid => candidates,
             _ => crate::retrieval::fusion::fuse_and_rank(intent, &cfg, candidates),

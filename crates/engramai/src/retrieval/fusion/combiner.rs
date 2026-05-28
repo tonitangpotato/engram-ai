@@ -172,6 +172,27 @@ pub struct FusionConfig {
     /// still deserialize to the legacy behavior.
     #[serde(default = "default_entity_channel_enabled")]
     pub entity_channel_enabled: bool,
+    /// ISS-175 — Factual-only reweighted fusion + new text aggregate.
+    ///
+    /// When `true`, the Factual path (in `fuse_and_rank`) uses
+    /// `combine_factual_v2` instead of `combine`. The v2 formula:
+    /// - rebalances weights: graph 0.30 (was 0.45), text 0.25
+    ///   (was 0.40), vector 0.30 (was 0.0), recency 0.15 (unchanged)
+    /// - replaces `text = max(vector, bm25)` with sum-with-evidence-bonus:
+    ///   `text = 0.7*vec + 0.3*bm25 + 0.15 if bm25 > 0.05`
+    ///
+    /// Addresses three compounding bugs documented in the ISS-175
+    /// probe (`.gid/issues/ISS-175/artifacts/probe-conv26-findings.md`):
+    /// Bug 1 (graph_score saturation on 1-anchor queries — q75 has
+    /// 100% of pool at g=1.0), Bug 2 (vector_score has no own weight
+    /// channel), Bug 3 (max-aggregate discards rare-token bm25 signal,
+    /// but bm25 has 7.5× gold/non-gold separation — strongest predictor).
+    ///
+    /// Serde-defaults to `false` so older reproducibility records
+    /// deserialize to the locked v0.3.0-r3 behaviour. Callers flip via
+    /// `GraphQuery::with_factual_reweight(Some(true))`.
+    #[serde(default = "default_factual_reweight")]
+    pub factual_reweight: bool,
     /// Semantic version pin — bumped on weight changes.
     pub version: &'static str,
 }
@@ -195,6 +216,17 @@ fn default_mmr_lambda() -> f32 {
 /// `GraphQuery::entity_channel_override` to A/B against the
 /// always-on entity channel without re-baking `FusionConfig::locked()`.
 fn default_entity_channel_enabled() -> bool {
+    false
+}
+
+/// Serde default for [`FusionConfig::factual_reweight`] (ISS-175).
+///
+/// Defaults to `false` — Factual fusion stays byte-identical to the
+/// locked v0.3.0-r3 weight matrix + `text = max(vec, bm25)` aggregate.
+/// The bench harness flips this via `GraphQuery::factual_reweight_override`
+/// to A/B against the rebalanced weights + sum-with-evidence-bonus text
+/// aggregate without re-baking `FusionConfig::locked()`.
+fn default_factual_reweight() -> bool {
     false
 }
 
@@ -268,6 +300,7 @@ impl FusionConfig {
             min_fused_score: 0.0,
             mmr_lambda: default_mmr_lambda(),
             entity_channel_enabled: default_entity_channel_enabled(),
+            factual_reweight: default_factual_reweight(),
             version: "v0.3.0-locked-r3",
         }
     }
@@ -343,6 +376,70 @@ pub fn combine(intent: Intent, sub: &SubScores, weights: &FusionWeights) -> f64 
 }
 
 // ---------------------------------------------------------------------------
+// combine_factual_v2 — ISS-175 reweighted Factual fusion
+// ---------------------------------------------------------------------------
+
+/// ISS-175 — Factual-only fusion with rebalanced weights and the
+/// sum-with-evidence-bonus text aggregate. Used ONLY when
+/// `FusionConfig.factual_reweight` is `true`. See that field's docs
+/// for the why; the probe findings file is the ground truth on the
+/// three bugs this addresses.
+///
+/// Pure function of inputs — no clock, no RNG. The `intent` parameter
+/// is implicit (Factual); callers must dispatch on the flag in
+/// `fuse_and_rank` before invoking.
+pub fn combine_factual_v2(sub: &SubScores) -> f64 {
+    // Locked v2 weights (sum to 1.0):
+    const W_TEXT: f64 = 0.25;
+    const W_VECTOR: f64 = 0.30;
+    const W_GRAPH: f64 = 0.30;
+    const W_RECENCY: f64 = 0.15;
+
+    // New text aggregate: 0.7*vec + 0.3*bm25 + 0.15 bonus if bm25 > 0.05.
+    // Replaces v1's `max(vec, bm25)` which silently discards bm25 on
+    // gold rows where vec > bm25 — the Bug 3 case from ISS-175.
+    let text_score: Option<f64> = match (sub.vector_score, sub.bm25_score) {
+        (None, None) => None,
+        (v, b) => {
+            let v = v.unwrap_or(0.0);
+            let b = b.unwrap_or(0.0);
+            let base = 0.7 * v + 0.3 * b;
+            let bonus = if b > 0.05 { 0.15 } else { 0.0 };
+            Some((base + bonus).min(1.0))
+        }
+    };
+
+    // Component renormalization (§5.2) — identical pattern to `combine`,
+    // just with the v2 weight constants and the vector channel given
+    // its own weight (W_VECTOR > 0).
+    let components: [(f64, Option<f64>); 4] = [
+        (W_TEXT, text_score),
+        (W_VECTOR, sub.vector_score),
+        (W_GRAPH, sub.graph_score),
+        (W_RECENCY, sub.recency_score),
+    ];
+
+    let mut live_weight_sum = 0.0_f64;
+    let mut weighted_sum = 0.0_f64;
+    for (w, v) in components.iter() {
+        if *w <= 0.0 {
+            continue;
+        }
+        if let Some(score) = v {
+            let clamped = clamp01(*score);
+            weighted_sum += w * clamped;
+            live_weight_sum += w;
+        }
+    }
+
+    if live_weight_sum <= 0.0 {
+        return 0.0;
+    }
+
+    clamp01(weighted_sum / live_weight_sum)
+}
+
+// ---------------------------------------------------------------------------
 // fuse_and_rank — apply combine + tie-break + min_fused_score
 // ---------------------------------------------------------------------------
 
@@ -359,6 +456,10 @@ pub fn fuse_and_rank(
 ) -> Vec<ScoredResult> {
     let weights = cfg.signal_weights.get(intent);
 
+    // ISS-175 — Factual path may opt into the reweighted v2 fusion via
+    // `cfg.factual_reweight`. All other intents always use `combine`.
+    let use_factual_v2 = cfg.factual_reweight && matches!(intent, Intent::Factual);
+
     // Re-score every Memory candidate. Topic candidates keep their
     // existing score (Abstract plan computes them differently — §4.4).
     for r in candidates.iter_mut() {
@@ -368,7 +469,11 @@ pub fn fuse_and_rank(
             ..
         } = r
         {
-            *score = combine(intent, sub_scores, &weights);
+            *score = if use_factual_v2 {
+                combine_factual_v2(sub_scores)
+            } else {
+                combine(intent, sub_scores, &weights)
+            };
         }
     }
 
@@ -715,6 +820,262 @@ mod tests {
         let s1 = combine(Intent::Factual, &sub, &w);
         let s2 = combine(Intent::Factual, &sub, &w);
         assert_eq!(s1.to_bits(), s2.to_bits());
+    }
+
+    // -------- ISS-175: combine_factual_v2 + factual_reweight flag --------
+
+    #[test]
+    fn factual_reweight_default_off() {
+        // Pin the locked default. If this fails, someone changed the
+        // default — bump version and update all downstream
+        // reproducibility records.
+        let cfg = FusionConfig::locked();
+        assert!(
+            !cfg.factual_reweight,
+            "FusionConfig::locked().factual_reweight must default to false \
+             so v0.3.0-r3 byte-identity is preserved",
+        );
+    }
+
+    #[test]
+    fn factual_reweight_v2_lifts_gold_with_rare_bm25_hit() {
+        // Probe q71 case: gold has bm25=0.25 vec=0.62 graph=0.33,
+        // leader has bm25=0.0 vec=0.67 graph=1.0. Under v1 (max-aggregate
+        // + graph-dominant weights), leader wins despite gold's lexical
+        // hit. Under v2, the gap should narrow (probe predicts ~18%
+        // deficit reduction on q71-shaped data — may not flip alone).
+        let gold = SubScores {
+            vector_score: Some(0.62),
+            bm25_score: Some(0.25),
+            graph_score: Some(0.33),
+            recency_score: None,
+            actr_score: None,
+            affect_similarity: None,
+        };
+        let leader = SubScores {
+            vector_score: Some(0.67),
+            bm25_score: Some(0.0),
+            graph_score: Some(1.0),
+            recency_score: None,
+            actr_score: None,
+            affect_similarity: None,
+        };
+        let weights = FusionConfig::locked().signal_weights.get(Intent::Factual);
+
+        let v1_gold = combine(Intent::Factual, &gold, &weights);
+        let v1_leader = combine(Intent::Factual, &leader, &weights);
+        assert!(
+            v1_leader > v1_gold,
+            "v1 sanity: leader should currently win the q71-shape \
+             (bug we're fixing). v1_leader={v1_leader:.4} v1_gold={v1_gold:.4}"
+        );
+
+        let v2_gold = combine_factual_v2(&gold);
+        let v2_leader = combine_factual_v2(&leader);
+        let v1_gap = v1_leader - v1_gold;
+        let v2_gap = v2_leader - v2_gold;
+        assert!(
+            v2_gap < v1_gap,
+            "v2 should narrow the gap. v1_gap={v1_gap:.4} v2_gap={v2_gap:.4}"
+        );
+    }
+
+    #[test]
+    fn factual_reweight_v2_renormalizes_when_recency_missing() {
+        // Hand-computed expectation:
+        //   text = 0.7*0.6 + 0.3*0.3 + 0.15 (bonus, bm25>0.05) = 0.66
+        //   live weights: W_TEXT(0.25) + W_VECTOR(0.30) + W_GRAPH(0.30) = 0.85
+        //   weighted_sum = 0.25*0.66 + 0.30*0.6 + 0.30*0.5
+        //                = 0.165 + 0.18 + 0.15 = 0.495
+        //   normalized   = 0.495 / 0.85 = 0.58235...
+        let sub = SubScores {
+            vector_score: Some(0.6),
+            bm25_score: Some(0.3),
+            graph_score: Some(0.5),
+            recency_score: None,
+            actr_score: None,
+            affect_similarity: None,
+        };
+        let s = combine_factual_v2(&sub);
+        assert!(
+            (s - 0.5824).abs() < 0.001,
+            "expected ~0.5824 (renorm with recency missing), got {s}"
+        );
+    }
+
+    #[test]
+    fn factual_reweight_v2_evidence_bonus_fires_above_threshold() {
+        // bm25 just below threshold: no bonus.
+        let below = SubScores {
+            vector_score: Some(0.5),
+            bm25_score: Some(0.04),
+            graph_score: Some(1.0),
+            recency_score: Some(0.5),
+            actr_score: None,
+            affect_similarity: None,
+        };
+        // bm25 just above threshold: bonus fires.
+        let above = SubScores {
+            vector_score: Some(0.5),
+            bm25_score: Some(0.06),
+            graph_score: Some(1.0),
+            recency_score: Some(0.5),
+            actr_score: None,
+            affect_similarity: None,
+        };
+        let s_below = combine_factual_v2(&below);
+        let s_above = combine_factual_v2(&above);
+        // Bonus = +0.15 to text * W_TEXT(0.25) = +0.0375 raw, then renorm
+        // by 1.0 live weight → measurable lift of ~0.03.
+        assert!(
+            s_above > s_below + 0.03,
+            "evidence bonus should add measurable lift: s_below={s_below:.4} \
+             s_above={s_above:.4}"
+        );
+    }
+
+    #[test]
+    fn factual_reweight_v2_all_none_returns_zero() {
+        let sub = SubScores {
+            vector_score: None,
+            bm25_score: None,
+            graph_score: None,
+            recency_score: None,
+            actr_score: None,
+            affect_similarity: None,
+        };
+        assert_eq!(combine_factual_v2(&sub), 0.0);
+    }
+
+    #[test]
+    fn factual_reweight_flag_dispatches_in_fuse_and_rank() {
+        // Wire-up test: fuse_and_rank with cfg.factual_reweight=true on
+        // a Factual intent should produce DIFFERENT scores than the
+        // same call with cfg.factual_reweight=false (proves the branch
+        // actually fires). Use the q71-shape gold from earlier.
+        use crate::retrieval::ScoredResult;
+        use crate::types::{MemoryLayer, MemoryRecord, MemoryType};
+        let sub_gold = SubScores {
+            vector_score: Some(0.62),
+            bm25_score: Some(0.25),
+            graph_score: Some(0.33),
+            recency_score: None,
+            actr_score: None,
+            affect_similarity: None,
+        };
+        let mk_record = || MemoryRecord {
+            id: "test-mem-id".to_string(),
+            content: "test".to_string(),
+            memory_type: MemoryType::Factual,
+            layer: MemoryLayer::Working,
+            created_at: chrono::Utc::now(),
+            occurred_at: None,
+            access_times: vec![],
+            working_strength: 0.0,
+            core_strength: 0.0,
+            importance: 0.0,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: String::new(),
+            contradicts: None,
+            contradicted_by: None,
+            superseded_by: None,
+            metadata: None,
+        };
+        let make_cand = || vec![ScoredResult::Memory {
+            record: mk_record(),
+            score: 0.0,
+            sub_scores: sub_gold.clone(),
+            embedding: None,
+        }];
+
+        let mut cfg_off = FusionConfig::locked();
+        cfg_off.factual_reweight = false;
+        let off = fuse_and_rank(Intent::Factual, &cfg_off, make_cand());
+
+        let mut cfg_on = FusionConfig::locked();
+        cfg_on.factual_reweight = true;
+        let on = fuse_and_rank(Intent::Factual, &cfg_on, make_cand());
+
+        let off_score = match &off[0] {
+            ScoredResult::Memory { score, .. } => *score,
+            _ => panic!("expected Memory"),
+        };
+        let on_score = match &on[0] {
+            ScoredResult::Memory { score, .. } => *score,
+            _ => panic!("expected Memory"),
+        };
+        assert!(
+            (off_score - on_score).abs() > 1e-6,
+            "flag must change scoring. off={off_score:.6} on={on_score:.6}"
+        );
+    }
+
+    #[test]
+    fn factual_reweight_does_not_affect_other_intents() {
+        // Flip the flag on, but call fuse_and_rank with Episodic intent.
+        // Score must be identical to the flag-off path because the
+        // ISS-175 branch is Factual-only.
+        use crate::retrieval::ScoredResult;
+        use crate::types::{MemoryLayer, MemoryRecord, MemoryType};
+        let sub = SubScores {
+            vector_score: Some(0.6),
+            bm25_score: Some(0.3),
+            graph_score: Some(0.5),
+            recency_score: Some(0.4),
+            actr_score: None,
+            affect_similarity: None,
+        };
+        let mk_record = || MemoryRecord {
+            id: "test-mem-id".to_string(),
+            content: "test".to_string(),
+            memory_type: MemoryType::Factual,
+            layer: MemoryLayer::Working,
+            created_at: chrono::Utc::now(),
+            occurred_at: None,
+            access_times: vec![],
+            working_strength: 0.0,
+            core_strength: 0.0,
+            importance: 0.0,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: String::new(),
+            contradicts: None,
+            contradicted_by: None,
+            superseded_by: None,
+            metadata: None,
+        };
+        let make_cand = || vec![ScoredResult::Memory {
+            record: mk_record(),
+            score: 0.0,
+            sub_scores: sub.clone(),
+            embedding: None,
+        }];
+
+        let mut cfg_off = FusionConfig::locked();
+        cfg_off.factual_reweight = false;
+        let off = fuse_and_rank(Intent::Episodic, &cfg_off, make_cand());
+
+        let mut cfg_on = FusionConfig::locked();
+        cfg_on.factual_reweight = true;
+        let on = fuse_and_rank(Intent::Episodic, &cfg_on, make_cand());
+
+        let off_score = match &off[0] {
+            ScoredResult::Memory { score, .. } => *score,
+            _ => panic!("expected Memory"),
+        };
+        let on_score = match &on[0] {
+            ScoredResult::Memory { score, .. } => *score,
+            _ => panic!("expected Memory"),
+        };
+        assert_eq!(
+            off_score.to_bits(),
+            on_score.to_bits(),
+            "Episodic intent must be byte-identical regardless of \
+             factual_reweight flag"
+        );
     }
 
     // -------- RRF --------
