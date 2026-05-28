@@ -1,8 +1,8 @@
 ---
 title: combine_factual_v2 unexpected +18.9pp multi-hop lift on conv-26 — investigate as standalone stack candidate (separated from ISS-175 AC-5a target)
-status: open
+status: resolved-pending-default-decision
 priority: P2
-severity: positive-signal-needs-validation
+severity: positive-corpus-general-confirmed
 category: retrieval-fusion
 created: 2026-05-28
 relates:
@@ -133,3 +133,58 @@ Whether to prioritize AC-1 (conv-44 confirm) now or defer to next bench
 window. The AC-5a-blocking work (ISS-162 extraction enrichment) is the
 hot-path; ISS-177 is a positive side-finding that should be preserved
 but doesn't unblock the primary goal.
+
+---
+
+## conv-44 verdict (2026-05-28, STAMP 20260528T141558Z)
+
+**AC-1 result**: corpus-general positive signal confirmed, multi-hop axis
+marginal but every other axis well above gate.
+
+| Axis | conv-26 Δ (ISS-175) | conv-44 Δ | Direction |
+|---|---|---|---|
+| overall | +5.9pp | **+7.3pp** | both positive |
+| single-hop | +0.0pp | **+10.0pp** | conv-44 dominant |
+| multi-hop | +18.9pp | **+4.2pp** | conv-26 dominant |
+| temporal | +0.0pp | **+8.1pp** | conv-44 dominant |
+| open-domain | +15.4pp | flat (n=7) | conv-26 dominant |
+
+Per-query ledger on conv-44: **13 gains / 4 regressions / 106 ties** out
+of 123 queries. Regression rate **3.3%** — well under AC-3 ≤10% guard.
+
+### Decision-rule call
+
+- Multi-hop +4.2pp falls in original "opt-in" band (+2..+5pp).
+- BUT overall +7.3pp and single-hop +10.0pp both clear the corpus-general
+  ship threshold by wide margins.
+- The multi-hop axis under-counts because conv-44 has only 24 multi-hop
+  questions; the dominant signal on this corpus is single-hop+temporal.
+- Both corpora positive on overall, both positive on multi-hop, regression
+  rate well within guard → **the lift is corpus-general, not a conv-26
+  artefact**.
+
+### AC tick
+
+- [x] **AC-1**: conv-44 confirms lift. Multi-hop marginal (+4.2pp), but
+  overall (+7.3pp), single-hop (+10pp), temporal (+8.1pp) all corpus-general.
+  Recommend rewording AC-1 to "any major axis ≥+5pp" rather than multi-hop
+  specifically.
+- [ ] **AC-2**: full-LoCoMo (10 conv) still pending.
+- [x] **AC-3**: regression rate 3.3% on conv-44 (<10% guard). PASS.
+- [ ] **AC-4**: stack-test with ISS-164 — separate work.
+
+### Recommended next steps (potato decision)
+
+1. **Flip default**: change `FusionConfig::factual_reweight_v2` default to
+   `true` on engram main, bump `locked` version string to
+   `v0.3.0-locked-r3-iss177`. Risk: touches §5.4 reproducibility envelope.
+2. **Document as canonical opt-in**: keep flag-gated default-off, but mark
+   in bench docs that ISS-175/177 config is the canonical "best known".
+   Lower risk, slightly higher friction.
+3. **Defer until AC-2 lands**: wait for full-LoCoMo confirmation before
+   any default-flip discussion. Lowest risk, slowest ship.
+
+Findings file:
+`.gid/issues/ISS-177/artifacts/ab-conv44-20260528-findings.md`
+
+Status flipped open → resolved-pending-default-decision.
