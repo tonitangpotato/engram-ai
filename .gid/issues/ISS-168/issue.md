@@ -2,7 +2,7 @@
 title: Triple extractor parser drops ~5% of Haiku responses on multi-array CoT pattern (prose between [...] blocks)
 priority: P2
 severity: minor
-status: open
+status: in_review
 category: extractor
 created: 2026-05-27
 relates_to:
@@ -15,6 +15,8 @@ tags:
 - parser
 - haiku
 - locomo
+fixed_by: 3fe1585
+resolved: 2026-05-28
 ---
 
 ## Summary
@@ -132,3 +134,51 @@ This issue was deliberately deferred from ISS-167 to keep that
 fix narrow. ISS-167 closed the **100% rejection** failure mode
 (duplicate JSON keys); ISS-168 closes the residual **~5% loss**
 failure mode (multi-array CoT). Both can coexist in the parser.
+
+---
+
+## Implementation — 2026-05-28 (commit `3fe1585`)
+
+Option 1 (first-array-wins, ~15 LOC + 5 tests) shipped per recommendation.
+
+### Approach
+
+New helper `extract_first_top_level_array(&str) -> Option<&str>`
+walks the input char-by-char tracking:
+
+- bracket depth (`[` → +1, `]` → −1)
+- whether the cursor is inside a JSON string literal (`"` toggles
+  it; `\` escapes the next char so `\"` doesn't close the string)
+
+It returns the slice from the first `[` through its matching `]`
+(inclusive). Everything after — a second array, trailing prose,
+anything — is discarded.
+
+`parse_triple_response` swaps `s[find('[')..rfind(']')+1]` for this
+helper; behaviour on single-array inputs is unchanged.
+
+### AC ticks
+
+- [x] **AC-1**: first complete top-level JSON array extracted regardless
+  of trailing prose / additional arrays. Policy + rationale documented
+  in the helper's doc comment.
+- [x] **AC-2**: 5 regression tests cover:
+  - `iss168_two_arrays_with_prose_between_takes_first` — the observed
+    pattern from ISS-166
+  - `iss168_replacement_pattern_first_array_wins` — scratch-that pattern,
+    pins the documented choice of first-wins (vs. last-wins)
+  - `iss168_prose_preamble_and_postamble_still_extracts` — ISS-167
+    regression guard
+  - `iss168_nested_brackets_in_string_values_do_not_confuse_scanner` —
+    string-awareness guard
+  - `iss168_escaped_quote_in_string_preserves_string_boundary` —
+    escape-handling guard
+- [x] **AC-3**: all 6 ISS-167 regression tests still green
+  (`parse_triple_response_tolerates_duplicate_*`,
+  `parse_triple_response_mixed_valid_and_malformed_elements_keeps_valid`,
+  etc.). 22/22 `triple_extractor` tests. 2016/2016 engramai lib tests.
+- [ ] **AC-4**: zero "trailing characters" WARN on next conv-26
+  ingest with `ENGRAM_BENCH_PIPELINE_POOL=1`. Deferred — cheap to
+  verify when the next ISS-179 sweep runs; no separate bench needed
+  just for this. If a new failure mode surfaces in the wild, file
+  ISS-XXX rather than re-opening ISS-168.
