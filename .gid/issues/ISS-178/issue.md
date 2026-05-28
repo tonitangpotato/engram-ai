@@ -1,6 +1,6 @@
 ---
 title: Slim prev-turn ExtractionContext (subset of ISS-162) — minimum lever to fix conv-26 q3-style noun-phrase drop
-status: in_progress
+status: open
 priority: P2
 severity: extraction-fidelity
 category: extraction
@@ -64,13 +64,9 @@ doesn't move q3, the broader ISS-162 hypothesis collapses cheaply.
 
 ## ACs
 
-- [x] AC-1: `ExtractionContext` type defined in `engramai::extractor`, both extractors (Anthropic + Ollama) accept it, default behavior (`prev=None`) is byte-identical to current
-  - Shipped engram commits fdac0a4 (struct + trait default) + 670bc41 (Anthropic + Ollama overrides + shared `build_extraction_user_message`).
-  - Byte-identity pinned by `iss178_build_user_message_no_prev_returns_pre_iss178_byte_identical` and `iss178_default_impl_falls_through_to_extract_with_current_only`.
-- [x] AC-2: Unit tests added: `prev_none_byte_identical`, `prev_some_prompt_shape`, `prev_multiline_handled`
-  - 10 `iss178_*` extractor unit tests in `crates/engramai/src/extractor.rs` covering byte-identity, with_prev some/none, whitespace fall-through, prompt-shape (`with_prev_contains_both_turns_and_guard`), trait default fallthrough, override receives full context. 3 integration tests in `crates/engramai/tests/iss178_prev_turn_e2e.rs` covering meta-to-extractor flow, no_prev path, whitespace rejection. 60/60 extractor lib tests + 3/3 integration green.
-- [x] AC-3: `engram-bench` driver wires the previous turn into `ExtractionContext` during conv-26 ingestion (env-gated `ENGRAM_BENCH_PREV_TURN_CONTEXT=on`, default off for envelope preservation)
-  - Shipped engram-bench commit cf6e859. `resolve_prev_turn_context()` helper at src/drivers/locomo.rs:642 (mirrors entity_channel pattern). When on, replay loop at lines 1023-1062 uses `Memory::ingest_with_meta` with `StorageMeta { occurred_at, prev_turn: Some(prev episode text), ..Default::default() }` for every episode after the first. When off, stays on `ingest_with_stats_at` (byte-identical to pre-ISS-178). 5 env-resolver unit tests added, 199/199 lib green.
+- [ ] AC-1: `ExtractionContext` type defined in `engramai::extractor`, both extractors (Anthropic + Ollama) accept it, default behavior (`prev=None`) is byte-identical to current
+- [ ] AC-2: Unit tests added: `prev_none_byte_identical`, `prev_some_prompt_shape`, `prev_multiline_handled`
+- [ ] AC-3: `engram-bench` driver wires the previous turn into `ExtractionContext` during conv-26 ingestion (env-gated `ENGRAM_BENCH_PREV_TURN_CONTEXT=on`, default off for envelope preservation)
 - [ ] AC-4: conv-26 A/B sweep (envelope: K=10, temp=0, HyDE=off, MMR=off, entity_channel=off, FACTUAL_REWEIGHT=on per ISS-177 canonical) shows q3 score Δ ≥ 0 (1 → still 1 on B, or 0 → 1 on B). Regression rate ≤10% (AC-3-style guard).
 - [ ] AC-5: SF aggregate Δ ≥ +1 question (≥6/27 from 5/27 baseline). If Δ = 0, ISS-178 falsified, lever closed.
 - [ ] AC-6: If AC-4 + AC-5 met, decision-tree branch:
