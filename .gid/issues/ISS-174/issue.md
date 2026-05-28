@@ -1,6 +1,6 @@
 ---
 title: Extend vector_score to Hybrid sub-plan Factual path (ISS-172 follow-up, mirror Strategy A)
-status: open
+status: deferred
 priority: P2
 severity: incomplete-fix
 category: retrieval
@@ -10,6 +10,7 @@ relates:
 - engram:ISS-172
 - engram:ISS-173
 blocked_by: engram:ISS-175
+deferred_until: iss-179-ac-5a-redefine
 ---
 
 ## Summary
@@ -77,4 +78,19 @@ through Hybrid still suffer; then decide on Option A vs B.
 
 ## Status
 
-Filed as follow-up — blocked on ISS-175 outcome.
+**2026-05-28 — deferred.** ISS-175 reached `falsified-on-AC-5a`
+(verdict: `kept-as-opt-in`) — combine_factual_v2 did NOT lift
+single-fact AC-5a on conv-26 (+0.66pp overall, +1 SF flip out of
+27). The premise of ISS-174 ("once ISS-175 lands productively,
+extend the same wiring to Hybrid sub-plan") is invalidated:
+extending a floor-fix to a second code path that consumes the
+same falsified signal can't recover anything.
+
+Re-promotion criteria:
+- ISS-179 AC-5a redefines a target that ISS-175's combine_factual_v2
+  actually improves (e.g. multi-hop axis where ISS-177 saw +18.9pp),
+  AND
+- A fresh per-query trace shows the 4 Hybrid-routed SF qids would
+  benefit from cosine-based pre-ranking inside FactualPlan.
+
+Until then, ISS-174 is dead weight — closing the loop honestly.

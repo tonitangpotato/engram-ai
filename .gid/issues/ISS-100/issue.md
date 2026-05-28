@@ -1,12 +1,22 @@
 ---
 id: ISS-100
 title: Port LOCOMO LLM-as-judge into engram-bench (decouple from cogmembench)
-status: in_progress
+status: resolved
 priority: P0
 severity: high
-labels: [v0.3, ship-gate, benchmarks, leg-1]
+labels:
+- v0.3
+- ship-gate
+- benchmarks
+- leg-1
 created: 2026-05-02
-relates_to: [GOAL-5.1, GOAL-5.2, ISS-046, ISS-058]
+relates_to:
+- GOAL-5.1
+- GOAL-5.2
+- ISS-046
+- ISS-058
+fixed_by: engram-bench:16cb376
+resolved: 2026-05-23
 ---
 
 # Port LOCOMO LLM-as-judge into engram-bench
@@ -35,18 +45,18 @@ runtime dependency on cogmembench.
 
 ## Acceptance criteria
 
-- [ ] `../engram-bench/src/llm_client.rs` exists, smoke test passes
+- [x] `../engram-bench/src/llm_client.rs` exists, smoke test passes
       ("Reply Yes" → response starts with "Yes")
-- [ ] `../engram-bench/src/scorers/locomo_judge.rs` exists with
+- [x] `../engram-bench/src/scorers/locomo_judge.rs` exists with
       `judge_answer` + `generate_answer`, prompts byte-for-byte from cogmembench
-- [ ] `drivers/locomo.rs` modified: retrieve → generate_answer → judge_answer
+- [x] `drivers/locomo.rs` modified: retrieve → generate_answer → judge_answer
       → record, with JSONL checkpointing
-- [ ] Smoke test (25 questions on conv-26) verdict-mismatch ≤ 1/25 vs
+- [x] Smoke test (25 questions on conv-26) verdict-mismatch ≤ 1/25 vs
       cogmembench's `engram_adapter.py`
-- [ ] Full 199-question run produces `.gid/eval-runs/RUN-NNNN/` with
+- [x] Full 199-question run produces `.gid/eval-runs/RUN-NNNN/` with
       results.json + summary.md, including J-score, evidence_recall,
       latency, token cost
-- [ ] No new dep added to `crates/engramai/Cargo.toml` (GUARD-9)
+- [x] No new dep added to `crates/engramai/Cargo.toml` (GUARD-9)
 
 ## Out of scope
 

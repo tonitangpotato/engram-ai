@@ -1,7 +1,7 @@
 ---
 id: ISS-090
 title: Retire add_with_emotion / add_with_emotion_at — convert to store_raw shims, complete ISS-019 Step 4.5
-status: in_progress
+status: resolved
 priority: P2
 severity: medium
 tags:
@@ -14,6 +14,7 @@ related:
 - ISS-089
 - ISS-087
 - ISS-019
+resolved: 2026-05-28
 ---
 
 # ISS-090: Retire `add_with_emotion` / `add_with_emotion_at`
@@ -36,21 +37,21 @@ After ISS-089 lands, the CLI no longer calls `add_with_emotion_at` for the `--oc
 
 ## Acceptance Criteria
 
-- [ ] **AC-1**: `StorageMeta` gains `emotion: Option<f64>` and `domain: Option<String>` fields. Default `None`. Serialized to `user_metadata` if set (round-trip preserved).
-- [ ] **AC-2**: `store_raw` Path A (extractor present) applies caller emotion to extracted facts using a **fallback rule**: `final_valence = fact.valence.or(meta.emotion)`. Extractor's per-fact judgment wins; caller emotion is the prior used only when extractor produced no valence for that fact. Document this behavior in `store_raw`'s rustdoc.
-- [ ] **AC-3**: `store_raw` Path A also applies caller `domain` to facts that have no extractor-assigned domain (same fallback discipline).
-- [ ] **AC-4**: `store_raw` Path B (no extractor) uses caller emotion/domain directly on the single admitted record (no fact split — no aggregation question).
-- [ ] **AC-5**: CLI `Commands::Store`: collapse the `(emotion, domain).is_some()` branch. ALL invocations route through `mem.store_raw(content, StorageMeta { occurred_at, emotion, domain, … })`. Single call site.
-- [ ] **AC-6**: `add_with_emotion` becomes a `#[deprecated]` shim that calls `store_raw` (NOT `add_raw`). Signature preserved for any external caller. Internally goes through Path A.
-- [ ] **AC-7**: `add_with_emotion_at` becomes a `#[deprecated]` shim that calls `store_raw` (same treatment). Note ISS-090 in the deprecation message.
-- [ ] **AC-8**: `add_raw` is unchanged (still has its own deprecation note from ISS-019). Out of scope here.
-- [ ] **AC-9**: Test `tests/iss_090_emotion_through_store_raw.rs`:
+- [x] **AC-1**: `StorageMeta` gains `emotion: Option<f64>` and `domain: Option<String>` fields. Default `None`. Serialized to `user_metadata` if set (round-trip preserved). *(Verified 2026-05-28 — store_api.rs:128 + 136, default impl at 320-321 asserts both `None`.)*
+- [x] **AC-2**: `store_raw` Path A (extractor present) applies caller emotion to extracted facts using a **fallback rule**: `final_valence = fact.valence.or(meta.emotion)`. Extractor's per-fact judgment wins; caller emotion is the prior used only when extractor produced no valence for that fact. Document this behavior in `store_raw`'s rustdoc. *(Verified 2026-05-28 — test `iss090_path_a_extractor_judgment_wins` + `iss090_path_a_caller_emotion_fills_when_extractor_neutral` both green.)*
+- [x] **AC-3**: `store_raw` Path A also applies caller `domain` to facts that have no extractor-assigned domain (same fallback discipline). *(Verified 2026-05-28 — same Path A tests cover domain fallback.)*
+- [x] **AC-4**: `store_raw` Path B (no extractor) uses caller emotion/domain directly on the single admitted record (no fact split — no aggregation question). *(Verified 2026-05-28 — test `iss090_path_b_emotion_applied_directly` green.)*
+- [x] **AC-5**: CLI `Commands::Store`: collapse the `(emotion, domain).is_some()` branch. ALL invocations route through `mem.store_raw(content, StorageMeta { occurred_at, emotion, domain, … })`. Single call site. *(Verified 2026-05-28 — crates/engram-cli/src/main.rs:1348-1365 is the single `mem.store_raw` call; ISS-090 inline comment present.)*
+- [x] **AC-6**: `add_with_emotion` becomes a `#[deprecated]` shim that calls `store_raw` (NOT `add_raw`). Signature preserved for any external caller. Internally goes through Path A. *(Verified 2026-05-28 — memory.rs:3153 `#[deprecated(since="0.2.3")]` present, body delegates to `add_with_emotion_at` which goes through store_raw per AC-7.)*
+- [x] **AC-7**: `add_with_emotion_at` becomes a `#[deprecated]` shim that calls `store_raw` (same treatment). Note ISS-090 in the deprecation message. *(Verified 2026-05-28 — memory.rs:3209 shim delegates to `store_raw`, ISS-090 note in docstring at 3175 and in deprecation message.)*
+- [x] **AC-8**: `add_raw` is unchanged (still has its own deprecation note from ISS-019). Out of scope here. *(Confirmed scope — `add_raw` untouched by ISS-090 commits.)*
+- [x] **AC-9**: Test `tests/iss_090_emotion_through_store_raw.rs`: *(Verified 2026-05-28 — 4/4 tests green including deprecated shim routing through store_raw.)*
   - Store via `add_with_emotion(content, …, emotion=-0.5, domain="trading")` → assert graph node exists (proof Path A ran)
   - Store via CLI `engram store --emotion -0.5 --domain trading "…"` → assert graph node exists
   - Store text where extractor produces a fact with explicit valence → assert caller emotion does NOT override (fallback rule honored)
   - Store text where extractor produces facts with no valence → assert caller emotion is applied
-- [ ] **AC-10**: `EmpathyBus::process_interaction` integration verified — domain trend accumulation still works through new path. (Likely just works because emotion lands on each fact and EmpathyBus reads facts. But add a regression test.)
-- [ ] **AC-11**: All `add_with_emotion*` rustdoc examples in the codebase updated to show the `store_raw` path as the recommended way (shim docs say "prefer `store_raw` directly").
+- [x] **AC-10**: `EmpathyBus::process_interaction` integration verified — domain trend accumulation still works through new path. (Likely just works because emotion lands on each fact and EmpathyBus reads facts. But add a regression test.) *(Verified 2026-05-28 — `tests/iss_090_empathy_bus_compat.rs::add_with_emotion_shim_fires_empathy_bus` green: asserts trading-domain trend row exists after shim call.)*
+- [x] **AC-11**: All `add_with_emotion*` rustdoc examples in the codebase updated to show the `store_raw` path as the recommended way (shim docs say "prefer `store_raw` directly"). *(Verified 2026-05-28 — memory.rs:3175-3208 docstring on `add_with_emotion_at` shows the `store_raw` recommended-path example with `StorageMeta { emotion, domain, occurred_at, .. }`.)*
 
 ## Out of Scope
 
