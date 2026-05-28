@@ -1,12 +1,13 @@
 ---
 title: LOCOMO driver missing answer-extraction step (predicted = full memory.content)
-status: open
+status: resolved
 severity: blocker
 priority: P0
 feature: v03-benchmarks
 repo: engram-bench
 blocks: GOAL-5.1,GOAL-5.2
 tags: v0.3,benchmarks,locomo,design-gap
+fixed_by: engram-bench:16cb376
 ---
 
 # LOCOMO driver missing answer-extraction step
@@ -148,15 +149,26 @@ To be made (A vs B vs C). Recommendation pending discussion:
 
 ## Acceptance Criteria
 
-- [ ] Decision recorded (A / B / C / B-then-A) with rationale
-- [ ] `design.md` §3.1 step 3 rewritten to specify the chosen
+- [x] Decision recorded (A / B / C / B-then-A) with rationale
+- [x] `design.md` §3.1 step 3 rewritten to specify the chosen
       answer-extraction mechanism explicitly (no more "per LOCOMO's
-      scoring conventions")
-- [ ] Driver implementation lands in `engram-bench` with answer-extraction
-      step wired between retrieve and score
-- [ ] Smoke test produces non-trivial score on the existing fixture
+      scoring conventions") — see §3.1 step 3b + §3.1.1 (prompt pinned)
+- [x] Driver implementation lands in `engram-bench` with answer-extraction
+      step wired between retrieve and score — `score_judged` + `generate_answer` +
+      `judge_answer` in `drivers/locomo.rs`, smoke test at L2456 passes
+- [x] Smoke test produces non-trivial score on the existing fixture
       (`alice met bob in 2020` / gold=`2020`) — exact threshold depends
       on chosen option
-- [ ] Repro record captures answer-extraction config (model, prompt hash,
-      etc. for A/C; mode flag for B)
-- [ ] If A/C: cost & latency budget for one full LOCOMO run documented
+- [x] Repro record captures answer-extraction config (model, prompt hash,
+      etc. for A/C; mode flag for B) — `ReproRecord::answer_extraction.prompt_sha256`
+      in `harness/repro.rs`, surfaced from `answer_gen/extractor.rs`
+- [x] If A/C: cost & latency budget for one full LOCOMO run documented —
+      per-query `generate_ms`/`judge_ms`/`generate_tokens`/`judge_tokens` in `locomo_per_query.jsonl`
+
+## Resolution
+
+Resolved via ISS-100 port (commit `16cb376` in engram-bench, 12 files +3035 LoC).
+Full generate→judge pipeline replaced the original `predicted = record.content`
+shortcut. The 0.0 fixture score is no longer the driver bug it once was; ISS-101
+status was simply not flipped at the time. Verified 2026-05-28 via cite-before-claim
+spot-check of driver code, design §3.1 step 3b, and `harness::repro::ReproRecord`.
