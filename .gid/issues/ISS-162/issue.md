@@ -1,16 +1,21 @@
 ---
-title: "Ingest path: extractor sees single turn, missing conversation context window"
+title: 'Ingest path: extractor sees single turn, missing conversation context window'
 status: open
-priority: P1
+priority: P3
 severity: architecture-gap
 category: ingestion
 created: 2026-05-26
 relates:
-  - ISS-148
-  - ISS-161
-  - ISS-163
-  - ISS-164
+- ISS-148
+- ISS-161
+- ISS-163
+- ISS-164
 discovered_in: ISS-161 root-cause audit 2026-05-26
+downgrade_reason:
+- ISS-178 slim-prev-turn falsification — slim variant actively harmful on conv-26 (Δsh −2
+- reg 11.2%
+- q3 no flip). Full session-state design needs different justification before reprioritising.
+downgraded_at: 2026-05-28
 ---
 
 ## Summary
@@ -171,3 +176,41 @@ have the gold noun phrase in the **previous turn**. If those 5 are
 recovered, single-fact on conv-26 reaches 13/27 = 0.48 — still below
 AC-5a 0.60 but a 16pp lift, the largest single architectural lever
 identified.
+
+---
+
+## DOWNGRADE — 2026-05-28 (P1 → P3)
+
+ISS-178 was filed as the **minimum viable subset** of this issue — prev-turn
+only, no rolling summary, no session-state machinery — specifically to test
+whether the "extractor needs more context" hypothesis held empirically before
+investing in the full design.
+
+Conv-26 A/B sweep result (`.gid/issues/ISS-178/artifacts/falsification-conv26-20260528.md`):
+
+- Overall Δ **−1.97 pp**
+- Single-hop Δ **−6.25 pp** (4/32 → 2/32)
+- Open-domain Δ **−15.38 pp**
+- q3 (the canonical "prev-turn-fixable" question per ISS-161 audit) — **no flip**
+- Regression rate **11.2 %** (AC-4 guard fail)
+
+Sample regressions show the slim prev-turn context **prunes useful co-occurring
+facts** the long-window extractor would otherwise keep (e.g. q15 lost 3 of 4
+Melanie hobbies). The expected lift (5 of 9 single-fact misses fixable per the
+above audit) **did not materialise**.
+
+The fuller design here (`SessionState`, rolling summary, sliding window) is
+strictly more aggressive than what ISS-178 tested — there is no evidence the
+delta against ISS-178's failure mode is positive. Until a different mechanism
+is proposed (e.g. structured retrieval pre-pass over the current namespace to
+pull anchor entities **without** discarding extractor scope), this issue
+should not be implementation-priority.
+
+**Hold criteria for re-promotion to P1/P2:**
+
+1. A different context source is proposed (not just prev-turn text); AND
+2. A cheap probe (extractor-prompt-only or fixture-level) shows the proposed
+   source does not exhibit the ISS-178 pruning pattern; AND
+3. ISS-179 AC-5a target redefine (Options A/B/C/D) is resolved — if Option C
+   is taken (move SF target off conv-26), the conv-26-derived motivation for
+   this issue weakens.

@@ -1,6 +1,6 @@
 ---
 title: Slim prev-turn ExtractionContext (subset of ISS-162) — minimum lever to fix conv-26 q3-style noun-phrase drop
-status: open
+status: falsified
 priority: P2
 severity: extraction-fidelity
 category: extraction
@@ -10,6 +10,8 @@ relates:
 - engram:ISS-148
 - engram:ISS-161
 relates_to: .gid/issues/ISS-162/issue.md
+resolved: 2026-05-28
+verdict: actively_harmful_on_conv26
 ---
 
 ## Summary
@@ -98,3 +100,43 @@ changes and ISS-178 might or might not still be worth pursuing.
 - ISS-161 audit: `.gid/issues/ISS-161/artifacts/heartbeat-1240-real-failure-modes.md`
 - ISS-148 AC-5a: blocking conv-26 single-fact target
 - ISS-179: AC-5a redefine discussion (paired)
+
+---
+
+## VERDICT — 2026-05-28 (ACTIVELY HARMFUL, all commits reverted)
+
+Conv-26 A/B sweep (STAMP `20260528T204811Z`) with envelope ISS-177 canonical:
+
+| Bucket | A (off) | B (on) | Δ |
+|---|---|---|---|
+| Overall (n=152) | 0.2961 | 0.2763 | **−1.97 pp** |
+| open-domain (n=13) | 0.4615 | 0.3077 | **−15.38 pp** |
+| single-hop (n=32)  | 0.1250 | 0.0625 | **−6.25 pp** (4 → 2) |
+| multi-hop (n=37)   | 0.2973 | 0.2973 | +0.00 pp |
+| temporal (n=70)    | 0.3429 | 0.3571 | +1.43 pp |
+
+- **q3 (PRIMARY): no flip** (0 → 0 — both arms "I don't know")
+- **q7 (secondary): no flip** (0 → 0)
+- Δ single-hop **−2**, regression rate **11.2 %** (AC-4 guard fail)
+- Sample of A=1 → B=0 cases confirms regressions are **real** (Arm B returned
+  fact-incomplete answers, e.g. q15 dropped 3 of Melanie's 4 hobbies). Not
+  judge noise.
+
+**Mechanism (inferred):** slim prev-turn-only context discards co-occurring
+entities the long-window extractor would otherwise keep, causing net fact
+loss on a corpus where the dominant single-hop misses are NOT prev-turn-fixable.
+
+**Reverts:**
+- `engram`: `0123b1c`, `76faa8c`, `aff3868`, `645be52` (reverting `5352739`, `989025c`, `670bc41`, `fdac0a4`)
+- `engram-bench`: `ac193ca` (reverting `cf6e859`)
+
+Falsification artifact:
+`.gid/issues/ISS-178/artifacts/falsification-conv26-20260528.md`
+
+**Downstream actions:**
+- ISS-162 downgrade to **P3** — slim-variant evidence does not support the
+  fuller session-state design either, until a different context source is
+  proposed that doesn't prune facts.
+- Reinforces ISS-179 Option C (move SF target off conv-26) — no
+  context-injection lever (ISS-164 entity_channel, ISS-178 prev-turn) has
+  moved the conv-26 single-fact bucket. Still awaiting potato's decision.
