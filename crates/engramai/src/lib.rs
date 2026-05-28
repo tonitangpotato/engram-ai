@@ -135,7 +135,7 @@ pub use bus::{EmotionalBus, EmotionalTrend};
 pub use config::MemoryConfig;
 pub use config::TripleConfig;
 pub use embeddings::{EmbeddingConfig, EmbeddingProvider, EmbeddingError};
-pub use extractor::{MemoryExtractor, ExtractedFact, AnthropicExtractor, AnthropicExtractorConfig, TokenProvider, OllamaExtractor, OllamaExtractorConfig};
+pub use extractor::{MemoryExtractor, ExtractedFact, AnthropicExtractor, AnthropicExtractorConfig, TokenProvider, OllamaExtractor, OllamaExtractorConfig, ExtractionContext};
 pub use type_weights::{TypeWeights, infer_type_weights};
 pub use memory::{Memory, SleepReport, is_insight};
 pub use write_stats::{
