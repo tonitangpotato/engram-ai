@@ -134,24 +134,6 @@ pub struct StorageMeta {
     /// B applies it directly to the single admitted record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
-
-    /// Previous conversational turn for extraction context (ISS-178).
-    ///
-    /// When `Some(_)` and an extractor is configured, the extractor's
-    /// `extract_with_context` path receives the previous turn as
-    /// disambiguation context — used to resolve noun phrases like
-    /// "researching that" or "the agency" that depend on the
-    /// preceding question.
-    ///
-    /// When `None` (default) → extractor sees only `content`,
-    /// byte-identical to pre-ISS-178 behaviour.
-    ///
-    /// Only the extraction prompt sees this field — it is NOT stored
-    /// on the memory record, and never reaches retrieval or
-    /// observability. Replay drivers (LoCoMo) populate it from the
-    /// preceding episode; live ingest paths leave it `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prev_turn: Option<String>,
 }
 
 // ---------------------------------------------------------------------
