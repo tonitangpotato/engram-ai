@@ -1,6 +1,6 @@
 ---
 title: 'GraphEntityResolver: no fuzzy/lexical-variant alias matching (e.g. art vs abstract painting)'
-status: open
+status: deferred
 priority: P3
 severity: limitation
 category: retrieval
@@ -9,6 +9,8 @@ relates:
 - ISS-165
 - ISS-164
 discovered_in: ISS-165 post-fix verification probe (engram-bench:f28b41d) on conv-26 q43
+deferred_at: 2026-05-28
+deferred_reason: ISS-164 entity_channel falsified — ISS-170 lexical-floor matters only if entity_channel revives + a synonym-stress query distribution lands.
 ---
 
 ## Summary
@@ -114,3 +116,33 @@ best a +1–2 question lift. Re-prioritize **only if**:
   (search_candidates exact-equality)
 - ISS-165 fix commit: `engram:a5b0407`
 - Validation probe: `engram-bench/examples/iss165_postfix_probe.rs`
+
+---
+
+## 2026-05-28 — moot, deferred behind entity_channel revival
+
+ISS-170's own recommendation:
+
+> Defer. The current ISS-165 fix already moved us from 0/9 to
+> 9/9 anchored on the LoCoMo single-fact set; this issue is at
+> best a +1–2 question lift. Re-prioritize **only if**:
+> - ISS-164 Phase 2 sweep shows entity_channel is the right
+>   direction (i.e. anchors actually drive the metric), AND
+> - a clear LoCoMo question is shown to fail solely because of
+>   a lexical-variant miss.
+
+ISS-164 status = **falsified** (Phase 2 sweep, conv-26: SF +0,
+overall −3.29 pp, multi-hop −10.81 pp; locked default `false`).
+
+Neither of the re-prioritize conditions is met. The lexical
+resolver's exact-equality limit only matters when its output is
+actually consumed by a retrieval channel — `entity_channel` is
+the only such consumer in the current pipeline, and it's off by
+default.
+
+Status: **deferred**. Re-open if:
+
+1. ISS-164 entity_channel is revived under a different design, or
+2. A new query distribution (e.g. paraphrased LoCoMo rewrites,
+   HotpotQA-style fixture) hits the lexical floor and is shown
+   to be the dominant remaining gap.

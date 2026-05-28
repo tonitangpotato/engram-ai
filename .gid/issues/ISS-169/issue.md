@@ -1,6 +1,6 @@
 ---
 title: 'GraphEntityResolver: verb/common-noun false positives in n-gram mention extraction'
-status: open
+status: deferred
 priority: P3
 severity: noise
 category: retrieval
@@ -9,6 +9,8 @@ relates:
 - ISS-165
 - ISS-164
 discovered_in: ISS-165 post-fix verification probe (engram-bench:f28b41d) on conv-26 q76
+deferred_at: 2026-05-28
+deferred_reason: 'ISS-164 entity_channel falsified — ISS-169 noise floor only matters if entity_channel revives. Per ISS-169 own recommendation: moot.'
 ---
 
 ## Summary
@@ -117,3 +119,38 @@ falsifies entity_channel altogether, this issue is moot.
 - ISS-165 fix commit: `engram:a5b0407`
 - Validation probe output: `engram-bench/examples/iss165_postfix_probe.rs`
   (q76 line shows the `Go` false positive)
+
+---
+
+## 2026-05-28 — moot, deferred behind entity_channel revival
+
+ISS-169's own recommendation:
+
+> Option A behind a config flag (default ON, opt-out only for
+> benchmark reproducibility), ship if-and-only-if ISS-164 Phase
+> 2 sweep shows entity_channel is worth keeping. If sweep
+> falsifies entity_channel altogether, this issue is moot.
+
+ISS-164 status = **falsified** (Phase 2 sweep, conv-26: SF +0,
+overall −3.29 pp, multi-hop −10.81 pp; locked default `false`).
+
+The `Go` / verb / common-noun false-positive anchors only matter
+when those anchors are actually consumed by a retrieval channel.
+With `entity_channel` off by default (locked envelope), the
+`graph_entity_resolver` n-gram mention extractor's output is not
+flowing into Associative Step 3b' direct fan-out in production
+benches.
+
+Status: **deferred**. Re-open if:
+
+1. ISS-164 entity_channel is revived under a different design
+   (e.g. anchor-confidence-weighted, gold-question-distilled),
+   **or**
+2. The classifier's `EntityLookup` (ISS-149) gets unblocked and
+   starts routing Factual on a substantial query share, **or**
+3. A separate consumer of `graph_entity_resolver::resolve` lands
+   that's sensitive to anchor noise.
+
+None of the above are on the near-term roadmap as of 2026-05-28.
+Keep the issue filed for traceability but mark deferred so we
+don't ship dead code.
