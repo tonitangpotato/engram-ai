@@ -87,13 +87,33 @@ fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + S
         return Ok(vec![]);
     }
 
-    let json_start = json_str.find('[');
-    let json_end = json_str.rfind(']');
-
-    let json_to_parse = match (json_start, json_end) {
-        (Some(start), Some(end)) if start < end => &json_str[start..=end],
-        _ => {
-            log::warn!("No JSON array found in triple extraction response: {}", json_str);
+    // ISS-168: extract the FIRST complete top-level JSON array, not
+    // `s[find('[')..rfind(']')+1]`. Haiku occasionally emits a chain-of-thought
+    // pattern with two arrays separated by prose, e.g.
+    //
+    //     [{"subject": "Caroline", ...}]
+    //
+    //     Wait, "creates" isn't in the allowed predicates. Let me re-evaluate:
+    //
+    //     []
+    //
+    // The old span-to-last-`]` slice produced `[{...}]\n\nprose\n\n[]`, which
+    // fails JSON parse and drops the entire response (~5% of Haiku calls per
+    // ISS-166 validation probe).
+    //
+    // First-array-wins matches the principle "extract the first self-contained
+    // JSON, ignore CoT remnants" and aligns with how most LLM JSON-output
+    // parsers handle this. Tradeoff vs. LAST-array-wins: Haiku's "final"
+    // array in the observed pattern is `[]` (it talked itself out of a valid
+    // triple), so taking the last array would *worsen* recall here, not
+    // improve it.
+    let json_to_parse = match extract_first_top_level_array(json_str) {
+        Some(slice) => slice,
+        None => {
+            log::warn!(
+                "No top-level JSON array found in triple extraction response: {}",
+                json_str
+            );
             return Ok(vec![]);
         }
     };
@@ -186,7 +206,62 @@ fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + S
     Ok(triples)
 }
 
-/// Map the LLM's `subject_kind` / `object_kind` string (from `RawTriple`) to
+/// Find the first complete top-level JSON array in `s` and return the
+/// slice from the opening `[` through the matching `]` (inclusive).
+///
+/// Scans char-by-char tracking bracket depth and whether we're inside a
+/// JSON string literal (where `[` / `]` do not count toward nesting). The
+/// scanner respects backslash escapes inside strings (`\"`, `\\`).
+///
+/// Returns `None` if no balanced top-level array is found.
+///
+/// ISS-168: this replaces the old `s[find('[')..rfind(']')+1]` policy,
+/// which over-extracted into trailing prose / second arrays on Haiku CoT
+/// output.
+fn extract_first_top_level_array(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    // Find the first '[' that isn't inside a string. At the top level we are
+    // never inside a string before the first '[' (the prompt asks for a JSON
+    // array), so a plain `find('[')` is enough here — but the depth scanner
+    // below handles strings correctly once we're inside the array.
+    let start = s.find('[')?;
+    let mut i = start;
+
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == b'\\' {
+                escape = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+        } else {
+            match c {
+                b'"' => in_string = true,
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&s[start..=i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+
+    // Unbalanced — no matching close found.
+    None
+}
+
+
 /// `EntityKind`. Returns `None` for empty / unknown / out-of-allowlist strings;
 /// callers fall back to `KindSource::Default`.
 ///
@@ -622,4 +697,91 @@ mod tests {
         let triples = parse_triple_response(response).expect("must not error");
         assert!(triples.is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // ISS-168 — first-array-wins parser tolerates Haiku CoT with multiple
+    // top-level arrays separated by prose.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn iss168_two_arrays_with_prose_between_takes_first() {
+        // Observed pattern from ISS-166 validation probe (~5% of conv-26
+        // Haiku calls): Haiku emits a first array, second-guesses itself in
+        // prose, then emits an empty array as its "final answer".
+        let response = r#"[{"subject": "Caroline", "predicate": "uses", "object": "red and blue colors", "confidence": 0.9}]
+
+Wait, I need to reconsider - "creates" is not in the allowed predicates.
+The allowed predicates don't fit this casual conversation well.
+
+[]"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(
+            triples.len(),
+            1,
+            "first array wins; second [] is discarded along with the prose"
+        );
+        assert_eq!(triples[0].subject, "Caroline");
+        assert_eq!(triples[0].predicate, Predicate::Uses);
+        assert_eq!(triples[0].object, "red and blue colors");
+    }
+
+    #[test]
+    fn iss168_replacement_pattern_first_array_wins() {
+        // The replacement-pattern CoT: first answer, then "scratch that",
+        // then a different answer. First-array-wins policy → first answer.
+        // (LAST-array policy would have been the opposite call; this test
+        // pins the documented choice.)
+        let response = r#"[
+            {"subject": "Rust", "predicate": "uses", "object": "LLVM", "confidence": 0.9},
+            {"subject": "Rust", "predicate": "implements", "object": "ownership", "confidence": 0.8}
+        ]
+
+Wait, scratch that — let me re-extract more conservatively.
+
+[{"subject": "Rust", "predicate": "is_a", "object": "language", "confidence": 0.95}]"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(triples.len(), 2, "first array (2 triples) wins over second (1)");
+        assert_eq!(triples[0].subject, "Rust");
+        assert_eq!(triples[0].predicate, Predicate::Uses);
+        assert_eq!(triples[1].predicate, Predicate::Implements);
+    }
+
+    #[test]
+    fn iss168_prose_preamble_and_postamble_still_extracts() {
+        // ISS-167 already handled the "prose before + after a single array"
+        // case via find('[')..rfind(']'). The new scanner must preserve this
+        // behaviour. Regression guard.
+        let response = r#"Here's what I extracted from the conversation:
+
+[{"subject": "A", "predicate": "uses", "object": "B", "confidence": 0.7}]
+
+Hope this helps!"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].subject, "A");
+        assert_eq!(triples[0].object, "B");
+    }
+
+    #[test]
+    fn iss168_nested_brackets_in_string_values_do_not_confuse_scanner() {
+        // The scanner must respect JSON string boundaries — a `[` or `]`
+        // inside a quoted string value is content, not structure. Without
+        // string-awareness the depth counter would underflow or close early
+        // on `"object": "the [main] idea"`.
+        let response = r#"[{"subject": "Caroline", "predicate": "related_to", "object": "the [main] idea", "confidence": 0.6}]"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].object, "the [main] idea");
+    }
+
+    #[test]
+    fn iss168_escaped_quote_in_string_preserves_string_boundary() {
+        // Escape-handling guard: a `\"` inside a string must not be
+        // mistaken for the string's closing quote.
+        let response = r#"[{"subject": "X", "predicate": "uses", "object": "the \"big\" idea", "confidence": 0.5}]"#;
+        let triples = parse_triple_response(response).expect("must parse");
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].object, r#"the "big" idea"#);
+    }
 }
+
