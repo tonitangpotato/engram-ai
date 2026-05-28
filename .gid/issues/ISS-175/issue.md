@@ -1,6 +1,6 @@
 ---
 title: Factual fusion graph_score collapses to 1.0 on 1-anchor queries — vector_score has no independent channel
-status: open
+status: falsified-on-AC-5a
 priority: P1
 severity: ranker-floor-too-low
 category: retrieval-fusion
@@ -12,6 +12,7 @@ relates:
 blocks:
 - engram:ISS-148
 - engram:ISS-174
+verdict: kept-as-opt-in
 ---
 
 ## Summary
@@ -346,3 +347,52 @@ revised recommendation + implementation plan.
 P1 because it directly blocks ISS-148 AC-5a recovery.
 
 Next: implementation per plan above (single PR, ~150 LoC + 5 tests).
+
+---
+
+## A/B Verdict — 2026-05-28 (STAMP 20260528T034409Z)
+
+**Sweep**: conv-26 K=10 temp=0 HyDE=off entity_channel=off pipeline_pool=1.
+Arm A = `FACTUAL_REWEIGHT=off`, Arm B = `on`. engram-bench commit b51ee58.
+
+**Plan-kind histogram** (proves the formula engaged):
+- A: factual=113, hybrid=31, associative=8
+- B: factual=113, hybrid=30, associative=8, abstract=1
+
+`combine_factual_v2` ran on **113/152 queries in both arms** — the
+formula did fire on the intended Factual plan.
+
+**Single-fact sub-bucket (the AC-5a gate)**:
+- Single-hop raw: A=3/32 B=3/32 **Δ=0**
+- Two single-hop flips cancel: q32 gain (list), q47 loss (list).
+- Under any SF/list partition (comma-heuristic or strict): SF Δ=0.
+
+**Ship gate (B sf ≥ A sf + 2) NOT met. FALSIFIED on AC-5a target.**
+
+**Unexpected positive — overall +5.9pp, multi-hop +18.9pp**:
+- Multi-hop: A=7/37 → B=14/37 (+7 net, 8 gains, 1 regression)
+- Open-domain: A=2/13 → B=4/13 (+2 net, 2 gains, 0 regressions)
+- Total: 13 gains, 4 regressions, 135 ties = +9 net on 152 queries.
+- Spot-checked gains are real retrieval wins (date-bearing factoids
+  surfaced from outside A's top-10), not LLM-judge noise.
+- Spot-checked regressions follow the inverse pattern: vague-emotional
+  golds (q47, q150) get bumped by bm25-rich rivals under v2 weights.
+
+**Verdict**: combine_factual_v2 surfaces a real "evidence vs emotion"
+ranking axis but doesn't lift the AC-5a-relevant single-fact bucket
+(consistent with probe predictions — q40/q43/q71 stayed misses).
+
+**Recommendation**:
+1. Keep code on `main` as opt-in (flag default `false`). Don't flip.
+2. Multi-hop +18.9pp is a meaningful lift on its own — file follow-up
+   to investigate whether it's a stack candidate for non-AC-5a goals.
+3. AC-5a target (single-fact ≥17/27) remains unreachable via this
+   lever; consistent with ISS-161 verdict that current architecture
+   tops out around 8/27 without extraction enrichment (ISS-162) or
+   a stronger reranker than the cross-encoder weapon (which already
+   falsified).
+
+**Artifacts**:
+- `.gid/issues/ISS-175/artifacts/ab-conv26-20260528-findings.md` — full ledger
+- `engram-bench/benchmarks/runs/ISS175-A-conv26-20260528T034409Z/` — Arm A data
+- `engram-bench/benchmarks/runs/ISS175-B-conv26-20260528T034409Z/` — Arm B data
