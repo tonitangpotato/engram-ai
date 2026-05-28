@@ -12,6 +12,7 @@ relates:
 - engram:ISS-177
 - engram:ISS-178
 relates_to: .gid/issues/ISS-148/issue.md
+updated: 2026-05-28
 ---
 
 ## Summary
@@ -137,3 +138,81 @@ to land on ISS-179 itself; it's a planning artifact.
 - ISS-161 audit: per-question failure-mode taxonomy
 - ISS-175 / ISS-177: lever sweeps that prompted this re-examination
 - ISS-178: slim prev-turn lever (currently the highest-confidence remaining SF lever)
+
+---
+
+## 2026-05-28 update — ISS-178 falsification tightens the ceiling
+
+ISS-178 (slim prev-turn ExtractionContext) shipped and was **falsified
+as ACTIVELY HARMFUL** on conv-26:
+
+- Overall Δ −1.97 pp
+- single-hop (n=32) **4 → 2** (Δ −6.25 pp)
+- single-fact bucket: q3 (PRIMARY) and q7 (secondary) **both no-flip**
+- Regression rate **11.2 %** (AC-4 ≤10 % FAIL)
+- Mechanism: slim prev-turn context **prunes** co-occurring entities
+  the long-window extractor was keeping → net fact loss
+
+See `.gid/issues/ISS-178/artifacts/falsification-conv26-20260528.md`
+and `.gid/issues/ISS-178/issue.md` (status `falsified`).
+
+### Revised lever-by-lever table
+
+| Lever | Status | SF lift on conv-26 |
+|---|---|---|
+| ISS-175 combine_factual_v2 | shipped opt-in | +0 |
+| ~~ISS-178 prev-turn context~~ | **falsified 2026-05-28** | **+0** (and harmful) |
+| ISS-159 cross-encoder reranker | **falsified 2026-05-26** | +0 |
+| ISS-164 entity_channel | falsified, locked off | +0 |
+| ISS-149 force-Factual | de-prioritised — net-negative on conv-26 SH | +0 |
+| ISS-070 multi-hop dispatcher | open P0 | +1 (q11) |
+| Aggregation/counting | no lever filed | +0 to +3 (q40, q43, q75) |
+| BLIP ingestion | infrastructure | +1 (q37) |
+| Generation prompt rework | no lever filed | +0 to +1 (q71) |
+| Temporal resolver | no lever filed | +0 to +1 (q76) |
+| **Stack ceiling (best-case, updated)** | — | **5 + 3..6 = 8-11/27** |
+
+Three independent retrieval-side levers have now falsified on the conv-26
+single-fact axis (ISS-159, ISS-164, ISS-178). The remaining roadmap is
+all *infrastructure work outside retrieval*: aggregation, BLIP,
+generation, temporal, multi-hop graph. None of those are shipped or
+budgeted near-term.
+
+Updated best-case stack ceiling = **8-11/27 ≈ 0.30-0.41**, against AC-5a
+target 17/27 = 0.63. Gap widened from "tough but tractable" to
+"requires multiple unfiled infrastructure projects".
+
+### Strengthened recommendation
+
+**Option A + Option C combined**, now with higher confidence:
+
+1. **Option A (axis-level AC-5a):** "Any major axis Δ ≥+5pp over locked
+   default on conv-26 OR overall Δ ≥+3pp on conv-44 secondary corpus."
+   Rewards real lift, drops the structurally-unreachable single-fact
+   axis as the sole gate.
+
+2. **Option C (move SF target off conv-26):** AC-5a single-fact gate
+   moves to conv-44 or full-LoCoMo where the question-distribution
+   floor isn't dominated by aggregation/temporal/BLIP cases. conv-26
+   single-fact stays as a **diagnostic axis** (tracked but not gated).
+
+Pure Option D ("accept long-horizon, treat as v0.4 goal") is also
+defensible if you want to stop conversation-on-target and focus shipping
+energy on whichever levers are next-most-EV regardless of AC-5a.
+
+### What I'm NOT recommending
+
+- **Option B (overall ≥0.30 as the SF target):** ISS-177 Arm B already
+  hit 0.345 on conv-44 — this would be a near-trivial target on the
+  wrong axis, defeats the point of AC-5a.
+- **Option E (file all missing infrastructure tickets):** 6-12 months
+  of pre-committed work without proof any individual ticket moves the
+  user-facing number. Build evidence first.
+
+### Decision still pending
+
+Need potato to pick A / C / D / combination. No code on ISS-179 until
+this is resolved — but the ceiling now sits at ~0.30-0.41 best-case
+on conv-26 SF, and three retrieval-side levers in a row have failed,
+so the question is no longer "can we hit 0.63" but "do we keep targeting
+0.63 at all on this corpus."
