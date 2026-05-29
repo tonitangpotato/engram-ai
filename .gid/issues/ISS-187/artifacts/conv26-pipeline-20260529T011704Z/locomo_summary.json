@@ -1,0 +1,10 @@
+{
+  "overall": 0.25,
+  "by_category": {
+    "multi-hop": 0.21621621621621623,
+    "open-domain": 0.3076923076923077,
+    "single-hop": 0.15625,
+    "temporal": 0.3
+  },
+  "n_queries": 152
+}

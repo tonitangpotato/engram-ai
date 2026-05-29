@@ -4,8 +4,16 @@ category: retrieval-foundation
 discovered_in: ISS-186 resolved 2026-05-28 — 19/32 SH queries have gold in top-10 of pure bi-encoder probe but conv-26 SF scores 5-8/27. Gold is being dropped between Stage B (execute_plan) and Stage D (top-k truncate).
 priority: P0
 severity: diagnostic
-status: in_progress
-relates: [engram:ISS-186, engram:ISS-148, engram:ISS-149, engram:ISS-159, engram:ISS-164, engram:ISS-175, engram:ISS-178, engram:ISS-179]
+status: resolved
+relates:
+- engram:ISS-186
+- engram:ISS-148
+- engram:ISS-149
+- engram:ISS-159
+- engram:ISS-164
+- engram:ISS-175
+- engram:ISS-178
+- engram:ISS-179
 ---
 
 ## Why this issue exists
@@ -96,19 +104,27 @@ Whichever drop bucket dominates names the next attack surface.
    immediately before `fuse_and_rank` (api.rs:846 area), insert
    `crate::retrieval::fusion::dump::maybe_dump_prefusion_pool(intent, &candidates);`.
    One line. Hot path stays single env-var read when disabled.
-3. **engram-bench/examples/iss187_pipeline_audit.rs** — new
-   example. Ingests conv-26 with the locked ISS-178 Arm A envelope
+   Hybrid plan path is included — it also flows through this hook
+   before bypassing fuse_and_rank.
+3. **No engram-bench code change.** The existing `LocomoDriver`
+   already wraps each query with `set_dump_label(qid)` /
+   `clear_dump_label()` around `graph_query_locked`. Setting
+   `ENGRAM_DUMP_FUSED_POOL_DIR=<stamped dir>` and
+   `ENGRAM_DUMP_FUSED_POOL_QIDS=<32 conv-26 SH qids>` is all
+   that's needed for the bench to produce both pre-fusion and
+   post-fusion JSONL per query.
+4. **/tmp/iss187_run.sh** — sweep wrapper. Sets locked envelope
    (FACTUAL_REWEIGHT=off ENTITY_CHANNEL=off PIPELINE_POOL=1
-   WORKERS=4). Sets `ENGRAM_DUMP_FUSED_POOL_DIR` to a stamped
-   output dir. For each of the 32 conv-26 single-hop queries: sets
-   `set_dump_label(qid)`, runs `Memory::recall(question)`, captures
-   final returned ids. Emits one summary JSONL row per query with
-   `qid`, `gold_id`, `gold_text_match`, `stage_D_rank` (from the
-   returned ids), plus pointers to the two dump files.
-4. **/tmp/iss187_analyse.py** — joins `prefusion-*.jsonl`,
-   `fused-*.jsonl`, and the summary file. For each query computes
+   WORKERS=4 K=10) + `ENGRAM_DUMP_FUSED_POOL_DIR` +
+   `ENGRAM_DUMP_FUSED_POOL_QIDS`, launches `engram-bench locomo
+   conv-26`. Stamped output dir under
+   `.gid/issues/ISS-187/artifacts/`.
+5. **/tmp/iss187_analyse.py** — joins `prefusion-*.jsonl`,
+   `<qid>-*.jsonl` (fused), and the bench's `locomo_per_query.jsonl`
+   (final stage D). For each of the 19 A-bucket queries computes
    the four drop-point buckets above. Emits a markdown table +
-   aggregate counts.
+   aggregate counts. Output committed to
+   `.gid/issues/ISS-187/artifacts/conv26-drops-<STAMP>.md`.
 
 ## Decision rule
 
@@ -141,17 +157,97 @@ Aggregate the 19 A-bucket queries (from ISS-186) by drop point:
 - [x] AC-3: ISS-175 fused-pool dump filename and schema unchanged
   (`<label>-<intent>.jsonl`). Regression test pins the existing
   filename pattern.
-- [ ] AC-4: `engram-bench/examples/iss187_pipeline_audit.rs`
-  builds clean (default features, no cross_encoder feature
-  required) and runs over conv-26 in <20min wall.
-- [ ] AC-5: `iss187_analyse.py` produces the four-drop-point
+- [x] AC-4: Engram-bench produces both `<qid>-<intent>.jsonl`
+  (fused / ISS-175) and `<qid>-prefusion-<intent>.jsonl`
+  (ISS-187) under one run when `ENGRAM_DUMP_FUSED_POOL_DIR` is
+  set. No new example needed — the existing LocomoDriver already
+  calls `set_dump_label(qid)` around `graph_query_locked`, so
+  the api.rs hook fires automatically. Verified by a sweep
+  script that launches the bench with the 32 conv-26 SH qids
+  whitelisted via `ENGRAM_DUMP_FUSED_POOL_QIDS`, runs in <20min
+  wall on the locked ISS-178 Arm A envelope.
+- [x] AC-5: `iss187_analyse.py` produces the four-drop-point
   bucketing for the 19 A-bucket queries identified in ISS-186.
-  Output committed to `.gid/issues/ISS-187/artifacts/`.
-- [ ] AC-6: Decision section in this issue body picks ONE
-  follow-up issue (classifier / fusion / K_seed / structural /
-  harness) based on the bucket counts, citing per-query data.
+  Output committed to `.gid/issues/ISS-187/artifacts/`
+  (`conv26-drops-20260529T011704Z.md`). NOTE: analyse script had a
+  schema bug (assumed nested `r["query"]["id"]`/`gold_answer`; actual
+  per_query schema is flat `r["id"]`/`r["gold"]`) that produced an
+  all-drop_AB false verdict on first run — fixed before recording.
+- [x] AC-6: Decision section picks ISS-188 (populate factual-plan
+  candidate embeddings so MMR diversity works on list-questions),
+  citing q18 worked example + drop_CD 22/32 distribution.
 
 ## Status
 
-In progress 2026-05-28 — issue opened, implementation plan locked,
-starting on AC-1 (dump.rs generalisation).
+Resolved 2026-05-29 — all 6 ACs met. Diagnostic complete: drop_CD
+dominates, root cause = factual-plan candidates carry no embedding so
+MMR diversity is inert. Next attack surface = ISS-188 (embedding
+population for diversity reranking on list-questions).
+
+## Decision (2026-05-29, STAMP=20260529T011704Z)
+
+**Verdict: `drop_CD` dominates (22/32 full SH set), and within the
+13 SF-subset drop_CD queries, 10/13 are LIST-type gold scoring 0.**
+This satisfies the `drop_CD ≥ 8/19` branch — but the *root cause* is
+deeper than "K_seed too small". The data names a specific structural
+defect: **MMR's diversity channel is dead on the factual plan.**
+
+### Evidence chain (q18 worked example)
+
+q18 gold = `"beach, mountains, forest"` (3 camping locations).
+Final predicted = `"In the mountains"` → score 0.0 (judge: incomplete,
+missing beach + forest).
+
+- Fusion pool (Stage C) = 186 candidates.
+- top-6 of fusion are ALL mountains/forest memories (cosine clusters
+  hard on the query's "camping" signal).
+- `beach` memories ARE in the pool but ranked **C#38 / C#46 / C#152**.
+- top-10 truncate (Stage D) → LLM sees only mountains/forest → partial
+  answer → judge 0.
+
+The gold is retrieved (pool has it) and well-clustered for ONE list
+item, but the other items are pushed to rank 38-152 by pure relevance
+ranking. **This is exactly the problem MMR/diversity is designed to
+fix** — break the redundant top cluster, surface the
+relevant-but-distant items before truncation.
+
+### Why every retrieval lever since ISS-159 falsified
+
+`crates/engramai/src/retrieval/fusion/mmr.rs` module docs (lines
+58-70) state: candidates with `embedding: None` get **0 diversity
+penalty**, so on plans with no populated embeddings (factual /
+episodic) **MMR degenerates to a no-op**. The factual plan — which
+all 10 failing list-questions route through — carries
+`embedding: None` (confirmed: q18 prefusion scores are all 0.0).
+
+Therefore:
+- ISS-139 MMR λ-sweep saw no signal on factual plan (MMR was inert there).
+- ISS-159 (cross-encoder), ISS-164 (entity channel), ISS-175 (factual
+  reweight), ISS-178 (prev-turn) all tuned **single-point relevance**.
+  List-questions don't lack relevance — they lack **coverage/diversity**,
+  and the diversity channel was structurally dead.
+
+### Distribution (32 conv-26 single-hop)
+
+- drop_CD: 22/32 (gold in pool, lost at top-10 truncate)
+- drop_AB: 7/32 (4 are pool=10 non-factual routes; only q40/q23/q75
+  are true bi-encoder misses — numeric "2", book titles)
+- drop_BC: 1/32 (q3)
+- SF-subset drop_CD: 13 queries, **10/13 LIST-type, all score ~0**
+
+### Follow-up issue (root fix, NOT K_seed bump)
+
+File **ISS-188: populate candidate embeddings on the factual (and
+episodic) plan so MMR can perform diversity reranking on
+list-questions.** Implements the "Future work" already noted in
+mmr.rs:73-74 (opt-in Storage-backed `get_embedding` fallback per
+candidate). Then re-run the ISS-139 λ-sweep **on the 10 LIST-type SF
+queries specifically** (not the diluted full conv-26 set) to find the
+λ that maximizes list coverage without regressing single-value SF.
+
+Cheap K_seed bump is explicitly REJECTED as the primary fix: the gold
+is already in a 186-deep pool, so widening the pool doesn't help —
+the problem is ordering within the pool, which only diversity
+reranking addresses. K bump only helps if we also feed >10 candidates
+to the LLM, which inflates context cost without fixing the ordering
+defect.
