@@ -100,38 +100,6 @@ const MAX_MENTIONS: usize = 64;
 /// like `"is_a"` or `"to_do"` could legitimately be an alias).
 const MIN_UNIGRAM_CHARS: usize = 2;
 
-/// A candidate mention: a token n-gram with its position in the
-/// tokenized query. The span `[start, start + len)` is in **token**
-/// units (not byte/char offsets) and is used for specificity dedup
-/// (ISS-192): a mention whose span is strictly subsumed by a longer
-/// mention that *also* resolved to an entity is a less-specific
-/// fragment (e.g. `"support"` / `"group"` inside `"LGBTQ support
-/// group"`) and is dropped so it cannot crowd the precise entity out
-/// of the Factual plan's `max_anchors` cap.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Mention {
-    /// The mention surface text (space-joined tokens, original case).
-    text: String,
-    /// Index of the first token in the tokenized query.
-    start: usize,
-    /// Number of tokens (the n-gram order).
-    len: usize,
-}
-
-impl Mention {
-    /// Token span end (exclusive).
-    fn end(&self) -> usize {
-        self.start + self.len
-    }
-
-    /// True if `self`'s span is **strictly** subsumed by `other`'s:
-    /// `other` covers `self` and is genuinely longer (covers at least
-    /// one token `self` does not). Equal spans are not subsumed.
-    fn subsumed_by(&self, other: &Mention) -> bool {
-        other.start <= self.start && self.end() <= other.end() && other.len > self.len
-    }
-}
-
 /// Extract candidate mentions from a query as token n-grams.
 ///
 /// Tokenization: split on Unicode whitespace and ASCII punctuation
@@ -149,10 +117,7 @@ impl Mention {
 ///
 /// Pure function: no I/O, no clock, no allocation reuse — safe for
 /// the `EntityResolver` determinism contract.
-///
-/// Each returned [`Mention`] carries its token span `[start, start+len)`
-/// so the resolver can apply specificity dedup (ISS-192).
-fn extract_mentions(query: &str) -> Vec<Mention> {
+fn extract_mentions(query: &str) -> Vec<String> {
     // Tokenize. We use `char::is_alphanumeric` as the "in-token"
     // predicate plus the apostrophe (U+0027) so contractions stay
     // together; everything else is a separator. This sidesteps the
@@ -205,18 +170,12 @@ fn extract_mentions(query: &str) -> Vec<Mention> {
     // Emit n-grams length-ascending so 1-grams (cheapest, highest hit
     // rate for person names) come first. This ordering is part of
     // the determinism contract — callers may observe via test logs.
-    // Each mention carries its token span [start, start+len) so the
-    // resolver can apply specificity dedup (ISS-192): a mention whose
-    // span is subsumed by a *longer* mention that also resolves is a
-    // less-specific fragment (e.g. "support" / "group" inside
-    // "LGBTQ support group") and must not crowd the precise entity out
-    // of the `max_anchors` cap.
-    let mut out: Vec<Mention> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for n in 1..=MAX_NGRAM_N {
         if n > n_tokens {
             break;
         }
-        for (start, window) in cleaned.windows(n).enumerate() {
+        for window in cleaned.windows(n) {
             if out.len() >= MAX_MENTIONS {
                 return out;
             }
@@ -224,11 +183,7 @@ fn extract_mentions(query: &str) -> Vec<Mention> {
             if n == 1 && window[0].chars().count() < MIN_UNIGRAM_CHARS {
                 continue;
             }
-            out.push(Mention {
-                text: window.join(" "),
-                start,
-                len: n,
-            });
+            out.push(window.join(" "));
         }
     }
     out
@@ -282,11 +237,11 @@ impl<'a> EntityResolver for GraphEntityResolver<'a> {
             return Vec::new();
         }
 
-        let mut hits: Vec<(Mention, ResolvedAnchor)> = Vec::new();
+        let mut hits: Vec<ResolvedAnchor> = Vec::new();
         for ns in namespaces.into_iter().take(MAX_NAMESPACES_SCANNED) {
             for mention in &mentions {
                 let candidate_query = CandidateQuery {
-                    mention_text: mention.text.clone(),
+                    mention_text: mention.clone(),
                     mention_embedding: None,
                     kind_filter: None,
                     namespace: ns.clone(),
@@ -327,54 +282,27 @@ impl<'a> EntityResolver for GraphEntityResolver<'a> {
                         continue;
                     }
 
-                    hits.push((
-                        mention.clone(),
-                        ResolvedAnchor {
-                            entity_id: m.entity_id,
-                            canonical_name: m.canonical_name,
-                            match_strength,
-                        },
-                    ));
+                    hits.push(ResolvedAnchor {
+                        entity_id: m.entity_id,
+                        canonical_name: m.canonical_name,
+                        match_strength,
+                    });
                 }
             }
         }
 
-        // ISS-192 specificity dedup. ISS-165's n-gram scan emits every
-        // sub-span of a multi-word entity, so a query like "Caroline's
-        // LGBTQ support group" resolves the precise entity *and* its
-        // generic fragments ("support", "group", "support group") —
-        // each as a full alias hit at strength 0.7. With the Factual
-        // plan's `max_anchors` cap and recency-only tiebreak, the
-        // precise (often least-recent) entity gets truncated out and
-        // the gold-bearing edge never reaches the candidate pool.
-        //
-        // Fix: drop any hit whose mention span is strictly subsumed by
-        // a *longer* mention that also resolved to ≥1 entity. This is
-        // span-based (not entity-based), so a fragment that happens to
-        // resolve to a distinct, legitimately-shorter entity is only
-        // dropped when a longer overlapping mention actually resolved.
-        // Inert when no multi-word mention resolves (e.g. all hits are
-        // unigrams) — preserves pre-ISS-192 behaviour for those queries.
-        let resolved_mentions: Vec<Mention> =
-            hits.iter().map(|(mention, _)| mention.clone()).collect();
-        hits.retain(|(mention, _)| {
-            !resolved_mentions
-                .iter()
-                .any(|other| mention.subsumed_by(other))
-        });
-
         // Dedupe by entity_id, keeping the highest match_strength. Sort
         // by (match_strength desc, entity_id asc) for determinism.
-        hits.sort_by(|(_, a), (_, b)| {
+        hits.sort_by(|a, b| {
             b.match_strength
                 .partial_cmp(&a.match_strength)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.entity_id.cmp(&b.entity_id))
         });
         let mut seen = std::collections::HashSet::new();
-        hits.retain(|(_, a)| seen.insert(a.entity_id));
+        hits.retain(|a| seen.insert(a.entity_id));
 
-        hits.into_iter().map(|(_, anchor)| anchor).collect()
+        hits
     }
 }
 
@@ -565,97 +493,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn iss192_specificity_dedup_drops_subsumed_fragments() {
-        // Mirror of conv-26-q0: a query whose precise entity ("LGBTQ
-        // support group") shares tokens with generic fragments
-        // ("support", "group", "support group") that *also* have their
-        // own alias entities. Pre-ISS-192 all four resolved at equal
-        // strength and the precise (least-recent) one could be
-        // truncated out by the Factual plan's max_anchors cap. After
-        // the fix, the subsumed fragments are dropped because the
-        // longer "LGBTQ support group" mention resolved.
-        let mut conn = fresh_conn();
-        let mut store = SqliteGraphStore::new(&mut conn);
-        let caroline = write_entity(&mut store, "Caroline", "default");
-        let precise = write_entity(&mut store, "LGBTQ support group", "default");
-        let frag_pair = write_entity(&mut store, "support group", "default");
-        let frag_support = write_entity(&mut store, "support", "default");
-        let frag_group = write_entity(&mut store, "group", "default");
-
-        let resolver = GraphEntityResolver::new(&store);
-        let hits = resolver.resolve("When did Caroline go to the LGBTQ support group?");
-        let ids: std::collections::HashSet<_> = hits.iter().map(|h| h.entity_id).collect();
-
-        // Precise entities survive.
-        assert!(
-            ids.contains(&caroline),
-            "Caroline must survive dedup; got {hits:?}"
-        );
-        assert!(
-            ids.contains(&precise),
-            "precise 'LGBTQ support group' must survive dedup; got {hits:?}"
-        );
-        // Subsumed fragments are dropped (their spans sit strictly
-        // inside the longer "LGBTQ support group" mention that resolved).
-        assert!(
-            !ids.contains(&frag_pair),
-            "'support group' fragment should be dropped; got {hits:?}"
-        );
-        assert!(
-            !ids.contains(&frag_support),
-            "'support' fragment should be dropped; got {hits:?}"
-        );
-        assert!(
-            !ids.contains(&frag_group),
-            "'group' fragment should be dropped; got {hits:?}"
-        );
-    }
-
-    #[test]
-    fn iss192_dedup_inert_when_no_longer_mention_resolves() {
-        // Non-regression: a fragment that resolves to a distinct entity
-        // is NOT dropped when no longer overlapping mention resolves.
-        // Here only "support" has an alias entity; "LGBTQ support group"
-        // and "support group" resolve to nothing, so "support" must
-        // survive (the fix is span-subsumption-by-a-RESOLVED-longer-
-        // mention, not blanket fragment suppression).
-        let mut conn = fresh_conn();
-        let mut store = SqliteGraphStore::new(&mut conn);
-        let caroline = write_entity(&mut store, "Caroline", "default");
-        let frag_support = write_entity(&mut store, "support", "default");
-
-        let resolver = GraphEntityResolver::new(&store);
-        let hits = resolver.resolve("Did Caroline need support?");
-        let ids: std::collections::HashSet<_> = hits.iter().map(|h| h.entity_id).collect();
-        assert!(ids.contains(&caroline), "Caroline must resolve; got {hits:?}");
-        assert!(
-            ids.contains(&frag_support),
-            "'support' must survive when no longer mention resolves; got {hits:?}"
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // Mention struct unit tests (span subsumption).
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn mention_subsumed_by_strict_containment() {
-        // "support" (token 1, len 1) inside "LGBTQ support group"
-        // (token 0, len 3).
-        let frag = Mention { text: "support".into(), start: 1, len: 1 };
-        let whole = Mention { text: "LGBTQ support group".into(), start: 0, len: 3 };
-        assert!(frag.subsumed_by(&whole));
-        // Equal spans are NOT subsumed (same length).
-        let same = Mention { text: "LGBTQ support group".into(), start: 0, len: 3 };
-        assert!(!whole.subsumed_by(&same));
-        // Disjoint spans are not subsumed.
-        let other = Mention { text: "Caroline".into(), start: 5, len: 1 };
-        assert!(!other.subsumed_by(&whole));
-        // A longer span is never subsumed by a shorter one.
-        assert!(!whole.subsumed_by(&frag));
-    }
-
     // ---------------------------------------------------------------
     // Pure mention-extraction tests (no graph layer).
     // ---------------------------------------------------------------
@@ -667,20 +504,19 @@ mod tests {
         // 2-grams: "What did", "did Caroline", "Caroline research"
         // 3-grams: "What did Caroline", "did Caroline research"
         // 4-grams: "What did Caroline research"
-        let texts: Vec<&str> = m.iter().map(|x| x.text.as_str()).collect();
-        assert!(texts.contains(&"Caroline"));
-        assert!(texts.contains(&"What did"));
-        assert!(texts.contains(&"Caroline research"));
-        assert!(texts.contains(&"What did Caroline research"));
+        assert!(m.contains(&"Caroline".to_string()));
+        assert!(m.contains(&"What did".to_string()));
+        assert!(m.contains(&"Caroline research".to_string()));
+        assert!(m.contains(&"What did Caroline research".to_string()));
     }
 
     #[test]
     fn extract_mentions_strips_possessive() {
         let m = extract_mentions("Caroline's hat");
-        assert!(m.iter().any(|x| x.text == "Caroline"), "got: {m:?}");
-        assert!(m.iter().any(|x| x.text == "hat"), "got: {m:?}");
+        assert!(m.contains(&"Caroline".to_string()), "got: {m:?}");
+        assert!(m.contains(&"hat".to_string()), "got: {m:?}");
         assert!(
-            !m.iter().any(|x| x.text.contains("'s")),
+            !m.iter().any(|s| s.contains("'s")),
             "possessive should be stripped; got: {m:?}"
         );
     }
@@ -692,11 +528,11 @@ mod tests {
         // The 2-gram "I a" / "a 1" / "I a 1" survive because the
         // length filter is only on n=1.
         assert!(
-            !m.iter().any(|x| x.text == "I"),
+            !m.contains(&"I".to_string()),
             "single-char 1-gram should be filtered; got: {m:?}"
         );
         assert!(
-            !m.iter().any(|x| x.text == "a"),
+            !m.contains(&"a".to_string()),
             "single-char 1-gram should be filtered; got: {m:?}"
         );
     }
@@ -716,9 +552,9 @@ mod tests {
         let m2 = extract_mentions("Alice met Bob");
         assert_eq!(m1, m2, "extract_mentions must be deterministic");
         // First 3 entries should be the 1-grams in input order.
-        assert_eq!(m1[0].text, "Alice");
-        assert_eq!(m1[1].text, "met");
-        assert_eq!(m1[2].text, "Bob");
+        assert_eq!(m1[0], "Alice");
+        assert_eq!(m1[1], "met");
+        assert_eq!(m1[2], "Bob");
     }
 
     #[test]
@@ -740,10 +576,10 @@ mod tests {
         // CJK / non-ASCII tokens should tokenize too (alphanumeric
         // is Unicode-aware).
         let m = extract_mentions("Caroline 去 Sweden");
-        assert!(m.iter().any(|x| x.text == "Caroline"));
+        assert!(m.contains(&"Caroline".to_string()));
         // 去 is a single CJK char — passes is_alphanumeric, but is
         // single-char so filtered by MIN_UNIGRAM_CHARS.
         // Sweden is 6 chars, passes filter.
-        assert!(m.iter().any(|x| x.text == "Sweden"));
+        assert!(m.contains(&"Sweden".to_string()));
     }
 }
