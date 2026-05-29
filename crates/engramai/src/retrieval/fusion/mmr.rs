@@ -264,6 +264,59 @@ fn memory_embedding(r: &ScoredResult) -> Option<&[f32]> {
     }
 }
 
+/// ISS-188 — backfill missing candidate embeddings before MMR.
+///
+/// MMR's diversity term needs per-candidate embeddings, but the
+/// Factual/Episodic plans build `ScoredResult::Memory` candidates with
+/// `embedding == None`. Without vectors, MMR gives them a 0 diversity
+/// penalty and degenerates to a no-op on exactly the plans that serve
+/// list-questions (ISS-187).
+///
+/// This walks `ranked`, collects the ids of Memory candidates still
+/// missing an embedding, asks `fetch` for them in **one** batch, and
+/// backfills the `embedding` field in place. Candidates whose id the
+/// fetcher doesn't return (deleted / superseded / no stored vector)
+/// keep `None` and MMR treats them as maximally diverse — the same
+/// behaviour as before, no candidate is dropped.
+///
+/// `fetch` takes the id slice and returns an id → vector map. It is
+/// injected (rather than taking `&Storage`) so this stays a pure,
+/// unit-testable function decoupled from the SQL layer.
+pub fn populate_missing_embeddings<F>(ranked: &mut [ScoredResult], fetch: F)
+where
+    F: FnOnce(&[&str]) -> std::collections::HashMap<String, Vec<f32>>,
+{
+    let missing_ids: Vec<String> = ranked
+        .iter()
+        .filter_map(|r| match r {
+            ScoredResult::Memory {
+                record, embedding, ..
+            } if embedding.is_none() => Some(record.id.clone()),
+            _ => None,
+        })
+        .collect();
+    if missing_ids.is_empty() {
+        return;
+    }
+    let id_refs: Vec<&str> = missing_ids.iter().map(String::as_str).collect();
+    let embs = fetch(&id_refs);
+    if embs.is_empty() {
+        return;
+    }
+    for r in ranked.iter_mut() {
+        if let ScoredResult::Memory {
+            record, embedding, ..
+        } = r
+        {
+            if embedding.is_none() {
+                if let Some(v) = embs.get(&record.id) {
+                    *embedding = Some(v.clone());
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -570,5 +623,112 @@ mod tests {
     fn lambda_accessor_roundtrips() {
         let rr = MmrReranker::new(0.7);
         assert_eq!(rr.lambda(), 0.7);
+    }
+
+    // -- ISS-188: populate_missing_embeddings ------------------------------
+
+    #[test]
+    fn populate_backfills_missing_memory_embeddings() {
+        // Two Factual candidates with no embedding (the production
+        // state on Factual/Episodic plans). The fetcher returns a
+        // vector for each → both fields get populated.
+        let mut ranked = vec![
+            mk_memory("m1", 0.9, None),
+            mk_memory("m2", 0.8, None),
+        ];
+        populate_missing_embeddings(&mut ranked, |ids| {
+            assert_eq!(ids.len(), 2, "both missing ids requested in one batch");
+            let mut m = std::collections::HashMap::new();
+            m.insert("m1".to_string(), vec![1.0, 0.0, 0.0]);
+            m.insert("m2".to_string(), vec![0.0, 1.0, 0.0]);
+            m
+        });
+        assert_eq!(memory_embedding(&ranked[0]), Some([1.0, 0.0, 0.0].as_slice()));
+        assert_eq!(memory_embedding(&ranked[1]), Some([0.0, 1.0, 0.0].as_slice()));
+    }
+
+    #[test]
+    fn populate_leaves_unreturned_ids_as_none() {
+        // The fetcher only knows m1 (m2 deleted / no stored vector).
+        // m2 stays None → MMR will treat it as maximally diverse, no
+        // candidate is dropped.
+        let mut ranked = vec![
+            mk_memory("m1", 0.9, None),
+            mk_memory("m2", 0.8, None),
+        ];
+        populate_missing_embeddings(&mut ranked, |_ids| {
+            let mut m = std::collections::HashMap::new();
+            m.insert("m1".to_string(), vec![1.0, 0.0, 0.0]);
+            m
+        });
+        assert_eq!(memory_embedding(&ranked[0]), Some([1.0, 0.0, 0.0].as_slice()));
+        assert_eq!(memory_embedding(&ranked[1]), None);
+    }
+
+    #[test]
+    fn populate_does_not_overwrite_existing_embeddings() {
+        // A candidate that already carries an embedding (Hybrid plan)
+        // must not be re-fetched or clobbered.
+        let mut ranked = vec![mk_memory("m1", 0.9, Some(vec![9.0, 9.0, 9.0]))];
+        populate_missing_embeddings(&mut ranked, |ids| {
+            assert!(ids.is_empty(), "no missing ids → fetcher gets empty slice");
+            std::collections::HashMap::new()
+        });
+        assert_eq!(memory_embedding(&ranked[0]), Some([9.0, 9.0, 9.0].as_slice()));
+    }
+
+    #[test]
+    fn populate_then_low_lambda_diversifies_previously_dead_cluster() {
+        // The end-to-end ISS-188 contract: candidates arrive with NO
+        // embeddings (MMR would be a no-op), we backfill them with a
+        // redundant-cluster layout, and λ<1.0 then reorders to surface
+        // the distant candidate into the head — proving the diversity
+        // channel comes alive once fed.
+        //
+        // Layout: three "apple" candidates near [1,0,0] (high score) and
+        // one "car" near [0,1,0] (lower score). Pre-backfill MMR cannot
+        // distinguish them. Post-backfill, λ=0.7 should pull `car` up
+        // past at least one redundant apple.
+        let mut ranked = vec![
+            mk_memory("apple-a", 0.95, None),
+            mk_memory("apple-b", 0.90, None),
+            mk_memory("apple-c", 0.85, None),
+            mk_memory("car", 0.80, None),
+        ];
+
+        // Sanity: with no embeddings, λ=0.7 leaves order unchanged
+        // (every candidate has 0 diversity penalty → pure relevance).
+        let dead = MmrReranker::new(0.7).rerank("q", &ranked).unwrap();
+        assert_eq!(
+            ids(&dead),
+            vec!["m:apple-a", "m:apple-b", "m:apple-c", "m:car"],
+            "no embeddings → MMR degenerates to relevance order"
+        );
+
+        // Backfill the redundant-cluster embeddings.
+        populate_missing_embeddings(&mut ranked, |_ids| {
+            let mut m = std::collections::HashMap::new();
+            m.insert("apple-a".to_string(), vec![1.0, 0.0, 0.0]);
+            m.insert("apple-b".to_string(), vec![0.98, 0.02, 0.0]);
+            m.insert("apple-c".to_string(), vec![0.95, 0.05, 0.0]);
+            m.insert("car".to_string(), vec![0.0, 1.0, 0.0]);
+            m
+        });
+
+        // Now MMR can see the redundancy: `car` should rise above at
+        // least one apple it was originally ranked below.
+        let alive = MmrReranker::new(0.7).rerank("q", &ranked).unwrap();
+        let order = ids(&alive);
+        let car_pos = order.iter().position(|s| s == "m:car").unwrap();
+        assert!(
+            car_pos < 3,
+            "post-backfill λ=0.7 should surface the diverse `car` out of \
+             the tail; got order {order:?}"
+        );
+        assert_ne!(
+            order,
+            vec!["m:apple-a", "m:apple-b", "m:apple-c", "m:car"],
+            "backfill must change the order vs the dead-channel baseline"
+        );
     }
 }

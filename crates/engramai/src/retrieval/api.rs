@@ -304,6 +304,21 @@ pub struct GraphQuery {
     /// on conv-26 (factual_reweight on vs off). Normal callers should
     /// leave this `None`.
     pub factual_reweight_override: Option<bool>,
+    /// ISS-188 — per-query override for
+    /// [`FusionConfig::populate_embeddings_for_diversity`].
+    ///
+    /// When `Some(true)`, the API batch-fetches embeddings for any
+    /// `ScoredResult::Memory` candidate still carrying `embedding ==
+    /// None` immediately before the C.5 MMR hook, so MMR's diversity
+    /// term has real vectors to work with on the Factual/Episodic
+    /// plans. When `Some(false)`, pins the off side even if a future
+    /// locked default flips. `None` falls back to
+    /// `FusionConfig::locked().populate_embeddings_for_diversity`.
+    ///
+    /// Intended consumers: bench drivers running the ISS-188 λ-sweep
+    /// on the 10 LIST-type SF queries. Normal callers leave this
+    /// `None`.
+    pub populate_embeddings_for_diversity_override: Option<bool>,
 }
 
 impl std::fmt::Debug for GraphQuery {
@@ -333,6 +348,10 @@ impl std::fmt::Debug for GraphQuery {
             )
             .field("entity_channel_override", &self.entity_channel_override)
             .field("factual_reweight_override", &self.factual_reweight_override)
+            .field(
+                "populate_embeddings_for_diversity_override",
+                &self.populate_embeddings_for_diversity_override,
+            )
             .finish()
     }
 }
@@ -360,6 +379,7 @@ impl GraphQuery {
             cross_encoder_override: None,
             entity_channel_override: None,
             factual_reweight_override: None,
+            populate_embeddings_for_diversity_override: None,
         }
     }
 
@@ -486,6 +506,18 @@ impl GraphQuery {
     /// — locked v0.3.0-r3 byte-identity).
     pub fn with_factual_reweight(mut self, enabled: Option<bool>) -> Self {
         self.factual_reweight_override = enabled;
+        self
+    }
+
+    /// See [`GraphQuery::populate_embeddings_for_diversity_override`]
+    /// for semantics. Pass `None` to fall back to
+    /// `FusionConfig::locked().populate_embeddings_for_diversity`
+    /// (currently `false` — locked v0.3.0-r3 byte-identity).
+    pub fn with_populate_embeddings_for_diversity(
+        mut self,
+        enabled: Option<bool>,
+    ) -> Self {
+        self.populate_embeddings_for_diversity_override = enabled;
         self
     }
 }
@@ -735,6 +767,12 @@ impl Memory {
         let mmr_lambda_override = query.mmr_lambda_override;
         let cross_encoder_override = query.cross_encoder_override.clone();
         let factual_reweight_override = query.factual_reweight_override;
+        let populate_embeddings_for_diversity = query
+            .populate_embeddings_for_diversity_override
+            .unwrap_or_else(|| {
+                crate::retrieval::fusion::FusionConfig::locked()
+                    .populate_embeddings_for_diversity
+            });
         let dispatched = crate::retrieval::dispatch::dispatch(query, &classifier);
         let plan_kind = dispatched.plan_kind;
         let intent = dispatched.intent;
@@ -868,6 +906,36 @@ impl Memory {
             crate::retrieval::dispatch::PlanKind::Hybrid => candidates,
             _ => crate::retrieval::fusion::fuse_and_rank(intent, &cfg, candidates),
         };
+
+        // Stage C.4 (ISS-188): populate candidate embeddings before the
+        // diversity reranker.
+        //
+        // MMR's diversity term (`mmr.rs`) computes cosine similarity on
+        // per-candidate embeddings. The Factual/Episodic plans build
+        // candidates without embeddings (`ScoredResult::Memory.embedding
+        // == None`), so MMR gives them a 0 diversity penalty and
+        // degenerates to a no-op on exactly the plans the list-questions
+        // route through (ISS-187: drop_CD 22/32, 10/13 SF-subset are
+        // LIST-type scoring 0).
+        //
+        // When enabled, batch-fetch embeddings for any Memory candidate
+        // still carrying `embedding == None` and backfill the field, so
+        // the C.5 MMR hook can surface relevant-but-distant list items
+        // into the head before `top_k` truncation. One SQL round-trip
+        // per query (the `IN (...)` batch), not per candidate.
+        //
+        // When disabled (locked default), the candidate set reaches MMR
+        // unchanged — byte-identical to the v0.3 path.
+        if populate_embeddings_for_diversity {
+            crate::retrieval::fusion::mmr::populate_missing_embeddings(
+                &mut ranked,
+                |ids| {
+                    self.storage()
+                        .get_embeddings_for_ids(ids, embedding_model_owned.as_str())
+                        .unwrap_or_default()
+                },
+            );
+        }
 
         // Stage C.5a (ISS-159 weapon A): optional cross-encoder
         // reranker, run **before** MMR (D5). The cross-encoder
@@ -1609,5 +1677,49 @@ mod tests {
             std::sync::Arc::strong_count(&ce) >= strong_before + 2,
             "GraphQuery::clone should share the Arc, not deep-copy"
         );
+    }
+
+    // -- ISS-188: populate_embeddings_for_diversity knob -------------------
+
+    #[test]
+    fn graph_query_populate_embeddings_default_is_none() {
+        // Locked v0.3 byte-identity: the override defaults to None so
+        // the resolved value falls back to
+        // FusionConfig::locked().populate_embeddings_for_diversity.
+        let q = GraphQuery::new("hello");
+        assert!(q.populate_embeddings_for_diversity_override.is_none());
+    }
+
+    #[test]
+    fn locked_fusion_config_populate_embeddings_is_false() {
+        // The locked default must keep the diversity-embedding
+        // population OFF, so Factual/Episodic candidates reach MMR
+        // unchanged and the §5.4 reproducibility envelope holds until
+        // the ISS-188 sweep validates the lift.
+        let cfg = crate::retrieval::fusion::FusionConfig::locked();
+        assert!(!cfg.populate_embeddings_for_diversity);
+    }
+
+    #[test]
+    fn graph_query_with_populate_embeddings_sets_field() {
+        let q_on = GraphQuery::new("hello")
+            .with_populate_embeddings_for_diversity(Some(true));
+        assert_eq!(
+            q_on.populate_embeddings_for_diversity_override,
+            Some(true)
+        );
+
+        let q_off = GraphQuery::new("hello")
+            .with_populate_embeddings_for_diversity(Some(false));
+        assert_eq!(
+            q_off.populate_embeddings_for_diversity_override,
+            Some(false)
+        );
+
+        // None clears the override (falls back to locked default).
+        let q_cleared = q_on.with_populate_embeddings_for_diversity(None);
+        assert!(q_cleared
+            .populate_embeddings_for_diversity_override
+            .is_none());
     }
 }

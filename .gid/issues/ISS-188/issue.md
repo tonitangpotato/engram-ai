@@ -1,3 +1,6 @@
+---
+status: in_progress
+---
 # .gid/issues/ISS-188/issue.md (issue)
 project: engram
 ---
@@ -57,12 +60,22 @@ the pool; only diversity reranking does.
 
 ## Acceptance criteria
 
-- [ ] AC-1: factual/episodic-plan candidates carry populated
+- [x] AC-1: factual/episodic-plan candidates carry populated
   `embedding` (from Storage fallback) at the C.5 hook, gated by a
   serde-default-false config knob. Off = byte-identical to current.
-- [ ] AC-2: unit test — factual plan with embedding-population ON +
+  Shipped: `FusionConfig::populate_embeddings_for_diversity` (serde
+  default false) + `GraphQuery::with_populate_embeddings_for_diversity`
+  override + Stage C.4 backfill in api.rs before the cross-encoder/MMR
+  hooks, via `mmr::populate_missing_embeddings` (pure fn, one batched
+  `get_embeddings_for_ids` SQL round-trip).
+- [x] AC-2: unit test — factual plan with embedding-population ON +
   λ<1.0 reorders a synthetic redundant-cluster candidate set so a
   distant relevant item enters the head; OFF = unchanged.
+  Shipped: `populate_then_low_lambda_diversifies_previously_dead_cluster`
+  (proves dead-channel baseline = relevance order, post-backfill
+  λ=0.7 surfaces the diverse `car`) + 3 fn-contract tests
+  (backfill / unreturned-ids-stay-None / no-overwrite) + 3 api builder
+  tests. 26/26 mmr + 2027/2027 lib green.
 - [ ] AC-3: λ-sweep on the **10 LIST-type SF queries** (q13/q15/q18/
   q19/q24/q32/q34/q38/q39/q47), NOT the diluted full conv-26 set.
   Find λ maximizing list coverage.
@@ -83,5 +96,7 @@ the pool; only diversity reranking does.
 
 ## Status
 
-Open 2026-05-29 — root fix identified by ISS-187 diagnostic.
-Implementation not started.
+In progress 2026-05-29 — AC-1/AC-2 shipped (code + tests, 2027/2027 lib
+green, 0 warnings). Remaining: AC-3 λ-sweep on the 10 LIST-type SF
+queries, AC-4 no-regression check, AC-5 conv-44 cross-validation — all
+bench work, needs the engram-bench env knob wired next.

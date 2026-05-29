@@ -193,6 +193,34 @@ pub struct FusionConfig {
     /// `GraphQuery::with_factual_reweight(Some(true))`.
     #[serde(default = "default_factual_reweight")]
     pub factual_reweight: bool,
+    /// ISS-188 — populate candidate embeddings before the C.5 MMR hook.
+    ///
+    /// MMR's diversity term needs per-candidate embeddings (`sim(c, s)`
+    /// = cosine on candidate vectors, see `mmr.rs`). The Factual and
+    /// Episodic plans build their candidates without embeddings
+    /// (`ScoredResult::Memory.embedding == None`), so MMR gives them a
+    /// `0` diversity penalty and degenerates to a no-op on exactly the
+    /// plans the list-questions route through (ISS-187 diagnosis:
+    /// drop_CD 22/32 conv-26 single-hop, 10/13 SF-subset are LIST-type
+    /// scoring 0; q18 gold "beach, mountains, forest" — beach memories
+    /// sit at fusion rank 38/46/152 while the redundant mountains/forest
+    /// cluster fills top-10).
+    ///
+    /// When `true`, the API batch-fetches embeddings via
+    /// `Storage::get_embeddings_for_ids` for any `ScoredResult::Memory`
+    /// candidate still carrying `embedding == None`, immediately before
+    /// the C.5 MMR hook, so MMR can compute real cosine-diversity and
+    /// surface relevant-but-distant list items into the head before
+    /// `top_k` truncation.
+    ///
+    /// When `false` (default), the candidate set reaches MMR unchanged
+    /// — byte-identical to the locked v0.3 path. Callers flip via
+    /// `GraphQuery::with_populate_embeddings_for_diversity(Some(true))`.
+    ///
+    /// Serde-defaults to `false` so older reproducibility records
+    /// deserialize to the locked behaviour.
+    #[serde(default = "default_populate_embeddings_for_diversity")]
+    pub populate_embeddings_for_diversity: bool,
     /// Semantic version pin — bumped on weight changes.
     pub version: &'static str,
 }
@@ -227,6 +255,13 @@ fn default_entity_channel_enabled() -> bool {
 /// to A/B against the rebalanced weights + sum-with-evidence-bonus text
 /// aggregate without re-baking `FusionConfig::locked()`.
 fn default_factual_reweight() -> bool {
+    false
+}
+
+/// Serde default for [`FusionConfig::populate_embeddings_for_diversity`]
+/// (ISS-188). `false` keeps the locked v0.3 path where Factual/Episodic
+/// candidates reach MMR without embeddings (diversity no-op).
+fn default_populate_embeddings_for_diversity() -> bool {
     false
 }
 
@@ -301,6 +336,7 @@ impl FusionConfig {
             mmr_lambda: default_mmr_lambda(),
             entity_channel_enabled: default_entity_channel_enabled(),
             factual_reweight: default_factual_reweight(),
+            populate_embeddings_for_diversity: default_populate_embeddings_for_diversity(),
             version: "v0.3.0-locked-r3",
         }
     }
