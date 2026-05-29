@@ -1,0 +1,119 @@
+{
+  "by_category": {
+    "multi-hop": {
+      "arm_a_off": 0.25,
+      "arm_b_on": 0.20833333333333334,
+      "delta": -0.041666666666666664,
+      "n": 24
+    },
+    "open-domain": {
+      "arm_a_off": 0.0,
+      "arm_b_on": 0.14285714285714285,
+      "delta": 0.14285714285714285,
+      "n": 7
+    },
+    "single-hop": {
+      "arm_a_off": 0.26666666666666666,
+      "arm_b_on": 0.23333333333333334,
+      "delta": -0.03333333333333333,
+      "n": 30
+    },
+    "temporal": {
+      "arm_a_off": 0.24193548387096775,
+      "arm_b_on": 0.22580645161290322,
+      "delta": -0.016129032258064516,
+      "n": 62
+    }
+  },
+  "delta": -0.01626016260162602,
+  "flips": [
+    {
+      "arm_a_off": 1.0,
+      "arm_b_on": 0.0,
+      "category": "multi-hop",
+      "direction": "1→0",
+      "gold": "first week of May 2023",
+      "id": "conv-44-q5",
+      "predicted_arm_a_off": "According to the memories, Audrey saw a hummingbird on May 3, 2023 (2023-05-03).",
+      "predicted_arm_b_on": "On 2023-05-03, during a hike."
+    },
+    {
+      "arm_a_off": 0.0,
+      "arm_b_on": 1.0,
+      "category": "multi-hop",
+      "direction": "0→1",
+      "gold": "No",
+      "id": "conv-44-q8",
+      "predicted_arm_a_off": "Based on memory [5] from April 2023, Andrew mentioned \"my family's dog\" but did not indicate he personally owned it. The memories don't confirm Andrew had his own pet dog in March 2023.",
+      "predicted_arm_b_on": "Based on memory [5] from April 2, 2023, Andrew referred to \"my family's dog,\" not his own dog. Memory [6] indicates he was searching for a pet-friendly apartment, suggesting he didn't have his own pet yet. So no, Andrew did not have his own pet dog in March 2023, though his family had one."
+    },
+    {
+      "arm_a_off": 1.0,
+      "arm_b_on": 0.0,
+      "category": "multi-hop",
+      "direction": "1→0",
+      "gold": "June 2023",
+      "id": "conv-44-q13",
+      "predicted_arm_a_off": "Based on the memories, Audrey was in the process of moving to a new house on 2023-06-26.",
+      "predicted_arm_b_on": "I don't know. The memories indicate Audrey is in the process of moving and unpacking boxes, but no specific date is provided for when the move occurred."
+    },
+    {
+      "arm_a_off": 1.0,
+      "arm_b_on": 0.0,
+      "category": "multi-hop",
+      "direction": "1→0",
+      "gold": "the weekend before October 24, 2023",
+      "id": "conv-44-q38",
+      "predicted_arm_a_off": "According to memory [4], Andrew attended a wine tasting with his girlfriend last weekend relative to 2023-10-24.",
+      "predicted_arm_b_on": "According to memory [4], Andrew attended a wine tasting with his girlfriend last weekend from October 24, 2023, so it would have been around October 21-22, 2023."
+    },
+    {
+      "arm_a_off": 0.0,
+      "arm_b_on": 1.0,
+      "category": "multi-hop",
+      "direction": "0→1",
+      "gold": "three",
+      "id": "conv-44-q45",
+      "predicted_arm_a_off": "I don't know. The memories mention Scout, Toby, and Buddy as Andrew's pets in November 2023, but there's no information about December 2023 or any changes to the number of pets by then.",
+      "predicted_arm_b_on": "Based on the memories, Andrew will have 3 pets as of December 2023: Scout, Toby, and Buddy."
+    },
+    {
+      "arm_a_off": 0.0,
+      "arm_b_on": 1.0,
+      "category": "open-domain",
+      "direction": "0→1",
+      "gold": "Park ranger or a similar position working for the National Park Services.",
+      "id": "conv-44-q53",
+      "predicted_arm_a_off": "Based on Andrew's love for animals, nature, birds, and ecological systems, he could potentially pursue a career in wildlife conservation, ecology, environmental education, or animal welfare.",
+      "predicted_arm_b_on": "Based on Andrew's love for animals, nature, birds, and ecological systems, he could potentially pursue a career in wildlife conservation, ecology, environmental education, or park/nature management."
+    },
+    {
+      "arm_a_off": 1.0,
+      "arm_b_on": 0.0,
+      "category": "single-hop",
+      "direction": "1→0",
+      "gold": "3",
+      "id": "conv-44-q60",
+      "predicted_arm_a_off": "Based on the memories, Andrew has two dogs (memory [4] mentions \"already having two dogs\"), and they got a puppy named Scout (memory [5]), which would make it three dogs total.",
+      "predicted_arm_b_on": "Based on the memories, Andrew has two dogs (including a puppy named Scout)."
+    },
+    {
+      "arm_a_off": 1.0,
+      "arm_b_on": 0.0,
+      "category": "temporal",
+      "direction": "1→0",
+      "gold": "sushi",
+      "id": "conv-44-q112",
+      "predicted_arm_a_off": "Based on the memories, Andrew tried sushi (California or salmon roll with various sauces) at a new spot that recently opened.",
+      "predicted_arm_b_on": "I don't know.\n\nThe memories mention Andrew decided to try California or salmon roll with various sauces, and that a new spot recently opened that he finds awesome, but they don't specify what cuisine was at that new spot."
+    }
+  ],
+  "gate": "AC-5 same-DB A/B (surfacing OFF vs ON over identical retrieved pools)",
+  "issue": "ISS-191",
+  "n_flips": 8,
+  "n_gains_0_to_1": 3,
+  "n_losses_1_to_0": 5,
+  "n_queries": 123,
+  "overall_arm_a_off": 0.23577235772357724,
+  "overall_arm_b_on": 0.21951219512195122
+}
