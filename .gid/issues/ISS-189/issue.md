@@ -1,12 +1,26 @@
 ---
 id: ISS-189
-title: "Factual plan discards 1-hop edge provenance, falls back to recorded_at-truncated flat anchor recall — answer episode dropped before fusion"
-status: open
+title: Factual plan discards 1-hop edge provenance, falls back to recorded_at-truncated flat anchor recall — answer episode dropped before fusion
+status: resolved
 priority: P0
 severity: degradation
-tags: [retrieval, factual-plan, graph-traversal, recall, locomo, root-cause]
+tags:
+- retrieval
+- factual-plan
+- graph-traversal
+- recall
+- locomo
+- root-cause
 created: 2026-05-29
-relates_to: [ISS-105, ISS-149, ISS-175, ISS-147, ISS-152, ISS-188]
+relates_to:
+- ISS-105
+- ISS-149
+- ISS-175
+- ISS-147
+- ISS-152
+- ISS-188
+- .gid/issues/ISS-190/issue.md
+fixed_by: 2ec7e3c
 ---
 
 # ISS-189: Factual plan throws away its own graph edge traversal
@@ -229,12 +243,38 @@ forward-resolve new edges. Tracked as a follow-up; not blocking q0.
 - **AC-3c.** [PASS] `iss189_ac5_incoming_edge_respects_predicate_filter` —
   incoming-edge traversal honors `predicate_filter`; non-matching incoming
   edges are excluded.
-- **AC-4.** conv-44-q0 ("Which year did Audrey adopt the first three of her
-  dogs?", gold 2020) scores 1.0 under the ISS-161 Arm A envelope
-  (K=10, temp=0, HyDE off, MMR off, entity_channel off, pipeline_pool=1).
-  [validation running — STAMP 20260529T131853Z]
-- **AC-5.** No regression on conv-44 overall vs the CONV44-baseline
-  (`20260529T060701Z`, overall 0.2276). [validation running]
+- **AC-4.** [FAIL — reassigned to ISS-190] conv-44-q0 scores 0.0 post-fix.
+  Recall IS fixed (probe confirms `a8b823f4` now in pool), but generation
+  refuses the temporal arithmetic: the post-fix prediction quotes the gold
+  fact "owned for 3 years as of March 2023" then answers "I don't know" the
+  adoption year. The model has `3 years` + `as of 2023` and won't compute
+  `2023 − 3 = 2020`. This is a **generation defect, not a recall defect** —
+  tracked in **ISS-190**. Run STAMP `20260529T131853Z`.
+- **AC-5.** [PASS] No regression on conv-44 overall: post-fix **0.2439** vs
+  CONV44-baseline `20260529T060701Z` **0.2276** (+1.6pp). No category
+  regressed. (`ISS189-fix-conv44-20260529T131853Z/locomo_summary.json`)
+
+## Closing note (2026-05-29)
+
+**Option A is SHIPPED (commit `2ec7e3c`) and stays committed.** It fixes a
+genuine incoming-edge provenance bug: the Factual plan walked only OUTGOING
+edges, so answer episodes that sit on the *object* side of a `part_of` edge
+(dogs → Audrey) were never seeded into the pool. The fix makes the gold
+evidence episode `a8b823f4` reach generation with no regression and a small
+overall lift.
+
+**Why close this issue:** the structural recall defect this issue exists to
+fix is resolved and verified by probe + bench. The residual conv-44-q29 score
+gap is **provably downstream** (generation temporal arithmetic), now owned by
+**ISS-190**. Keeping ISS-189 open would conflate a shipped retrieval fix with
+an unstarted generation fix.
+
+**Option B (PartOf inverse `ContainedBy`) is deferred to LOW priority /
+hygiene-only.** It would make Option A's incoming walk a redundant safety net
+rather than the load-bearing path, but it will **not** move q29's score (the
+blocker is generation). Worth doing as data-model cleanliness when the schema
+is next touched; not worth a dedicated cycle now. Not filed as its own issue
+— the TODO comment at `schema.rs:157-158` is the marker.
 
 ## Evidence artifacts
 
