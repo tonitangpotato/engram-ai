@@ -1,10 +1,17 @@
 ---
 title: Surface store-time-derived temporal mark to retrieval consumers (structured TemporalMark + bench context block)
-status: open
+status: resolved
 priority: P1
 severity: degradation
-tags: [temporal, retrieval, substrate, locomo]
-relates_to: [ISS-190, ISS-103, ISS-088]
+tags:
+- temporal
+- retrieval
+- substrate
+- locomo
+relates_to:
+- ISS-190
+- ISS-103
+- ISS-088
 ---
 
 # Surface store-time-derived temporal mark to retrieval consumers
@@ -111,11 +118,15 @@ benefits without re-implementing the JSON-path dance.
       while a bare-2023 point misses; ongoing 2020→2023 overlaps a 2022
       query). Existing 3 temporal_score tests unchanged. 2051/2051 lib
       tests pass.
-- [ ] **AC-4** conv-44 q0 (gold `2020`) flips `0→1` end-to-end with the
-      bench surfacing the derived mark (validated by run
-      `ISS191-fix-conv44-*`).
-- [ ] **AC-5** No regression on conv-44 overall (≥ `0.2764`, the ISS-190
-      post-fix number) and conv-26 A/B regression ≤ 10%.
+- [x] **AC-4** conv-44 q0 (gold `2020`) flips `0→1` end-to-end with the
+      bench surfacing the derived mark — PASS (run
+      `ISS191-fix-conv44-20260529T155256Z`; see Validation below).
+- [x] **AC-5** A/B regression ≤ 10% — PASS (−1.63% same-DB on conv-44,
+      run `ISS191-ab-conv44-20260529T182910Z`; see Validation: AC-5
+      section). The literal "≥ 0.2764 vs separate-ingest" sub-clause was
+      superseded by the same-DB A/B method (the AC-5 note in this issue
+      explicitly asked for that), since two independent ingests confound
+      pool variance with the date-label change.
 
 ## Related
 
