@@ -2,6 +2,25 @@
 //! `MemoryRecord`. Reads once per record via `Dimensions::from_stored_metadata`
 //! and exposes typed borrows — no JSON walking, no string-array fallbacks.
 //!
+//! ## ⚠️ Status: unwired scaffold (NOT compiled — no `mod dimension_access` in lib.rs)
+//!
+//! This module is intentionally retained, not dead by accident. It is the
+//! shared accessor designed for **ISS-024** (dimensional read path) and
+//! **ISS-020 Phase B** (`dimension_match_score` reading `participants()` /
+//! `relations()`), both still **open** as of 2026-05-29.
+//!
+//! The temporal half (Change 3a) was shipped *separately* on the canonical
+//! read path as `MemoryRecord::derived_temporal_mark()` /
+//! `derived_temporal_value()` for ISS-190/ISS-191, so this file is currently
+//! redundant *for temporal only*. Do NOT delete it to "clean up" — that would
+//! discard the participants/relations getters that ISS-024 / ISS-020 Phase B
+//! depend on. Wire it (add `mod dimension_access;` + use it in
+//! `dimension_match_score`) when Phase B lands.
+//!
+//! Note: because `temporal()` here routes through `from_stored_metadata`, it
+//! inherits the v2-read-path fix from commit 50a8535 automatically — it will
+//! not silently diverge from the live temporal accessor.
+//!
 //! Design reference: `.gid/issues/ISS-024-dimensional-read-path-and-cli-meta-gap/design.md` §5.2.
 //!
 //! The goal is that Change 3a (`temporal_score` reads `temporal()`) and the
