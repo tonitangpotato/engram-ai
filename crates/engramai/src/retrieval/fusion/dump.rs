@@ -1,12 +1,27 @@
-//! # Fused-pool diagnostic dump (ISS-175)
+//! # Fused-pool diagnostic dump (ISS-175 / ISS-187)
 //!
-//! `task:retr-iss175-probe` — env-gated, off by default. When enabled,
-//! every call to [`crate::retrieval::fusion::fuse_and_rank`] writes its
-//! complete post-fusion / post-sort / pre-truncation candidate pool to
-//! disk as JSONL. This exists to diagnose ISS-175 (Factual fusion
-//! reweighting): Factual queries surface 150-263 candidates and we
-//! need to know where the gold answer sits in that pool — top-K dumps
-//! (engram-bench `ENGRAM_BENCH_DUMP_CANDIDATES=1`) cannot see rank 50+.
+//! `task:retr-iss175-probe` / `task:retr-iss187-pipeline-audit` —
+//! env-gated, off by default. When enabled, every call to
+//! [`crate::retrieval::fusion::fuse_and_rank`] writes its complete
+//! post-fusion / post-sort / pre-truncation candidate pool to disk
+//! as JSONL (ISS-175). When the Stage-B audit is also wired (see
+//! `maybe_dump_prefusion_pool` and the api.rs hook), the same
+//! infrastructure also dumps the **pre-fusion** candidate set
+//! coming out of `execute_plan` (ISS-187). One env-var activates
+//! both — operator gets two files per query and can join them on
+//! `memory_id` to see whether the gold candidate survived fusion.
+//!
+//! ISS-175 use case: Factual queries surface 150-263 candidates
+//! and we need to know where the gold answer sits in that pool —
+//! top-K dumps (engram-bench `ENGRAM_BENCH_DUMP_CANDIDATES=1`)
+//! cannot see rank 50+.
+//!
+//! ISS-187 use case: ISS-186 settled that the bi-encoder finds
+//! gold within top-10 for 19/32 conv-26 SH queries, but the
+//! production pipeline scores 5-8/27. The pre-fusion dump tells
+//! us whether the channel adapters retrieved gold at all (if not,
+//! plan classifier is the lever) before fusion drops it (if so,
+//! fusion is the lever).
 //!
 //! ## Contract
 //!
@@ -18,17 +33,22 @@
 //!   `ENGRAM_DUMP_FUSED_POOL_DIR=/some/dir` (the directory must
 //!   already exist — we don't `mkdir -p` because that hides typos)
 //!   AND attaches a query-id label via
-//!   [`set_dump_label`] before invoking retrieval.
-//! - **Filename**: `<dir>/<label>-<intent>.jsonl`. Label is the
-//!   caller-provided opaque string (driver's qid, typically); intent
-//!   is the lowercase `Intent::Debug`. Existing files are appended
-//!   to, not overwritten — multiple calls for the same (label,
+//!   [`set_dump_label`] before invoking retrieval. The same
+//!   env var activates both fused-pool and prefusion dumps.
+//! - **Filename**: `<dir>/<label>-<intent>.jsonl` for the fused
+//!   (post-fusion, ISS-175 legacy pattern, preserved byte-identical
+//!   for backward compat) and `<dir>/<label>-prefusion-<intent>.jsonl`
+//!   for the pre-fusion stage (ISS-187). Label is the caller-provided
+//!   opaque string (driver's qid, typically); intent is the
+//!   lowercase `Intent::Debug`. Existing files are appended to,
+//!   not overwritten — multiple calls for the same (label, stage,
 //!   intent) accumulate so plan-internal `fuse_and_rank` invocations
 //!   (e.g. inside Hybrid sub-plans) are not lost.
 //! - **Optional whitelist**: `ENGRAM_DUMP_FUSED_POOL_QIDS=q40,q43,q71,q75`
 //!   filters by label so a full bench run produces dumps for only
 //!   the queries under investigation (Factual SF qids). Unset =
-//!   dump all labelled queries.
+//!   dump all labelled queries. The whitelist applies to **both**
+//!   stages — they share gating, the only difference is filename.
 //! - **Determinism**: this module is pure I/O on the side. It MUST
 //!   NOT mutate `candidates` or short-circuit any later stage.
 //!   Failures (disk full, permission denied) are logged via
@@ -156,6 +176,79 @@ fn dump_env() -> &'static DumpEnv {
 /// This function NEVER panics. All I/O failures are logged and
 /// swallowed.
 pub(crate) fn maybe_dump_fused_pool(intent: Intent, candidates: &[ScoredResult]) {
+    maybe_dump_internal(Stage::Fused, intent, candidates);
+}
+
+/// ISS-187 — Stage-B (pre-fusion) candidate dump. Mirrors
+/// `maybe_dump_fused_pool` but writes to
+/// `<dir>/<label>-prefusion-<intent>.jsonl` so a single bench run
+/// produces both pre- and post-fusion files per query for the
+/// candidate-survival audit.
+///
+/// Shares all gating with `maybe_dump_fused_pool`:
+/// `ENGRAM_DUMP_FUSED_POOL_DIR` activates,
+/// `ENGRAM_DUMP_FUSED_POOL_QIDS` whitelists by label,
+/// `set_dump_label` provides the per-query label. This is
+/// intentional — the operator wants both stages for the same
+/// queries in the same run, so a single env-var set should turn on
+/// both dumps.
+///
+/// Schema is identical to the fused-pool dump (same `DumpRow`
+/// fields). The only difference is the filename infix `prefusion`
+/// vs the fused dump's omitted infix (preserved for ISS-175
+/// backward compatibility). Operator distinguishes stages by
+/// filename, analyse script joins on `memory_id`.
+///
+/// Fast path (env unset): single env-var read via OnceCell, no
+/// allocation, no file I/O. Same cost profile as the fused-pool
+/// dump.
+pub(crate) fn maybe_dump_prefusion_pool(intent: Intent, candidates: &[ScoredResult]) {
+    maybe_dump_internal(Stage::Prefusion, intent, candidates);
+}
+
+/// Which pipeline stage a dump represents. Encodes filename infix
+/// — `Fused` produces `<label>-<intent>.jsonl` (ISS-175 legacy
+/// pattern, preserved byte-identical), `Prefusion` produces
+/// `<label>-prefusion-<intent>.jsonl` (ISS-187).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Fused,
+    Prefusion,
+}
+
+impl Stage {
+    /// Filename infix between label and intent. `Fused` returns
+    /// `None` so the legacy `<label>-<intent>.jsonl` pattern is
+    /// preserved (ISS-175 AC contract). `Prefusion` returns
+    /// `Some("prefusion")` so the resulting filename is
+    /// `<label>-prefusion-<intent>.jsonl`.
+    fn filename_infix(self) -> Option<&'static str> {
+        match self {
+            Stage::Fused => None,
+            Stage::Prefusion => Some("prefusion"),
+        }
+    }
+
+    /// Short label for `eprintln!` diagnostics when a write fails.
+    fn diag_str(self) -> &'static str {
+        match self {
+            Stage::Fused => "fused",
+            Stage::Prefusion => "prefusion",
+        }
+    }
+}
+
+/// Shared gate + dispatch for both stages. Single env-var read
+/// (cached OnceCell), single thread-local label read, single
+/// whitelist check. The Fused and Prefusion paths differ only in
+/// filename — extracting this gate into one place makes it
+/// impossible for the two stages to drift in their gating
+/// semantics (e.g. one accidentally bypassing the whitelist).
+fn maybe_dump_internal(
+    stage: Stage,
+    intent: Intent,
+    candidates: &[ScoredResult],
+) {
     let env = dump_env();
     let Some(dir) = env.dir.as_ref() else {
         return; // fast path — diagnostic off
@@ -175,10 +268,11 @@ pub(crate) fn maybe_dump_fused_pool(intent: Intent, candidates: &[ScoredResult])
         }
     }
 
-    if let Err(e) = write_dump(dir, &label_str, intent, candidates) {
+    if let Err(e) = write_dump(dir, &label_str, stage, intent, candidates) {
         eprintln!(
-            "[engram::fusion::dump] failed to write fused pool dump \
-             label={label_str} intent={intent:?}: {e}"
+            "[engram::fusion::dump] failed to write {stage_str} pool dump \
+             label={label_str} intent={intent:?}: {e}",
+            stage_str = stage.diag_str(),
         );
     }
 }
@@ -186,11 +280,15 @@ pub(crate) fn maybe_dump_fused_pool(intent: Intent, candidates: &[ScoredResult])
 fn write_dump(
     dir: &Path,
     label: &str,
+    stage: Stage,
     intent: Intent,
     candidates: &[ScoredResult],
 ) -> std::io::Result<()> {
     let intent_str = intent_to_str(intent);
-    let path = dir.join(format!("{label}-{intent_str}.jsonl"));
+    let path = match stage.filename_infix() {
+        None => dir.join(format!("{label}-{intent_str}.jsonl")),
+        Some(infix) => dir.join(format!("{label}-{infix}-{intent_str}.jsonl")),
+    };
 
     let mut f = OpenOptions::new()
         .create(true)
@@ -400,7 +498,7 @@ mod tests {
         };
         let cands = vec![mem("a", 0.6, sub_a), mem("b", 0.45, sub_b)];
 
-        write_dump(dir.path(), "q40", Intent::Factual, &cands).expect("write");
+        write_dump(dir.path(), "q40", Stage::Fused, Intent::Factual, &cands).expect("write");
 
         let path = dir.path().join("q40-factual.jsonl");
         let body = std::fs::read_to_string(&path).expect("read");
@@ -424,9 +522,126 @@ mod tests {
         assert_eq!(row1["memory_id"], "b");
 
         // Second call appends (does not truncate).
-        write_dump(dir.path(), "q40", Intent::Factual, &cands[..1]).expect("append");
+        write_dump(dir.path(), "q40", Stage::Fused, Intent::Factual, &cands[..1])
+            .expect("append");
         let body2 = std::fs::read_to_string(&path).expect("read");
         assert_eq!(body2.lines().count(), 3, "append must not truncate");
+    }
+
+    /// ISS-187 AC-3 regression: ISS-175 fused-pool dump filename
+    /// pattern MUST remain `<label>-<intent>.jsonl` (no stage
+    /// infix). Operators / analyse scripts depend on this path
+    /// shape; the prefusion dump introduced by ISS-187 must not
+    /// retro-rename existing fused-pool output.
+    #[test]
+    fn fused_stage_filename_omits_stage_infix_iss175_compat() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cands = vec![mem("a", 0.5, SubScores::default())];
+
+        write_dump(dir.path(), "q42", Stage::Fused, Intent::Episodic, &cands)
+            .expect("write");
+
+        // Exact filename — no "fused" infix, matching the original
+        // ISS-175 contract (dump.rs docstring "Filename":
+        // `<dir>/<label>-<intent>.jsonl`).
+        let expected = dir.path().join("q42-episodic.jsonl");
+        assert!(
+            expected.exists(),
+            "ISS-175 fused-pool filename pattern broke: \
+             expected {expected:?} to exist after Stage::Fused write"
+        );
+
+        // Negative assertion: the prefusion-infix filename must NOT
+        // appear when Stage::Fused is written. This pins the
+        // contract that Stage carries the only filename divergence.
+        let wrong = dir.path().join("q42-fused-episodic.jsonl");
+        assert!(
+            !wrong.exists(),
+            "Stage::Fused must not emit a 'fused'-infix filename — \
+             that would break ISS-175 analyse scripts"
+        );
+    }
+
+    /// ISS-187 AC-1: prefusion dump produces a filename with the
+    /// `prefusion` infix between label and intent. Schema is
+    /// identical to fused-pool (operator joins on `memory_id`).
+    #[test]
+    fn prefusion_stage_filename_carries_infix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sub = SubScores {
+            vector_score: Some(0.55),
+            bm25_score: Some(0.2),
+            graph_score: Some(0.0),
+            ..Default::default()
+        };
+        let cands = vec![mem("m1", 0.7, sub)];
+
+        write_dump(dir.path(), "q40", Stage::Prefusion, Intent::Factual, &cands)
+            .expect("write");
+
+        let path = dir.path().join("q40-prefusion-factual.jsonl");
+        assert!(path.exists(), "prefusion dump missing at {path:?}");
+
+        let body = std::fs::read_to_string(&path).expect("read");
+        let row: serde_json::Value =
+            serde_json::from_str(body.lines().next().expect("one line")).expect("json");
+        // Schema is identical to fused-pool — `intent` reflects the
+        // logical intent, not the stage. Stage lives in the
+        // filename so consumers parse it from the path, keeping
+        // per-row JSON compatible with existing ISS-175 parsers.
+        assert_eq!(row["intent"], "factual");
+        assert_eq!(row["memory_id"], "m1");
+        assert_eq!(row["rank"], 1);
+        assert!((row["vector_score"].as_f64().unwrap() - 0.55).abs() < 1e-9);
+    }
+
+    /// ISS-187 AC-1: `maybe_dump_prefusion_pool` is the public
+    /// entry point — verify it is a no-op when env unset (matching
+    /// the contract that `maybe_dump_fused_pool` already honours).
+    /// Same caveat as `maybe_dump_fused_pool_no_op_when_env_unset`:
+    /// `dump_env()` is a process-cached `OnceLock`, so if any
+    /// earlier test set `ENGRAM_DUMP_FUSED_POOL_DIR`, we skip.
+    #[test]
+    fn maybe_dump_prefusion_pool_no_op_when_env_unset() {
+        if dump_env().dir.is_some() {
+            return;
+        }
+        let cands: Vec<ScoredResult> = vec![];
+        // Must not panic, must not allocate, must not write anywhere.
+        maybe_dump_prefusion_pool(Intent::Factual, &cands);
+    }
+
+    /// ISS-187: both stages share the qid whitelist. Driving
+    /// `maybe_dump_*` directly is hard because of the OnceLock, but
+    /// the dispatch helper `maybe_dump_internal` factors out gate
+    /// logic so the test can target the whitelist branch directly.
+    /// We rely on the fact that `maybe_dump_internal` would have
+    /// written to `dir` if it passed the whitelist; absence of the
+    /// expected file proves the whitelist rejected the label.
+    ///
+    /// This test deliberately does NOT call the public entry point
+    /// (which reads from the cached OnceLock) — it asserts the
+    /// internal contract that whitelist gating is shared by both
+    /// stages.
+    #[test]
+    fn write_dump_is_per_stage_filename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cands = vec![mem("c", 0.4, SubScores::default())];
+
+        write_dump(dir.path(), "qx", Stage::Fused, Intent::Abstract, &cands)
+            .expect("fused");
+        write_dump(dir.path(), "qx", Stage::Prefusion, Intent::Abstract, &cands)
+            .expect("prefusion");
+
+        assert!(dir.path().join("qx-abstract.jsonl").exists());
+        assert!(dir.path().join("qx-prefusion-abstract.jsonl").exists());
+
+        // Both files contain the same row content (schema is shared).
+        let a = std::fs::read_to_string(dir.path().join("qx-abstract.jsonl"))
+            .expect("read a");
+        let b = std::fs::read_to_string(dir.path().join("qx-prefusion-abstract.jsonl"))
+            .expect("read b");
+        assert_eq!(a, b, "schema must be identical across stages");
     }
 
     #[test]

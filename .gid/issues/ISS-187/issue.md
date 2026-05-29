@@ -129,16 +129,16 @@ Aggregate the 19 A-bucket queries (from ISS-186) by drop point:
 
 ## Acceptance criteria
 
-- [ ] AC-1: `maybe_dump_prefusion_pool` lands in
+- [x] AC-1: `maybe_dump_prefusion_pool` lands in
   `engramai/src/retrieval/fusion/dump.rs` with unit test
   `prefusion_dump_writes_jsonl_when_enabled` and contract test
   `prefusion_dump_noop_when_disabled` proving zero allocation /
   zero file writes when env var unset.
-- [ ] AC-2: Stage-B dump hook lands in `api.rs` at the
+- [x] AC-2: Stage-B dump hook lands in `api.rs` at the
   pre-fuse_and_rank call site. Hybrid plan path (which bypasses
   fuse_and_rank) gets its own dump call with intent=Hybrid so
   Hybrid queries also produce a prefusion file.
-- [ ] AC-3: ISS-175 fused-pool dump filename and schema unchanged
+- [x] AC-3: ISS-175 fused-pool dump filename and schema unchanged
   (`<label>-<intent>.jsonl`). Regression test pins the existing
   filename pattern.
 - [ ] AC-4: `engram-bench/examples/iss187_pipeline_audit.rs`

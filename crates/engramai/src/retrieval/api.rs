@@ -854,6 +854,16 @@ impl Memory {
         if let Some(enabled) = factual_reweight_override {
             cfg.factual_reweight = enabled;
         }
+
+        // ISS-187 — Stage-B (pre-fusion) candidate-survival dump.
+        // Env-gated and no-op when disabled (fast path: single
+        // OnceCell read). Fires for **every** plan_kind including
+        // Hybrid — Hybrid skips `fuse_and_rank` but still goes
+        // through fusion in spirit (RRF), and we want to see its
+        // raw post-channel candidates too. Borrow only; ownership
+        // of `candidates` flows into the match arm below unchanged.
+        crate::retrieval::fusion::dump::maybe_dump_prefusion_pool(intent, &candidates);
+
         let mut ranked = match plan_kind {
             crate::retrieval::dispatch::PlanKind::Hybrid => candidates,
             _ => crate::retrieval::fusion::fuse_and_rank(intent, &cfg, candidates),
