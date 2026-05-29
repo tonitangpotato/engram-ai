@@ -58,7 +58,34 @@ metadata.engram.dimensions.temporal = {"kind":"vague","value":"3 years (duration
 - But **nothing combined them.** `content` carries no absolute year; the
   duration sits inert in metadata.
 
-### 2. The grounding path uses two_timer (a rule library) — and it can't parse durations
+### 2. String → TemporalMark is pure format-recognition — it never *derives*
+
+`dimensions.rs:434` turns the extractor's `temporal` string into a typed
+`TemporalMark` via `enriched::parse_temporal_mark` (`enriched.rs:454`):
+
+```rust
+pub fn parse_temporal_mark(s: &str) -> TemporalMark {
+    // RFC3339?  -> Exact
+    // YYYY-MM-DDTHH:MM:SS?  -> Exact
+    // YYYY-MM-DD?  -> Day
+    TemporalMark::Vague(s.to_string())   // everything else
+}
+```
+
+This function **only recognizes already-absolute date formats.** Any natural
+language — "yesterday", "last summer", **"3 years (duration)"** — falls
+straight through to `Vague(s)`, stored verbatim with **zero derivation**.
+It is not given the reference date and does no arithmetic. So q29's value
+becomes `Vague("3 years (duration)")` and stops there.
+
+This is the structurally-missing link: there is no stage in the pipeline that
+holds *natural-language time expression* + *reference date* + *derivation
+ability* at the same time. `parse_temporal_mark` has the string but is a
+format parser (no reference, no derivation); the extractor LLM has language
+understanding but no reference date (§3); two_timer has the reference but no
+open-set language ability (below). Each stage is missing one of the three.
+
+### 3. The Vague → TimeRange path uses two_timer (a rule library) — and it can't parse durations
 
 `temporal_grounding.rs` (ISS-088) rewrites resolved relative-time phrases
 inline so content carries absolute anchors. It detects phrases with a
@@ -86,7 +113,7 @@ Two findings:
   re-validation → the regex branch is effectively dead. A
   **regex/parser capability mismatch** internal bug, independent of q29.
 
-### 3. The deeper root: the extractor LLM is never given the reference date
+### 4. The deeper root: the extractor LLM is never given the reference date
 
 `extractor.rs:561` / `:731`:
 
@@ -121,6 +148,23 @@ pipeline** (the extractor). It is simply being denied the one input
 
 ## Root fix: reference-date-aware LLM temporal derivation at extraction time
 
+### First-principles framing
+
+The real defect is **not** "two_timer is too weak." It is that we used the
+wrong time *model*: we compressed structured time (point / interval /
+duration) into a single待解析 string, then asked a rule library to parse an
+open set. Temporal expression is open-ended ("3 years", "a couple years
+back", "since college", "过年那会儿"); enumerated regex/rules can never cover
+it — that is the patch treadmill SOUL.md's root-fix rule forbids.
+
+The pipeline splits the capability into three stages, each missing one
+ingredient (see evidence §2): the extractor LLM has language understanding
+but no reference date; `parse_temporal_mark` has neither (pure format match);
+two_timer has the reference but no open-set language ability. **The fix is to
+put all three in one place** — the extractor LLM call, which already runs and
+is the only component that can handle an open set — by giving it the
+reference date it is currently denied.
+
 Resolve relative/duration expressions to absolute dates **where the semantic
 understanding and the reference date are both available** — inside the
 extractor LLM call, at storage time. This matches engram's existing ISS-088
@@ -143,9 +187,45 @@ answer prompt would be measuring prompt engineering, not engram. Therefore
 the derivation must happen at **store time**, so any agent that recalls the
 memory gets the absolute date for free.
 
-(Note: the mem0 ANSWER_PROMPT evidence is first-hand from its open-source
-eval repo. A Zep/Graphiti comparison is NOT yet verified — its paper PDF
-didn't extract cleanly; do not cite Zep's approach until its source is read.)
+### What Zep/Graphiti does (first-hand, confirms this approach)
+
+Verified from Graphiti's `graphiti_core/prompts/extract_edges.py` (Apache-2.0,
+read this session):
+
+- Injects `reference_time` (ISO 8601 UTC) into the extraction prompt —
+  *"used to resolve relative time mentions"*.
+- Instructs the LLM to resolve vague/relative expressions itself —
+  *"Use REFERENCE_TIME to resolve vague or relative temporal expressions
+  (e.g. 'last week')"*. **No rule library at all.**
+- LLM outputs structured absolute time: `valid_at` / `invalid_at` as ISO 8601
+  (bi-temporal), with explicit DATETIME RULES ("if only a year is mentioned,
+  use January 1st"; ongoing facts → episode timestamp).
+- Prefers the per-episode timestamp; `reference_time` is a fallback.
+- Anti-hallucination guard: *"Leave both fields null if no explicit or
+  resolvable time is stated."*
+
+So two independent first-hand sources (mem0 answer-time, Zep extraction-time)
+both use an LLM + reference date for temporal resolution. Our store-time
+choice aligns with Zep, which is the system that treats temporality as a core
+product concern.
+
+### Where we DIVERGE from Zep (deliberately): keep the uncertainty
+
+Zep forces every resolved time into a precise ISO 8601 timestamp
+(`valid_at: 2020-01-01T00:00:00Z`). For an inherently vague input like
+"owned for 3 years" that is **lying with a precise type** — dressing "~2020"
+up as midnight Jan 1. engram is a *memory* substrate; vagueness is a real
+property of memory ("I think I got the dogs about three years ago" *is*
+fuzzy), and忠实保留模糊性 is the honest thing to do (SOUL.md: 不要简化问题).
+
+Therefore engram's temporal dimension should carry an **uncertainty-preserving
+structured value** — e.g. `{kind: interval, start: "~2020" (year-granular,
+uncertain), end: ongoing, reference: 2023-03-27, raw: "3 years"}` — rather
+than a fake-precise instant. This is the one place we are *more* correct than
+Zep, not just copying it.
+
+(mem0 ANSWER_PROMPT evidence is first-hand from its open-source eval repo;
+Zep evidence is first-hand from `extract_edges.py`.)
 
 ### Implementation sketch
 
@@ -158,9 +238,12 @@ didn't extract cleanly; do not cite Zep's approach until its source is read.)
    time expression to an absolute date/year based on this reference (e.g.
    'owned for 3 years' on 2023-03-27 → started ~2020). If no time reference
    is present, omit the temporal field — do NOT fabricate a date."*
-3. **Output absolute + raw.** Have the temporal dimension carry the derived
-   absolute value alongside the original phrase, so content/anchors are
-   self-contained while the original wording is preserved for audit.
+3. **Output an uncertainty-preserving structured value.** Have the temporal
+   dimension carry the derived absolute value *with its granularity and
+   uncertainty* (e.g. year-granular `~2020`, `ongoing` end) alongside the
+   original phrase (`raw`), so content/anchors are self-contained and the
+   original wording is preserved for audit. Do NOT coerce vague inputs into
+   fake-precise instants (the Zep divergence above).
 4. **Demote two_timer to fallback** for the simple deixis it already handles
    ("yesterday"); it is no longer the primary path. Open-set understanding
    moves to the LLM.
@@ -200,20 +283,35 @@ didn't extract cleanly; do not cite Zep's approach until its source is read.)
 ## Risk / scope
 
 - Touches the extraction prompt + `Extractor::extract` signature + ingest
-  wiring + temporal-grounding fallback demotion. Blast radius is the
-  extraction path; retrieval/schema untouched.
+  wiring + the String→TemporalMark path + temporal-grounding fallback
+  demotion. Blast radius is the extraction/dimension path; retrieval/schema
+  largely untouched.
+- **Design-phase must-verify (schema reach):** can the existing
+  `TemporalMark` (Exact/Range/Day/Vague) + `TimeRange` represent
+  "~2020, ongoing, uncertain, year-granular"? Almost certainly NOT — `Range`
+  needs two bounds and an open/ongoing end + an uncertainty marker has no
+  home today. If the existing types can't carry it, split the
+  **uncertainty-preserving structured temporal value** into a follow-up
+  **ISS-191** (schema + metadata version bump + `temporal_score` interval
+  support), and let ISS-190 land the minimal viable form first (inject
+  reference + LLM derives a best-effort absolute year into the existing
+  `Day`/`Range`) to capture q29's score without the full schema change.
 - Changing the extraction prompt re-touches the same surface as ISS-161 L3
   (extractor prompt experiments) — coordinate so the two don't fight.
-- The temporal-dimension shape change (absolute + raw) may need a metadata
-  version bump; check `metadata.engram.version` handling.
+- **NOT in scope:** unifying bi-temporal between the memory layer and the
+  graph-edge layer (`valid_from`/`valid_to` already exist on edges). That is
+  an architecture-level decision; file separately, do not let temporal
+  derivation balloon into a substrate refactor (karpathy guideline).
 
 ## Evidence artifacts
 
 - `examples/probe_twotimer.rs` — two_timer all-Err probe (this session)
+- `enriched.rs:454` (`parse_temporal_mark`) — format-only, no derivation
 - substrate row `597d12e7` (`.tmpOaiaHe/substrate.db`) — split-time evidence
 - `extractor.rs:561` / `:731` — prompt lacks reference
 - `locomo.rs:1053` — per-episode `occurred_at` exists at ingest
 - mem0 eval `ANSWER_PROMPT` (answer-time conversion, first-hand)
+- Graphiti `extract_edges.py` (extraction-time LLM + reference_time, first-hand)
 - Run `ISS189-fix-conv44-20260529T131853Z` — q29 prediction + 0.2439 overall
 
 ## Related
