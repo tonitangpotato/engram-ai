@@ -44,7 +44,15 @@ pub struct GroundingResult {
 /// Pattern groups:
 /// - single-word: yesterday, today, tomorrow
 /// - "<last|this|next> <week|month|year>"
-/// - "N (days|weeks|months|years) ago"
+/// - "N (days|weeks) ago"
+///
+/// ISS-190: the `months`/`years` arms were REMOVED. `two_timer` cannot
+/// resolve "N months ago" / "N years ago" (it returns Err), so the regex
+/// matched them only for `parse_dimension_time` to reject them — a silent
+/// dead branch. Multi-month/year durations are now resolved at extraction
+/// time by the reference-date-aware LLM (see `extractor::reference_preamble`),
+/// not by this rule library. `two_timer` stays a fallback for the short-range
+/// deixis it *can* handle.
 fn phrase_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -55,7 +63,7 @@ fn phrase_regex() -> &'static Regex {
               | today
               | tomorrow
               | (?:last|this|next)\s+(?:week|month|year)
-              | \d+\s+(?:days?|weeks?|months?|years?)\s+ago
+              | \d+\s+(?:days?|weeks?)\s+ago
             )\b
             ",
         )
@@ -194,6 +202,31 @@ mod tests {
 
     fn ts(y: i32, m: u32, d: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, m, d, 10, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn iss190_regex_no_longer_matches_unresolvable_month_year_durations() {
+        // AC-4: the dead `months?|years?` regex arms are removed. two_timer
+        // cannot resolve these, so matching them only produced silent skips.
+        // Multi-month/year derivation now happens in the extractor LLM.
+        let re = phrase_regex();
+        assert!(!re.is_match("owned for 3 years ago"), "years-ago must not match");
+        assert!(!re.is_match("2 months ago"), "months-ago must not match");
+        // The short-range deixis two_timer CAN handle is still matched.
+        assert!(re.is_match("3 days ago"), "days-ago must still match");
+        assert!(re.is_match("2 weeks ago"), "weeks-ago must still match");
+        assert!(re.is_match("yesterday"), "yesterday must still match");
+    }
+
+    #[test]
+    fn iss190_year_duration_field_is_left_untouched() {
+        // The exact q29 topology: a year-scale duration in the field must NOT
+        // be ground here (the LLM owns it now) — and must NOT be silently
+        // half-processed. ground_field returns false (no rewrite).
+        let mut field = String::from("owned for 3 years");
+        let changed = ground_field(&mut field, ts(2023, 3, 27));
+        assert!(!changed, "year-scale duration must not be touched by grounding");
+        assert_eq!(field, "owned for 3 years", "field must be unchanged");
     }
 
     #[test]
