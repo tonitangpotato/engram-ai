@@ -4735,6 +4735,47 @@ impl Memory {
         Ok(memory_scores)
     }
     
+    /// Compute the memory's temporal extent `[start, end]` for interval
+    /// scoring (ISS-191 AC-3).
+    ///
+    /// Prefers the store-time-derived [`TemporalMark`](crate::dimensions::TemporalMark)
+    /// when it represents an interval:
+    ///   - `Approx { start, end, .. }` → `[start, end]`; an open end
+    ///     (`None`, "ongoing") clamps to `event_time()` (the latest point we
+    ///     can justify) so an ongoing mark never matches the far future.
+    ///   - `Range { start, end }` → `[start, end]`.
+    ///   - `Day(d)` → the single day `[d 00:00, d 00:00]`.
+    /// `Exact`/`Vague`/absent → a single point at `event_time()` (byte-identical
+    /// to pre-AC-3 behavior). Dates are anchored at UTC midnight.
+    fn memory_temporal_extent(
+        record: &MemoryRecord,
+    ) -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
+        use crate::dimensions::TemporalMark;
+        use chrono::TimeZone;
+        let point = record.event_time();
+        let at_midnight = |d: chrono::NaiveDate| -> chrono::DateTime<chrono::Utc> {
+            chrono::Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
+        };
+        match record.derived_temporal_mark() {
+            Some(TemporalMark::Approx { start, end, .. }) => {
+                let s = at_midnight(start);
+                // Open-ended → clamp the right bound to the event time so an
+                // "ongoing since ~2020" mark spans [2020, now-ish], not forever.
+                let e = end.map(at_midnight).unwrap_or_else(|| s.max(point));
+                (s.min(e), s.max(e))
+            }
+            Some(TemporalMark::Range { start, end }) => {
+                (at_midnight(start), at_midnight(end))
+            }
+            Some(TemporalMark::Day(d)) => {
+                let dt = at_midnight(d);
+                (dt, dt)
+            }
+            // Exact / Vague / none → a single point (no interval widening).
+            _ => (point, point),
+        }
+    }
+
     /// Temporal channel scoring for C7 Multi-Retrieval Fusion.
     ///
     /// When a time range is detected in the query, memories within that range
@@ -4756,21 +4797,40 @@ impl Memory {
                 // ingested in 2026) would never match a query about 2023
                 // because `created_at` is now wall-clock. Falls back to
                 // `created_at` when `occurred_at` is None.
-                let event_time = record.event_time();
-                if event_time >= range.start && event_time <= range.end {
-                    // Within range: score by proximity to center of range
+                //
+                // ISS-191 AC-3: when the memory carries a store-time-derived
+                // *interval* mark (`Approx`/`Range`/`Day`), score by interval
+                // overlap with the query range instead of a single point. This
+                // lets a "2020" query match a memory whose derived temporal is
+                // `~2020` even though its `occurred_at` (ingest-derived) is a
+                // later date. Memories with no interval mark keep the exact
+                // point behavior (byte-identical to pre-AC-3).
+                let (m_start, m_end) = Self::memory_temporal_extent(record);
+                // Overlap test: intervals [m_start, m_end] and [range.start,
+                // range.end] intersect iff each starts no later than the other
+                // ends. A point (m_start == m_end) reduces to the old check.
+                if m_start <= range.end && m_end >= range.start {
+                    // Score by proximity of the memory-interval *center* to the
+                    // query-range center — same curve as before, now using the
+                    // interval midpoint so an approximate year scores by where
+                    // it sits, not its raw ingest timestamp.
+                    let event_time = m_start + (m_end - m_start) / 2;
                     let range_duration = (range.end - range.start).num_seconds() as f64;
                     let range_center = range.start + (range.end - range.start) / 2;
                     let distance = (event_time - range_center).num_seconds().abs() as f64;
                     let half_range = range_duration / 2.0;
                     if half_range > 0.0 {
-                        // 1.0 at center, 0.5 at edges
-                        1.0 - (distance / half_range) * 0.5
+                        // 1.0 at center, clamped at 0.5 floor for in-range hits
+                        // (matches pre-AC-3: edges scored 0.5). An interval
+                        // whose center sits outside the query range but still
+                        // overlaps stays in [0.5, 1.0] rather than going
+                        // negative.
+                        (1.0 - (distance / half_range) * 0.5).max(0.5)
                     } else {
                         1.0
                     }
                 } else {
-                    0.0 // Outside range
+                    0.0 // No overlap
                 }
             }
             None => {
@@ -8176,6 +8236,83 @@ mod confidence_tests {
         // Should be in neutral range (0.25-0.75)
         assert!(score >= 0.25 && score <= 0.75,
             "No range: score should be neutral-ish: {}", score);
+    }
+
+    /// Attach a v2 metadata blob carrying the given derived TemporalMark so
+    /// `record.derived_temporal_mark()` (and thus `memory_temporal_extent`)
+    /// reads it back through the canonical path.
+    fn record_with_temporal(
+        id: &str,
+        occurred_at: chrono::DateTime<Utc>,
+        mark: crate::dimensions::TemporalMark,
+    ) -> MemoryRecord {
+        let mut dims = crate::dimensions::Dimensions::minimal("content").unwrap();
+        dims.temporal = Some(mark);
+        let metadata = serde_json::json!({
+            "engram": { "dimensions": serde_json::to_value(&dims).unwrap() }
+        });
+        let mut rec = make_test_record(id, "content", Utc::now());
+        rec.occurred_at = Some(occurred_at);
+        rec.metadata = Some(metadata);
+        rec
+    }
+
+    #[test]
+    fn test_temporal_score_approx_interval_matches_year_query() {
+        // ISS-191 AC-3: a memory whose ingest-derived event time is 2023 but
+        // whose store-time-derived mark is ~2020 must match a "2020" query
+        // range via interval overlap — the raw point alone would miss it.
+        use crate::dimensions::TemporalMark;
+        use crate::query_classifier::TimeRange;
+        use chrono::TimeZone;
+
+        let q_start = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
+        let q_end = Utc.with_ymd_and_hms(2020, 12, 31, 0, 0, 0).unwrap();
+        let range = Some(TimeRange { start: q_start, end: q_end });
+
+        let occurred_2023 = Utc.with_ymd_and_hms(2023, 3, 27, 0, 0, 0).unwrap();
+        let approx_2020 = TemporalMark::Approx {
+            start: chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            end: Some(chrono::NaiveDate::from_ymd_opt(2020, 12, 31).unwrap()),
+            approximate: true,
+            note: Some("owned for 3 years as of 2023-03-27".to_string()),
+        };
+
+        // With the derived ~2020 mark → in-range hit.
+        let with_mark = record_with_temporal("ac3-hit", occurred_2023, approx_2020);
+        let score = Memory::temporal_score(&with_mark, &range, Utc::now());
+        assert!(score >= 0.5, "approx ~2020 should match 2020 query: {score}");
+
+        // Same 2023 event time, NO derived mark → point is outside 2020 range.
+        let mut without = make_test_record("ac3-miss", "content", Utc::now());
+        without.occurred_at = Some(occurred_2023);
+        let miss = Memory::temporal_score(&without, &range, Utc::now());
+        assert!(miss < 0.01, "no mark, 2023 point should miss 2020 query: {miss}");
+    }
+
+    #[test]
+    fn test_temporal_score_approx_ongoing_spans_to_event_time() {
+        // An open-ended (ongoing) Approx clamps its right bound to event_time,
+        // so "~2020 ongoing" with a 2023 event time overlaps a 2022 query.
+        use crate::dimensions::TemporalMark;
+        use crate::query_classifier::TimeRange;
+        use chrono::TimeZone;
+
+        let occurred_2023 = Utc.with_ymd_and_hms(2023, 3, 27, 0, 0, 0).unwrap();
+        let ongoing = TemporalMark::Approx {
+            start: chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            end: None,
+            approximate: true,
+            note: None,
+        };
+        let rec = record_with_temporal("ac3-ongoing", occurred_2023, ongoing);
+
+        let range = Some(TimeRange {
+            start: Utc.with_ymd_and_hms(2022, 1, 1, 0, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2022, 12, 31, 0, 0, 0).unwrap(),
+        });
+        let score = Memory::temporal_score(&rec, &range, Utc::now());
+        assert!(score >= 0.5, "ongoing 2020→2023 should overlap 2022: {score}");
     }
 
     #[test]
