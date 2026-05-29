@@ -2426,6 +2426,7 @@ impl MemoryExtractor for PrecomputedExtractor {
     fn extract(
         &self,
         _text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Vec<crate::extractor::ExtractedFact>, Box<dyn std::error::Error + Send + Sync>> {
         let result = self.0.lock().unwrap().take()
             .expect("PrecomputedExtractor::extract called more than once");
@@ -3398,7 +3399,7 @@ impl Memory {
 
         // Path A: extractor present.
         if let Some(ref extractor) = self.extractor {
-            match extractor.extract(content) {
+            match extractor.extract(content, meta.occurred_at) {
                 Ok(facts) if facts.is_empty() => {
                     // ISS-068: the extractor produced zero facts, but
                     // we still admit the raw content into memory so
@@ -4152,7 +4153,7 @@ impl Memory {
             // Re-run extractor. (Safe unwrap — guarded by the None-check
             // at the top of the function.)
             let extractor = self.extractor.as_ref().unwrap();
-            let facts_result = extractor.extract(&record.content);
+            let facts_result = extractor.extract(&record.content, record.occurred_at);
 
             match facts_result {
                 Ok(facts) if facts.is_empty() => {

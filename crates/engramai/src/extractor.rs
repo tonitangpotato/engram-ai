@@ -4,6 +4,7 @@
 //! that preserves backward compatibility — if no extractor is set,
 //! memories are stored as-is.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::error::Error;
 use std::time::Duration;
@@ -369,9 +370,45 @@ fn default_domain() -> String {
 pub trait MemoryExtractor: Send + Sync {
     /// Extract key facts from raw conversation text.
     ///
+    /// `reference` is the wall-clock time the episode occurred (when known).
+    /// Implementations that call an LLM MUST inject it into the prompt so the
+    /// model can resolve relative / duration time expressions to absolute
+    /// dates at store time (ISS-190). When `None`, no reference is available
+    /// and relative expressions are left unresolved.
+    ///
     /// Returns empty vec if nothing worth remembering.
     /// Returns an error if the extraction fails (network, parsing, etc.).
-    fn extract(&self, text: &str) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>>;
+    fn extract(
+        &self,
+        text: &str,
+        reference: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>>;
+}
+
+/// Build the per-episode reference-date preamble injected ahead of the
+/// conversation text (ISS-190). Returns an empty string when no reference is
+/// known, so the prompt is byte-identical to the pre-ISS-190 behaviour for
+/// callers that don't supply an `occurred_at`.
+///
+/// When a reference IS supplied, the model is told to resolve every relative /
+/// duration time expression to an absolute date (preserving uncertainty —
+/// "owned for 3 years" on 2023-03-27 → "~2020", year-granular) and to OMIT the
+/// temporal field rather than fabricate one when no time cue exists.
+fn reference_preamble(reference: Option<DateTime<Utc>>) -> String {
+    match reference {
+        Some(r) => format!(
+            "This episode occurred on {}. When filling the temporal field, \
+resolve every relative or duration time expression to an absolute date or \
+year based on this reference (e.g. \"owned for 3 years\" stated on 2023-03-27 \
+→ \"~2020\"; \"two months ago\" → the resulting month/year). Preserve \
+uncertainty — keep approximate markers like \"~\", \"around\", or year-only \
+granularity when the source is vague; do NOT invent a fake-precise day or \
+time. If the text contains no time reference at all, OMIT the temporal field \
+entirely — do NOT fabricate one.\n\n",
+            r.format("%Y-%m-%d")
+        ),
+        None => String::new(),
+    }
 }
 
 /// The extraction prompt template (dimensional format).
@@ -415,7 +452,7 @@ Respond with ONLY valid JSON (no markdown, no explanation):
   {
     "core_fact": "What happened — the essential fact (REQUIRED)",
     "participants": "Who was involved — extract EVERY named person/agent/entity. Required if ANY person/agent is named anywhere in the text or in core_fact itself. Do NOT skip just because the name already appears in core_fact — still list it here. Only omit when truly nobody is named.",
-    "temporal": "When it happened — extract ANY time reference from FOUR sources: (1) absolute (2026-04-22, Monday, 3pm), (2) relative (yesterday, last week, just now, last year, next month), (3) duration (for 2 hours, 5 years), (4) GRAMMATICAL ASPECT that implies time: progressive ('is running', 'is planning' → 'ongoing'), future ('will', 'plans to', 'gonna' → 'future/planned'), perfect ('got married', 'has decided' → 'past/completed'), habitual ('every day', 'daily' → 'recurring'). Required if ANY time cue exists — including grammatical aspect alone. Only omit for pure stative descriptions with no time dimension (e.g. 'X is tall', 'Y is blue').",
+    "temporal": "When it happened — extract ANY time reference from FOUR sources: (1) absolute (2026-04-22, Monday, 3pm), (2) relative (yesterday, last week, just now, last year, next month), (3) duration (for 2 hours, 5 years), (4) GRAMMATICAL ASPECT that implies time: progressive ('is running', 'is planning' → 'ongoing'), future ('will', 'plans to', 'gonna' → 'future/planned'), perfect ('got married', 'has decided' → 'past/completed'), habitual ('every day', 'daily' → 'recurring'). When a reference date is supplied above, RESOLVE relative/duration expressions to the absolute date or year they denote (preserving uncertainty — keep '~' / year-only granularity for vague sources). Required if ANY time cue exists — including grammatical aspect alone. Only omit for pure stative descriptions with no time dimension (e.g. 'X is tall', 'Y is blue').",
     "location": "Where / in what context (omit if not mentioned)",
     "context": "Background / surrounding situation (omit if not relevant)",
     "causation": "Why it happened / motivation / trigger / purpose — extract if the text contains ANY of FOUR cue types: (A) Explicit connectors: because, since, due to, so, so that, in order to, 因为, 所以, 为了, triggered by, caused by, required for, leads to, results in. (B) Structural causation verbs where subject-verb-object expresses cause→effect: necessitates, penalizes, forces, enables, prevents, blocks, helps, encouraged, gave courage to, inspired, motivates, drives, 'lacks X needs Y', 'failure modes include X', 'X is needed for Y'. (C) Implicit reason clauses: 'X is lowest-risk because Y', 'X performs worse under Y', 'X is the chosen approach for Y reason'. (D) PURPOSE / GOAL / MOTIVATION — this is the MOST COMMON form in everyday conversation, do not miss it: 'X to Y' (infinitive of purpose: 'plans to continue education to explore careers' → causation = 'to explore careers'), 'X's goal is Y' → causation = Y, 'interested in X to Y' → causation = Y, 'values X as a source of motivation' → causation = 'X is source of motivation', 'finds motivation from X' → causation = X, 'pursuing X to support Y' → causation = 'to support Y', 'gained courage to X' → causation = led to X. Required if any cue exists. Only omit when the fact is purely descriptive with no why/purpose/motivation/enablement.",
@@ -441,7 +478,6 @@ Field notes:
 - domain (REQUIRED): coding | trading | research | communication | general
 - All other fields: include if information is present in the text OR in core_fact. Structural fields (participants, temporal, causation) MUST be filled when relevant information exists — do not skip them just because the info is already captured in core_fact. Fields are extraction of dimensions, not deduplication.
 
-Conversation:
 "#;
 
 /// Configuration for Anthropic-based extraction.
@@ -557,8 +593,17 @@ impl AnthropicExtractor {
 }
 
 impl MemoryExtractor for AnthropicExtractor {
-    fn extract(&self, text: &str) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
-        let prompt = format!("{}{}", EXTRACTION_PROMPT, text);
+    fn extract(
+        &self,
+        text: &str,
+        reference: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
+        let prompt = format!(
+            "{}{}Conversation:\n{}",
+            EXTRACTION_PROMPT,
+            reference_preamble(reference),
+            text
+        );
         
         let body = serde_json::json!({
             "model": self.config.model,
@@ -727,8 +772,17 @@ impl OllamaExtractor {
 }
 
 impl MemoryExtractor for OllamaExtractor {
-    fn extract(&self, text: &str) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
-        let prompt = format!("{}{}", EXTRACTION_PROMPT, text);
+    fn extract(
+        &self,
+        text: &str,
+        reference: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
+        let prompt = format!(
+            "{}{}Conversation:\n{}",
+            EXTRACTION_PROMPT,
+            reference_preamble(reference),
+            text
+        );
         
         let body = serde_json::json!({
             "model": self.config.model,
@@ -924,7 +978,53 @@ fn parse_extraction_response(content: &str) -> Result<Vec<ExtractedFact>, Box<dy
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
+    #[test]
+    fn iss190_reference_preamble_resolves_relative_time() {
+        // q29 topology: episode states "owned for 3 years"; reference date
+        // 2023-03-27 → the preamble must carry the date AND instruct the LLM
+        // to resolve relative/duration expressions to an absolute year.
+        use chrono::TimeZone;
+        let reference = Utc.with_ymd_and_hms(2023, 3, 27, 0, 0, 0).unwrap();
+        let preamble = reference_preamble(Some(reference));
+
+        assert!(
+            preamble.contains("2023-03-27"),
+            "preamble must inject the reference date: {preamble}"
+        );
+        assert!(
+            preamble.contains("absolute"),
+            "preamble must instruct absolute resolution: {preamble}"
+        );
+        // Uncertainty preservation (deliberate divergence from Zep): the
+        // worked example keeps the approximate "~2020" marker.
+        assert!(
+            preamble.contains("~2020"),
+            "preamble must demonstrate uncertainty-preserving resolution: {preamble}"
+        );
+    }
+
+    #[test]
+    fn iss190_reference_preamble_absent_is_byte_identical_legacy() {
+        // Negative guard: no reference → empty preamble, so the assembled
+        // prompt is byte-identical to the pre-ISS-190 behaviour. This is the
+        // "do NOT fabricate" safety net for callers without an occurred_at.
+        assert_eq!(reference_preamble(None), "");
+    }
+
+    #[test]
+    fn iss190_reference_preamble_forbids_fabrication() {
+        // When a reference exists but the text has no time cue, the model
+        // must OMIT rather than invent a temporal value.
+        use chrono::TimeZone;
+        let reference = Utc.with_ymd_and_hms(2023, 3, 27, 0, 0, 0).unwrap();
+        let preamble = reference_preamble(Some(reference));
+        assert!(
+            preamble.contains("OMIT") && preamble.contains("fabricate"),
+            "preamble must forbid fabrication when no time cue exists: {preamble}"
+        );
+    }
+
     #[test]
     fn test_parse_new_dimensional_format() {
         let response = r#"{"memories": [{"core_fact": "User prefers tea over coffee", "stance": "prefers tea", "importance": 0.6, "tags": ["preference"], "confidence": "confident", "valence": 0.1, "domain": "general"}]}"#;
@@ -1177,7 +1277,7 @@ Hope this helps!"#;
     #[ignore] // Requires Ollama running locally
     fn test_ollama_extraction() {
         let extractor = OllamaExtractor::new("llama3.2:3b");
-        let facts = extractor.extract("I really love pizza, especially pepperoni. My favorite restaurant is Mario's.").unwrap();
+        let facts = extractor.extract("I really love pizza, especially pepperoni. My favorite restaurant is Mario's.", None).unwrap();
         println!("Extracted facts: {:?}", facts);
     }
     
@@ -1186,7 +1286,7 @@ Hope this helps!"#;
     fn test_anthropic_extraction() {
         let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY not set");
         let extractor = AnthropicExtractor::new(&api_key, false);
-        let facts = extractor.extract("我昨天和小明一起去吃了火锅，很好吃。小明说他下周要去上海出差。").unwrap();
+        let facts = extractor.extract("我昨天和小明一起去吃了火锅，很好吃。小明说他下周要去上海出差。", None).unwrap();
         println!("Extracted facts: {:?}", facts);
     }
 

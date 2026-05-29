@@ -48,14 +48,14 @@ type ExtractErr = Box<dyn StdError + Send + Sync>;
 
 struct EmptyExtractor;
 impl MemoryExtractor for EmptyExtractor {
-    fn extract(&self, _text: &str) -> Result<Vec<ExtractedFact>, ExtractErr> {
+    fn extract(&self, _text: &str, _reference: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExtractedFact>, ExtractErr> {
         Ok(vec![])
     }
 }
 
 struct ErrorExtractor;
 impl MemoryExtractor for ErrorExtractor {
-    fn extract(&self, _text: &str) -> Result<Vec<ExtractedFact>, ExtractErr> {
+    fn extract(&self, _text: &str, _reference: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExtractedFact>, ExtractErr> {
         Err("503 upstream timeout".into())
     }
 }
@@ -64,7 +64,7 @@ struct MultiFactExtractor {
     fact_count: usize,
 }
 impl MemoryExtractor for MultiFactExtractor {
-    fn extract(&self, _text: &str) -> Result<Vec<ExtractedFact>, ExtractErr> {
+    fn extract(&self, _text: &str, _reference: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExtractedFact>, ExtractErr> {
         let facts = (0..self.fact_count)
             .map(|i| ExtractedFact {
                 core_fact: format!("fact number {i}"),

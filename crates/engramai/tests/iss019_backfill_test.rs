@@ -51,6 +51,7 @@ impl MemoryExtractor for StubExtractor {
     fn extract(
         &self,
         text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n < self.fail_first_n {

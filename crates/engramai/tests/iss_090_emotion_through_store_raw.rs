@@ -34,6 +34,7 @@ impl MemoryExtractor for NeutralExtractor {
     fn extract(
         &self,
         text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
         let fact = ExtractedFact {
             core_fact: text.chars().take(80).collect(),
@@ -57,6 +58,7 @@ impl MemoryExtractor for OpinionatedExtractor {
     fn extract(
         &self,
         text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
         let fact = ExtractedFact {
             core_fact: text.chars().take(80).collect(),

@@ -29,6 +29,7 @@ impl MemoryExtractor for EchoExtractor {
     fn extract(
         &self,
         text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
         let fact = ExtractedFact {
             core_fact: text.chars().take(80).collect(),
@@ -49,6 +50,7 @@ impl MemoryExtractor for NoFactsExtractor {
     fn extract(
         &self,
         _text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
         Ok(vec![])
     }

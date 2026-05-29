@@ -186,7 +186,7 @@ impl ProgrammableExtractor {
 }
 
 impl MemoryExtractor for ProgrammableExtractor {
-    fn extract(&self, text: &str) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
+    fn extract(&self, text: &str, _reference: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n < self.fail_until {
             // Simulated extractor-level failure (transient).
