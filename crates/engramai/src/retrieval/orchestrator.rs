@@ -366,6 +366,37 @@ impl RecordLoader for HashMapLoader {
 /// `bm25_score` (ISS-147 — lexical channel, `Some(0.0)` for non-FTS
 /// hits per §5.1 missing-signal contract). Recency / actr / vector
 /// are `None` — Factual is a graph+text plan in v0.3 onwards.
+/// ISS-192 fix 3 — edge-seed privilege scoring (pure, no I/O).
+///
+/// Maps a candidate's anchor-breadth (`seen_via.len() / total_anchors`,
+/// already in `[0,1]`) into a graph_score that privileges candidates
+/// admitted by the edge-provenance seed — i.e. those carrying a typed
+/// graph edge that *asserts* the queried relationship — over pure
+/// co-mention breadth.
+///
+/// When `bonus == 0.0` the result is exactly `breadth` (inert: the
+/// edge-seeded flag is ignored, byte-identical to pre-fix behaviour).
+///
+/// When `bonus > 0.0` the `[0,1]` range is split into two bands:
+/// pure co-mentions map into `[0, 1-bonus]` and edge-seeded candidates
+/// into `[bonus, 1]`. This guarantees ANY edge-seeded candidate
+/// outscores ANY pure co-mention regardless of breadth, while still
+/// preserving relative ordering *within* each band. Removes/clamps
+/// nothing destructive — multi-hop bridges (co-mention based) keep their
+/// breadth ordering, they only lose the artificial advantage over an
+/// asserting edge.
+fn edge_seeded_graph_score(breadth: f64, edge_seeded: bool, bonus: f64) -> f64 {
+    if bonus <= 0.0 {
+        return breadth;
+    }
+    let scaled = breadth * (1.0 - bonus);
+    if edge_seeded {
+        scaled + bonus
+    } else {
+        scaled
+    }
+}
+
 pub(crate) fn factual_to_scored(
     result: &crate::retrieval::plans::factual::FactualPlanResult,
     loader: &dyn RecordLoader,
@@ -381,6 +412,16 @@ pub(crate) fn factual_to_scored(
     // but the plan guarantees ≥ 1 anchor at this point so it's purely
     // belt-and-suspenders.
     let total_anchors = result.anchors.len().max(1) as f64;
+
+    // ISS-192 fix 3 — edge-seed privilege weight. Read once per call from
+    // `ENGRAM_FACTUAL_EDGE_SEED_BONUS`. Default 0.0 = inert (graph_score is
+    // byte-identical to pre-fix breadth). Clamped to [0,1); a value of 1.0
+    // would zero out breadth signal entirely, so we cap just below.
+    let edge_seed_bonus = std::env::var("ENGRAM_FACTUAL_EDGE_SEED_BONUS")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0)
+        .clamp(0.0, 0.999);
 
     let ids: Vec<MemoryId> = result.memories.iter().map(|m| m.memory_id.clone()).collect();
     let records = loader.load_many(&ids);
@@ -398,7 +439,29 @@ pub(crate) fn factual_to_scored(
         .zip(records.into_iter())
         .filter_map(|(row, rec)| {
             let record = rec?; // drop missing rows silently
-            let graph_score = (row.seen_via.len() as f64) / total_anchors;
+            // ISS-192 fix 3 — edge-seed privilege.
+            //
+            // Pure breadth (`seen_via.len() / total_anchors`) treats a
+            // candidate reached via a typed graph edge that *asserts* the
+            // queried relationship identically to one that merely
+            // co-mentions the anchor in N episodes. On dense corpora a
+            // coincidental high-co-mention memory outranks the asserting
+            // edge's source episode, which is exactly how conv-26-q0's
+            // dated gold episode (seen via one PartOf edge) lost to
+            // undated co-mentions. This is breadth-dilution (Defect B).
+            //
+            // The fix is ADDITIVE and removes no candidates (multi-hop
+            // bridges, which are co-mention based, keep their breadth
+            // score — they only lose the artificial advantage over an
+            // asserting edge). We split the [0,1] graph_score range into
+            // two bands: pure co-mentions map into `[0, 1-w]` and
+            // edge-seeded candidates into `[w, 1]`, so ANY edge-seeded
+            // hit outscores ANY pure co-mention. `w` (the bonus weight)
+            // is read from `ENGRAM_FACTUAL_EDGE_SEED_BONUS`, default 0.0
+            // → byte-identical to pre-fix behaviour (inert until the A/B
+            // sets it).
+            let breadth = (row.seen_via.len() as f64) / total_anchors;
+            let graph_score = edge_seeded_graph_score(breadth, row.edge_seeded, edge_seed_bonus);
             // ISS-147 AC-3: Some(0.0) for FTS misses (NOT None) —
             // None triggers missing-signal renormalisation which
             // would defeat the lexical channel's contribution.
@@ -1799,6 +1862,7 @@ mod tests {
                     .take(*n_anchors_seen)
                     .copied()
                     .collect::<BTreeSet<_>>(),
+                edge_seeded: false,
             })
             .collect();
         f::FactualPlanResult {
@@ -1808,6 +1872,101 @@ mod tests {
             memories: mem_rows,
             outcome: f::FactualOutcome::Ok,
         }
+    }
+
+    // ISS-192 fix 3 helper: like `fake_factual_result` but each memory
+    // carries an explicit `edge_seeded` flag. (Currently the edge-seed
+    // scoring is unit-tested via the pure `edge_seeded_graph_score`
+    // helper; this builder is kept for any future integration-level test
+    // that needs a seeded FactualPlanResult.)
+    #[allow(dead_code)]
+    fn fake_factual_result_seeded(
+        anchors: usize,
+        memories: &[(&str, usize, bool)],
+    ) -> crate::retrieval::plans::factual::FactualPlanResult {
+        use crate::retrieval::plans::factual as f;
+        use std::collections::BTreeSet;
+        let anchor_ids: Vec<uuid::Uuid> = (0..anchors)
+            .map(|i| uuid::Uuid::from_u128(0x0a00_0000_0000_0000_0000_0000_0000_0000 + i as u128))
+            .collect();
+        let resolved: Vec<f::ResolvedAnchor> = anchor_ids
+            .iter()
+            .map(|id| f::ResolvedAnchor {
+                entity_id: *id,
+                canonical_name: format!("anchor-{id}"),
+                match_strength: 1.0,
+            })
+            .collect();
+        let mem_rows: Vec<f::FactualMemoryRow> = memories
+            .iter()
+            .map(|(mid, n_anchors_seen, edge_seeded)| f::FactualMemoryRow {
+                memory_id: mid.to_string(),
+                seen_via: anchor_ids
+                    .iter()
+                    .take(*n_anchors_seen)
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                edge_seeded: *edge_seeded,
+            })
+            .collect();
+        f::FactualPlanResult {
+            anchors: resolved,
+            edges: Vec::new(),
+            linked_entities: BTreeSet::new(),
+            memories: mem_rows,
+            outcome: f::FactualOutcome::Ok,
+        }
+    }
+
+    #[test]
+    fn iss192_edge_seed_bonus_zero_is_byte_identical_breadth() {
+        // bonus = 0.0 → edge_seeded flag is ignored, graph_score is pure
+        // breadth. An edge-seeded candidate with breadth 1/3 must NOT
+        // outrank a pure co-mention with breadth 3/3. Pure-function test:
+        // no env, no storage → parallel-safe.
+        let seed = edge_seeded_graph_score(1.0 / 3.0, true, 0.0);
+        let com = edge_seeded_graph_score(1.0, false, 0.0);
+        assert!((seed - 1.0 / 3.0).abs() < 1e-6);
+        assert!((com - 1.0).abs() < 1e-6);
+        assert!(com > seed, "with bonus=0, breadth wins (inert)");
+    }
+
+    #[test]
+    fn iss192_edge_seed_bonus_privileges_asserting_edge_over_breadth() {
+        // bonus = 0.5 → edge-seeded candidate (breadth 1/3) must outrank a
+        // pure co-mention with full breadth 3/3. This is the q0 fix: the
+        // asserting-edge source episode beats coincidental co-mention
+        // noise. Pure-function test → parallel-safe.
+        let seed = edge_seeded_graph_score(1.0 / 3.0, true, 0.5);
+        let com = edge_seeded_graph_score(1.0, false, 0.5);
+        // seed: (1/3)*(1-0.5) + 0.5 = 0.1667 + 0.5 = 0.6667.
+        // comention: (3/3)*(1-0.5) = 0.5.
+        assert!((seed - (1.0 / 3.0 * 0.5 + 0.5)).abs() < 1e-6);
+        assert!((com - 0.5).abs() < 1e-6);
+        assert!(
+            seed > com,
+            "edge-seeded asserting edge must beat full-breadth co-mention"
+        );
+    }
+
+    #[test]
+    fn iss192_edge_seed_preserves_ordering_within_bands() {
+        // Within the edge-seeded band, higher breadth still ranks higher;
+        // same for the co-mention band. And every seeded candidate beats
+        // every co-mention candidate.
+        let bonus = 0.5;
+        let seeded_lo = edge_seeded_graph_score(0.0, true, bonus); // 0.5
+        let seeded_hi = edge_seeded_graph_score(1.0, true, bonus); // 1.0
+        let com_lo = edge_seeded_graph_score(0.0, false, bonus); // 0.0
+        let com_hi = edge_seeded_graph_score(1.0, false, bonus); // 0.5
+        assert!(seeded_hi > seeded_lo, "breadth ordering within seeded band");
+        assert!(com_hi > com_lo, "breadth ordering within co-mention band");
+        // Boundary: the strongest co-mention (0.5) ties the weakest seeded
+        // (0.5) — acceptable; the privilege guarantees seeded ≥ co-mention,
+        // and any seeded with breadth>0 strictly wins.
+        assert!(seeded_lo >= com_hi, "weakest seeded ≥ strongest co-mention");
+        let seeded_any = edge_seeded_graph_score(0.01, true, bonus);
+        assert!(seeded_any > com_hi, "any positive-breadth seeded strictly wins");
     }
 
     #[test]

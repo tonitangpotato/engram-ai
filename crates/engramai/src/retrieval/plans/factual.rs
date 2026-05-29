@@ -260,10 +260,20 @@ pub struct FactualEdgeRow {
 /// memory. The orchestrator can use the cardinality as a "graph_score"
 /// signal in fusion (more anchors agreeing → stronger graph evidence).
 /// Sorted by `BTreeSet` so iteration order is deterministic.
+///
+/// `edge_seeded` is true when this memory was admitted to the candidate
+/// pool by the ISS-189 D1 edge-provenance seed — i.e. it is the source
+/// episode of a *typed graph edge* that asserts the queried relationship,
+/// not merely a coincidental co-mention surfaced by the recency scan.
+/// ISS-192 fix 3 uses this to give edge-seeded candidates a numerator
+/// privilege in `graph_score`: an asserting edge is categorically stronger
+/// evidence than breadth of co-mention. A memory can be both edge-seeded
+/// AND co-mentioned; the flag is true if it was edge-seeded at all.
 #[derive(Debug, Clone)]
 pub struct FactualMemoryRow {
     pub memory_id: MemoryId,
     pub seen_via: BTreeSet<Uuid>,
+    pub edge_seeded: bool,
 }
 
 /// Outcome surface for the Factual plan — design §6.4 mapping.
@@ -583,6 +593,15 @@ impl FactualPlan {
             }
         }
 
+        // ISS-192 fix 3 — remember WHICH memories the edge-provenance seed
+        // admitted. These carry a typed graph edge that asserts the queried
+        // relationship, so `factual_to_scored` can give them a graph_score
+        // numerator privilege over coincidental co-mentions (which the
+        // recency scan below adds with equal per-anchor weight). Captured
+        // here, before the recency scan mutates `memories`, so it reflects
+        // only edge provenance.
+        let edge_seeded_ids: BTreeSet<MemoryId> = memories.keys().cloned().collect();
+
         // ISS-189 logging — how many candidates the edge-provenance seed
         // contributed before the recency scan runs. If this is 0 on a
         // query whose answer lives on a traversed edge, the seed source
@@ -657,7 +676,7 @@ impl FactualPlan {
                     anchors,
                     edges,
                     linked_entities,
-                    memories: memories_into_rows(memories),
+                    memories: memories_into_rows(memories, &edge_seeded_ids),
                     outcome: FactualOutcome::Cutoff,
                 });
             }
@@ -676,14 +695,14 @@ impl FactualPlan {
                     anchors,
                     edges,
                     linked_entities,
-                    memories: memories_into_rows(memories),
+                    memories: memories_into_rows(memories, &edge_seeded_ids),
                     outcome: FactualOutcome::Cutoff,
                 });
             }
         }
         budget.end_stage();
 
-        let memory_rows = memories_into_rows(memories);
+        let memory_rows = memories_into_rows(memories, &edge_seeded_ids);
 
         // Decide outcome:
         // - edges empty AND memories empty → DowngradedNoEdges (graph
@@ -809,9 +828,19 @@ fn traverse_anchors<G: GraphRead + ?Sized>(
 
 /// Convert the accumulator map into a sorted [`Vec<FactualMemoryRow>`].
 /// Sort key: `memory_id` ascending — tests rely on this.
-fn memories_into_rows(map: BTreeMap<MemoryId, BTreeSet<Uuid>>) -> Vec<FactualMemoryRow> {
+fn memories_into_rows(
+    map: BTreeMap<MemoryId, BTreeSet<Uuid>>,
+    edge_seeded_ids: &BTreeSet<MemoryId>,
+) -> Vec<FactualMemoryRow> {
     map.into_iter()
-        .map(|(memory_id, seen_via)| FactualMemoryRow { memory_id, seen_via })
+        .map(|(memory_id, seen_via)| {
+            let edge_seeded = edge_seeded_ids.contains(&memory_id);
+            FactualMemoryRow {
+                memory_id,
+                seen_via,
+                edge_seeded,
+            }
+        })
         .collect()
 }
 
