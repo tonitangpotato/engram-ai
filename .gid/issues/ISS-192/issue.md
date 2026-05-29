@@ -258,3 +258,62 @@ is sufficient to lift the *dated* episode into top-10 (vs the undated
 membership memory) is what AC-3's A/B measures. If the undated memory
 still wins, Defect B's numerator privilege (fix 3: edge-predicate
 boost) or a reranker (ISS-159) is required on top.
+
+## AC-3 result — FIX 2 FALSIFIED (conv-26 A/B, 2026-05-29)
+
+Fix 2 (specificity dedup) shipped as `c680a20`, reverted as `2825a14`.
+
+A/B (identical ISS-190 envelope: K=10 temp=0 HyDE/MMR/entity off,
+FACTUAL_REWEIGHT off, pipeline_pool=1):
+
+```
+                pre-fix (probe)   after-fix       Δ
+overall         0.2961            0.2566          -3.95pp
+multi-hop       0.3514            0.2432          -10.82pp  ← regression
+single-hop      0.0938            0.0313          -6.25pp   ← regression
+open-domain     0.2308            0.2308           0.00pp
+temporal        0.3714            0.3714           0.00pp
+conv-26-q0      0.0               0.0              NO FLIP
+```
+
+Per-query diff: **3 gains, 9 losses, net −6 questions.** Losses
+cluster in multi-hop (q10, q21, q67, q79) and single-hop (q24, q47) —
+the categories that dropped. This is systematic, not LLM-judge wobble.
+
+**Why it failed.** Two compounding reasons:
+
+1. **q0 root cause is untouched.** The dated gold episode
+   (`occurred_at 2023-05-08`) ranks *outside top-10* regardless of the
+   anchor set. Fix 2 only changed *which* undated LGBTQ memory reached
+   generation (pre: "Connected LGBTQ Activists … regular meetings";
+   post: "attending an LGBTQ+ counseling …") — never the dated one.
+   The defect is in the graph_score **numerator / ranking stage**, not
+   anchor breadth. Confirmed by AC-1: even when the precise entity
+   *survives* the cap, q0 still fails.
+
+2. **Dedup removes signal, not just noise.** Dropping the fragment
+   anchors (`support`, `group`, `support group`) also drops the
+   *legitimate co-mention edges* those fragments seed into the
+   candidate pool. For multi-hop/single-hop questions where a generic
+   fragment was the bridge to a useful neighbor, removing it deletes
+   the path. Specificity-by-subsumption is too blunt: token-span
+   containment does not imply semantic redundancy.
+
+**Decision.** Fix 2 is the WRONG lever. Reverted. The real fix must
+operate on **graph_score numerator** (Defect B), not anchor pruning:
+
+- **Fix 3 (preferred):** privilege edge-asserting memories in
+  graph_score — a candidate reached via an edge whose predicate
+  matches the query relation (e.g. PartOf / temporal "when") gets a
+  numerator boost over coincidental co-mentions. This lifts the dated
+  episode above undated membership memories WITHOUT removing any
+  candidates, so multi-hop bridges survive.
+- **Fix 4 (orthogonal, see q0_root_cause note):** the precise day is
+  stranded in the temporal `note` string ("yesterday (2023-05-07)…")
+  while structured start/end collapsed to a full-year interval. Even a
+  perfect ranking can't surface "7 May 2023" if the day never reaches
+  generation. Extractor must pin the resolved day into start/end.
+  Likely a separate ISS downstream of ISS-190/191.
+
+q0 needs BOTH: Fix 3 to rank the episode into top-10, Fix 4 so the
+episode actually carries the day. Anchor pruning (Fix 1/2) is closed.
