@@ -63,9 +63,24 @@ benefits without re-implementing the JSON-path dance.
 
 ## Acceptance criteria
 
-- [ ] **AC-1** Add a typed accessor on `MemoryRecord` (or a thin helper
+- [x] **AC-1** Add a typed accessor on `MemoryRecord` (or a thin helper
       in the dimensions module) that returns the derived temporal mark
       without callers touching raw `metadata` JSON paths.
+      **DONE** (commit `50a8535`): `MemoryRecord::derived_temporal_mark()
+      -> Option<TemporalMark>` + Display convenience
+      `derived_temporal_value() -> Option<String>`, both routing through
+      the canonical `Dimensions::from_stored_metadata` path. +5 unit
+      tests. **Uncovered a substrate bug while implementing:** the v2
+      store path writes `temporal` as a tagged object
+      `{"kind":"vague","value":"~2020 (...)"}` but the read path
+      (`from_legacy_metadata`) only did `get_string("temporal")` →
+      **silently dropped every v2 typed temporal mark on the canonical
+      read path**. Root-fixed in `from_legacy_metadata` (try object
+      deserialize first, fall back to v1 string parse). This is the gap
+      that forced the bench part (740b8b2) to reach into raw JSON
+      pointers. 2042/2042 lib tests pass. NB: `dimension_access.rs`
+      (`DimensionView`) is an orphan module (never wired into lib.rs) so
+      its tests never ran — it carried the same latent bug.
 - [ ] **AC-2** Extend `TemporalMark`/`TimeRange` to represent an
       uncertainty-preserving year-granular / ongoing value (the "~2020,
       ongoing" case) as structured data, with a metadata version bump and
