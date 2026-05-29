@@ -228,20 +228,50 @@ pub enum TemporalMark {
     Day(NaiveDate),
     /// A closed range of days.
     Range { start: NaiveDate, end: NaiveDate },
+    /// Store-time-derived approximate / open-ended interval (ISS-191).
+    ///
+    /// Represents the "~2020 / ongoing / uncertain / year-granular" case
+    /// that ISS-190's extractor resolves from relative or duration phrasing
+    /// (e.g. "owned for 3 years as of 2023-03-27" → start ≈ 2020-01-01).
+    /// Distinct from [`Range`](Self::Range) in two ways the consumer needs
+    /// as **structured** data, not buried in a `Vague` string:
+    ///
+    /// - `end: None` means the interval is **ongoing** (open-ended) — there
+    ///   is no asserted closing bound.
+    /// - `approximate: true` flags the bounds as **inferred**, not asserted,
+    ///   so a downstream interval scorer (ISS-191 AC-3) can widen tolerance
+    ///   instead of treating them as exact.
+    ///
+    /// `note` carries the human-readable derivation provenance (the same
+    /// text the old `Vague` form embedded, e.g. `"owned for 3 years as of
+    /// 2023-03-27"`) so nothing is lost on the upgrade.
+    Approx {
+        start: NaiveDate,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<NaiveDate>,
+        #[serde(default)]
+        approximate: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     /// Unparseable natural-language temporal reference.
     Vague(String),
 }
 
 impl TemporalMark {
-    /// Precision ordering (higher = more precise): Exact > Range > Day > Vague.
+    /// Precision ordering (higher = more precise):
+    /// Exact > Range > Day > Approx > Vague.
     ///
-    /// Matches design §2.2. Used by `Dimensions::union` to prefer the
-    /// more precise mark when both inputs are present.
+    /// Matches design §2.2 (ISS-191 inserts `Approx` between `Day` and
+    /// `Vague`: an inferred/open interval is more precise than free text
+    /// but less than a single asserted day). Used by `Dimensions::union`
+    /// to prefer the more precise mark when both inputs are present.
     pub fn precision_rank(&self) -> u8 {
         match self {
-            TemporalMark::Exact(_) => 4,
-            TemporalMark::Range { .. } => 3,
-            TemporalMark::Day(_) => 2,
+            TemporalMark::Exact(_) => 5,
+            TemporalMark::Range { .. } => 4,
+            TemporalMark::Day(_) => 3,
+            TemporalMark::Approx { .. } => 2,
             TemporalMark::Vague(_) => 1,
         }
     }
@@ -261,6 +291,34 @@ impl std::fmt::Display for TemporalMark {
             TemporalMark::Day(d) => write!(f, "{}", d.format("%Y-%m-%d")),
             TemporalMark::Range { start, end } => {
                 write!(f, "{}..{}", start.format("%Y-%m-%d"), end.format("%Y-%m-%d"))
+            }
+            TemporalMark::Approx {
+                start,
+                end,
+                approximate,
+                note,
+            } => {
+                // Render as a downstream-answer-model friendly string. Mirrors
+                // the resolved-string convention the old Vague form used so the
+                // bench context block and any consumer see the same shape:
+                //   "~2020"                       (approximate, ongoing)
+                //   "~2020..2023"                 (approximate, closed)
+                //   "2020.. (ongoing)"            (asserted start, open end)
+                //   "~2020 (owned for 3 years…)"  (with provenance note)
+                let tilde = if *approximate { "~" } else { "" };
+                match end {
+                    Some(e) => write!(
+                        f,
+                        "{tilde}{}..{tilde}{}",
+                        start.format("%Y"),
+                        e.format("%Y")
+                    )?,
+                    None => write!(f, "{tilde}{} (ongoing)", start.format("%Y"))?,
+                }
+                if let Some(n) = note {
+                    write!(f, " ({n})")?;
+                }
+                Ok(())
             }
             TemporalMark::Vague(s) => write!(f, "{s}"),
         }
@@ -920,11 +978,70 @@ mod tests {
             end: NaiveDate::from_ymd_opt(2026, 4, 23).unwrap(),
         };
         let vague = TemporalMark::Vague("a while back".to_string());
+        let approx = TemporalMark::Approx {
+            start: NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            end: None,
+            approximate: true,
+            note: Some("owned for 3 years as of 2023-03-27".to_string()),
+        };
 
-        // design §2.2: Exact > Range > Day > Vague
+        // design §2.2 (ISS-191): Exact > Range > Day > Approx > Vague
         assert!(exact.precision_rank() > range.precision_rank());
         assert!(range.precision_rank() > day.precision_rank());
-        assert!(day.precision_rank() > vague.precision_rank());
+        assert!(day.precision_rank() > approx.precision_rank());
+        assert!(approx.precision_rank() > vague.precision_rank());
+    }
+
+    #[test]
+    fn temporal_approx_serde_round_trip() {
+        // Ongoing / open-ended approximate interval with provenance note.
+        let ongoing = TemporalMark::Approx {
+            start: NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            end: None,
+            approximate: true,
+            note: Some("owned for 3 years as of 2023-03-27".to_string()),
+        };
+        let json = serde_json::to_string(&ongoing).unwrap();
+        // Tagged-object layout matches the v2 metadata read path
+        // (Dimensions::from_legacy_metadata deserializes it directly).
+        assert!(json.contains("\"kind\":\"approx\""), "got: {json}");
+        let decoded: TemporalMark = serde_json::from_str(&json).unwrap();
+        assert_eq!(ongoing, decoded);
+
+        // Closed approximate interval, no note: optional fields omitted on
+        // serialize (skip_serializing_if) but default cleanly on read.
+        let closed = TemporalMark::Approx {
+            start: NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            end: Some(NaiveDate::from_ymd_opt(2023, 12, 31).unwrap()),
+            approximate: false,
+            note: None,
+        };
+        let json = serde_json::to_string(&closed).unwrap();
+        assert!(!json.contains("\"note\""), "note should be omitted: {json}");
+        let decoded: TemporalMark = serde_json::from_str(&json).unwrap();
+        assert_eq!(closed, decoded);
+    }
+
+    #[test]
+    fn temporal_approx_display_renders_year_granular() {
+        let ongoing = TemporalMark::Approx {
+            start: NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            end: None,
+            approximate: true,
+            note: Some("owned for 3 years as of 2023-03-27".to_string()),
+        };
+        assert_eq!(
+            ongoing.to_string(),
+            "~2020 (ongoing) (owned for 3 years as of 2023-03-27)"
+        );
+
+        let closed = TemporalMark::Approx {
+            start: NaiveDate::from_ymd_opt(2020, 1, 1).unwrap(),
+            end: Some(NaiveDate::from_ymd_opt(2023, 12, 31).unwrap()),
+            approximate: true,
+            note: None,
+        };
+        assert_eq!(closed.to_string(), "~2020..~2023");
     }
 
     // -- Dimensions::minimal --
