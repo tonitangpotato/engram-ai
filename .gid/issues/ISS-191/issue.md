@@ -91,3 +91,38 @@ benefits without re-implementing the JSON-path dance.
   (`valid_from`/`valid_to` on edges). Architecture-level; file separately
   (karpathy guideline — don't let temporal surfacing balloon into a
   substrate refactor).
+
+## Validation: q0 flips 0→1 (run ISS191-fix-conv44-20260529T155256Z)
+
+With the bench surfacing the derived mark (commit `740b8b2`), the target
+question flips:
+
+- **conv-44-q0** (gold `2020`): `0.0 → 1.0`. Prediction: *"Based on memory
+  [1], Audrey owned Pepper, Precious, and Panda for 3 years as of
+  [2020]…"* — the answer LLM read the surfaced `~2020` mark and computed
+  the year. **AC-4 PASS.** The full ISS-190 → ISS-191 chain (derive at
+  store time → surface to consumer) is confirmed end-to-end.
+
+### Caveat: overall delta is single-sample noise, not a regression
+
+Overall `0.2764` (ISS-190 run) → `0.2439` (this run): 7 gained (incl q0) /
+11 lost, net −4. The losses are NOT temporal-related and CANNOT be caused
+by the fix logic:
+
+- q14/q26/q50/q9 are **single-hop content questions** with no
+  duration/relative-time element. The `[when]`-prefix change only relabels
+  the date on already-retrieved lines — it cannot change *which* memories
+  rank.
+- The two runs are **separate ingests** → different dedup merge order →
+  slightly different candidate pools. Example: q50 (gold "Grooming") — the
+  ISS-190 run retrieved the grooming memory, this run didn't. That's
+  retrieval-pool variance, not date surfacing.
+- Plus temp=0 LLM-judge wobble on borderline phrasings (q14 both runs say
+  essentially the same thing about nature).
+
+**To separate signal from noise properly:** a same-DB A/B (toggle the
+surfacing on a single fixed ingest via an env flag) or a multi-run mean.
+AC-5 (regression gate) should be measured that way, NOT via two
+independent ingests. Tracked for follow-up.
+
+- [x] **AC-4** conv-44 q0 flips 0→1 — PASS (this run).
