@@ -247,6 +247,26 @@ impl TemporalMark {
     }
 }
 
+impl std::fmt::Display for TemporalMark {
+    /// Human/LLM-readable rendering of a temporal mark.
+    ///
+    /// This is the canonical form a consumer surfaces to a downstream
+    /// answer model (ISS-191): for `Vague` it returns the extractor's
+    /// resolved string verbatim (which already embeds derived anchors
+    /// and provenance, e.g. `~2020 (owned for 3 years as of
+    /// 2023-03-27)`); the typed variants render as ISO dates.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TemporalMark::Exact(dt) => write!(f, "{}", dt.format("%Y-%m-%d")),
+            TemporalMark::Day(d) => write!(f, "{}", d.format("%Y-%m-%d")),
+            TemporalMark::Range { start, end } => {
+                write!(f, "{}..{}", start.format("%Y-%m-%d"), end.format("%Y-%m-%d"))
+            }
+            TemporalMark::Vague(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------
 // Dimensions — the typed metadata signature
 // ---------------------------------------------------------------------
@@ -430,9 +450,28 @@ impl Dimensions {
         };
 
         let participants = get_string("participants");
-        let temporal = get_string("temporal").map(|s| {
-            crate::enriched::parse_temporal_mark(&s)
-        });
+        // Temporal has two on-disk shapes:
+        //   - v2 typed (`build_legacy_metadata` → `serde_json::to_value(&Dimensions)`):
+        //     a tagged object `{"kind":"vague","value":"~2020 (...)"}` that
+        //     deserializes straight back into `TemporalMark` (preserves the
+        //     store-time-derived precision, ISS-190/ISS-191).
+        //   - v1 legacy: a plain string the extractor wrote, re-parsed via
+        //     `parse_temporal_mark`.
+        // Try the typed object first; fall back to the string path. Reading
+        // only via `get_string` (the pre-ISS-191 behavior) silently dropped
+        // every v2 typed mark on the canonical read path.
+        let temporal = dims_obj
+            .and_then(|o| o.get("temporal"))
+            .or_else(|| top_obj.and_then(|o| o.get("temporal")))
+            .and_then(|val| {
+                if val.is_object() {
+                    serde_json::from_value::<TemporalMark>(val.clone()).ok()
+                } else {
+                    val.as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(crate::enriched::parse_temporal_mark)
+                }
+            });
         let location = get_string("location");
         let context = get_string("context");
         let causation = get_string("causation");

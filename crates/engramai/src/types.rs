@@ -244,6 +244,43 @@ impl MemoryRecord {
     pub fn event_time(&self) -> DateTime<Utc> {
         self.occurred_at.unwrap_or(self.created_at)
     }
+
+    /// The store-time-derived temporal mark for this memory, if the
+    /// enrichment pipeline produced one (ISS-190 / ISS-191 AC-1).
+    ///
+    /// engram is a memory **substrate**: consumers must not reach into
+    /// raw `metadata` JSON paths (`metadata.engram.dimensions.temporal`)
+    /// to read the derived temporal value — that couples them to the
+    /// storage layout. This accessor parses the row's metadata through
+    /// the canonical [`Dimensions::from_stored_metadata`] path and
+    /// returns the typed [`TemporalMark`], so every consumer reads the
+    /// derivation the same way.
+    ///
+    /// Returns `None` when there is no metadata, no temporal dimension,
+    /// or the metadata fails to parse (a malformed blob is treated as
+    /// "no derived mark", never an error — read paths must not panic on
+    /// a bad row). `core_fact` is taken from `content`, matching the
+    /// canonical parse contract.
+    pub fn derived_temporal_mark(&self) -> Option<crate::dimensions::TemporalMark> {
+        let metadata = self.metadata.as_ref()?;
+        crate::dimensions::Dimensions::from_stored_metadata(metadata, &self.content)
+            .ok()?
+            .temporal
+    }
+
+    /// The store-time-derived temporal value rendered for a downstream
+    /// answer model (ISS-191).
+    ///
+    /// Thin convenience over [`derived_temporal_mark`](Self::derived_temporal_mark):
+    /// returns the [`Display`](std::fmt::Display) rendering of the mark
+    /// (the resolved string with its provenance for `Vague`, an ISO date
+    /// for the typed variants). `None` when no derived mark exists.
+    ///
+    /// This is exactly the string a context-assembly layer should prefer
+    /// over the raw `occurred_at` date when present.
+    pub fn derived_temporal_value(&self) -> Option<String> {
+        self.derived_temporal_mark().map(|m| m.to_string())
+    }
 }
 
 /// Search result with activation score and confidence.
@@ -381,4 +418,99 @@ pub struct BulkCorrectionResult {
     pub superseded_count: usize,
     /// IDs of all superseded memories.
     pub superseded_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod derived_temporal_tests {
+    use super::*;
+    use crate::dimensions::{Dimensions, TemporalMark};
+    use chrono::NaiveDate;
+    use serde_json::json;
+
+    /// Build a minimal `MemoryRecord` carrying the given metadata blob and content.
+    /// Mirrors the field set used by the other module test helpers.
+    fn record_with(metadata: Option<serde_json::Value>, content: &str) -> MemoryRecord {
+        let now = Utc::now();
+        MemoryRecord {
+            id: "rec0".to_string(),
+            content: content.to_string(),
+            memory_type: MemoryType::Factual,
+            layer: MemoryLayer::Working,
+            created_at: now,
+            occurred_at: None,
+            access_times: vec![now],
+            working_strength: 1.0,
+            core_strength: 0.0,
+            importance: 0.5,
+            pinned: false,
+            consolidation_count: 0,
+            last_consolidated: None,
+            source: String::new(),
+            contradicts: None,
+            contradicted_by: None,
+            superseded_by: None,
+            metadata,
+        }
+    }
+
+    /// Wrap a `Dimensions` into the canonical v2 stored-metadata layout.
+    fn v2_metadata(dims: &Dimensions) -> serde_json::Value {
+        json!({ "engram": { "dimensions": serde_json::to_value(dims).unwrap() } })
+    }
+
+    #[test]
+    fn derived_mark_returns_store_time_vague_value() {
+        // The ISS-190 case: extractor resolves a relative/duration phrase into a
+        // provenance-bearing Vague mark. The consumer must read it back typed,
+        // WITHOUT touching raw `metadata.engram.dimensions.temporal` JSON paths.
+        let resolved = "~2020 (owned for 3 years as of 2023-03-27)";
+        let mut dims = Dimensions::minimal("Audrey adopted Pepper, Precious and Panda").unwrap();
+        dims.temporal = Some(TemporalMark::Vague(resolved.to_string()));
+        let rec = record_with(Some(v2_metadata(&dims)), "Audrey adopted Pepper, Precious and Panda");
+
+        match rec.derived_temporal_mark() {
+            Some(TemporalMark::Vague(s)) => assert_eq!(s, resolved),
+            other => panic!("expected Vague derived mark, got {other:?}"),
+        }
+        // The Display convenience surfaces the same verbatim string for the
+        // downstream answer model (this is what the bench context block emits).
+        assert_eq!(rec.derived_temporal_value().as_deref(), Some(resolved));
+    }
+
+    #[test]
+    fn derived_mark_returns_typed_day_variant() {
+        let mut dims = Dimensions::minimal("event content").unwrap();
+        dims.temporal = Some(TemporalMark::Day(NaiveDate::from_ymd_opt(2024, 1, 10).unwrap()));
+        let rec = record_with(Some(v2_metadata(&dims)), "event content");
+
+        match rec.derived_temporal_mark() {
+            Some(TemporalMark::Day(d)) => assert_eq!(d, NaiveDate::from_ymd_opt(2024, 1, 10).unwrap()),
+            other => panic!("expected Day, got {other:?}"),
+        }
+        // typed variants render as ISO dates, not provenance strings.
+        assert_eq!(rec.derived_temporal_value().as_deref(), Some("2024-01-10"));
+    }
+
+    #[test]
+    fn derived_mark_is_none_without_metadata() {
+        let rec = record_with(None, "no metadata content");
+        assert!(rec.derived_temporal_mark().is_none());
+        assert!(rec.derived_temporal_value().is_none());
+    }
+
+    #[test]
+    fn derived_mark_is_none_when_no_temporal_dimension() {
+        // metadata parses fine but carries no temporal dimension.
+        let dims = Dimensions::minimal("content with no temporal").unwrap();
+        let rec = record_with(Some(v2_metadata(&dims)), "content with no temporal");
+        assert!(rec.derived_temporal_mark().is_none());
+        assert!(rec.derived_temporal_value().is_none());
+    }
+
+    #[test]
+    fn derived_mark_is_none_on_malformed_metadata() {
+        // A bad blob must be treated as "no derived mark", never a panic.
+        let rec = record_with(Some(json!({"garbage": [1, 2, 3]})), "content survives");
+        assert!(rec.derived_temporal_mark().is_none());
+    }
 }
