@@ -1,0 +1,35 @@
+=== ISS-188 AC-3 λ-sweep — STAMP 20260529T041125Z ===
+
+LIST-type SF coverage (q13/15/18/19/24/32/34/38/39/47, n=10):
+  arm   sum_score  pass>=0.5
+  A         2.000    2/10
+  B         2.000    2/10
+  C         3.000    3/10
+
+  per-query scores:
+  qid                  A       B       C
+  q13               1.00    1.00    1.00
+  q15               0.00    0.00    0.00
+  q18               0.00    0.00    0.00
+  q19               0.00    0.00    0.00
+  q24               0.00    0.00    0.00
+  q32               0.00    0.00    0.00
+  q34               0.00    0.00    1.00
+  q38               0.00    1.00    0.00
+  q39               0.00    0.00    1.00
+  q47               1.00    0.00    0.00
+
+Single-value SF coverage (q4/q7/q43, n=3) — AC-4 guard:
+  A    sum=1.000 pass=1/3
+  B    sum=1.000 pass=1/3
+  C    sum=1.000 pass=1/3
+
+conv-26 overall (AC-4 guard):
+  A    overall=0.23684210526315788
+  B    overall=0.25
+  C    overall=0.21710526315789475
+
+=== Decision rule ===
+  baseline (A) list-SF pass: 2/10
+  best arm: C list-SF pass: 3/10  (lift +1/10)
+  → VERDICT: opt-in only (lift 1/10), keep default off

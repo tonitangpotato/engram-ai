@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: resolved
 ---
 # .gid/issues/ISS-188/issue.md (issue)
 project: engram
@@ -94,9 +94,68 @@ the pool; only diversity reranking does.
   across retrieved items), not retrieval. Pivot to ISS-179 (SF axis
   redefinition) per its existing recommendation.
 
+## AC-3 verdict — FALSIFIED (2026-05-29)
+
+λ-sweep ran on conv-26, ISS-161 Arm A envelope (K=10, temp=0, HyDE off,
+entity_channel off, FACTUAL_REWEIGHT off, pipeline_pool=1). STAMP
+`20260529T041125Z`. Artifacts in `artifacts/ac3-sweep-verdict-*.txt`
+plus the three sweep scripts.
+
+LIST-type SF coverage (q13/15/18/19/24/32/34/38/39/47, pass ≥ 0.5):
+
+  arm                          list-SF   overall
+  A  populate=off (baseline)   2/10      0.237
+  B  populate=on  λ=0.7        2/10      0.250
+  C  populate=on  λ=0.5        3/10      0.217
+
+Letter of the rule: Arm C lift = +1/10 → "opt-in only". But the +1 does
+NOT survive scrutiny — it is judge/reorder wobble, not a structural fix:
+
+- **Only q13 passes in all 3 arms (3/3).** Every other LIST-SF "pass"
+  — q34, q38, q39, q47 — passes in exactly **1 of 3** arms. Each arm
+  wins a *different* question and loses one it had:
+    q34: 0/0/**1** (C only)   q38: 0/**1**/0 (B only)
+    q39: 0/0/**1** (C only)   q47: **1**/0/0 (A only)
+  If embedding population genuinely surfaced list content, gains would
+  be consistent across the LIST set, not a shuffle.
+- Overall score-flip A→C = 23/152 (15.1%), net **−3** (10 gained, 13
+  lost). The "+1 list-SF" rides on top of an overall regression
+  (0.217 < 0.237 baseline) — AC-4 no-regression guard **FAILS**.
+- Single-value SF (q4/q7/q43) flat 1/3 across all arms — neither
+  helped nor hurt.
+
+**Conclusion:** feeding factual/episodic-plan candidate embeddings +
+diversity reranking (λ=0.7 and λ=0.5) does NOT lift list-question
+recall. Effective lift ≤ 0 once wobble is discounted. Per the decision
+rule, the partial-answer problem is in the **JUDGE** (penalizes
+incomplete lists) or **GENERATION** (LLM not synthesizing across
+retrieved items), **not retrieval**. ISS-187's mechanism (MMR diversity
+dead on factual plan) was real, but fixing it does not move the gold —
+which means retrieval was never the binding constraint for these
+list-questions. Pivot to ISS-179 (SF axis redefinition).
+
+AC-5 (conv-44 cross-validation) **skipped** — no winning λ to validate.
+
+## Disposition of the code
+
+AC-1/AC-2 code (commit c683cc0) stays in tree but **default OFF**
+(`FusionConfig::populate_embeddings_for_diversity = false`, serde
+default false). It is inert at the locked v0.3 default (byte-identical),
+fully tested (26/26 mmr + 2027/2027 lib green), and available as an
+opt-in knob should a future SF redefinition (ISS-179) make diversity
+reranking relevant again. No revert — the mechanism is correct, the
+hypothesis that it would help list-questions is what was falsified.
+
+## ACs
+
+- [x] AC-1: code (Stage C.4 populate + serde-default-false knob) — c683cc0
+- [x] AC-2: tests (26/26 mmr + 2027/2027 lib, 0 warnings) — c683cc0
+- [x] AC-3: λ-sweep run — lift ≤0 after wobble discount → FALSIFIED
+- [x] AC-4: no-regression check — FAILED (Arm C −3 overall)
+- [~] AC-5: conv-44 cross-validation — SKIPPED (no winning λ)
+
 ## Status
 
-In progress 2026-05-29 — AC-1/AC-2 shipped (code + tests, 2027/2027 lib
-green, 0 warnings). Remaining: AC-3 λ-sweep on the 10 LIST-type SF
-queries, AC-4 no-regression check, AC-5 conv-44 cross-validation — all
-bench work, needs the engram-bench env knob wired next.
+**resolved (falsified) 2026-05-29.** AC-3 λ-sweep shows no real lift on
+list-questions; bottleneck is judge/generation, not retrieval. Code
+kept default-off as opt-in. Next: ISS-179 (SF axis redefinition).
