@@ -474,7 +474,105 @@ pub fn parse_temporal_mark(s: &str) -> TemporalMark {
         return TemporalMark::Day(d);
     }
 
+    // Approximate / year-granular / ongoing (ISS-190 derivation → ISS-191
+    // AC-2). The reference-date preamble instructs the extractor to resolve
+    // relative/duration phrasing to a year while PRESERVING uncertainty, so
+    // it emits strings like:
+    //   "~2020"
+    //   "~2020 (owned for 3 years as of 2023-03-27)"   (with provenance note)
+    //   "around 2020"
+    //   "2020 (ongoing)" / "since 2020"
+    //   "2020"                                         (bare year)
+    // These are interval data, not free text — surface them as `Approx` so a
+    // downstream interval scorer (AC-3) can read structured bounds instead of
+    // re-parsing a string. `approximate` is set when the source carried a
+    // fuzz marker (`~`, "around", "about", "approximately") or is year-only.
+    if let Some(mark) = parse_approx_year(trimmed) {
+        return mark;
+    }
+
     TemporalMark::Vague(s.to_string())
+}
+
+/// Parse an approximate / year-granular / ongoing temporal string into a
+/// [`TemporalMark::Approx`]. Returns `None` when no leading year is found, so
+/// the caller falls back to [`TemporalMark::Vague`].
+///
+/// Grammar (lenient): an optional fuzz prefix (`~`, "around", "about",
+/// "approximately", "circa", "c."), a 4-digit year (1000–9999), then an
+/// optional ` (note)` tail capturing the derivation provenance. "ongoing" /
+/// "present" / "since" / "now" anywhere in the tail (or a `since`-prefixed
+/// source) marks the interval open-ended (`end: None`); otherwise the year is
+/// treated as a single approximate year (start = Jan 1, end = Dec 31).
+fn parse_approx_year(s: &str) -> Option<TemporalMark> {
+    let lower = s.to_ascii_lowercase();
+
+    // Split off a trailing parenthetical note: "~2020 (owned for 3 years…)".
+    let (head, note) = match s.split_once('(') {
+        Some((h, rest)) => {
+            let note = rest.strip_suffix(')').unwrap_or(rest).trim();
+            (
+                h.trim(),
+                if note.is_empty() {
+                    None
+                } else {
+                    Some(note.to_string())
+                },
+            )
+        }
+        None => (s.trim(), None),
+    };
+
+    // Strip a leading fuzz marker so the year parses ("~2020", "around 2020").
+    let fuzz_prefixes = ["~", "around ", "about ", "approximately ", "circa ", "c. "];
+    let head_lc = head.to_ascii_lowercase();
+    let mut rest = head;
+    for p in fuzz_prefixes {
+        if let Some(stripped) = head_lc.strip_prefix(p) {
+            // map back to the original-cased slice by byte length
+            rest = head[head.len() - stripped.len()..].trim_start();
+            break;
+        }
+    }
+    // "since 2020" → open-ended, year-granular.
+    let since = rest.to_ascii_lowercase();
+    if let Some(after) = since.strip_prefix("since ") {
+        rest = rest[rest.len() - after.len()..].trim_start();
+    }
+
+    // Take the leading 4-digit run as the year.
+    let year_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if year_str.len() != 4 {
+        return None;
+    }
+    let year: i32 = year_str.parse().ok()?;
+    if !(1000..=9999).contains(&year) {
+        return None;
+    }
+
+    let start = NaiveDate::from_ymd_opt(year, 1, 1)?;
+
+    // Open-ended if the source signals it ongoing.
+    let ongoing = lower.contains("ongoing")
+        || lower.contains("present")
+        || lower.contains("since ")
+        || lower.ends_with("now")
+        || lower.contains("(now");
+
+    let end = if ongoing {
+        None
+    } else {
+        NaiveDate::from_ymd_opt(year, 12, 31)
+    };
+
+    // A `~`, "around", "since", or bare-year source is approximate by
+    // construction: year-granular bounds are never asserted to the day.
+    Some(TemporalMark::Approx {
+        start,
+        end,
+        approximate: true,
+        note,
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -691,6 +789,76 @@ mod tests {
         match tm {
             TemporalMark::Vague(s) => assert_eq!(s, "   "),
             _ => panic!("expected Vague"),
+        }
+    }
+
+    #[test]
+    fn parse_temporal_tilde_year_becomes_approx_closed() {
+        // ISS-191 AC-2: the ISS-190 derivation emits "~2020" (year-granular,
+        // approximate). It must become structured Approx, not free-text Vague.
+        match parse_temporal_mark("~2020") {
+            TemporalMark::Approx {
+                start,
+                end,
+                approximate,
+                note,
+            } => {
+                assert_eq!(start, NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
+                assert_eq!(end, Some(NaiveDate::from_ymd_opt(2020, 12, 31).unwrap()));
+                assert!(approximate);
+                assert!(note.is_none());
+            }
+            other => panic!("expected Approx, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_temporal_tilde_year_with_provenance_note() {
+        // The full ISS-190 shape: derived year + provenance parenthetical.
+        match parse_temporal_mark("~2020 (owned for 3 years as of 2023-03-27)") {
+            TemporalMark::Approx { start, note, .. } => {
+                assert_eq!(start, NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
+                assert_eq!(note.as_deref(), Some("owned for 3 years as of 2023-03-27"));
+            }
+            other => panic!("expected Approx, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_temporal_since_year_is_ongoing() {
+        match parse_temporal_mark("since 2020") {
+            TemporalMark::Approx { start, end, .. } => {
+                assert_eq!(start, NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
+                assert_eq!(end, None, "ongoing → open-ended interval");
+            }
+            other => panic!("expected ongoing Approx, got {other:?}"),
+        }
+        match parse_temporal_mark("2020 (ongoing)") {
+            TemporalMark::Approx { end, .. } => assert_eq!(end, None),
+            other => panic!("expected ongoing Approx, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_temporal_bare_year_is_approx() {
+        match parse_temporal_mark("2020") {
+            TemporalMark::Approx { start, end, .. } => {
+                assert_eq!(start, NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
+                assert_eq!(end, Some(NaiveDate::from_ymd_opt(2020, 12, 31).unwrap()));
+            }
+            other => panic!("expected Approx, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_temporal_non_year_stays_vague() {
+        // Guard: a leading number that isn't a 4-digit year must NOT become
+        // Approx (otherwise "3 years ago" or "12 months" would misparse).
+        for input in ["3 years ago", "12 monthly visits", "last tuesday", "42"] {
+            assert!(
+                matches!(parse_temporal_mark(input), TemporalMark::Vague(_)),
+                "{input:?} should stay Vague"
+            );
         }
     }
 
