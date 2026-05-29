@@ -262,18 +262,34 @@ Zep evidence is first-hand from `extract_edges.py`.)
 
 ## Acceptance criteria
 
-- [ ] **AC-1** Reference date is threaded from the ingest path into the
+- [x] **AC-1** Reference date is threaded from the ingest path into the
       extraction prompt (per-episode `occurred_at`). Unit test: extractor
       receives the reference; prompt contains it.
-- [ ] **AC-2** For the q29 topology — input "owned for 3 years" with
+      DONE (24c13ac): `MemoryExtractor::extract(text, reference)` + `reference_preamble()`;
+      threaded via `store_raw` (meta.occurred_at) + backfill (record.occurred_at);
+      bench `ingest_with_stats_at` already carries it. Test
+      `iss190_reference_preamble_resolves_relative_time` asserts the prompt contains
+      the date.
+- [x] **AC-2** For the q29 topology — input "owned for 3 years" with
       reference 2023-03-27 — the stored temporal dimension (or grounded
       content) carries an absolute year ≈ 2020. Unit/integration test with a
       mocked/temp=0 extractor.
-- [ ] **AC-3** Negative guard: input with NO time reference must NOT produce
+      DONE (68dfd43): `tests/iss190_temporal_grounding_e2e.rs` — mock extractor
+      resolves the duration against the threaded reference; resolved year 2020
+      survives into the persisted record. NOTE: `parse_temporal_mark("~2020")`
+      → `Vague("~2020")` (year string preserved, not a structured calendar
+      value). Sufficient for q0; structured form deferred to ISS-191.
+- [x] **AC-3** Negative guard: input with NO time reference must NOT produce
       a fabricated date — temporal field omitted. Test case included.
-- [ ] **AC-4** two_timer demoted to fallback; the dead regex/parser-mismatch
+      DONE (24c13ac): preamble instructs OMIT-not-fabricate;
+      `iss190_reference_preamble_forbids_fabrication` + `..._absent_is_byte_identical_legacy`
+      (None reference → empty preamble → byte-identical legacy prompt).
+- [x] **AC-4** two_timer demoted to fallback; the dead regex/parser-mismatch
       branch in `temporal_grounding.rs` is either fixed or removed (no silent
       regex match that two_timer then rejects).
+      DONE (949bce1): probe confirmed two_timer resolves days/weeks-ago but
+      returns Err for months/years-ago. Removed `months?|years?` from the regex
+      arm; LLM now owns multi-month/year derivation. 2 regression tests.
 - [ ] **AC-5** A/B on conv-26 (locked envelope: K=10 temp=0 HyDE=off MMR=off
       entity_channel=off pipeline_pool=1). Target: duration/relative-temporal
       single-fact questions flip 0→1, regression rate ≤10%.
