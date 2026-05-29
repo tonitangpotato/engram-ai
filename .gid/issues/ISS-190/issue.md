@@ -293,8 +293,32 @@ Zep evidence is first-hand from `extract_edges.py`.)
 - [ ] **AC-5** A/B on conv-26 (locked envelope: K=10 temp=0 HyDE=off MMR=off
       entity_channel=off pipeline_pool=1). Target: duration/relative-temporal
       single-fact questions flip 0→1, regression rate ≤10%.
-- [ ] **AC-6** Cross-validate on conv-44: q29 flips 0→1, overall ≥ baseline
-      0.2439 (run `ISS189-fix-conv44-20260529T131853Z`).
+- [~] **AC-6** Cross-validate on conv-44 — **PARTIAL** (run
+      `ISS190-fix-conv44-20260529T151114Z`, STAMP 20260529T151114Z).
+      - **overall 0.2764 ≥ baseline 0.2439 ✅** (+3.25pp; also > original
+        0.2276). temporal 0.274→0.306 (+3.2pp), single-hop 0.167→0.333
+        (+16.6pp). 12 gained / 8 lost (net +4 q). multi-hop −8.3pp and
+        open-domain −14pp are the small-n offsets.
+      - **q0 (the dog-adoption target, gold 2020) stayed 0.0 ❌.**
+        Store-layer derivation is CONFIRMED working: the substrate row for
+        "Audrey has three pets … owned for 3 years" carries
+        `temporal={kind:vague, value:"~2020 (owned for 3 years as of
+        2023-03-27)"}` — the extractor correctly resolved the duration
+        against the reference and preserved uncertainty. The block is
+        DOWNSTREAM: `engram-bench/src/drivers/locomo.rs::format_context_block`
+        (~line 975) feeds the answer LLM `[occurred_at] {record.content}` —
+        i.e. the *ingest* date 2023-03-27 + raw content "owned for 3 years".
+        The derived `~2020` mark (in `metadata.engram.dimensions.temporal`)
+        never reaches the answer prompt, so the answer LLM sees "3 years as
+        of March 2023" and declines to subtract. q0's own prediction proves
+        it: *"Audrey has owned Pepper, Precious, and Panda for 3 years as of
+        March 2023, but don't specify which year she first adopted them."*
+      - **Verdict:** ISS-190's store-time grounding (AC-1..4) is correct and
+        net-positive end-to-end. The remaining q0 flip is gated by surfacing
+        the derived temporal mark to consumers — exactly the structured
+        `TemporalMark` work deferred to **ISS-191**, plus a one-line
+        bench-side change to emit `temporal.value` (not `occurred_at`) in the
+        context block. AC-6's flip clause moves under ISS-191.
 
 ## Risk / scope
 
