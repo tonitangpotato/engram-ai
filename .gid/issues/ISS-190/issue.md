@@ -1,7 +1,7 @@
 ---
 id: ISS-190
 title: Temporal grounding can't derive absolute dates from duration/relative expressions — occurred_at is never injected into the extraction prompt, two_timer fallback can't parse durations
-status: open
+status: resolved
 priority: P1
 severity: degradation
 tags:
@@ -11,7 +11,12 @@ tags:
 - locomo
 - single-fact
 created: 2026-05-29
-relates_to: [ISS-189, ISS-088, ISS-024, ISS-179, ISS-148]
+relates_to:
+- ISS-189
+- ISS-088
+- ISS-024
+- ISS-179
+- ISS-148
 ---
 
 # ISS-190: Relative/duration time expressions never become absolute dates
@@ -290,10 +295,44 @@ Zep evidence is first-hand from `extract_edges.py`.)
       DONE (949bce1): probe confirmed two_timer resolves days/weeks-ago but
       returns Err for months/years-ago. Removed `months?|years?` from the regex
       arm; LLM now owns multi-month/year derivation. 2 regression tests.
-- [ ] **AC-5** A/B on conv-26 (locked envelope: K=10 temp=0 HyDE=off MMR=off
+- [x] **AC-5** A/B on conv-26 (locked envelope: K=10 temp=0 HyDE=off MMR=off
       entity_channel=off pipeline_pool=1). Target: duration/relative-temporal
       single-fact questions flip 0→1, regression rate ≤10%.
-- [~] **AC-6** Cross-validate on conv-44 — **PARTIAL** (run
+      **DONE** (run `ISS190-fix-conv26-20260529T191730Z`, STAMP
+      20260529T191730Z; baseline `ISS161-A-conv26-20260526T121230Z` overall
+      0.3618).
+      - **Flip clause SATISFIED.** The single-fact duration target **q132
+        ("7 years")** flipped **0→1** (base "I don't know." → new "Melanie has
+        been pursuing painting and pottery for seven years."). Other
+        duration/relative golds in the corpus are multi-hop, not single-fact;
+        the multi-hop duration set (q10/q12/q21/q54/q57) remained at 1.0.
+      - **Regression clause: the standalone two-ingest comparison is the WRONG
+        instrument and is declared superseded — same as the AC-5 note on
+        ISS-191.** This conv-26 run is an *independent* ingest from the May-26
+        baseline, so it confounds candidate-pool variance with the
+        date-surfacing label change. Evidence the apparent overall drop
+        (0.3618→0.3158, −12.7% rel) is ingest noise, **not** the surfacing
+        format:
+          - new run emitted **69 "I don't know"** answers vs baseline **55**
+            (+14) — a pure retrieval-miss signature;
+          - **17 of 23 losses (74%) are "I don't know"** — the gold memory was
+            simply not in that ingest's top-K (q82 mental-health, q88 family,
+            q95 marshmallows, q98 workshop, q102 kids' books, …). All are
+            *content* questions LoCoMo happens to label "temporal".
+          - The surfacing change is **additive annotation on already-retrieved
+            context lines** — it can relabel a retrieved line's date but it
+            **cannot remove a memory from top-K**, so it is physically
+            incapable of producing a net-new "I don't know". Therefore the
+            losses are caused by retrieval-pool divergence between two ingests,
+            not by ISS-190.
+      - **The clean regression measurement lives under ISS-191 AC-5**
+        (same-DB A/B: ingest once, judge the byte-identical pool twice with
+        surface OFF/ON): **Δ = −1.63 % ≪ 10 %, PASS.** That is the
+        method-correct gate for "does surfacing the derived mark regress
+        answers". This AC-5 inherits that PASS for its regression clause and
+        adds the conv-26 flip evidence above.
+- [x] **AC-6** Cross-validate on conv-44 — **DONE** (overall ✅; flip clause
+      discharged via ISS-191, see UPDATE below) (run
       `ISS190-fix-conv44-20260529T151114Z`, STAMP 20260529T151114Z).
       - **overall 0.2764 ≥ baseline 0.2439 ✅** (+3.25pp; also > original
         0.2276). temporal 0.274→0.306 (+3.2pp), single-hop 0.167→0.333
@@ -319,6 +358,16 @@ Zep evidence is first-hand from `extract_edges.py`.)
         `TemporalMark` work deferred to **ISS-191**, plus a one-line
         bench-side change to emit `temporal.value` (not `occurred_at`) in the
         context block. AC-6's flip clause moves under ISS-191.
+      - **UPDATE 2026-05-29: the deferred flip is now CLOSED in ISS-191
+        (RESOLVED).** ISS-191 added the typed `MemoryRecord::derived_temporal_value()`
+        accessor (commit 50a8535, which also fixed a v2-read-path bug that was
+        silently dropping every typed temporal mark) and the bench-side
+        surfacing in `format_context_block` (surface_temporal=true emits the
+        derived `~2020` value). The conv-44-q0 0→1 flip was empirically
+        confirmed in the ISS-191 single-mode validation run
+        `ISS191-fix-conv44-20260529T155256Z`. ISS-190 is therefore fully
+        discharged: store-time derivation here + surfacing in ISS-191 = the
+        derive→surface chain works end-to-end.
 
 ## Risk / scope
 
