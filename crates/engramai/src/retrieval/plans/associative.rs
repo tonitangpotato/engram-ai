@@ -759,6 +759,15 @@ mod tests {
                 .map(|(obj, c)| fake_edge(subject, obj, c))
                 .collect())
         }
+        fn edges_into(
+            &self,
+            _object: Uuid,
+            _predicate: Option<&Predicate>,
+            _include_invalidated: bool,
+        ) -> Result<Vec<Edge>, GraphError> {
+            // Associative plan tests don't exercise incoming-edge traversal.
+            Ok(Vec::new())
+        }
         fn memories_mentioning_entity(
             &self,
             entity: Uuid,

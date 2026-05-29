@@ -309,6 +309,25 @@ pub trait GraphRead {
         predicate: Option<&Predicate>,
         include_invalidated: bool,
     ) -> Result<Vec<Edge>, GraphError>;
+    /// Incoming edges: rows whose entity-object equals `object` (ISS-189).
+    ///
+    /// `edges_of` answers "edges where `x` is the *subject*" (outgoing).
+    /// This answers the mirror question "edges where `x` is the entity
+    /// *object*" (incoming). Needed because asymmetric predicates (e.g.
+    /// `PartOf` with no stored inverse) record the provenance `memory_id`
+    /// on the edge pointing *at* the anchor — `dog --part_of--> Audrey`
+    /// carries the episode that establishes Audrey's dogs, but an
+    /// outgoing-only traversal from `Audrey` can never see it.
+    ///
+    /// Literal-object edges are never returned (they have no
+    /// `object_entity_id`). Backed by `idx_graph_edges_object_entity`.
+    /// Same `predicate` / `include_invalidated` contract as `edges_of`.
+    fn edges_into(
+        &self,
+        object: Uuid,
+        predicate: Option<&Predicate>,
+        include_invalidated: bool,
+    ) -> Result<Vec<Edge>, GraphError>;
     /// As-of query (GOAL-1.5). Edges "believed true" for `subject` at
     /// real-world time `at`. See design §4.2.
     fn edges_as_of(
@@ -2698,6 +2717,131 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                     let v: Vec<EdgeRowColumns> = stmt
                         .query_map(
                             rusqlite::params![subject_blob, self.namespace],
+                            row_to_edge_columns,
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    v
+                }
+            }
+        };
+        cols.into_iter().map(decode_edge_row).collect()
+    }
+    fn edges_into(
+        &self, object: Uuid, predicate: Option<&Predicate>, include_invalidated: bool,
+    ) -> Result<Vec<Edge>, GraphError> {
+        // Mirror of `edges_of` on the object side (ISS-189). Only
+        // entity-object rows can match (`object_entity_id = ?1`), so
+        // literal-object edges are implicitly excluded — correct, since a
+        // literal object has no entity to be "incoming" to.
+        //
+        // Index used: `idx_graph_edges_object_entity` (object_entity_id).
+        // The `predicate` / `invalidated_at` filters narrow further but
+        // are not separately indexed on the object side; for the anchor
+        // fan-in sizes the Factual plan sees (single-digit to low
+        // hundreds) the object index alone is sufficient.
+        let object_blob = object.as_bytes().to_vec();
+        let cols: Vec<EdgeRowColumns> = match predicate {
+            Some(p) => {
+                let (kind, label) = predicate_to_columns(p)?;
+                if include_invalidated {
+                    let mut stmt = self.conn.prepare_cached(
+                        "SELECT id, subject_id,
+                                predicate_kind, predicate_label,
+                                object_kind, object_entity_id, object_literal,
+                                summary,
+                                valid_from, valid_to, recorded_at, invalidated_at,
+                                invalidated_by, supersedes,
+                                episode_id, memory_id,
+                                resolution_method,
+                                activation, confidence,
+                                agent_affect,
+                                created_at
+                         FROM graph_edges
+                         WHERE object_entity_id = ?1 AND namespace = ?2
+                           AND predicate_kind = ?3 AND predicate_label = ?4
+                         ORDER BY recorded_at DESC, id ASC",
+                    )?;
+                    let v: Vec<EdgeRowColumns> = stmt
+                        .query_map(
+                            rusqlite::params![object_blob, self.namespace, kind, label],
+                            row_to_edge_columns,
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    v
+                } else {
+                    let mut stmt = self.conn.prepare_cached(
+                        "SELECT id, subject_id,
+                                predicate_kind, predicate_label,
+                                object_kind, object_entity_id, object_literal,
+                                summary,
+                                valid_from, valid_to, recorded_at, invalidated_at,
+                                invalidated_by, supersedes,
+                                episode_id, memory_id,
+                                resolution_method,
+                                activation, confidence,
+                                agent_affect,
+                                created_at
+                         FROM graph_edges
+                         WHERE object_entity_id = ?1 AND namespace = ?2
+                           AND predicate_kind = ?3 AND predicate_label = ?4
+                           AND invalidated_at IS NULL
+                         ORDER BY recorded_at DESC, id ASC",
+                    )?;
+                    let v: Vec<EdgeRowColumns> = stmt
+                        .query_map(
+                            rusqlite::params![object_blob, self.namespace, kind, label],
+                            row_to_edge_columns,
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    v
+                }
+            }
+            None => {
+                if include_invalidated {
+                    let mut stmt = self.conn.prepare_cached(
+                        "SELECT id, subject_id,
+                                predicate_kind, predicate_label,
+                                object_kind, object_entity_id, object_literal,
+                                summary,
+                                valid_from, valid_to, recorded_at, invalidated_at,
+                                invalidated_by, supersedes,
+                                episode_id, memory_id,
+                                resolution_method,
+                                activation, confidence,
+                                agent_affect,
+                                created_at
+                         FROM graph_edges
+                         WHERE object_entity_id = ?1 AND namespace = ?2
+                         ORDER BY recorded_at DESC, id ASC",
+                    )?;
+                    let v: Vec<EdgeRowColumns> = stmt
+                        .query_map(
+                            rusqlite::params![object_blob, self.namespace],
+                            row_to_edge_columns,
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    v
+                } else {
+                    let mut stmt = self.conn.prepare_cached(
+                        "SELECT id, subject_id,
+                                predicate_kind, predicate_label,
+                                object_kind, object_entity_id, object_literal,
+                                summary,
+                                valid_from, valid_to, recorded_at, invalidated_at,
+                                invalidated_by, supersedes,
+                                episode_id, memory_id,
+                                resolution_method,
+                                activation, confidence,
+                                agent_affect,
+                                created_at
+                         FROM graph_edges
+                         WHERE object_entity_id = ?1 AND namespace = ?2
+                           AND invalidated_at IS NULL
+                         ORDER BY recorded_at DESC, id ASC",
+                    )?;
+                    let v: Vec<EdgeRowColumns> = stmt
+                        .query_map(
+                            rusqlite::params![object_blob, self.namespace],
                             row_to_edge_columns,
                         )?
                         .collect::<Result<Vec<_>, _>>()?;

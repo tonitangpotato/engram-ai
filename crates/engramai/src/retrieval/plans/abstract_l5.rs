@@ -568,6 +568,14 @@ mod tests {
         ) -> Result<Vec<Edge>, GraphError> {
             unimplemented!()
         }
+        fn edges_into(
+            &self,
+            _o: Uuid,
+            _p: Option<&Predicate>,
+            _i: bool,
+        ) -> Result<Vec<Edge>, GraphError> {
+            unimplemented!()
+        }
         fn edges_as_of(
             &self,
             _s: Uuid,

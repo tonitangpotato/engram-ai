@@ -1108,6 +1108,14 @@ mod backfill_tests {
         ) -> Result<Vec<Edge>, GraphError> {
             unimplemented!("edges_of: not used by resolve_for_backfill")
         }
+        fn edges_into(
+            &self,
+            _id: Uuid,
+            _p: Option<&Predicate>,
+            _inv: bool,
+        ) -> Result<Vec<Edge>, GraphError> {
+            unimplemented!("edges_into: not used by resolve_for_backfill")
+        }
         fn edges_as_of(
             &self,
             _id: Uuid,

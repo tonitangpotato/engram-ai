@@ -56,7 +56,17 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use chrono::{DateTime, Utc};
+use log::{debug, trace};
 use uuid::Uuid;
+
+/// Log target for Factual-plan diagnostics. Enable with
+/// `RUST_LOG=engramai::retrieval::factual=trace` (or `=debug` for the
+/// per-stage summaries without the per-edge firehose). Kept off the
+/// default path: a silent plan is the normal case, and this target only
+/// emits when explicitly requested. Added after ISS-189, where the plan
+/// dropped the answer episode and no in-plan signal existed to see *why*
+/// (anchor set, traversal direction, seed contents, recency truncation).
+const LOG_TARGET: &str = "engramai::retrieval::factual";
 
 use crate::graph::edge::{Edge, EdgeEnd};
 use crate::graph::error::GraphError;
@@ -431,11 +441,34 @@ impl FactualPlan {
 
         // §4.1 step 2 — empty anchors ⇒ downgrade.
         if anchors.is_empty() {
+            debug!(
+                target: LOG_TARGET,
+                "stage1 resolve: query={:?} → 0 anchors (DowngradedNoEntity)",
+                inputs.query
+            );
             return Ok(FactualPlanResult::empty_with(
                 FactualOutcome::DowngradedNoEntity {
                     reason: "no_resolved_anchor",
                 },
             ));
+        }
+
+        // ISS-189 logging — anchor set is the first thing to verify when a
+        // factual recall misses: a wrong/incomplete anchor set silently
+        // bounds every downstream stage. `debug!` for the summary count,
+        // `trace!` for the per-anchor identity.
+        debug!(
+            target: LOG_TARGET,
+            "stage1 resolve: query={:?} → {} anchor(s)",
+            inputs.query,
+            anchors.len()
+        );
+        for a in &anchors {
+            trace!(
+                target: LOG_TARGET,
+                "  anchor entity_id={} name={:?} match_strength={:.3}",
+                a.entity_id, a.canonical_name, a.match_strength
+            );
         }
 
         // Translate (as_of, include_superseded, query_time) → AsOfMode.
@@ -471,6 +504,32 @@ impl FactualPlan {
             }
         }
 
+        // ISS-189 logging — traversal is the stage that misled the first
+        // root-cause attempt. `traverse_anchors` only follows OUTGOING
+        // edges (`subject = anchor`); an answer reachable only via an
+        // INCOMING edge (anchor on the object side) never appears here.
+        // Logging the per-edge `memory_id` makes that visible: if the
+        // expected source episode is absent from this list, the recall
+        // gap is in traversal direction, not in fusion/ranking.
+        debug!(
+            target: LOG_TARGET,
+            "stage2 traverse: {} anchor(s) → {} outgoing edge(s), {} linked entit(ies)",
+            anchors.len(),
+            edges.len(),
+            linked_entities.len()
+        );
+        for row in &edges {
+            trace!(
+                target: LOG_TARGET,
+                "  edge anchor={} pred={:?} linked={:?} memory_id={:?} live={}",
+                row.anchor_id,
+                &row.projected.edge.predicate,
+                row.linked_entity,
+                row.projected.edge.memory_id,
+                row.projected.is_live
+            );
+        }
+
         if edges.is_empty() {
             // Anchors resolved but 1-hop projection is empty — distinct
             // from `DowngradedNoEntity`. Memory lookup might still
@@ -496,6 +555,45 @@ impl FactualPlan {
         // graph_score signal in fusion uses this).
         let mut memories: BTreeMap<MemoryId, BTreeSet<Uuid>> = BTreeMap::new();
 
+        // ISS-189 D1 — seed candidates from edge provenance.
+        //
+        // Stage 2 already traversed the typed graph and found the edges
+        // that *assert* the queried relationship. Each such edge carries
+        // the `memory_id` of the source episode that established it. That
+        // episode is, by construction, the most directly relevant answer
+        // candidate for a factual query — yet the legacy Stage 3 threw it
+        // away and re-derived candidates from a recency-truncated flat
+        // `memories_mentioning_entity` scan (ORDER BY recorded_at DESC
+        // LIMIT). On dense anchors (e.g. an entity mentioned in hundreds
+        // of episodes) the answer episode ranks far down the recency list
+        // and gets cut before fusion ever sees it.
+        //
+        // Seeding from `edges[].memory_id` makes the plan honor its own
+        // successful graph traversal: the source episode is admitted to
+        // the candidate pool unconditionally, attributed to the anchor
+        // that produced the edge. The recency-scan loops below still run
+        // to add neighborhood breadth, but they can no longer silently
+        // discard the answer.
+        for edge in &edges {
+            if let Some(mid) = &edge.projected.edge.memory_id {
+                memories
+                    .entry(mid.clone())
+                    .or_default()
+                    .insert(edge.anchor_id);
+            }
+        }
+
+        // ISS-189 logging — how many candidates the edge-provenance seed
+        // contributed before the recency scan runs. If this is 0 on a
+        // query whose answer lives on a traversed edge, the seed source
+        // (Stage 2 edges) is empty for the wrong-direction reason above.
+        let seeded_count = memories.len();
+        debug!(
+            target: LOG_TARGET,
+            "stage3 seed: edge-provenance contributed {} candidate(s)",
+            seeded_count
+        );
+
         // Per-anchor recall budget (ISS-105):
         //
         //   effective_limit = min(α × requested_k / max(1, anchors.len()),
@@ -518,8 +616,35 @@ impl FactualPlan {
         };
         let limit = effective_limit;
 
+        debug!(
+            target: LOG_TARGET,
+            "stage3 recency-scan: effective_limit={} (requested_k={}, anchors={}, cap={})",
+            limit,
+            inputs.requested_k,
+            anchors.len(),
+            inputs.memory_limit_per_entity
+        );
+
         for anchor in &anchors {
             let hits = graph.memories_mentioning_entity(anchor.entity_id, limit)?;
+            // A full-limit return means the recency-ordered scan was
+            // truncated: any source episode older than the `limit`-th most
+            // recent mention of this anchor was dropped here. ISS-189: this
+            // is exactly how the answer episode got cut (ranked 519/524 by
+            // recency on a dense anchor).
+            if hits.len() >= limit {
+                trace!(
+                    target: LOG_TARGET,
+                    "  anchor={} recency-scan TRUNCATED at limit={} (older mentions dropped)",
+                    anchor.entity_id, limit
+                );
+            } else {
+                trace!(
+                    target: LOG_TARGET,
+                    "  anchor={} recency-scan returned {} (not truncated)",
+                    anchor.entity_id, hits.len()
+                );
+            }
             for mid in hits {
                 memories
                     .entry(mid)
@@ -575,6 +700,14 @@ impl FactualPlan {
             FactualOutcome::Ok
         };
 
+        debug!(
+            target: LOG_TARGET,
+            "factual done: outcome={:?} candidates={} (seeded={})",
+            outcome,
+            memory_rows.len(),
+            seeded_count
+        );
+
         Ok(FactualPlanResult {
             anchors,
             edges,
@@ -628,6 +761,42 @@ fn traverse_anchors<G: GraphRead + ?Sized>(
                 EdgeEnd::Entity { id } => Some(*id),
                 EdgeEnd::Literal { .. } => None,
             };
+            out.push(FactualEdgeRow {
+                anchor_id: anchor.entity_id,
+                linked_entity,
+                projected: pe,
+            });
+        }
+
+        // ISS-189 — also traverse INCOMING edges (this anchor on the
+        // object side). Asymmetric predicates such as `PartOf` store no
+        // inverse, so the episode that establishes the relationship is
+        // recorded on the edge pointing *at* the anchor
+        // (`dog --part_of--> Audrey`). An outgoing-only walk from the
+        // anchor never sees that edge's `memory_id`, so the answer
+        // episode never enters the candidate pool. For an incoming edge
+        // the neighbor is the *subject*, not the object.
+        let incoming: Vec<Edge> = match mode {
+            AsOfMode::At(t) => {
+                // No object-side as-of primitive; reuse the live-or-history
+                // incoming query and apply the predicate + temporal filter
+                // through `project_edges` below.
+                let mut e = graph.edges_into(anchor.entity_id, predicate, true)?;
+                e.retain(|edge| {
+                    let valid = edge.valid_from.map(|vf| vf <= *t).unwrap_or(true)
+                        && edge.valid_to.map(|vt| vt > *t).unwrap_or(true)
+                        && edge.invalidated_at.map(|ia| ia > *t).unwrap_or(true);
+                    valid
+                });
+                e
+            }
+            _ => graph.edges_into(anchor.entity_id, predicate, mode.wants_history())?,
+        };
+
+        let projected_in = project_edges(incoming, *mode);
+        for pe in projected_in {
+            // Neighbor = subject for an incoming edge.
+            let linked_entity = Some(pe.edge.subject_id);
             out.push(FactualEdgeRow {
                 anchor_id: anchor.entity_id,
                 linked_entity,
@@ -691,6 +860,7 @@ mod tests {
     #[derive(Default)]
     struct StubGraph {
         edges_of_map: HashMap<Uuid, Vec<Edge>>,
+        edges_into_map: HashMap<Uuid, Vec<Edge>>,
         edges_as_of_map: HashMap<Uuid, Vec<Edge>>,
         memories_of: HashMap<Uuid, Vec<String>>,
         memories_calls: RefCell<usize>,
@@ -700,6 +870,11 @@ mod tests {
     impl StubGraph {
         fn add_edge_for(&mut self, anchor: Uuid, edge: Edge) {
             self.edges_of_map.entry(anchor).or_default().push(edge);
+        }
+        /// Register `edge` as an INCOMING edge to `object` (ISS-189): the
+        /// edge's entity-object is `object`, its subject is some neighbor.
+        fn add_incoming_edge_for(&mut self, object: Uuid, edge: Edge) {
+            self.edges_into_map.entry(object).or_default().push(edge);
         }
         fn add_memories(&mut self, entity: Uuid, mids: Vec<&str>) {
             self.memories_of
@@ -751,6 +926,26 @@ mod tests {
             let edges = self
                 .edges_of_map
                 .get(&subject)
+                .cloned()
+                .unwrap_or_default();
+            let mut filtered: Vec<Edge> = edges
+                .into_iter()
+                .filter(|e| include_invalidated || e.invalidated_at.is_none())
+                .collect();
+            if let Some(p) = predicate {
+                filtered.retain(|e| &e.predicate == p);
+            }
+            Ok(filtered)
+        }
+        fn edges_into(
+            &self,
+            object: Uuid,
+            predicate: Option<&Predicate>,
+            include_invalidated: bool,
+        ) -> Result<Vec<Edge>, GraphError> {
+            let edges = self
+                .edges_into_map
+                .get(&object)
                 .cloned()
                 .unwrap_or_default();
             let mut filtered: Vec<Edge> = edges
@@ -1304,5 +1499,281 @@ mod tests {
         for l in limits.iter() {
             assert_eq!(*l, 30, "α·K / anchors = 3×50/5 = 30");
         }
+    }
+
+    /// ISS-189 AC-1 — edge provenance seeds the candidate pool.
+    ///
+    /// Stage 2 traverses an edge carrying `memory_id = "answer_ep"`. The
+    /// Factual plan must admit `answer_ep` to its candidate set directly
+    /// from the edge, attributed to the anchor that produced the edge —
+    /// regardless of whether the recency scan would have surfaced it.
+    #[test]
+    fn iss189_ac1_edge_memory_id_seeds_candidate() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+
+        let audrey = Uuid::from_u128(1);
+        let pepper = Uuid::from_u128(2);
+
+        // pepper --part_of--> audrey, sourced from the answer episode.
+        let mut edge = Edge::new(
+            audrey,
+            Predicate::proposed("part_of"),
+            EdgeEnd::Entity { id: pepper },
+            Some(ts(100)),
+            ts(150),
+        );
+        edge.memory_id = Some("answer_ep".into());
+        graph.add_edge_for(audrey, edge);
+        // Recency scan returns nothing for the anchor — proves the
+        // candidate came from the edge, not the flat scan.
+        graph.add_memories(audrey, vec![]);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: audrey,
+            canonical_name: "Audrey".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut b = budget();
+        let result = plan
+            .execute(&make_inputs("audrey dogs"), &resolver, &graph, &mut b)
+            .unwrap();
+
+        assert_eq!(result.outcome, FactualOutcome::Ok);
+        let answer = result
+            .memories
+            .iter()
+            .find(|r| r.memory_id == "answer_ep")
+            .expect("edge memory_id must seed the candidate pool");
+        assert!(
+            answer.seen_via.contains(&audrey),
+            "seeded candidate attributed to the anchor that produced the edge"
+        );
+    }
+
+    /// ISS-189 AC-2 — the answer episode survives a dense anchor.
+    ///
+    /// Reproduction of conv-44 q29: Audrey is mentioned in many episodes;
+    /// the answer episode ranks below the recency-truncation limit, so the
+    /// flat `memories_mentioning_entity` scan cuts it. The edge provenance
+    /// seeding (D1) must rescue it before fusion.
+    #[test]
+    fn iss189_ac2_answer_survives_recency_truncation() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+
+        let audrey = Uuid::from_u128(1);
+        let pepper = Uuid::from_u128(2);
+
+        let mut edge = Edge::new(
+            audrey,
+            Predicate::proposed("part_of"),
+            EdgeEnd::Entity { id: pepper },
+            Some(ts(100)),
+            ts(150),
+        );
+        edge.memory_id = Some("answer_ep".into());
+        graph.add_edge_for(audrey, edge);
+
+        // Audrey mentioned in many recent episodes; the answer ranks
+        // last. With the legacy per-anchor limit the StubGraph truncates
+        // the scan and drops `answer_ep`.
+        let mut mentions: Vec<&str> = (0..50)
+            .map(|i| Box::leak(format!("recent_{i:02}").into_boxed_str()) as &str)
+            .collect();
+        mentions.push("answer_ep");
+        graph.add_memories(audrey, mentions);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: audrey,
+            canonical_name: "Audrey".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut inputs = make_inputs("audrey dogs");
+        // Tight K so the recency scan is truncated well above the answer.
+        inputs.requested_k = 3; // α·K = 9 < 51 mentions → answer cut
+        inputs.memory_limit_per_entity = 100;
+
+        let mut b = budget();
+        let result = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+
+        assert!(
+            result.memories.iter().any(|r| r.memory_id == "answer_ep"),
+            "answer episode must survive recency truncation via edge seeding"
+        );
+    }
+
+    /// ISS-189 AC-3 — seeding is additive, not a replacement.
+    ///
+    /// The edge-provenance seed must coexist with the recency-scan
+    /// candidates: both the seeded answer and the flat-scan neighborhood
+    /// appear, and a candidate surfaced by both paths records both
+    /// attributions in `seen_via`.
+    #[test]
+    fn iss189_ac3_seeding_is_additive() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+
+        let audrey = Uuid::from_u128(1);
+        let pepper = Uuid::from_u128(2);
+
+        let mut edge = Edge::new(
+            audrey,
+            Predicate::proposed("part_of"),
+            EdgeEnd::Entity { id: pepper },
+            Some(ts(100)),
+            ts(150),
+        );
+        edge.memory_id = Some("answer_ep".into());
+        graph.add_edge_for(audrey, edge);
+
+        // Flat scan surfaces a neighborhood episode AND the answer_ep
+        // (so we can assert dual attribution).
+        graph.add_memories(audrey, vec!["neighbor_ep", "answer_ep"]);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: audrey,
+            canonical_name: "Audrey".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut b = budget();
+        let result = plan
+            .execute(&make_inputs("audrey dogs"), &resolver, &graph, &mut b)
+            .unwrap();
+
+        // Both candidates present.
+        assert!(result.memories.iter().any(|r| r.memory_id == "neighbor_ep"));
+        let answer = result
+            .memories
+            .iter()
+            .find(|r| r.memory_id == "answer_ep")
+            .expect("answer present via both edge seed and flat scan");
+        // Surfaced by both paths → single audrey attribution (same
+        // entity), but it must be present.
+        assert!(answer.seen_via.contains(&audrey));
+    }
+
+    /// ISS-189 AC-4 — INCOMING-edge provenance seeds the candidate pool.
+    ///
+    /// This is the real conv-44-q0 topology: the answer episode is
+    /// recorded on edges pointing *at* the anchor
+    /// (`pepper --part_of--> Audrey`), with `Audrey` as the entity
+    /// object. Audrey has NO outgoing edge carrying the answer. An
+    /// outgoing-only traversal (pre-fix) never sees `answer_ep`; the
+    /// incoming-edge traversal must pull it in.
+    #[test]
+    fn iss189_ac4_incoming_edge_memory_id_seeds_candidate() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+
+        let audrey = Uuid::from_u128(1);
+        let pepper = Uuid::from_u128(2);
+
+        // pepper --part_of--> audrey, sourced from the answer episode.
+        // Audrey is the OBJECT here, so this is an incoming edge to Audrey.
+        let mut edge = Edge::new(
+            pepper,
+            Predicate::proposed("part_of"),
+            EdgeEnd::Entity { id: audrey },
+            Some(ts(100)),
+            ts(150),
+        );
+        edge.memory_id = Some("answer_ep".into());
+        graph.add_incoming_edge_for(audrey, edge);
+
+        // Audrey has NO outgoing edges and the recency scan returns
+        // nothing — proves the candidate came ONLY from the incoming
+        // edge.
+        graph.add_memories(audrey, vec![]);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: audrey,
+            canonical_name: "Audrey".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut b = budget();
+        let result = plan
+            .execute(&make_inputs("which year audrey adopt dogs"), &resolver, &graph, &mut b)
+            .unwrap();
+
+        assert_eq!(result.outcome, FactualOutcome::Ok);
+        let answer = result
+            .memories
+            .iter()
+            .find(|r| r.memory_id == "answer_ep")
+            .expect("incoming-edge memory_id must seed the candidate pool");
+        assert!(
+            answer.seen_via.contains(&audrey),
+            "incoming-edge seed attributed to the anchor on the object side"
+        );
+        // The subject (pepper) is recorded as a linked entity.
+        assert!(
+            result.linked_entities.contains(&pepper),
+            "incoming-edge subject must appear as a linked entity"
+        );
+    }
+
+    /// ISS-189 AC-5 — incoming-edge predicate filter is honored.
+    ///
+    /// When a `predicate_filter` is set, incoming-edge traversal must
+    /// apply it just like the outgoing path: only edges whose predicate
+    /// matches the filter contribute candidates.
+    #[test]
+    fn iss189_ac5_incoming_edge_respects_predicate_filter() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+
+        let audrey = Uuid::from_u128(1);
+        let pepper = Uuid::from_u128(2);
+        let house = Uuid::from_u128(3);
+
+        // Matching predicate: pepper --part_of--> audrey (answer).
+        let mut want = Edge::new(
+            pepper,
+            Predicate::proposed("part_of"),
+            EdgeEnd::Entity { id: audrey },
+            Some(ts(100)),
+            ts(150),
+        );
+        want.memory_id = Some("answer_ep".into());
+        graph.add_incoming_edge_for(audrey, want);
+
+        // Non-matching predicate: house --located_at--> audrey (noise).
+        let mut noise = Edge::new(
+            house,
+            Predicate::proposed("located_at"),
+            EdgeEnd::Entity { id: audrey },
+            Some(ts(100)),
+            ts(150),
+        );
+        noise.memory_id = Some("noise_ep".into());
+        graph.add_incoming_edge_for(audrey, noise);
+
+        graph.add_memories(audrey, vec![]);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: audrey,
+            canonical_name: "Audrey".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut inputs = make_inputs("audrey dogs");
+        inputs.predicate_filter = Some(Predicate::proposed("part_of"));
+
+        let mut b = budget();
+        let result = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+
+        assert!(
+            result.memories.iter().any(|r| r.memory_id == "answer_ep"),
+            "matching-predicate incoming edge must seed the candidate"
+        );
+        assert!(
+            !result.memories.iter().any(|r| r.memory_id == "noise_ep"),
+            "non-matching-predicate incoming edge must be filtered out"
+        );
     }
 }
