@@ -81,12 +81,36 @@ benefits without re-implementing the JSON-path dance.
       pointers. 2042/2042 lib tests pass. NB: `dimension_access.rs`
       (`DimensionView`) is an orphan module (never wired into lib.rs) so
       its tests never ran — it carried the same latent bug.
-- [ ] **AC-2** Extend `TemporalMark`/`TimeRange` to represent an
+- [x] **AC-2** Extend `TemporalMark`/`TimeRange` to represent an
       uncertainty-preserving year-granular / ongoing value (the "~2020,
       ongoing" case) as structured data, with a metadata version bump and
       round-trip serde tests.
-- [ ] **AC-3** `temporal_score` interval support uses the structured form
+      **DONE** (commits `bb3f5ac` variant + `8567f8f` producer): added
+      `TemporalMark::Approx { start, end: Option<NaiveDate>, approximate:
+      bool, note: Option<String> }`. `end: None` = ongoing; `approximate`
+      flags inferred bounds; `note` carries derivation provenance.
+      `precision_rank` renumbered Exact(5) > Range(4) > Day(3) > Approx(2)
+      > Vague(1). `parse_temporal_mark` now emits `Approx` for the ISS-190
+      strings (`~2020`, `~2020 (note)`, `since 2020`, `2020 (ongoing)`,
+      bare `2020`) instead of `Vague`; non-year leading numbers stay
+      `Vague`. Tagged serde object `{"kind":"approx",...}` round-trips on
+      the AC-1 read path. +7 tests (serde, Display, 5 parse cases).
+      (No metadata *version* bump needed — `Approx` is a new tagged enum
+      variant, additive and backward-compatible on read.)
+- [x] **AC-3** `temporal_score` interval support uses the structured form
       (don't regress existing exact/range scoring).
+      **DONE** (commit `1d52fe8`): added
+      `Memory::memory_temporal_extent(record) -> (start, end)` — reads the
+      derived mark and yields `[start, end]` for `Approx`/`Range`/`Day`,
+      and a single point at `event_time()` for `Exact`/`Vague`/none
+      (byte-identical to pre-AC-3). `temporal_score` now scores by
+      interval **overlap** and uses the interval midpoint for the
+      proximity curve; the 0.5 in-range floor preserves the prior edge
+      score. Ongoing (`end: None`) clamps to `event_time` so it never
+      matches the far future. +2 tests (~2020 mark matches a 2020 query
+      while a bare-2023 point misses; ongoing 2020→2023 overlaps a 2022
+      query). Existing 3 temporal_score tests unchanged. 2051/2051 lib
+      tests pass.
 - [ ] **AC-4** conv-44 q0 (gold `2020`) flips `0→1` end-to-end with the
       bench surfacing the derived mark (validated by run
       `ISS191-fix-conv44-*`).
