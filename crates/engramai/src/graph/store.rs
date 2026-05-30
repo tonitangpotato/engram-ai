@@ -861,6 +861,56 @@ impl<'a> SqliteGraphStore<'a> {
         }))
     }
 
+    /// T37g A4: unified-substrate read for [`GraphStore::get_edge`].
+    ///
+    /// Reads a single structural edge from the unified `edges` table
+    /// (`edge_kind = 'structural'`) and reverse-maps it onto the legacy
+    /// [`EdgeRowColumns`] shape so the shared [`decode_edge_row`] decoder
+    /// can build the [`Edge`]. Per the T37g field-translation reference
+    /// (`T37g-readsite-map.md` §1.2):
+    ///
+    /// * `id`/`source_id` are TEXT UUIDs → re-encoded to 16-byte BLOBs so
+    ///   `decode_edge_row` (which calls `Uuid::from_slice`) is unchanged.
+    /// * `object_kind` is **derived** (R5): `target_id` non-NULL ⇒
+    ///   `"entity"`, `target_literal` non-NULL ⇒ `"literal"`. The `edges`
+    ///   CHECK guarantees exactly one is set.
+    /// * `episode_id` has **no unified home** (R3, §7.4) → always NULL.
+    /// * `memory_id` maps from `source_memory_id`, which is Phase-B NULL
+    ///   (R4) — read verbatim so it stays parity-correct once populated.
+    /// * `invalidated_by`/`supersedes` are TEXT UUIDs → re-encoded to BLOBs.
+    ///
+    /// Edge parity is **equality** (not superset): edges only originate
+    /// from the resolution pipeline, so the structural-edge set in `edges`
+    /// equals the `graph_edges` set.
+    fn get_edge_unified(&self, id: Uuid) -> Result<Option<Edge>, GraphError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, source_id,
+                    predicate_kind, predicate,
+                    target_id, target_literal,
+                    summary,
+                    valid_from, valid_to, recorded_at, invalidated_at,
+                    invalidated_by, supersedes,
+                    source_memory_id,
+                    resolution_method,
+                    activation, confidence,
+                    agent_affect,
+                    created_at
+             FROM edges
+             WHERE id = ?1 AND namespace = ?2
+               AND edge_kind = 'structural'",
+        )?;
+        let row = stmt
+            .query_row(
+                rusqlite::params![id.to_string(), self.namespace],
+                row_to_edge_columns_unified,
+            )
+            .optional()?;
+        match row {
+            None => Ok(None),
+            Some(cols) => decode_edge_row(cols).map(Some),
+        }
+    }
+
     /// Borrow the underlying connection. Tests use this to inspect rows
     /// directly; production code should not.
     #[cfg(test)]
@@ -1957,6 +2007,110 @@ fn row_to_edge_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<EdgeRowColum
     ))
 }
 
+/// T37g A4: row mapper for the unified `edges` table.
+///
+/// Produces the legacy [`EdgeRowColumns`] tuple from a unified-substrate
+/// edge row so the shared [`decode_edge_row`] decoder stays the single
+/// decode path for both legacy and unified reads. The unified SELECT
+/// column order is:
+///
+/// `id, source_id, predicate_kind, predicate, target_id, target_literal,
+///  summary, valid_from, valid_to, recorded_at, invalidated_at,
+///  invalidated_by, supersedes, source_memory_id, resolution_method,
+///  activation, confidence, agent_affect, created_at`
+///
+/// Reverse-mapping per `T37g-readsite-map.md` §1.2:
+///
+/// * TEXT UUIDs (`id`, `source_id`, `target_id`, `invalidated_by`,
+///   `supersedes`) → 16-byte BLOBs (`decode_edge_row` calls
+///   `Uuid::from_slice`).
+/// * `object_kind` is **derived** (R5): `target_id` non-NULL ⇒
+///   `"entity"`, else `"literal"`.
+/// * `episode_id` has no unified home (R3) → always `None`.
+/// * `memory_id` ← `source_memory_id` (R4, Phase-B NULL).
+fn row_to_edge_columns_unified(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<EdgeRowColumns> {
+    let id_text: String = row.get(0)?;
+    let source_id_text: String = row.get(1)?;
+    let predicate_kind: String = row.get(2)?;
+    let predicate_label: String = row.get(3)?;
+    let target_id_text: Option<String> = row.get(4)?;
+    let target_literal: Option<String> = row.get(5)?;
+    let summary: String = row.get(6)?;
+    let valid_from: Option<f64> = row.get(7)?;
+    let valid_to: Option<f64> = row.get(8)?;
+    let recorded_at: f64 = row.get(9)?;
+    let invalidated_at: Option<f64> = row.get(10)?;
+    let invalidated_by_text: Option<String> = row.get(11)?;
+    let supersedes_text: Option<String> = row.get(12)?;
+    let source_memory_id: Option<String> = row.get(13)?;
+    let resolution_method: String = row.get(14)?;
+    let activation: f64 = row.get(15)?;
+    let confidence: f64 = row.get(16)?;
+    let agent_affect: Option<String> = row.get(17)?;
+    let created_at: f64 = row.get(18)?;
+
+    // TEXT UUID → 16-byte BLOB. A malformed id stored in the substrate is
+    // a data-integrity bug; surface it as `rusqlite` invalid-column-type
+    // (the closure's error channel) rather than panicking.
+    let uuid_text_to_blob = |s: &str, col: usize| -> rusqlite::Result<Vec<u8>> {
+        Uuid::parse_str(s)
+            .map(|u| u.as_bytes().to_vec())
+            .map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    col,
+                    "uuid".to_string(),
+                    rusqlite::types::Type::Text,
+                )
+            })
+    };
+
+    let id_blob = uuid_text_to_blob(&id_text, 0)?;
+    let source_id_blob = uuid_text_to_blob(&source_id_text, 1)?;
+
+    // R5: derive object_kind + the legacy (object_entity_id, object_literal)
+    // pair from the unified (target_id, target_literal) discriminator.
+    let (object_kind, object_entity_id): (String, Option<Vec<u8>>) =
+        match &target_id_text {
+            Some(t) => ("entity".to_string(), Some(uuid_text_to_blob(t, 4)?)),
+            None => ("literal".to_string(), None),
+        };
+
+    let invalidated_by_blob: Option<Vec<u8>> = match &invalidated_by_text {
+        Some(s) => Some(uuid_text_to_blob(s, 11)?),
+        None => None,
+    };
+    let supersedes_blob: Option<Vec<u8>> = match &supersedes_text {
+        Some(s) => Some(uuid_text_to_blob(s, 12)?),
+        None => None,
+    };
+
+    Ok((
+        id_blob,           // 0: id
+        source_id_blob,    // 1: subject_id
+        predicate_kind,    // 2
+        predicate_label,   // 3
+        object_kind,       // 4
+        object_entity_id,  // 5
+        target_literal,    // 6: object_literal
+        summary,           // 7
+        valid_from,        // 8
+        valid_to,          // 9
+        recorded_at,       // 10
+        invalidated_at,    // 11
+        invalidated_by_blob, // 12
+        supersedes_blob,   // 13
+        None,              // 14: episode_id — no unified home (R3)
+        source_memory_id,  // 15: memory_id ← source_memory_id (R4)
+        resolution_method, // 16
+        activation,        // 17
+        confidence,        // 18
+        agent_affect,      // 19
+        created_at,        // 20
+    ))
+}
+
 /// Decode a raw `graph_edges` row into an [`Edge`]. Inverse of the
 /// `INSERT` in `insert_edge`. `confidence_source` defaults to `Recovered`
 /// because §4.1 has no column for it yet (DevNote #5); migrated edges
@@ -2534,6 +2688,9 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
     }
 
     fn get_edge(&self, id: Uuid) -> Result<Option<Edge>, GraphError> {
+        if self.unified_substrate {
+            return self.get_edge_unified(id);
+        }
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, subject_id,
                     predicate_kind, predicate_label,
@@ -10280,6 +10437,117 @@ mod tests {
         assert!(
             store.get_entity(Uuid::new_v4()).expect("ok").is_none(),
             "unknown id returns None on unified path"
+        );
+    }
+
+    #[test]
+    fn t37g_a4_get_edge_unified_parity_with_legacy() {
+        // T37g A4: a structural edge inserted via the dual-write path must
+        // read identically through the legacy `graph_edges` reader and the
+        // unified `edges` reader. Edge parity is EQUALITY (not superset):
+        // edges only originate from the resolution pipeline.
+        //
+        // NB: `episode_id` is left `None` because the unified `edges` table
+        // has no episode column (R3 §7.4) — an edge carrying an episode_id
+        // would diverge by design. `memory_id` round-trips through
+        // `source_memory_id`.
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+        let (subj, obj) = {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            let subj = insert_subject_entity(&mut store, "Alice");
+            let obj = insert_subject_entity(&mut store, "Acme");
+            (subj, obj)
+        };
+
+        let mut e = Edge::new(
+            subj,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: obj },
+            Some(now),
+            now,
+        );
+        e.summary = "Alice works at Acme".into();
+        e.valid_to = Some(now + chrono::Duration::days(365));
+        // `memory_id` is left None: in the unified table it maps to
+        // `source_memory_id REFERENCES nodes(id)` (R4, Phase-B NULL). A
+        // non-node string id like "mem-1" passes the legacy (no-FK)
+        // `graph_edges` insert but violates the unified FK by design.
+        e.resolution_method = ResolutionMethod::LlmTieBreaker;
+        e.activation = 0.4;
+        e.confidence = 0.9;
+        e.agent_affect = Some(serde_json::json!({"valence": 0.2}));
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            store.insert_edge(&e).expect("insert edge (dual-write)");
+        }
+
+        let legacy = {
+            let store = SqliteGraphStore::new(&mut conn);
+            store.get_edge(e.id).expect("legacy get").expect("found")
+        };
+        let unified = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store.get_edge(e.id).expect("unified get").expect("found")
+        };
+
+        assert_edge_core_eq(&unified, &legacy);
+        assert_edge_core_eq(&unified, &e);
+        // episode_id is dropped on the unified path (R3) — explicit.
+        assert_eq!(unified.episode_id, None, "episode_id has no unified home (R3)");
+        // confidence_source re-defaults on read (DevNote #5).
+        assert_eq!(unified.confidence_source, ConfidenceSource::Recovered);
+    }
+
+    #[test]
+    fn t37g_a4_get_edge_unified_literal_object_and_missing_id() {
+        // Cover the R5 object_kind derivation for a literal object
+        // (`target_literal` non-NULL ⇒ derived object_kind = "literal")
+        // and the not-found path.
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+        let subj = {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            insert_subject_entity(&mut store, "Bob")
+        };
+
+        let mut e = Edge::new(
+            subj,
+            Predicate::proposed("  Likes   Coffee  "),
+            EdgeEnd::Literal {
+                value: serde_json::json!({"strength": "strong"}),
+            },
+            None,
+            now,
+        );
+        e.confidence = 0.55;
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            store.insert_edge(&e).expect("insert literal edge");
+        }
+
+        let unified = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store.get_edge(e.id).expect("unified get").expect("found")
+        };
+        assert_edge_core_eq(&unified, &e);
+        match &unified.object {
+            EdgeEnd::Literal { value } => {
+                assert_eq!(value, &serde_json::json!({"strength": "strong"}));
+            }
+            other => panic!("expected Literal object, got {:?}", other),
+        }
+        // Normalized proposed predicate survives the unified round-trip.
+        match &unified.predicate {
+            Predicate::Proposed(s) => assert_eq!(s, "likes coffee"),
+            other => panic!("expected Proposed, got {:?}", other),
+        }
+
+        // Unknown id → None on the unified path.
+        let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+        assert!(
+            store.get_edge(Uuid::new_v4()).expect("ok").is_none(),
+            "unknown edge id returns None on unified path"
         );
     }
 }
