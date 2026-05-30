@@ -113,18 +113,30 @@ fn iss190_ac2_duration_resolves_to_absolute_year_at_store_time() {
 }
 
 #[test]
-fn iss190_ac2_vague_year_string_survives_parse_temporal_mark() {
-    // The minimal-viable representation: "~2020" is not a structured calendar
-    // value, so it lands in TemporalMark::Vague — but the YEAR STRING is
-    // preserved (not dropped). That is sufficient for the q0 answer. Full
-    // structured "~2020 / ongoing / year-granular" is deferred to ISS-191.
+fn iss190_ac2_approx_year_string_survives_parse_temporal_mark() {
+    // ISS-190 preserved the year string; ISS-191 AC-2 (commit bb3f5ac) then
+    // promoted it from free-text Vague to a structured year-granular interval
+    // so a downstream interval scorer (AC-3) reads bounds instead of
+    // re-parsing a string. "~2020" therefore lands in TemporalMark::Approx
+    // with the fuzz marker recorded — the year is still preserved (the
+    // original ISS-190 intent), just in structured form.
     let mark = parse_temporal_mark("~2020");
     match mark {
-        TemporalMark::Vague(s) => assert!(
-            s.contains("2020"),
-            "Vague mark must preserve the year string, got: {s}"
-        ),
-        other => panic!("expected Vague (year-only is not a calendar day), got {other:?}"),
+        TemporalMark::Approx {
+            start,
+            end,
+            approximate,
+            ..
+        } => {
+            assert_eq!(start.year(), 2020, "Approx start must carry the year 2020");
+            assert_eq!(
+                end.map(|d| d.year()),
+                Some(2020),
+                "year-only Approx spans the full calendar year"
+            );
+            assert!(approximate, "the `~` fuzz marker must set approximate=true");
+        }
+        other => panic!("expected Approx year-granular interval, got {other:?}"),
     }
 }
 
