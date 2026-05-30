@@ -3865,6 +3865,70 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 .collect()
         };
 
+        // T37g-A9 (hot BFS path): when `unified_substrate` is on, every
+        // per-step query reads FROM the unified `edges WHERE
+        // edge_kind='structural'` table instead of `graph_edges`. The
+        // column list, table, keyed columns and row mapper are selected
+        // once here; the BFS loop below interpolates them so the traversal
+        // logic stays single-sourced. Default-off resolves to the exact
+        // pre-T37g legacy SQL (byte-identical column list + table).
+        let unified = self.unified_substrate;
+        // Unified projection matches `row_to_edge_columns_unified`'s 19-col
+        // order; legacy matches `row_to_edge_columns`'s 21-col order.
+        let edge_cols: &str = if unified {
+            "id, source_id,
+             predicate_kind, predicate,
+             target_id, target_literal,
+             summary,
+             valid_from, valid_to, recorded_at, invalidated_at,
+             invalidated_by, supersedes,
+             source_memory_id,
+             resolution_method,
+             activation, confidence,
+             agent_affect,
+             created_at"
+        } else {
+            "id, subject_id,
+             predicate_kind, predicate_label,
+             object_kind, object_entity_id, object_literal,
+             summary,
+             valid_from, valid_to, recorded_at, invalidated_at,
+             invalidated_by, supersedes,
+             episode_id, memory_id,
+             resolution_method,
+             activation, confidence,
+             agent_affect,
+             created_at"
+        };
+        let edge_table: &str = if unified { "edges" } else { "graph_edges" };
+        // Unified rows are scoped to structural edges; legacy graph_edges
+        // holds only structural rows, so the clause is a no-op there.
+        let kind_scope: &str = if unified {
+            "AND edge_kind = 'structural'"
+        } else {
+            ""
+        };
+        // Keyed columns: outgoing matches on the subject side, incoming on
+        // the object side. Unified uses source_id/target_id (TEXT); legacy
+        // uses subject_id/object_entity_id (BLOB).
+        let subj_col: &str = if unified { "source_id" } else { "subject_id" };
+        let obj_col: &str = if unified { "target_id" } else { "object_entity_id" };
+        let pred_col: &str = if unified { "predicate" } else { "predicate_label" };
+        // Per-node keyed param: TEXT uuid (unified) vs 16-byte BLOB (legacy).
+        let node_param = |node: &Uuid| -> Box<dyn rusqlite::ToSql> {
+            if unified {
+                Box::new(node.to_string())
+            } else {
+                Box::new(node.as_bytes().to_vec())
+            }
+        };
+        let row_mapper: fn(&rusqlite::Row<'_>) -> rusqlite::Result<EdgeRowColumns> =
+            if unified {
+                row_to_edge_columns_unified
+            } else {
+                row_to_edge_columns
+            };
+
         // 3. BFS state.
         //
         //    `visited`  - entities already enqueued or yielded as a frontier
@@ -3893,7 +3957,6 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 if output.len() >= max_results {
                     break;
                 }
-                let node_blob = node.as_bytes().to_vec();
 
                 // 3a. Outgoing edges (subject = node). For each canonical
                 //     predicate variant in the filter — or all canonical if
@@ -3902,28 +3965,21 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                     // No filter: select all live edges; we'll filter to
                     // canonical in Rust by re-classifying each row's
                     // (kind, label).
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
-                                predicate_kind, predicate_label,
-                                object_kind, object_entity_id, object_literal,
-                                summary,
-                                valid_from, valid_to, recorded_at, invalidated_at,
-                                invalidated_by, supersedes,
-                                episode_id, memory_id,
-                                resolution_method,
-                                activation, confidence,
-                                agent_affect,
-                                created_at
-                         FROM graph_edges
-                         WHERE subject_id = ?1 AND namespace = ?2
+                    let sql = format!(
+                        "SELECT {edge_cols}
+                         FROM {edge_table}
+                         WHERE {subj_col} = ?1 AND namespace = ?2
+                           {kind_scope}
                            AND invalidated_at IS NULL
                            AND predicate_kind = 'canonical'
-                         ORDER BY activation DESC, recorded_at DESC, id ASC",
-                    )?;
+                         ORDER BY activation DESC, recorded_at DESC, id ASC"
+                    );
+                    let mut stmt = self.conn.prepare_cached(&sql)?;
+                    let node_p = node_param(node);
                     let rows: Vec<EdgeRowColumns> = stmt
                         .query_map(
-                            rusqlite::params![node_blob, self.namespace],
-                            row_to_edge_columns,
+                            rusqlite::params![node_p, self.namespace],
+                            row_mapper,
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     rows
@@ -3944,29 +4000,19 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                         .collect::<Vec<_>>()
                         .join(",");
                     let sql = format!(
-                        "SELECT id, subject_id,
-                                predicate_kind, predicate_label,
-                                object_kind, object_entity_id, object_literal,
-                                summary,
-                                valid_from, valid_to, recorded_at, invalidated_at,
-                                invalidated_by, supersedes,
-                                episode_id, memory_id,
-                                resolution_method,
-                                activation, confidence,
-                                agent_affect,
-                                created_at
-                         FROM graph_edges
-                         WHERE subject_id = ?1 AND namespace = ?2
+                        "SELECT {edge_cols}
+                         FROM {edge_table}
+                         WHERE {subj_col} = ?1 AND namespace = ?2
+                           {kind_scope}
                            AND invalidated_at IS NULL
                            AND predicate_kind = 'canonical'
-                           AND predicate_label IN ({})
-                         ORDER BY activation DESC, recorded_at DESC, id ASC",
-                        placeholders
+                           AND {pred_col} IN ({placeholders})
+                         ORDER BY activation DESC, recorded_at DESC, id ASC"
                     );
                     let mut stmt = self.conn.prepare(&sql)?;
                     let mut params: Vec<Box<dyn rusqlite::ToSql>> =
                         Vec::with_capacity(2 + labels.len());
-                    params.push(Box::new(node_blob.clone()));
+                    params.push(node_param(node));
                     params.push(Box::new(self.namespace.clone()));
                     for l in &labels {
                         params.push(Box::new(l.clone()));
@@ -3976,7 +4022,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                     let rows: Vec<EdgeRowColumns> = stmt
                         .query_map(
                             rusqlite::params_from_iter(param_refs),
-                            row_to_edge_columns,
+                            row_mapper,
                         )?
                         .collect::<Result<Vec<_>, _>>()?;
                     rows
@@ -4044,29 +4090,28 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 if must_scan_incoming && output.len() < max_results {
                     let incoming: Vec<EdgeRowColumns> = if walk_incoming.is_empty() && allowed_canonical.is_empty() {
                         // No filter → scan all live canonical incoming edges.
-                        let mut stmt = self.conn.prepare_cached(
-                            "SELECT id, subject_id,
-                                    predicate_kind, predicate_label,
-                                    object_kind, object_entity_id, object_literal,
-                                    summary,
-                                    valid_from, valid_to, recorded_at, invalidated_at,
-                                    invalidated_by, supersedes,
-                                    episode_id, memory_id,
-                                    resolution_method,
-                                    activation, confidence,
-                                    agent_affect,
-                                    created_at
-                             FROM graph_edges
-                             WHERE object_entity_id = ?1 AND namespace = ?2
-                               AND object_kind = 'entity'
+                        // Unified: `object_kind='entity'` ⇒ `target_id IS NOT NULL`.
+                        let obj_kind_scope = if unified {
+                            "AND target_id IS NOT NULL"
+                        } else {
+                            "AND object_kind = 'entity'"
+                        };
+                        let sql = format!(
+                            "SELECT {edge_cols}
+                             FROM {edge_table}
+                             WHERE {obj_col} = ?1 AND namespace = ?2
+                               {kind_scope}
+                               {obj_kind_scope}
                                AND invalidated_at IS NULL
                                AND predicate_kind = 'canonical'
-                             ORDER BY activation DESC, recorded_at DESC, id ASC",
-                        )?;
+                             ORDER BY activation DESC, recorded_at DESC, id ASC"
+                        );
+                        let mut stmt = self.conn.prepare_cached(&sql)?;
+                        let node_p = node_param(node);
                         let rows: Vec<EdgeRowColumns> = stmt
                             .query_map(
-                                rusqlite::params![node_blob, self.namespace],
-                                row_to_edge_columns,
+                                rusqlite::params![node_p, self.namespace],
+                                row_mapper,
                             )?
                             .collect::<Result<Vec<_>, _>>()?;
                         rows
@@ -4099,30 +4144,25 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                 .collect::<Vec<_>>()
                                 .join(",");
                             let sql = format!(
-                                "SELECT id, subject_id,
-                                        predicate_kind, predicate_label,
-                                        object_kind, object_entity_id, object_literal,
-                                        summary,
-                                        valid_from, valid_to, recorded_at, invalidated_at,
-                                        invalidated_by, supersedes,
-                                        episode_id, memory_id,
-                                        resolution_method,
-                                        activation, confidence,
-                                        agent_affect,
-                                        created_at
-                                 FROM graph_edges
-                                 WHERE object_entity_id = ?1 AND namespace = ?2
-                                   AND object_kind = 'entity'
+                                "SELECT {edge_cols}
+                                 FROM {edge_table}
+                                 WHERE {obj_col} = ?1 AND namespace = ?2
+                                   {kind_scope}
+                                   {obj_kind_scope}
                                    AND invalidated_at IS NULL
                                    AND predicate_kind = 'canonical'
-                                   AND predicate_label IN ({})
+                                   AND {pred_col} IN ({placeholders})
                                  ORDER BY activation DESC, recorded_at DESC, id ASC",
-                                placeholders
+                                obj_kind_scope = if unified {
+                                    "AND target_id IS NOT NULL"
+                                } else {
+                                    "AND object_kind = 'entity'"
+                                }
                             );
                             let mut stmt = self.conn.prepare(&sql)?;
                             let mut params: Vec<Box<dyn rusqlite::ToSql>> =
                                 Vec::with_capacity(2 + labels.len());
-                            params.push(Box::new(node_blob.clone()));
+                            params.push(node_param(node));
                             params.push(Box::new(self.namespace.clone()));
                             for l in &labels {
                                 params.push(Box::new(l.clone()));
@@ -4132,7 +4172,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                             let rows: Vec<EdgeRowColumns> = stmt
                                 .query_map(
                                     rusqlite::params_from_iter(param_refs),
-                                    row_to_edge_columns,
+                                    row_mapper,
                                 )?
                                 .collect::<Result<Vec<_>, _>>()?;
                             rows
@@ -11494,6 +11534,117 @@ mod tests {
             !unified.iter().any(|e| e.summary == "old" || e.summary == "future"),
             "stale + future-recorded rows excluded"
         );
+    }
+
+    #[test]
+    fn t37g_a9_traverse_unified_parity_with_legacy() {
+        // T37g A9 (hot BFS path): multi-hop traversal must return identical
+        // (entity, edge) results through legacy graph_edges and unified
+        // edges. Exercises all four per-step query sites:
+        //   - outgoing no-filter / filtered
+        //   - incoming no-filter / filtered (via the symmetric predicate
+        //     MarriedTo, which makes traverse walk incoming edges).
+        // Parity is EQUALITY on the full result set.
+        let mut conn = fresh_conn();
+        let t0 = Utc::now();
+
+        // Chain: A -WorksAt-> B -WorksAt-> C  (directed outgoing multi-hop)
+        // Plus:  A -MarriedTo- D             (symmetric: reachable from A
+        //                                     both as subject and, from D's
+        //                                     perspective, as incoming).
+        let (a, b, c, d) = {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            let a = insert_subject_entity(&mut store, "A");
+            let b = insert_subject_entity(&mut store, "B");
+            let c = insert_subject_entity(&mut store, "C");
+            let d = insert_subject_entity(&mut store, "D");
+
+            let ab = Edge::new(
+                a,
+                Predicate::Canonical(CanonicalPredicate::WorksAt),
+                EdgeEnd::Entity { id: b },
+                Some(t0),
+                t0,
+            );
+            let bc = Edge::new(
+                b,
+                Predicate::Canonical(CanonicalPredicate::WorksAt),
+                EdgeEnd::Entity { id: c },
+                Some(t0),
+                t0 + chrono::Duration::seconds(1),
+            );
+            // Symmetric MarriedTo A<->D, stored A as subject.
+            let ad = Edge::new(
+                a,
+                Predicate::Canonical(CanonicalPredicate::MarriedTo),
+                EdgeEnd::Entity { id: d },
+                Some(t0),
+                t0 + chrono::Duration::seconds(2),
+            );
+            store.insert_edge(&ab).unwrap();
+            store.insert_edge(&bc).unwrap();
+            store.insert_edge(&ad).unwrap();
+            (a, b, c, d)
+        };
+        let _ = (b, c, d); // entities referenced only via edges below
+
+        // Compare two traversal result vecs. Order can differ on ties so
+        // sort by (entity id, edge id) then field-compare.
+        let assert_traverse_parity =
+            |mut legacy: Vec<(Uuid, Edge)>, mut unified: Vec<(Uuid, Edge)>, label: &str| {
+                assert_eq!(
+                    legacy.len(),
+                    unified.len(),
+                    "{label}: count legacy={} unified={}",
+                    legacy.len(),
+                    unified.len()
+                );
+                legacy.sort_by_key(|(ent, e)| (*ent, e.id));
+                unified.sort_by_key(|(ent, e)| (*ent, e.id));
+                for ((le, ledge), (ue, uedge)) in legacy.iter().zip(unified.iter()) {
+                    assert_eq!(ue, le, "{label}: entity id");
+                    assert_edge_core_eq(uedge, ledge);
+                }
+            };
+
+        let mut run = |store_unified: bool, depth: usize, max: usize, pf: &[Predicate]| {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(store_unified);
+            store.traverse(a, depth, max, pf).expect("traverse")
+        };
+
+        // Case 1: no filter, deep — walks WorksAt chain A→B→C plus MarriedTo
+        // A↔D. From A: B (out), D (out + symmetric). From B: C. From D:
+        // incoming MarriedTo back to A (already visited).
+        {
+            let legacy = run(false, 5, 100, &[]);
+            let unified = run(true, 5, 100, &[]);
+            assert!(legacy.len() >= 3, "expect at least B, C, D reachable");
+            assert_traverse_parity(legacy, unified, "nofilter/deep");
+        }
+
+        // Case 2: predicate filter = WorksAt only (directed, no incoming).
+        {
+            let pf = vec![Predicate::Canonical(CanonicalPredicate::WorksAt)];
+            let legacy = run(false, 5, 100, &pf);
+            let unified = run(true, 5, 100, &pf);
+            assert_traverse_parity(legacy, unified, "filter/worksat");
+        }
+
+        // Case 3: predicate filter = MarriedTo (symmetric → exercises the
+        // incoming-edge query sites).
+        {
+            let pf = vec![Predicate::Canonical(CanonicalPredicate::MarriedTo)];
+            let legacy = run(false, 3, 100, &pf);
+            let unified = run(true, 3, 100, &pf);
+            assert_traverse_parity(legacy, unified, "filter/marriedto");
+        }
+
+        // Case 4: depth-bounded (1 hop) + max_results cap.
+        {
+            let legacy = run(false, 1, 2, &[]);
+            let unified = run(true, 1, 2, &[]);
+            assert_traverse_parity(legacy, unified, "depth1/cap2");
+        }
     }
 
     #[test]
