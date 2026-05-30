@@ -2343,12 +2343,14 @@ impl Storage {
     /// ## Why a separate helper from T13's `dual_write_edge_to_edges`
     ///
     /// T13's helper takes a `graph::edge::Edge` struct from the
-    /// resolution pipeline and hardcodes `edge_kind='assertion'`.
-    /// T22 backfills the legacy `entity_relations` table whose
-    /// rows correspond to a different ontological category
-    /// (`edge_kind='structural'` — "X has-part Y" type facts
+    /// resolution pipeline and writes `edge_kind='structural'`
+    /// (T37f locked mapping). T22 backfills the legacy
+    /// `entity_relations` table whose rows are also
+    /// `edge_kind='structural'` ("X has-part Y" type facts
     /// recorded directly rather than asserted by an
-    /// utterance-resolution pipeline). The input shape is also
+    /// utterance-resolution pipeline) — the ontological nuance
+    /// between the two now lives in the `predicate` string, not
+    /// the `edge_kind`. The input shape is also
     /// thinner: just (id, source_id, target_id, relation,
     /// confidence, source, namespace, created_at, metadata).
     ///

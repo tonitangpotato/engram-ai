@@ -1015,7 +1015,10 @@ fn dual_write_entity_to_nodes(
 }
 
 /// T13 — Phase B dual-write helper: project a resolution-pipeline `Edge`
-/// into the unified `edges` table as `edge_kind='assertion'`.
+/// into the unified `edges` table as `edge_kind='structural'`.
+/// (T37f locked mapping: all resolution-pipeline / graph predicates land
+/// on `edge_kind='structural'`, the `predicate` string preserved verbatim.
+/// Conservative reversible default — a later causal-split is pure-additive.)
 ///
 /// Field mapping (legacy `graph_edges` → unified `edges`):
 ///   * `id`              UUID blob → TEXT (UUID string)
@@ -1030,8 +1033,11 @@ fn dual_write_entity_to_nodes(
 ///     `namespace`, `created_at` — direct copy
 ///   * `memory_id` (TEXT in legacy) → `source_memory_id` (TEXT)
 ///   * `updated_at` ← `created_at` on first write (no in-place updates here)
-///   * `edge_kind` is set to `'assertion'` — all resolution-pipeline
-///     edges are subject-predicate-object assertions. Other kinds
+///   * `edge_kind` is set to `'structural'` (T37f locked mapping) — all
+///     resolution-pipeline edges are subject-predicate-object assertions,
+///     remapped to the canonical `structural` kind so the factual plan
+///     (`edge_kind IN ('structural','containment')`) can traverse them.
+///     The `predicate` string carries the original nuance. Other kinds
 ///     (`containment`, `co_activation`, `provenance`) come from T14-T16.
 ///
 /// `episode_id` is intentionally dropped — design §7.4 plans to remove
@@ -1090,7 +1096,7 @@ fn dual_write_edge_to_edges(
         ) VALUES (
             ?1,
             ?2, ?3, ?4,
-            'assertion', ?5, ?6,
+            'structural', ?5, ?6,
             ?7, '{}', 1.0,
             ?8, ?9,
             ?10, ?11, ?12,
@@ -5695,7 +5701,8 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
             )?;
 
             // T13 dual-write: mirror the resolution-pipeline edge into
-            // unified `edges` as `edge_kind='assertion'`. Same `tx` so
+            // unified `edges` as `edge_kind='structural'` (T37f locked
+            // mapping). Same `tx` so
             // either both rows land or neither. The entity rows the
             // edge references were dual-written above (step 3), so
             // FK source_id REFERENCES nodes(id) is satisfied.
@@ -9907,5 +9914,75 @@ mod tests {
         let got = store.traverse(bob, 1, 10, &pf).unwrap();
         let ids: Vec<Uuid> = got.iter().map(|(i, _)| *i).collect();
         assert!(ids.contains(&alice), "symmetric: Bob reaches Alice");
+    }
+
+    /// ISS-195 (T37f prong 1, locked edge_kind mapping): the resolution-
+    /// pipeline edge dual-written into the unified `edges` table must carry
+    /// `edge_kind='structural'` (NOT the old `'assertion'`), so the factual
+    /// plan (`edge_kind IN ('structural','containment')`) can traverse it.
+    /// The `predicate` string preserves the original nuance.
+    #[test]
+    fn iss195_dual_written_edge_is_structural_not_assertion() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let subj = insert_subject_entity(&mut store, "Alice");
+        let obj = insert_subject_entity(&mut store, "Acme");
+        let e = Edge::new(
+            subj,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: obj },
+            None,
+            now,
+        );
+        let eid = e.id;
+        store.insert_edge(&e).expect("insert edge");
+
+        // Read the dual-written row straight from the unified `edges` table.
+        let (edge_kind, predicate): (String, String) = conn
+            .query_row(
+                "SELECT edge_kind, predicate FROM edges WHERE id = ?1",
+                rusqlite::params![eid.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("dual-written edge row exists in unified `edges`");
+
+        assert_eq!(
+            edge_kind, "structural",
+            "T37f locked mapping: dual-written edge must be 'structural', not 'assertion'"
+        );
+        // predicate string preserves the original nuance (here the canonical
+        // WorksAt label) so a later causal-split stays pure-additive.
+        assert!(
+            !predicate.is_empty(),
+            "predicate string preserved (carries the original ontological nuance)"
+        );
+
+        // The endpoints are entity nodes in the unified `nodes` table.
+        let entity_node_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE node_kind = 'entity' AND id IN (?1, ?2)",
+                rusqlite::params![subj.to_string(), obj.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count entity nodes");
+        assert_eq!(
+            entity_node_count, 2,
+            "both edge endpoints dual-written as node_kind='entity'"
+        );
+
+        // The factual plan's traversal predicate must include this edge.
+        let visible_to_factual: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges \
+                 WHERE id = ?1 AND edge_kind IN ('structural','containment')",
+                rusqlite::params![eid.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count factual-visible edges");
+        assert_eq!(
+            visible_to_factual, 1,
+            "edge is visible to the factual plan's edge_kind filter"
+        );
     }
 }
