@@ -474,6 +474,28 @@ pub fn parse_temporal_mark(s: &str) -> TemporalMark {
         return TemporalMark::Day(d);
     }
 
+    // ISS-194 fix 4 — embedded resolved-day pin.
+    //
+    // `temporal_grounding::ground_field` rewrites a resolved relative-day
+    // phrase IN PLACE before this parse: "yesterday" → "yesterday
+    // (2023-05-07)". The whole-string `%Y-%m-%d` branch above misses that
+    // (the string starts with "yesterday"), and `parse_approx_year` below
+    // finds no leading year so the string would fall to `Vague` —
+    // stranding the resolved day exactly where conv-26-q0 lost it. Scan for
+    // a complete embedded `YYYY-MM-DD` and pin it to `Day`.
+    //
+    // Guard: skip when the source carried a fuzz marker (`~`, "around",
+    // "about", "approximately", "circa") — an approximate resolution must
+    // stay `Approx`, not collapse to a precise `Day`. Grounded relative-day
+    // phrases ("yesterday", "last Saturday") are not fuzz-marked, so they
+    // correctly pin. Partial dates ("2023-05", bare "2020") are not matched
+    // here and fall through to `parse_approx_year`.
+    if !has_fuzz_marker(trimmed) {
+        if let Some(d) = first_embedded_day(trimmed) {
+            return TemporalMark::Day(d);
+        }
+    }
+
     // Approximate / year-granular / ongoing (ISS-190 derivation → ISS-191
     // AC-2). The reference-date preamble instructs the extractor to resolve
     // relative/duration phrasing to a year while PRESERVING uncertainty, so
@@ -492,6 +514,62 @@ pub fn parse_temporal_mark(s: &str) -> TemporalMark {
     }
 
     TemporalMark::Vague(s.to_string())
+}
+
+/// ISS-194 fix 4 — true when the string carries an approximation marker,
+/// meaning any embedded date is an *approximate* resolution that must stay
+/// `Approx` rather than collapsing to a precise `Day`. Mirrors the fuzz
+/// prefixes recognised by [`parse_approx_year`], but matches anywhere in the
+/// string (the marker may precede a parenthetical resolved date, e.g.
+/// "around 2020 (2020-06-01)").
+fn has_fuzz_marker(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    s.contains('~')
+        || lower.contains("around")
+        || lower.contains("about")
+        || lower.contains("approximately")
+        || lower.contains("circa")
+}
+
+/// ISS-194 fix 4 — find the FIRST complete `YYYY-MM-DD` substring and return
+/// it as a validated [`NaiveDate`]. Scans byte-by-byte for the rigid
+/// `dddd-dd-dd` shape, then validates with chrono (rejects e.g. month 13 /
+/// day 32). Returns `None` when no complete, valid date is embedded. First
+/// match is the resolved event day — `ground_field` emits a single
+/// parenthetical, and where both event + reference dates appear the event
+/// day comes first.
+fn first_embedded_day(s: &str) -> Option<NaiveDate> {
+    let bytes = s.as_bytes();
+    let n = bytes.len();
+    let is_d = |b: u8| b.is_ascii_digit();
+    let mut i = 0;
+    while i + 10 <= n {
+        // shape: dddd-dd-dd
+        if is_d(bytes[i])
+            && is_d(bytes[i + 1])
+            && is_d(bytes[i + 2])
+            && is_d(bytes[i + 3])
+            && bytes[i + 4] == b'-'
+            && is_d(bytes[i + 5])
+            && is_d(bytes[i + 6])
+            && bytes[i + 7] == b'-'
+            && is_d(bytes[i + 8])
+            && is_d(bytes[i + 9])
+        {
+            // Ensure the run isn't a longer digit sequence (e.g. a 5-digit
+            // year or a date glued to more digits). Reject if flanked by a
+            // digit on either side.
+            let prev_ok = i == 0 || !is_d(bytes[i - 1]);
+            let next_ok = i + 10 == n || !is_d(bytes[i + 10]);
+            if prev_ok && next_ok {
+                if let Ok(d) = NaiveDate::parse_from_str(&s[i..i + 10], "%Y-%m-%d") {
+                    return Some(d);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Parse an approximate / year-granular / ongoing temporal string into a
@@ -860,6 +938,83 @@ mod tests {
                 "{input:?} should stay Vague"
             );
         }
+    }
+
+    // -- ISS-194 fix 4: embedded resolved-day pin --
+
+    #[test]
+    fn iss194_grounded_relative_day_pins_to_day() {
+        // temporal_grounding rewrites "yesterday" → "yesterday (2023-05-07)";
+        // the resolved day must pin to Day, not fall to Vague. This is the
+        // conv-26-q0 fix (gold "7 May 2023").
+        match parse_temporal_mark("yesterday (2023-05-07)") {
+            TemporalMark::Day(d) => {
+                assert_eq!(d, NaiveDate::from_ymd_opt(2023, 5, 7).unwrap());
+            }
+            other => panic!("expected Day(2023-05-07), got {other:?}"),
+        }
+        match parse_temporal_mark("last Saturday (2023-05-25)") {
+            TemporalMark::Day(d) => {
+                assert_eq!(d, NaiveDate::from_ymd_opt(2023, 5, 25).unwrap());
+            }
+            other => panic!("expected Day(2023-05-25), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iss194_fuzz_marked_resolution_stays_approx() {
+        // Guard: an approximate resolution carrying a fuzz marker must NOT
+        // collapse to a precise Day even though it embeds a full date.
+        match parse_temporal_mark("around 2020 (2020-06-01)") {
+            TemporalMark::Approx { .. } => {}
+            other => panic!("fuzz-marked must stay Approx, got {other:?}"),
+        }
+        // "~2020" with a provenance note embedding a date stays Approx too.
+        match parse_temporal_mark("~2020 (owned for 3 years as of 2023-03-27)") {
+            TemporalMark::Approx { .. } => {}
+            other => panic!("~-marked must stay Approx, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iss194_partial_and_bare_year_unaffected() {
+        // Partial date (year-month, no day) must NOT be caught by the
+        // embedded-day scan — it stays year-granular Approx (pre-existing
+        // parse_approx_year behaviour, unchanged by fix 4).
+        match parse_temporal_mark("2023-05") {
+            TemporalMark::Approx { start, .. } => {
+                assert_eq!(start, NaiveDate::from_ymd_opt(2023, 1, 1).unwrap());
+            }
+            other => panic!("year-month stays Approx, got {other:?}"),
+        }
+        // Bare year stays Approx too.
+        match parse_temporal_mark("2020") {
+            TemporalMark::Approx { .. } => {}
+            other => panic!("bare year stays Approx, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn iss194_first_embedded_day_helpers() {
+        // first_embedded_day: rigid dddd-dd-dd, validated, first match,
+        // not flanked by extra digits.
+        assert_eq!(
+            first_embedded_day("event (2023-05-07) ref 2023-05-08"),
+            Some(NaiveDate::from_ymd_opt(2023, 5, 7).unwrap()),
+            "first embedded date wins"
+        );
+        assert_eq!(first_embedded_day("no date here"), None);
+        assert_eq!(first_embedded_day("2023-13-40"), None, "invalid date rejected");
+        assert_eq!(
+            first_embedded_day("12023-05-07"),
+            None,
+            "5-digit-year prefix rejected (digit-flanked)"
+        );
+        // has_fuzz_marker
+        assert!(has_fuzz_marker("~2020"));
+        assert!(has_fuzz_marker("around 2020"));
+        assert!(has_fuzz_marker("approximately 2020"));
+        assert!(!has_fuzz_marker("yesterday (2023-05-07)"));
     }
 
     // -- serde round-trip --
