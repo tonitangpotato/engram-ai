@@ -677,6 +677,21 @@ pub struct SqliteGraphStore<'a> {
     /// Defaulted to that value for fresh stores; override via
     /// [`Self::with_embedding_dim`].
     pub(crate) embedding_dim: usize,
+    /// v0.4 unified substrate read-switch (T37g).
+    ///
+    /// When `true`, the *retrieval-layer* graph readers (`get_entity`,
+    /// `get_edge`, `edges_of`, `traverse`, …) fetch rows from the unified
+    /// `nodes` / `edges` tables instead of the legacy `graph_entities` /
+    /// `graph_edges` tables. Writes are always dual-routed (Phase B
+    /// `dual_write_entity_to_nodes` / `dual_write_edge_to_edges`), so
+    /// flipping this flag is a pure read swap — see
+    /// `.gid/features/v04-unified-substrate/T37g-readsite-map.md`.
+    ///
+    /// Captured at construction via [`Self::with_unified_substrate`] from
+    /// `MemoryConfig::unified_substrate`. Defaults to `false` (legacy
+    /// reads) so the flag is byte-identical until benched. Mirrors the
+    /// storage-layer `Storage::unified_substrate` (T29.5).
+    pub(crate) unified_substrate: bool,
 }
 
 impl<'a> SqliteGraphStore<'a> {
@@ -691,11 +706,20 @@ impl<'a> SqliteGraphStore<'a> {
             watermark: WatermarkTracker::new(1000),
             predicate_use_buffer: HashMap::new(),
             embedding_dim: crate::embeddings::default_embedding_dim(),
+            unified_substrate: false,
         }
     }
 
     pub fn with_namespace(mut self, ns: impl Into<String>) -> Self {
         self.namespace = ns.into();
+        self
+    }
+
+    /// Enable the v0.4 unified-substrate read-switch (T37g). When set, the
+    /// retrieval-layer graph readers fetch from unified `nodes`/`edges`
+    /// instead of legacy `graph_entities`/`graph_edges`. Defaults off.
+    pub fn with_unified_substrate(mut self, enabled: bool) -> Self {
+        self.unified_substrate = enabled;
         self
     }
 
@@ -953,6 +977,14 @@ fn dual_write_entity_to_nodes(
     let attributes_with_kind = merge_legacy_entity_kind(attributes_json, &entity.kind)?;
     let attributes_for_sql: &str = &attributes_with_kind;
 
+    // R1 (T37g) — project the legacy `graph_entities.merged_into` pointer onto
+    // the unified `nodes.superseded_by` column. A merged-away entity IS
+    // superseded by its survivor, so this is the semantically exact unified
+    // home for the merge pointer. Without it, T37g entity readers switching to
+    // `nodes` would lose the merge chain that `resolve_alias` / `get_entity`
+    // follow. NULL when the entity is live (not a merge loser).
+    let superseded_by_text: Option<String> = entity.merged_into.map(|u| u.to_string());
+
     tx.execute(
         r#"
         INSERT INTO nodes (
@@ -963,6 +995,7 @@ fn dual_write_entity_to_nodes(
             activation, importance, confidence, arousal,
             agent_affect, somatic_fingerprint,
             history,
+            superseded_by,
             fts_rowid
         ) VALUES (
             ?1, ?19, ?2,
@@ -972,6 +1005,7 @@ fn dual_write_entity_to_nodes(
             ?11, ?12, ?13, ?14,
             ?15, ?16,
             ?17,
+            ?20,
             ?18
         )
         ON CONFLICT(id) DO UPDATE SET
@@ -987,7 +1021,8 @@ fn dual_write_entity_to_nodes(
             arousal      = excluded.arousal,
             agent_affect = excluded.agent_affect,
             somatic_fingerprint = excluded.somatic_fingerprint,
-            history      = excluded.history
+            history      = excluded.history,
+            superseded_by = excluded.superseded_by
         "#,
         rusqlite::params![
             id_text,
@@ -1009,6 +1044,7 @@ fn dual_write_entity_to_nodes(
             history_json,
             claimed_fts_rowid,
             node_kind,
+            superseded_by_text,
         ],
     )?;
     Ok(())
@@ -9983,6 +10019,53 @@ mod tests {
         assert_eq!(
             visible_to_factual, 1,
             "edge is visible to the factual plan's edge_kind filter"
+        );
+    }
+
+    #[test]
+    fn t37g_r1_merged_into_dual_writes_to_superseded_by() {
+        // R1 (T37g): a merge-loser entity's `merged_into` pointer must land on
+        // the unified `nodes.superseded_by` column so that T37g entity readers
+        // switching to `nodes` preserve the merge chain. Before this fix the
+        // dual-write dropped the pointer entirely.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+
+        let survivor = insert_subject_entity(&mut store, "Robert");
+
+        // A loser entity whose `merged_into` points at the survivor.
+        let mut loser = Entity::new_random_id("Bob".into(), EntityKind::Person, now);
+        loser.merged_into = Some(survivor);
+        let loser_id = loser.id;
+        store.insert_entity(&loser).expect("insert merged loser");
+
+        // The unified `nodes` row for the loser carries the survivor id in
+        // `superseded_by`, hyphenated-lowercase TEXT (the dual-write id scheme).
+        let superseded_by: Option<String> = conn
+            .query_row(
+                "SELECT superseded_by FROM nodes WHERE id = ?1",
+                rusqlite::params![loser_id.to_string()],
+                |row| row.get(0),
+            )
+            .expect("loser node exists in unified `nodes`");
+        assert_eq!(
+            superseded_by,
+            Some(survivor.to_string()),
+            "merged_into must dual-write to nodes.superseded_by as the survivor's TEXT id"
+        );
+
+        // A live (non-merged) entity leaves `superseded_by` NULL.
+        let live_superseded: Option<String> = conn
+            .query_row(
+                "SELECT superseded_by FROM nodes WHERE id = ?1",
+                rusqlite::params![survivor.to_string()],
+                |row| row.get(0),
+            )
+            .expect("survivor node exists");
+        assert_eq!(
+            live_superseded, None,
+            "a live entity (no merged_into) must leave superseded_by NULL"
         );
     }
 }
