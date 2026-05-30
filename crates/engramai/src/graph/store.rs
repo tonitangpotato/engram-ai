@@ -2500,40 +2500,83 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
 
         // Alias hit fetch (if any).
         if let Some(aid) = alias_hit_id {
-            let sql = match &kind_filter_text {
-                Some(_) => {
-                    "SELECT id, kind, canonical_name, last_seen,
-                            identity_confidence, embedding
-                     FROM graph_entities
-                     WHERE id = ?1 AND namespace = ?2 AND kind = ?3"
+            // T37g A3: branch the alias-hit point lookup to `nodes` when on
+            // the unified substrate. The unified projection reads `content`
+            // as the canonical_name, `confidence` as identity_confidence,
+            // and the serde-encoded `_legacy_kind` attribute (reconstructed
+            // in Rust via `text_to_kind` after the SQL returns the quoted
+            // serde form via `_candidate_kind_sql`). Id is TEXT.
+            let row_opt = if self.unified_substrate {
+                let kind_match = match &query.kind_filter {
+                    Some(k) => Some(legacy_kind_match_param(k)?),
+                    None => None,
+                };
+                let sql = match &kind_match {
+                    Some(_) => {
+                        "SELECT id,
+                                json_quote(json_extract(attributes, '$._legacy_kind')),
+                                content, last_seen, confidence, embedding
+                         FROM nodes
+                         WHERE id = ?1 AND namespace = ?2
+                           AND node_kind IN ('entity','topic')
+                           AND json_extract(attributes, '$._legacy_kind') = ?3"
+                    }
+                    None => {
+                        "SELECT id,
+                                json_quote(json_extract(attributes, '$._legacy_kind')),
+                                content, last_seen, confidence, embedding
+                         FROM nodes
+                         WHERE id = ?1 AND namespace = ?2
+                           AND node_kind IN ('entity','topic')"
+                    }
+                };
+                let mut stmt = self.conn.prepare_cached(sql)?;
+                if let Some(km) = &kind_match {
+                    stmt.query_row(
+                        rusqlite::params![aid.to_string(), &query.namespace, km],
+                        Self::map_candidate_row,
+                    )
+                    .optional()?
+                } else {
+                    stmt.query_row(
+                        rusqlite::params![aid.to_string(), &query.namespace],
+                        Self::map_candidate_row,
+                    )
+                    .optional()?
                 }
-                None => {
-                    "SELECT id, kind, canonical_name, last_seen,
-                            identity_confidence, embedding
-                     FROM graph_entities
-                     WHERE id = ?1 AND namespace = ?2"
-                }
-            };
-            let mut stmt = self.conn.prepare_cached(sql)?;
-            let row_opt = if let Some(kt) = &kind_filter_text {
-                stmt.query_row(
-                    rusqlite::params![
-                        aid.as_bytes().to_vec(),
-                        &query.namespace,
-                        kt
-                    ],
-                    Self::map_candidate_row,
-                )
-                .optional()?
             } else {
-                stmt.query_row(
-                    rusqlite::params![
-                        aid.as_bytes().to_vec(),
-                        &query.namespace
-                    ],
-                    Self::map_candidate_row,
-                )
-                .optional()?
+                let kind_filter_text: Option<String> = match &query.kind_filter {
+                    Some(k) => Some(kind_to_text(k)?),
+                    None => None,
+                };
+                let sql = match &kind_filter_text {
+                    Some(_) => {
+                        "SELECT id, kind, canonical_name, last_seen,
+                                identity_confidence, embedding
+                         FROM graph_entities
+                         WHERE id = ?1 AND namespace = ?2 AND kind = ?3"
+                    }
+                    None => {
+                        "SELECT id, kind, canonical_name, last_seen,
+                                identity_confidence, embedding
+                         FROM graph_entities
+                         WHERE id = ?1 AND namespace = ?2"
+                    }
+                };
+                let mut stmt = self.conn.prepare_cached(sql)?;
+                if let Some(kt) = &kind_filter_text {
+                    stmt.query_row(
+                        rusqlite::params![aid.as_bytes().to_vec(), &query.namespace, kt],
+                        Self::map_candidate_row,
+                    )
+                    .optional()?
+                } else {
+                    stmt.query_row(
+                        rusqlite::params![aid.as_bytes().to_vec(), &query.namespace],
+                        Self::map_candidate_row,
+                    )
+                    .optional()?
+                }
             };
             if let Some((kind_text, name, ls, ic, eb)) = row_opt {
                 let kind = text_to_kind(&kind_text)?;
@@ -2560,54 +2603,97 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             // so the SQL layer can't safely truncate without the cosine
             // computation. This is the brute-force step the future ANN
             // index will replace.
-            let sql = match &kind_filter_text {
-                Some(_) => {
-                    "SELECT id, kind, canonical_name, last_seen,
-                            identity_confidence, embedding
-                     FROM graph_entities
-                     WHERE namespace = ?1 AND kind = ?2
-                       AND embedding IS NOT NULL"
+            let sql = if self.unified_substrate {
+                // T37g A3: unified embedding cohort scan. Reads `content` as
+                // canonical_name, `confidence` as identity_confidence, and
+                // the quoted serde `_legacy_kind` so `text_to_kind` round-
+                // trips. Id is TEXT; the mapper re-encodes to BLOB so the
+                // downstream `Uuid::from_slice` loop is unchanged.
+                match &kind_filter_text {
+                    Some(_) => {
+                        "SELECT id,
+                                json_quote(json_extract(attributes, '$._legacy_kind')),
+                                content, last_seen, confidence, embedding
+                         FROM nodes
+                         WHERE namespace = ?1
+                           AND node_kind IN ('entity','topic')
+                           AND json_extract(attributes, '$._legacy_kind') = ?2
+                           AND embedding IS NOT NULL"
+                    }
+                    None => {
+                        "SELECT id,
+                                json_quote(json_extract(attributes, '$._legacy_kind')),
+                                content, last_seen, confidence, embedding
+                         FROM nodes
+                         WHERE namespace = ?1
+                           AND node_kind IN ('entity','topic')
+                           AND embedding IS NOT NULL"
+                    }
                 }
-                None => {
-                    "SELECT id, kind, canonical_name, last_seen,
-                            identity_confidence, embedding
-                     FROM graph_entities
-                     WHERE namespace = ?1
-                       AND embedding IS NOT NULL"
+            } else {
+                match &kind_filter_text {
+                    Some(_) => {
+                        "SELECT id, kind, canonical_name, last_seen,
+                                identity_confidence, embedding
+                         FROM graph_entities
+                         WHERE namespace = ?1 AND kind = ?2
+                           AND embedding IS NOT NULL"
+                    }
+                    None => {
+                        "SELECT id, kind, canonical_name, last_seen,
+                                identity_confidence, embedding
+                         FROM graph_entities
+                         WHERE namespace = ?1
+                           AND embedding IS NOT NULL"
+                    }
                 }
+            };
+            // On the unified path the kind-filter param is the json_extract
+            // match value; on legacy it's the serde `kind` text.
+            let cohort_kind_param: Option<String> = if self.unified_substrate {
+                match &query.kind_filter {
+                    Some(k) => Some(legacy_kind_match_param(k)?),
+                    None => None,
+                }
+            } else {
+                kind_filter_text.clone()
+            };
+            let unified = self.unified_substrate;
+            let map_row = move |row: &rusqlite::Row<'_>| -> rusqlite::Result<CandidateScanRow> {
+                // Id: TEXT (unified) re-encoded to 16-byte BLOB, or BLOB
+                // (legacy) read directly — so the downstream decode loop is
+                // table-agnostic.
+                let id_blob: Vec<u8> = if unified {
+                    let id_text: String = row.get(0)?;
+                    Uuid::parse_str(&id_text)
+                        .map(|u| u.as_bytes().to_vec())
+                        .map_err(|_| {
+                            rusqlite::Error::InvalidColumnType(
+                                0,
+                                "uuid".to_string(),
+                                rusqlite::types::Type::Text,
+                            )
+                        })?
+                } else {
+                    row.get(0)?
+                };
+                Ok((
+                    id_blob,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                ))
             };
             let mut stmt = self.conn.prepare_cached(sql)?;
             let rows: Vec<CandidateScanRow> =
-                if let Some(kt) = &kind_filter_text {
-                    stmt.query_map(
-                        rusqlite::params![&query.namespace, kt],
-                        |row| {
-                            Ok((
-                                row.get::<_, Vec<u8>>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, f64>(3)?,
-                                row.get::<_, f64>(4)?,
-                                row.get::<_, Option<Vec<u8>>>(5)?,
-                            ))
-                        },
-                    )?
-                    .collect::<Result<_, _>>()?
+                if let Some(kp) = &cohort_kind_param {
+                    stmt.query_map(rusqlite::params![&query.namespace, kp], &map_row)?
+                        .collect::<Result<_, _>>()?
                 } else {
-                    stmt.query_map(
-                        rusqlite::params![&query.namespace],
-                        |row| {
-                            Ok((
-                                row.get::<_, Vec<u8>>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, f64>(3)?,
-                                row.get::<_, f64>(4)?,
-                                row.get::<_, Option<Vec<u8>>>(5)?,
-                            ))
-                        },
-                    )?
-                    .collect::<Result<_, _>>()?
+                    stmt.query_map(rusqlite::params![&query.namespace], &map_row)?
+                        .collect::<Result<_, _>>()?
                 };
 
             for (id_blob, kind_text, name, ls, ic, eb) in rows {
@@ -10707,5 +10793,88 @@ mod tests {
         };
         assert_eq!(legacy, vec!["alpha".to_string(), "zeta".to_string()]);
         assert_eq!(unified, legacy, "unified namespaces (incl topic kind) == legacy");
+    }
+
+    #[test]
+    fn t37g_a3_search_candidates_unified_parity() {
+        // T37g A3: alias-hit fetch + embedding-cohort scan must produce the
+        // same CandidateMatch set/order/scores on legacy (graph_entities)
+        // and unified (nodes). Exercises alias path, embedding path, kind
+        // filter, and a non-matching kind.
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+        let emb_mel = vec![1.0_f32, 0.0, 0.0, 0.0];
+        let emb_bob = vec![0.0_f32, 1.0, 0.0, 0.0];
+        let mel;
+        let bob;
+        let robot;
+        {
+            let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
+            mel = insert_test_entity(
+                &mut store, "Mel", EntityKind::Person, now, Some(emb_mel.clone()),
+            );
+            store.upsert_alias("mel", "Mel", mel.id, None).unwrap();
+            bob = insert_test_entity(
+                &mut store, "Bob", EntityKind::Person, now, Some(emb_bob.clone()),
+            );
+            // An Other-kind entity with an embedding — must be filtered out
+            // by a Person kind_filter on both paths.
+            robot = insert_test_entity(
+                &mut store, "R2", EntityKind::other("robot"), now, Some(emb_bob.clone()),
+            );
+        }
+        let _ = robot;
+
+        let mut run = |unified: bool, kind_filter: Option<EntityKind>, emb: Option<Vec<f32>>| {
+            let store = SqliteGraphStore::new(&mut conn)
+                .with_embedding_dim(4)
+                .with_unified_substrate(unified);
+            let q = CandidateQuery {
+                mention_text: "Mel".into(),
+                mention_embedding: emb,
+                kind_filter,
+                namespace: "default".into(),
+                top_k: 10,
+                recency_window: None,
+                now: dt_to_unix(now),
+            };
+            store.search_candidates(&q).unwrap()
+        };
+
+        let cmp = |a: &[CandidateMatch], b: &[CandidateMatch], ctx: &str| {
+            assert_eq!(a.len(), b.len(), "{ctx}: count");
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert_eq!(x.entity_id, y.entity_id, "{ctx}: entity_id order");
+                assert_eq!(x.alias_match, y.alias_match, "{ctx}: alias_match");
+                assert_eq!(x.embedding_score, y.embedding_score, "{ctx}: embedding_score");
+                assert_eq!(x.recency_score, y.recency_score, "{ctx}: recency_score");
+            }
+        };
+
+        // 1) Alias-only hit (no mention embedding).
+        cmp(
+            &run(true, None, None),
+            &run(false, None, None),
+            "alias-only",
+        );
+        // 2) Embedding cohort, no kind filter (Mel alias + all-emb cohort).
+        cmp(
+            &run(true, None, Some(emb_mel.clone())),
+            &run(false, None, Some(emb_mel.clone())),
+            "embedding-no-filter",
+        );
+        // 3) Embedding cohort + Person filter (robot excluded on both paths).
+        let unified_filtered = run(true, Some(EntityKind::Person), Some(emb_mel.clone()));
+        let legacy_filtered = run(false, Some(EntityKind::Person), Some(emb_mel.clone()));
+        cmp(&unified_filtered, &legacy_filtered, "embedding-person-filter");
+        assert!(
+            unified_filtered.iter().all(|c| c.entity_id != robot.id),
+            "Other-kind robot filtered out under Person filter"
+        );
+        assert!(
+            unified_filtered.iter().any(|c| c.entity_id == mel.id),
+            "Mel present"
+        );
+        let _ = bob;
     }
 }
