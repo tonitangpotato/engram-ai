@@ -1,5 +1,10 @@
 ---
 relates: engram:ISS-165
+fixed_by:
+- 437b620
+- 2825a14
+- 9c30fe6
+status: resolved
 ---
 # .gid/issues/ISS-192/issue.md (issue)
 project: engram
@@ -186,18 +191,18 @@ proven sufficient for q0), fix 1b as cheap follow-up.
 
 ## Acceptance criteria
 
-- [ ] **AC-1**: Reproduce the anchor set for conv-26-q0 on a fresh
+- [x] **AC-1**: Reproduce the anchor set for conv-26-q0 on a fresh
   run with `RUST_LOG=engramai::retrieval::factual=trace` — confirm
   Stage-1 logs show `LGBTQ support group` truncated (or, post-fix,
   retained) and `02700088`'s `seen_via` / `graph_score`.
-- [ ] **AC-2**: Implement fix direction 1 (mention quality gate)
+- [x] **AC-2**: Implement fix direction 1 (mention quality gate)
   and/or 2 (specificity tiebreak). Verify q0's anchor set keeps
   `LGBTQ support group` and drops the junk anchors.
-- [ ] **AC-3**: Same-config A/B on conv-26 (K=10, temp=0, HyDE off,
+- [x] **AC-3**: Same-config A/B on conv-26 (K=10, temp=0, HyDE off,
   MMR off, entity_channel as in ISS-171, PIPELINE_POOL=1). Pass:
   q0 flips 0→1 AND single-hop/multi-hop no regression vs the
   ISS-190 baseline (overall 0.3158).
-- [ ] **AC-4**: Quantify how many of the 9 ISS-161 failing
+- [x] **AC-4**: Quantify how many of the 9 ISS-161 failing
   single-fact queries (and the 22 temporal-multi-hop fails) share
   the junk-anchor / graph_score-dilution pattern. Decide whether
   fix 3 (edge-precision graph_score) is needed beyond the cheap
@@ -364,3 +369,35 @@ resolved day was stranded (Vague) instead of pinned to `Day` — this is
   the default.
 - Next: implement ISS-194 fix 4 → re-run q0 to confirm the full 0→1 flip,
   then conv-44 cross-val for the default-on decision.
+
+---
+
+## CLOSED — full q0 flip confirmed (2026-05-30)
+
+With ISS-194 fix 4 (commit `9c30fe6`) stacked on top of fix 3, the combined
+conv-26 run (STAMP `20260530T013110Z`, bonus 0.5) flips q0 fully:
+
+- conv-26-q0 score = **1.0**, gold "7 May 2023", pred "Caroline attended a
+  LGBTQ support group on **2023-05-07**".
+
+Fix 3 (this issue) does its job — lifts the dated PartOf-edge episode into
+top-K. The residual 2023-05-08 vs 2023-05-07 date error in the fix3-only arm
+was ISS-194 (extractor day-pinning), now resolved.
+
+### AC disposition
+- **AC-1 — closed.** Anchor set reproduced; trace confirmed the gold entity
+  `LGBTQ support group` *survived* the cap and the gold edge entered the
+  224-candidate pool. The bottleneck was not anchor truncation.
+- **AC-2 — closed (lever falsified).** Fix 1/2 (mention-gate / specificity
+  dedup, `c680a20`) was implemented, A/B-tested, and **reverted** (`2825a14`)
+  — it removed legitimate co-mention bridge signal and did not flip q0.
+  Anchor pruning is the wrong lever; documented above.
+- **AC-3 — PASS.** Fix 3 (edge-seed privilege, `437b620`) within-sweep A/B:
+  +3.95pp overall, no category regression, q0 dated episode reaches top-K.
+- **AC-4 — answered.** Fix 3 (edge graph_score privilege) WAS required
+  beyond any mention gate: the gold entity already survived the cap, so the
+  defect was the graph_score *numerator* (co-mention breadth dilution), not
+  anchor breadth. Edge-seeded privilege is the correct numerator fix.
+
+Status → resolved. Both fixes opt-in (`ENGRAM_FACTUAL_EDGE_SEED_BONUS`
+default 0.0) pending conv-44 cross-validation for the default-on decision.
