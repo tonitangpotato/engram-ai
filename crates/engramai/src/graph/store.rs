@@ -3284,13 +3284,80 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         // `stmt` ends before the block does (otherwise the MappedRows
         // temporary outlives `stmt` and rustc rejects it).
         //
-        // Indexes used:
+        // T37g-A6: when `unified_substrate` is on, read FROM the unified
+        // `edges WHERE edge_kind='structural'` table; subject_id→source_id
+        // (TEXT), columns/decoder per A4 (`row_to_edge_columns_unified`).
+        // Default-off path is byte-identical to the pre-T37g legacy SQL.
+        //
+        // Indexes used (legacy):
         //   - predicate + live      → `idx_graph_edges_live`
         //                             (partial: WHERE invalidated_at IS NULL)
         //   - predicate + all       → `idx_graph_edges_subject_pred_recorded`
         //   - no predicate + any    → `idx_graph_edges_subject`
+        let cols: Vec<EdgeRowColumns> = if self.unified_substrate {
+            // Unified column list + `edges WHERE edge_kind='structural'`,
+            // keyed on `source_id` (TEXT uuid).
+            let subject_text = subject.to_string();
+            const SELECT: &str = "SELECT id, source_id,
+                                          predicate_kind, predicate,
+                                          target_id, target_literal,
+                                          summary,
+                                          valid_from, valid_to, recorded_at, invalidated_at,
+                                          invalidated_by, supersedes,
+                                          source_memory_id,
+                                          resolution_method,
+                                          activation, confidence,
+                                          agent_affect,
+                                          created_at
+                                   FROM edges
+                                   WHERE source_id = ?1 AND namespace = ?2
+                                     AND edge_kind = 'structural'";
+            match predicate {
+                Some(p) => {
+                    let (kind, label) = predicate_to_columns(p)?;
+                    let sql = if include_invalidated {
+                        format!(
+                            "{SELECT} AND predicate_kind = ?3 AND predicate = ?4 \
+                             ORDER BY recorded_at DESC, id ASC"
+                        )
+                    } else {
+                        format!(
+                            "{SELECT} AND predicate_kind = ?3 AND predicate = ?4 \
+                             AND invalidated_at IS NULL \
+                             ORDER BY recorded_at DESC, id ASC"
+                        )
+                    };
+                    let mut stmt = self.conn.prepare_cached(&sql)?;
+                    let v: Vec<EdgeRowColumns> = stmt
+                        .query_map(
+                            rusqlite::params![subject_text, self.namespace, kind, label],
+                            row_to_edge_columns_unified,
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    v
+                }
+                None => {
+                    let sql = if include_invalidated {
+                        format!("{SELECT} ORDER BY recorded_at DESC, id ASC")
+                    } else {
+                        format!(
+                            "{SELECT} AND invalidated_at IS NULL \
+                             ORDER BY recorded_at DESC, id ASC"
+                        )
+                    };
+                    let mut stmt = self.conn.prepare_cached(&sql)?;
+                    let v: Vec<EdgeRowColumns> = stmt
+                        .query_map(
+                            rusqlite::params![subject_text, self.namespace],
+                            row_to_edge_columns_unified,
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    v
+                }
+            }
+        } else {
         let subject_blob = subject.as_bytes().to_vec();
-        let cols: Vec<EdgeRowColumns> = match predicate {
+        match predicate {
             Some(p) => {
                 let (kind, label) = predicate_to_columns(p)?;
                 if include_invalidated {
@@ -3398,6 +3465,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                     v
                 }
             }
+        }
         };
         cols.into_iter().map(decode_edge_row).collect()
     }
@@ -3409,13 +3477,78 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         // literal-object edges are implicitly excluded — correct, since a
         // literal object has no entity to be "incoming" to.
         //
-        // Index used: `idx_graph_edges_object_entity` (object_entity_id).
-        // The `predicate` / `invalidated_at` filters narrow further but
-        // are not separately indexed on the object side; for the anchor
-        // fan-in sizes the Factual plan sees (single-digit to low
-        // hundreds) the object index alone is sufficient.
+        // T37g-A7: unified path keys on `target_id` (TEXT uuid), the
+        // unified analogue of `object_entity_id`. Literal-object rows have
+        // `target_id IS NULL` so they are excluded by the `= ?1` predicate
+        // exactly as on the legacy side. Default-off is byte-identical.
+        //
+        // Index used (legacy): `idx_graph_edges_object_entity`
+        // (object_entity_id). The `predicate` / `invalidated_at` filters
+        // narrow further but are not separately indexed on the object
+        // side; for the anchor fan-in sizes the Factual plan sees
+        // (single-digit to low hundreds) the object index alone suffices.
+        let cols: Vec<EdgeRowColumns> = if self.unified_substrate {
+            let object_text = object.to_string();
+            const SELECT: &str = "SELECT id, source_id,
+                                          predicate_kind, predicate,
+                                          target_id, target_literal,
+                                          summary,
+                                          valid_from, valid_to, recorded_at, invalidated_at,
+                                          invalidated_by, supersedes,
+                                          source_memory_id,
+                                          resolution_method,
+                                          activation, confidence,
+                                          agent_affect,
+                                          created_at
+                                   FROM edges
+                                   WHERE target_id = ?1 AND namespace = ?2
+                                     AND edge_kind = 'structural'";
+            match predicate {
+                Some(p) => {
+                    let (kind, label) = predicate_to_columns(p)?;
+                    let sql = if include_invalidated {
+                        format!(
+                            "{SELECT} AND predicate_kind = ?3 AND predicate = ?4 \
+                             ORDER BY recorded_at DESC, id ASC"
+                        )
+                    } else {
+                        format!(
+                            "{SELECT} AND predicate_kind = ?3 AND predicate = ?4 \
+                             AND invalidated_at IS NULL \
+                             ORDER BY recorded_at DESC, id ASC"
+                        )
+                    };
+                    let mut stmt = self.conn.prepare_cached(&sql)?;
+                    let v: Vec<EdgeRowColumns> = stmt
+                        .query_map(
+                            rusqlite::params![object_text, self.namespace, kind, label],
+                            row_to_edge_columns_unified,
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    v
+                }
+                None => {
+                    let sql = if include_invalidated {
+                        format!("{SELECT} ORDER BY recorded_at DESC, id ASC")
+                    } else {
+                        format!(
+                            "{SELECT} AND invalidated_at IS NULL \
+                             ORDER BY recorded_at DESC, id ASC"
+                        )
+                    };
+                    let mut stmt = self.conn.prepare_cached(&sql)?;
+                    let v: Vec<EdgeRowColumns> = stmt
+                        .query_map(
+                            rusqlite::params![object_text, self.namespace],
+                            row_to_edge_columns_unified,
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    v
+                }
+            }
+        } else {
         let object_blob = object.as_bytes().to_vec();
-        let cols: Vec<EdgeRowColumns> = match predicate {
+        match predicate {
             Some(p) => {
                 let (kind, label) = predicate_to_columns(p)?;
                 if include_invalidated {
@@ -3523,6 +3656,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                     v
                 }
             }
+        }
         };
         cols.into_iter().map(decode_edge_row).collect()
     }
@@ -11073,6 +11207,127 @@ mod tests {
         };
         assert_eq!(legacy_slot.len(), 2, "slot returns both objects");
         assert_vec_parity(legacy_slot, unified_slot, "slot");
+    }
+
+    #[test]
+    fn t37g_a6_a7_edges_of_into_unified_parity_with_legacy() {
+        // T37g A6 (edges_of, subject side) + A7 (edges_into, object side):
+        // both must match legacy graph_edges across all four shapes
+        // (predicate Some/None × include_invalidated true/false). Edge
+        // parity is EQUALITY (R2). One edge is invalidated so the
+        // include_invalidated=false arm actually filters.
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+
+        let (alice, acme, globex) = {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            let alice = insert_subject_entity(&mut store, "Alice");
+            let acme = insert_subject_entity(&mut store, "Acme");
+            let globex = insert_subject_entity(&mut store, "Globex");
+            (alice, acme, globex)
+        };
+
+        // Live: Alice WorksAt Acme.
+        let mut e_live = Edge::new(
+            alice,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: acme },
+            Some(now),
+            now,
+        );
+        e_live.summary = "Alice works at Acme".into();
+
+        // Live, different predicate: Alice MemberOf Globex (exercises the
+        // no-predicate-filter arm returning >1 distinct predicate).
+        let mut e_member = Edge::new(
+            alice,
+            Predicate::Canonical(CanonicalPredicate::MemberOf),
+            EdgeEnd::Entity { id: globex },
+            Some(now),
+            now + chrono::Duration::seconds(1),
+        );
+        e_member.summary = "Alice is a member of Globex".into();
+
+        // Invalidated: Alice WorksAt Globex (only visible when
+        // include_invalidated=true).
+        let mut e_dead = Edge::new(
+            alice,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: globex },
+            Some(now - chrono::Duration::days(10)),
+            now - chrono::Duration::days(10),
+        );
+        e_dead.summary = "Alice used to work at Globex".into();
+        e_dead.invalidated_at = Some(now - chrono::Duration::days(1));
+
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            store.insert_edge(&e_live).expect("insert live");
+            store.insert_edge(&e_member).expect("insert member");
+            store.insert_edge(&e_dead).expect("insert dead");
+        }
+
+        let assert_vec_parity = |mut legacy: Vec<Edge>, mut unified: Vec<Edge>, label: &str| {
+            assert_eq!(
+                legacy.len(),
+                unified.len(),
+                "{label}: count legacy={} unified={}",
+                legacy.len(),
+                unified.len()
+            );
+            legacy.sort_by_key(|e| e.id);
+            unified.sort_by_key(|e| e.id);
+            for (l, u) in legacy.iter().zip(unified.iter()) {
+                assert_edge_core_eq(u, l);
+            }
+        };
+
+        let worksat = Predicate::Canonical(CanonicalPredicate::WorksAt);
+
+        // ---- A6: edges_of (subject = Alice) ----
+        for (pred, incl, expect_len, tag) in [
+            (Some(&worksat), false, 1usize, "of/pred/live"),
+            (Some(&worksat), true, 2usize, "of/pred/all"),
+            (None, false, 2usize, "of/nopred/live"),
+            (None, true, 3usize, "of/nopred/all"),
+        ] {
+            let legacy = {
+                let store = SqliteGraphStore::new(&mut conn);
+                store.edges_of(alice, pred, incl).expect("legacy edges_of")
+            };
+            let unified = {
+                let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+                store.edges_of(alice, pred, incl).expect("unified edges_of")
+            };
+            assert_eq!(legacy.len(), expect_len, "{tag}: legacy len");
+            assert_vec_parity(legacy, unified, tag);
+        }
+
+        // ---- A7: edges_into (object = Globex) ----
+        // Globex is the object of e_member (live, MemberOf) and e_dead
+        // (invalidated, WorksAt). Acme is the object of e_live but we query
+        // Globex to exercise both live+dead fan-in.
+        for (pred, incl, expect_len, tag) in [
+            (Some(&worksat), false, 0usize, "into/pred/live"),
+            (Some(&worksat), true, 1usize, "into/pred/all"),
+            (None, false, 1usize, "into/nopred/live"),
+            (None, true, 2usize, "into/nopred/all"),
+        ] {
+            let legacy = {
+                let store = SqliteGraphStore::new(&mut conn);
+                store
+                    .edges_into(globex, pred, incl)
+                    .expect("legacy edges_into")
+            };
+            let unified = {
+                let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+                store
+                    .edges_into(globex, pred, incl)
+                    .expect("unified edges_into")
+            };
+            assert_eq!(legacy.len(), expect_len, "{tag}: legacy len");
+            assert_vec_parity(legacy, unified, tag);
+        }
     }
 
     #[test]
