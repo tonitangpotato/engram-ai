@@ -67,7 +67,65 @@ leaving it at coarse granularity. The note can remain as provenance, but
 the structured interval must carry the resolved day so both consumers see
 it.
 
+## Implementation plan (scoped 2026-05-29)
+
+Root located: `parse_temporal_mark(s: &str)` in
+`crates/engramai/src/enriched.rs:454`. Current precedence:
+1. RFC3339 datetime → `Exact`
+2. `YYYY-MM-DDTHH:MM:SS` → `Exact`
+3. bare `YYYY-MM-DD` → `Day`
+4. `parse_approx_year` (`~2020`, `since 2020`, bare `2020`) → `Approx` (full-year)
+5. else → `Vague(original)`
+
+`temporal_grounding::ground_field` already rewrites `fact.temporal` in
+place BEFORE this parse: `"yesterday"` → `"yesterday (2023-05-07)"` (the
+resolved `range.start.date_naive()` in a single parenthetical). But step 3
+only matches when the WHOLE trimmed string is a date, so a grounded phrase
+`"yesterday (2023-05-07)"` skips step 3, then `parse_approx_year` splits on
+`(`, gets head `"yesterday"` (no leading year → `None`), and the string
+falls to `Vague` — the resolved day is stranded in the free-text remainder,
+never pinned to `Day`. That is the bug.
+
+**Fix:** insert a new step 3.5 between the bare-`%Y-%m-%d` check (step 3)
+and `parse_approx_year` (step 4): scan for an EMBEDDED `YYYY-MM-DD`
+substring (the grounding parenthetical) and, if exactly one resolved date
+is found, emit `TemporalMark::Day(that_date)`.
+
+Precision guards (avoid false positives):
+- Only fire when the embedded date is a complete `YYYY-MM-DD` (regex
+  `\b\d{4}-\d{2}-\d{2}\b`), validated by `NaiveDate::parse_from_str`. Reject
+  partial `2023-05` or bare `2020` (those stay on the `parse_approx_year`
+  path → `Approx`, preserving year-granular uncertainty).
+- If the SOURCE carried a fuzz marker (`~`, "around", "about",
+  "approximately", "circa") the resolution was approximate — do NOT collapse
+  to a precise `Day`; let it fall through to `parse_approx_year`/`Approx`.
+  Grounded relative-day phrases ("yesterday", "last Saturday") are NOT
+  fuzz-marked, so they correctly pin to `Day`.
+- Take the FIRST embedded date. Current grounding emits a single
+  parenthetical so there is one; if a future format embeds both event +
+  reference date, first = resolved event day (verified against
+  `ground_field` output order).
+
+**Generation (AC-2):** already satisfied by `temporal_grounding` —
+`ground_field` rewrites `core_fact` inline, so generation's text carries
+`"... yesterday (2023-05-07) ..."`. No separate work needed; the structured
+`Day` pin (this fix) is what unblocks `temporal_score` (AC-1) and lets
+retrieval/ranking surface the dated episode.
+
+**Tests:**
+- `parse_temporal_mark("yesterday (2023-05-07)")` → `Day(2023-05-07)` (AC-3)
+- `parse_temporal_mark("~2020")` → still `Approx` (guard: fuzz-marked)
+- `parse_temporal_mark("2020")` → still `Approx` (guard: bare year)
+- `parse_temporal_mark("last Saturday (2023-05-25)")` → `Day(2023-05-25)`
+- `parse_temporal_mark("around 2020 (2020-06-01)")` → `Approx` NOT `Day`
+  (fuzz marker dominates — verifies the guard, not just the happy path)
+
+This is additive to the parse precedence; existing `Exact`/`Day`/`Approx`/
+`Vague` cases are unchanged (the new branch only catches strings that
+previously fell to `Vague` while carrying a complete embedded date).
+
 ## Acceptance criteria
+
 
 - [ ] AC-1: When the extractor resolves a relative-day expression to an
       explicit day, the resulting `TemporalMark` has `start`/`end` narrowed
