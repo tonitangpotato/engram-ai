@@ -147,14 +147,30 @@ Lines 1714, 1744 (doc comments), 3508/3517 (`get_topic*` — reads
   **Empirical (conv-26 parity DB 2026-05-30):** `merged_into` non-null = **0**,
   `nodes.superseded_by` non-null = **0** → latent, does NOT bite conv-26, but
   must be fixed before a merge-heavy corpus or before T39 DROP.
-- **R2 — unified entity-node count gap.** **Empirical (conv-26 parity DB):**
-  `graph_entities` = **674**, `nodes WHERE node_kind='entity'` = **668** → a
-  **6-entity** dual-write gap. There are **0** short-hex (non-16-byte) ids on
-  this corpus (the earlier "3 legacy short-hex" was a stale-snapshot artifact —
-  superseded by this measurement). The 6 missing entity nodes must be root-caused
-  (dedup-merge collapsing? topic vs entity miscount? — note 674 includes topics)
-  before switching readers, OR accepted as a quantified gap with a backfill.
-  **Action:** re-run the count on next parity DB and diff the missing 6 ids.
+- **R2 — RESOLVED (not a regression). Root-caused 2026-05-30 on conv-26 parity DB.**
+  Directional id-level diff:
+  - `graph_entities` → `nodes`: **0 gap**. All 674 `graph_entities` rows
+    (665 entity-kind + 9 topic-kind) have a matching `nodes` row. The earlier
+    "674 vs 668" was an apples-to-oranges miscount (`graph_entities` total vs
+    entity-only nodes); counting `nodes WHERE node_kind IN ('entity','topic')`
+    gives 677, which *covers* all 674. **T37g readers switching to `nodes` lose
+    ZERO resolution-pipeline entities.**
+  - `nodes` → `graph_entities`: **3 extra** entities present ONLY in unified
+    `nodes`: `caroline`, `melanie`, `go` — all 16-hex-char (8-byte) ids.
+  - **Why:** two independent entity writers populate `nodes`. The
+    resolution-pipeline writer (`SqliteGraphStore`) uses 128-bit `Uuid`s and
+    dual-writes from `graph_entities`. The **storage-layer** writer
+    (`Storage` dedup path, switched by T29.5) uses `generate_entity_id`
+    (storage.rs:308 — a 16-hex FNV-1a content hash of name|type|namespace).
+    `caroline`/`melanie`/`go` came from the storage-layer path and never had a
+    `graph_entities` row.
+  - **Implication:** flag-on entity reads are a **superset** of flag-off, not a
+    loss. The 3 storage-layer entities (incl. conv-26 protagonists
+    caroline/melanie) become newly *visible* to graph traversal — plausibly a
+    quality gain, not a regression. **Consequence for §5:** flag-on is NOT
+    byte-identical for entity reads; parity tests must assert "unified ⊇ legacy"
+    for the entity-set, not "==". Edge reads remain "==" (edges only come from
+    the resolution pipeline; the storage-layer writer creates no edges).
 - **R3 — `edges_in_episode` (A10) has no unified equivalent.** `episode_id` is
   dropped from `edges` (design §7.4). Either (a) keep A10 legacy-only with a
   doc note (it is used by KC/pipeline introspection, not the hot AssociativePlan
@@ -192,7 +208,15 @@ unified-on == legacy-off on a fixture, run `cargo test -p engramai --lib`.
 ## 5. Acceptance
 
 - Flag-off: byte-identical to today (parity tests + §5.4 envelope).
-- Flag-on: A1–A9 read from unified `nodes`/`edges`; conv-26 LoCoMo multi-hop
-  parity (within §5.4 LLM-judge wobble) vs flag-off.
+- Flag-on:
+  - **Edge reads** (A4–A9): "==" parity vs flag-off — edges come only from the
+    resolution pipeline, which dual-writes 1:1 (R2: 782=782 structural edges).
+  - **Entity reads** (A1–A3, A14): "unified ⊇ legacy" — flag-on returns a
+    *superset* because the storage-layer dedup writer (`generate_entity_id`)
+    adds entities (e.g. caroline/melanie/go on conv-26) that have no
+    `graph_entities` row. Parity tests assert the legacy entity-set is contained
+    in the unified set, NOT equality.
+  - conv-26 LoCoMo multi-hop within §5.4 LLM-judge wobble vs flag-off (the
+    3 newly-visible entities should not *regress*; ideally neutral-to-positive).
 - After T37g + R4 unblock, T39 can DROP `graph_entities`/`graph_edges` without
   breaking retrieval.
