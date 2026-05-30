@@ -1551,6 +1551,25 @@ fn kind_to_text(kind: &EntityKind) -> Result<String, GraphError> {
     Ok(serde_json::to_string(kind)?)
 }
 
+/// T37g A2: build the comparison value for matching `_legacy_kind` via
+/// `json_extract(attributes, '$._legacy_kind')` on the unified `nodes`
+/// table.
+///
+/// `_legacy_kind` stores the serde-encoded `EntityKind` (ISS-120):
+/// canonical variants are JSON strings (`"person"`), `Other(s)` is a JSON
+/// object (`{"other":"robot"}`). `json_extract` returns the **bare**
+/// string for a JSON-string value and the **compact JSON text** for an
+/// object value, so the bound parameter must match both shapes:
+///
+/// * canonical (`Value::String`) → bind the bare inner string `person`
+/// * object (`Other`) → bind the compact JSON `{"other":"robot"}`
+fn legacy_kind_match_param(kind: &EntityKind) -> Result<String, GraphError> {
+    match serde_json::to_value(kind)? {
+        serde_json::Value::String(s) => Ok(s),
+        other => Ok(serde_json::to_string(&other)?),
+    }
+}
+
 /// Decode a TEXT column back to `EntityKind`. Companion to [`kind_to_text`].
 fn text_to_kind(s: &str) -> Result<EntityKind, GraphError> {
     Ok(serde_json::from_str(s)?)
@@ -2299,19 +2318,59 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         // through `get_entity`. This costs N+1 round-trips but keeps
         // serialization logic in exactly one place. For the bulk-read paths
         // (Phase 3 traverse / edges_of) we'll hand-write a wider SELECT.
-        let mut id_stmt = self.conn.prepare_cached(
-            "SELECT id FROM graph_entities
-             WHERE namespace = ?1 AND kind = ?2
-             ORDER BY last_seen DESC
-             LIMIT ?3",
-        )?;
-        let ids: Vec<Vec<u8>> = id_stmt
-            .query_map(
-                rusqlite::params![self.namespace, kind_text, limit as i64],
-                |row| row.get::<_, Vec<u8>>(0),
-            )?
-            .collect::<Result<_, _>>()?;
-        drop(id_stmt);
+        //
+        // T37g A2: the per-id fetch already routes through `get_entity`,
+        // which is flag-aware (A1). Only the *id-listing* SELECT needs the
+        // unified branch — `nodes` filtered by the serde-encoded
+        // `_legacy_kind` attribute (ISS-120) rather than the legacy `kind`
+        // column. `json_extract` returns the bare string for canonical
+        // kinds and the compact JSON object for `Other(_)`; the comparison
+        // param is built to match both (see `legacy_kind_match_param`).
+        let ids: Vec<Vec<u8>> = if self.unified_substrate {
+            let match_param = legacy_kind_match_param(kind)?;
+            let mut id_stmt = self.conn.prepare_cached(
+                "SELECT id FROM nodes
+                 WHERE namespace = ?1
+                   AND node_kind IN ('entity','topic')
+                   AND json_extract(attributes, '$._legacy_kind') = ?2
+                 ORDER BY last_seen DESC
+                 LIMIT ?3",
+            )?;
+            let id_texts: Vec<String> = id_stmt
+                .query_map(
+                    rusqlite::params![self.namespace, match_param, limit as i64],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<_, _>>()?;
+            drop(id_stmt);
+            // Re-encode TEXT uuids → 16-byte BLOBs so the shared decode loop
+            // below (which calls `Uuid::from_slice`) is unchanged.
+            id_texts
+                .into_iter()
+                .map(|s| {
+                    Uuid::parse_str(&s)
+                        .map(|u| u.as_bytes().to_vec())
+                        .map_err(|_| {
+                            GraphError::Invariant("nodes.id is not a valid uuid string")
+                        })
+                })
+                .collect::<Result<_, _>>()?
+        } else {
+            let mut id_stmt = self.conn.prepare_cached(
+                "SELECT id FROM graph_entities
+                 WHERE namespace = ?1 AND kind = ?2
+                 ORDER BY last_seen DESC
+                 LIMIT ?3",
+            )?;
+            let v: Vec<Vec<u8>> = id_stmt
+                .query_map(
+                    rusqlite::params![self.namespace, kind_text, limit as i64],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )?
+                .collect::<Result<_, _>>()?;
+            drop(id_stmt);
+            v
+        };
 
         let mut out = Vec::with_capacity(ids.len());
         for id_blob in ids {
@@ -4231,9 +4290,19 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         // namespaces seen across the canonical entity table is the
         // authoritative answer; entity-less namespaces (e.g. orphan alias
         // rows) are not exposed here by design.
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT DISTINCT namespace FROM graph_entities ORDER BY namespace",
-        )?;
+        //
+        // T37g A14: on the unified substrate the authoritative entity rows
+        // live in `nodes` (node_kind IN ('entity','topic')). Restricting to
+        // those kinds keeps the "namespaces with entities" semantics — a
+        // bare-memory node in a fresh namespace must not surface here.
+        let sql = if self.unified_substrate {
+            "SELECT DISTINCT namespace FROM nodes
+             WHERE node_kind IN ('entity','topic')
+             ORDER BY namespace"
+        } else {
+            "SELECT DISTINCT namespace FROM graph_entities ORDER BY namespace"
+        };
+        let mut stmt = self.conn.prepare_cached(sql)?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -10549,5 +10618,94 @@ mod tests {
             store.get_edge(Uuid::new_v4()).expect("ok").is_none(),
             "unknown edge id returns None on unified path"
         );
+    }
+
+    #[test]
+    fn t37g_a2_list_entities_by_kind_unified_parity() {
+        // T37g A2: filtering + recency ordering must match between legacy
+        // (graph_entities.kind) and unified (nodes._legacy_kind). Covers
+        // both a canonical kind (Person → JSON string) and an `Other` kind
+        // (→ JSON object) since the json_extract comparison differs.
+        let mut conn = fresh_conn();
+        let t0 = Utc::now();
+
+        let mut alice = Entity::new_random_id("Alice".into(), EntityKind::Person, t0);
+        let mut bob = Entity::new_random_id("Bob".into(), EntityKind::Person, t0);
+        let concept = Entity::new_random_id("Justice".into(), EntityKind::Concept, t0);
+        let robot = Entity::new_random_id("R2".into(), EntityKind::other("robot"), t0);
+        bob.last_seen = t0 + chrono::Duration::seconds(60);
+        alice.last_seen = t0 + chrono::Duration::seconds(30);
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            store.insert_entity(&alice).unwrap();
+            store.insert_entity(&bob).unwrap();
+            store.insert_entity(&concept).unwrap();
+            store.insert_entity(&robot).unwrap();
+        }
+
+        let legacy_people = {
+            let store = SqliteGraphStore::new(&mut conn);
+            store.list_entities_by_kind(&EntityKind::Person, 10).unwrap()
+        };
+        let unified_people = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store.list_entities_by_kind(&EntityKind::Person, 10).unwrap()
+        };
+        let legacy_ids: Vec<Uuid> = legacy_people.iter().map(|e| e.id).collect();
+        let unified_ids: Vec<Uuid> = unified_people.iter().map(|e| e.id).collect();
+        assert_eq!(
+            unified_ids, legacy_ids,
+            "unified Person list (filter + last_seen DESC order) == legacy"
+        );
+        assert_eq!(unified_ids, vec![bob.id, alice.id], "concept filtered, bob first");
+
+        // Limit honored on the unified path.
+        let limited = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store.list_entities_by_kind(&EntityKind::Person, 1).unwrap()
+        };
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].id, bob.id);
+
+        // `Other(_)` kind (JSON object) round-trips through json_extract.
+        let unified_robots = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store
+                .list_entities_by_kind(&EntityKind::other("robot"), 10)
+                .unwrap()
+        };
+        assert_eq!(unified_robots.len(), 1, "Other('robot') matched on unified");
+        assert_eq!(unified_robots[0].id, robot.id);
+        assert_eq!(unified_robots[0].kind, EntityKind::other("robot"));
+    }
+
+    #[test]
+    fn t37g_a14_list_namespaces_unified_parity() {
+        // T37g A14: distinct namespaces over the entity rows must match.
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+        let e1 = Entity::new_random_id("A".into(), EntityKind::Person, now);
+        let e2 = Entity::new_random_id("B".into(), EntityKind::Person, now);
+        let e3 = Entity::new_random_id("C".into(), EntityKind::Topic, now);
+        {
+            let mut s = SqliteGraphStore::new(&mut conn).with_namespace("zeta");
+            s.insert_entity(&e1).unwrap();
+        }
+        {
+            let mut s = SqliteGraphStore::new(&mut conn).with_namespace("alpha");
+            s.insert_entity(&e2).unwrap();
+            s.insert_entity(&e3).unwrap();
+        }
+
+        let legacy = {
+            let store = SqliteGraphStore::new(&mut conn);
+            store.list_namespaces().unwrap()
+        };
+        let unified = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store.list_namespaces().unwrap()
+        };
+        assert_eq!(legacy, vec!["alpha".to_string(), "zeta".to_string()]);
+        assert_eq!(unified, legacy, "unified namespaces (incl topic kind) == legacy");
     }
 }
