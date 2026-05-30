@@ -317,3 +317,50 @@ operate on **graph_score numerator** (Defect B), not anchor pruning:
 
 q0 needs BOTH: Fix 3 to rank the episode into top-10, Fix 4 so the
 episode actually carries the day. Anchor pruning (Fix 1/2) is closed.
+
+---
+
+## AC-3 result — fix 3 (edge-seed privilege) VALIDATED (2026-05-30)
+
+Commit `437b620`. conv-26 A/B, ISS-190 envelope (K=10 temp=0 HyDE/MMR/
+entity off, FACTUAL_REWEIGHT off, pipeline_pool=1, POPULATE off).
+Arm A = `ENGRAM_FACTUAL_EDGE_SEED_BONUS` unset (inert = pre-fix breadth).
+Arm B = bonus 0.5.
+Run STAMP 20260529T234442Z, dirs `ISS192-{A,B}-conv26-20260529T234442Z`.
+
+| category    | A (inert) | B (bonus 0.5) | Δ        |
+|-------------|-----------|---------------|----------|
+| overall     | 0.2368    | 0.2763        | +3.95pp  |
+| multi-hop   | 0.2703    | 0.3784        | +10.81pp |
+| open-domain | 0.0769    | 0.2308        | +15.38pp |
+| single-hop  | 0.0313    | 0.0625        | +3.13pp  |
+| temporal    | 0.3429    | 0.3286        | −1.43pp  |
+
+Gains 12 / losses 6 = net +6. **No multi-hop regression** — the additive
+band-split (co-mentions → [0,1-w], edge-seeded → [w,1]) preserved bridge
+ordering as designed; asserting edges simply stopped losing to coincidental
+co-mention breadth.
+
+### q0 — the decisive evidence (Defect B fixed; residual = fix 4)
+- Arm A: `"I don't know."`
+- Arm B: `"According to memory [6], Caroline attended a LGBTQ support group
+  on 2023-05-08."`
+
+Fix 3 lifted the dated gold episode into top-K AND into generation's
+context — exactly its job. Judge scored 0.0 only because the surfaced date
+is **2023-05-08** (the episode's `occurred_at` / conversation turn) not the
+gold **7 May 2023**. The event "yesterday" resolved to 2023-05-07 but that
+resolved day was stranded (Vague) instead of pinned to `Day` — this is
+**ISS-194 fix 4** exactly. q0 now needs ONLY fix 4 to flip 0→1.
+
+### Disposition
+- AC-3 (q0 dated episode reaches top-K, no regression, overall recovers):
+  **PASS**. Overall 0.2763 ≥ baseline; the only category dip is temporal
+  −1.43pp (single-question judge wobble), multi/single-hop both up.
+- Default bonus: recommend keeping `ENGRAM_FACTUAL_EDGE_SEED_BONUS` **opt-in
+  (default 0.0)** until a conv-44 cross-validation confirms the gain is
+  corpus-general (not conv-26-specific). The +10.81pp multi-hop / +15.38pp
+  open-domain lift is large enough to warrant the cross-val before flipping
+  the default.
+- Next: implement ISS-194 fix 4 → re-run q0 to confirm the full 0→1 flip,
+  then conv-44 cross-val for the default-on decision.
