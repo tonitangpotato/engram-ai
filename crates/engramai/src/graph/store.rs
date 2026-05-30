@@ -737,6 +737,130 @@ impl<'a> SqliteGraphStore<'a> {
         self
     }
 
+    /// T37g A1 — unified-substrate read for [`GraphRead::get_entity`].
+    ///
+    /// Reads the entity from the unified `nodes` table instead of the
+    /// legacy `graph_entities`. Field mapping (see
+    /// `.gid/features/v04-unified-substrate/T37g-readsite-map.md` §1.1):
+    ///   * `nodes.id` is the 36-char hyphenated UUID TEXT (vs legacy
+    ///     16-byte BLOB) — query param is `id.to_string()`.
+    ///   * `content` → `canonical_name`, `summary` → `summary`.
+    ///   * `kind` is reconstructed from `attributes._legacy_kind`
+    ///     (falling back on `node_kind`) via [`extract_legacy_entity_kind`],
+    ///     which also returns the attributes with the reserved key stripped.
+    ///   * `superseded_by` (TEXT survivor id) → `merged_into` (R1).
+    ///   * `history` is a real column (TEXT), same as legacy.
+    /// The `node_kind IN ('entity','topic')` filter excludes memory/insight
+    /// rows that share the `nodes` table.
+    fn get_entity_unified(&self, id: Uuid) -> Result<Option<Entity>, GraphError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, node_kind, content, summary, attributes,
+                    first_seen, last_seen, created_at, updated_at,
+                    activation, agent_affect, arousal, importance,
+                    confidence, somatic_fingerprint,
+                    history, superseded_by, embedding
+             FROM nodes
+             WHERE id = ?1 AND namespace = ?2
+               AND node_kind IN ('entity','topic')",
+        )?;
+        let row = stmt
+            .query_row(
+                rusqlite::params![id.to_string(), self.namespace],
+                |row| {
+                    let id_text: String = row.get(0)?;
+                    let node_kind: String = row.get(1)?;
+                    let content: String = row.get(2)?;
+                    let summary: String = row.get(3)?;
+                    let attributes_json: String = row.get(4)?;
+                    let first_seen: f64 = row.get(5)?;
+                    let last_seen: f64 = row.get(6)?;
+                    let created_at: f64 = row.get(7)?;
+                    let updated_at: f64 = row.get(8)?;
+                    let activation: f64 = row.get(9)?;
+                    let agent_affect_json: Option<String> = row.get(10)?;
+                    let arousal: f64 = row.get(11)?;
+                    let importance: f64 = row.get(12)?;
+                    let confidence: f64 = row.get(13)?;
+                    let fp_blob: Option<Vec<u8>> = row.get(14)?;
+                    let history_json: String = row.get(15)?;
+                    let superseded_by: Option<String> = row.get(16)?;
+                    let embedding_blob: Option<Vec<u8>> = row.get(17)?;
+                    Ok((
+                        id_text,
+                        node_kind,
+                        content,
+                        summary,
+                        attributes_json,
+                        first_seen,
+                        last_seen,
+                        created_at,
+                        updated_at,
+                        activation,
+                        agent_affect_json,
+                        arousal,
+                        importance,
+                        confidence,
+                        fp_blob,
+                        history_json,
+                        superseded_by,
+                        embedding_blob,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some(r) = row else { return Ok(None) };
+        let id_decoded = Uuid::parse_str(&r.0)
+            .map_err(|_| GraphError::Invariant("nodes.id is not a valid uuid string"))?;
+        // Reconstruct EntityKind from `_legacy_kind` (or fallbacks) and get
+        // the user-facing attributes with the reserved key stripped.
+        let (kind, cleaned_attributes_json) = extract_legacy_entity_kind(&r.4, &r.1)?;
+        let attributes: Json = serde_json::from_str(&cleaned_attributes_json)?;
+        let agent_affect: Option<Json> = match r.10 {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        };
+        let somatic_fingerprint = match r.14 {
+            Some(b) => Some(SomaticFingerprint::from_le_bytes(&b)?),
+            None => None,
+        };
+        let history: Vec<HistoryEntry> = serde_json::from_str(&r.15)?;
+        let merged_into: Option<Uuid> = match r.16 {
+            Some(s) => Some(
+                Uuid::parse_str(&s).map_err(|_| {
+                    GraphError::Invariant("nodes.superseded_by is not a valid uuid string")
+                })?,
+            ),
+            None => None,
+        };
+        let embedding = entity_embedding_from_blob(r.17, self.embedding_dim)?;
+
+        Ok(Some(Entity {
+            id: id_decoded,
+            canonical_name: r.2,
+            kind,
+            summary: r.3,
+            attributes,
+            history,
+            merged_into,
+            first_seen: unix_to_dt(r.5)?,
+            last_seen: unix_to_dt(r.6)?,
+            created_at: unix_to_dt(r.7)?,
+            updated_at: unix_to_dt(r.8)?,
+            // Provenance mention vectors live in join tables; the legacy
+            // reader returns empty vectors here too (Phase 2 parity).
+            episode_mentions: vec![],
+            memory_mentions: vec![],
+            activation: r.9,
+            agent_affect,
+            arousal: r.11,
+            importance: r.12,
+            identity_confidence: r.13,
+            somatic_fingerprint,
+            embedding,
+        }))
+    }
+
     /// Borrow the underlying connection. Tests use this to inspect rows
     /// directly; production code should not.
     #[cfg(test)]
@@ -1898,6 +2022,9 @@ fn decode_edge_row(c: EdgeRowColumns) -> Result<Edge, GraphError> {
 
 impl<'a> GraphRead for SqliteGraphStore<'a> {
     fn get_entity(&self, id: Uuid) -> Result<Option<Entity>, GraphError> {
+        if self.unified_substrate {
+            return self.get_entity_unified(id);
+        }
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, canonical_name, kind, summary, attributes,
                     first_seen, last_seen, created_at, updated_at,
@@ -10066,6 +10193,93 @@ mod tests {
         assert_eq!(
             live_superseded, None,
             "a live entity (no merged_into) must leave superseded_by NULL"
+        );
+    }
+
+    #[test]
+    fn t37g_a1_get_entity_unified_parity_with_legacy() {
+        // A1: get_entity reading from unified `nodes` must reconstruct the
+        // same Entity that the legacy `graph_entities` read returns.
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+
+        // Insert via the write path (dual-writes to graph_entities + nodes).
+        let mut e = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
+        e.summary = "a person named Alice".into();
+        e.attributes = serde_json::json!({"city": "Lisbon", "age": 30});
+        e.importance = 0.7;
+        e.identity_confidence = 0.9;
+        let eid = e.id;
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            store.insert_entity(&e).expect("insert");
+        }
+
+        // Legacy read.
+        let legacy = {
+            let store = SqliteGraphStore::new(&mut conn);
+            store.get_entity(eid).expect("legacy get").expect("present")
+        };
+        // Unified read.
+        let unified = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store.get_entity(eid).expect("unified get").expect("present")
+        };
+
+        assert_eq!(legacy.id, unified.id, "id");
+        assert_eq!(legacy.canonical_name, unified.canonical_name, "canonical_name");
+        assert_eq!(legacy.kind, unified.kind, "kind reconstructed from _legacy_kind");
+        assert_eq!(legacy.summary, unified.summary, "summary");
+        assert_eq!(legacy.attributes, unified.attributes, "attributes (_legacy_kind stripped)");
+        assert_eq!(legacy.importance, unified.importance, "importance");
+        assert_eq!(
+            legacy.identity_confidence, unified.identity_confidence,
+            "identity_confidence ← nodes.confidence"
+        );
+        assert_eq!(legacy.merged_into, unified.merged_into, "merged_into");
+        // _legacy_kind must NOT leak into the user-facing attributes.
+        assert!(
+            unified.attributes.get("_legacy_kind").is_none(),
+            "_legacy_kind reserved key stripped from unified attributes"
+        );
+    }
+
+    #[test]
+    fn t37g_a1_get_entity_unified_topic_kind_and_merged_into() {
+        // Topic-kind entity + a merged-loser entity: both must round-trip via
+        // the unified read.
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+
+        let survivor = insert_subject_entity(
+            &mut SqliteGraphStore::new(&mut conn),
+            "Robert",
+        );
+
+        let mut topic = Entity::new_random_id("Travel".into(), EntityKind::Topic, now);
+        topic.merged_into = Some(survivor);
+        let tid = topic.id;
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            store.insert_entity(&topic).expect("insert topic");
+        }
+
+        let unified = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store.get_entity(tid).expect("unified get").expect("present")
+        };
+        assert_eq!(unified.kind, EntityKind::Topic, "node_kind='topic' → EntityKind::Topic");
+        assert_eq!(
+            unified.merged_into,
+            Some(survivor),
+            "superseded_by → merged_into round-trips (R1)"
+        );
+
+        // Missing id → None on the unified path.
+        let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+        assert!(
+            store.get_entity(Uuid::new_v4()).expect("ok").is_none(),
+            "unknown id returns None on unified path"
         );
     }
 }
