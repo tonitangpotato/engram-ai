@@ -401,3 +401,41 @@ was ISS-194 (extractor day-pinning), now resolved.
 
 Status → resolved. Both fixes opt-in (`ENGRAM_FACTUAL_EDGE_SEED_BONUS`
 default 0.0) pending conv-44 cross-validation for the default-on decision.
+
+---
+
+## conv-44 cross-validation — default-on DECLINED (2026-05-30)
+
+Run STAMP `20260530T023832Z`, same ISS-190 envelope, within-sweep A/B
+(one binary, one ingestion per arm; bonus is the sole variable).
+
+| category    | A (inert) | B (bonus 0.5) | Δ        |
+|-------------|-----------|---------------|----------|
+| overall     | 0.2602    | 0.2358        | **−2.44pp** |
+| multi-hop   | 0.1250    | 0.0833        | −4.17pp  |
+| open-domain | 0.0000    | 0.1429        | +14.3pp (n tiny) |
+| single-hop  | 0.3667    | 0.3333        | −3.33pp  |
+| temporal    | 0.2903    | 0.2581        | −3.23pp  |
+
+5 gains / 8 losses = **net −3**. Of the 8 losses, **5 are "I don't know"**
+(conv-44-q107/q108/q117/q87/q97) — the edge-seed bonus displaced the
+answer-bearing co-mention memory out of top-K. These are real content
+regressions, not judge wobble.
+
+### Why the opposite sign vs conv-26
+conv-26 is list/multi-hop-heavy → edge-seed privilege correctly lifts
+graph-asserted bridge memories (+10.81pp multi-hop). conv-44 is
+single-fact-heavy → answers live in plain co-mention memories with no
+asserting edge, so privileging edges *demotes* the answer
+(−4.17pp multi-hop, −3.33pp single-hop). This is fix 3's inherent
+trade-off: it rewards graph assertion and penalises pure co-mention
+breadth — the right lever for multi-hop bridges, the wrong lever for
+single-fact recall.
+
+### Decision
+**`ENGRAM_FACTUAL_EDGE_SEED_BONUS` stays opt-in (default 0.0). NOT flipped
+default-on.** The conv-26 gain is corpus-specific. Default-on would regress
+single-fact-dominant corpora. Future direction: gate the bonus on the
+query's plan/relation type (apply only when the question is a bridge/"when"
+query whose answer sits behind a typed edge) rather than always-on — but
+that is new scope, filed separately if pursued.
