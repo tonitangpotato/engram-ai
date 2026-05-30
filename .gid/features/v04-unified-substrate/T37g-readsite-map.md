@@ -220,3 +220,37 @@ unified-on == legacy-off on a fixture, run `cargo test -p engramai --lib`.
     3 newly-visible entities should not *regress*; ideally neutral-to-positive).
 - After T37g + R4 unblock, T39 can DROP `graph_entities`/`graph_edges` without
   breaking retrieval.
+
+## 6. Completion status (2026-05-30)
+
+**T37g read-method migration is functionally COMPLETE.** All in-scope readers
+are switched behind the `unified_substrate` flag (default-off byte-identical):
+
+- A1 `get_entity`, A2 `list_entities_by_kind`, A3 `search_candidates`,
+  A4 `get_edge`, A14 `list_namespaces` — prior commits.
+- A5 `find_edges` — `a198555` (3 lookup shapes; test `t37g_a5`).
+- A6 `edges_of` / A7 `edges_into` — `2461d89` (source_id/target_id keying;
+  literal objects excluded from `edges_into`; test `t37g_a6_a7`, 8 cases).
+- A8 `edges_as_of` — `1857ea7` (bi-temporal window, `PARTITION BY`
+  predicate_kind/predicate/target_id/target_literal, rn=1 dedup,
+  recorded_at<=at cut; test `t37g_a8`).
+- A9 `traverse` (hot BFS) — `88477d1` (4 per-step query sites outgoing/incoming
+  × nofilter/filtered; incoming derives `object_kind='entity'` →
+  `target_id IS NOT NULL`; test `t37g_a9` covers WorksAt chain + symmetric
+  MarriedTo to force incoming sites).
+
+All edge readers reuse `row_to_edge_columns_unified` (A4) so `decode_edge_row`
+stays the single decode path. Parity tests assert legacy==unified (edges) /
+unified⊇legacy (entities).
+
+**Deferred per §3 R3/R4 (blocked on T12 backfill):** A10 `edges_in_episode`
+(episode_id dropped from unified edges), A11/A12/A13 memory-id readers
+(`edges.source_memory_id` Phase-B NULL). These stay legacy-only until T12 lands.
+
+**Validation:** `cargo test -p engramai --lib` → 2071 pass, 0 fail (4 ignored).
+The `iss190_temporal_grounding_e2e` failure observed during T37g work was an
+unrelated stale ISS-190 assertion superseded by ISS-191 AC-2 (`Approx` variant);
+fixed in `dee7383`, not a T37g regression.
+
+**Next:** live conv-26 LoCoMo bench with `unified_substrate=true` to confirm
+flag-on multi-hop quality is within §5.4 wobble vs flag-off.
