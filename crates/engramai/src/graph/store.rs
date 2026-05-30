@@ -3683,8 +3683,70 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         // `object_entity_id` participates; for literal-objects we partition on
         // the canonical-literal text. That matches the §4.2 invariant
         // "different object value ⇒ different window".
-        let subject_blob = subject.as_bytes().to_vec();
+        //
+        // T37g-A8: unified path is the same window query against `edges
+        // WHERE edge_kind='structural'`. The object window partitions on
+        // `(target_id, target_literal)` — the unified analogue of the
+        // `(object_kind, object_entity_id, object_literal)` triple (the
+        // kind is redundant given the target_id/target_literal XOR, R5).
+        // subject_id→source_id (TEXT). Default-off is byte-identical.
         let at_unix = dt_to_unix(at);
+
+        let cols: Vec<EdgeRowColumns> = if self.unified_substrate {
+            let subject_text = subject.to_string();
+            let mut stmt = self.conn.prepare_cached(
+                "WITH ranked AS (
+                    SELECT
+                        id, source_id,
+                        predicate_kind, predicate,
+                        target_id, target_literal,
+                        summary,
+                        valid_from, valid_to, recorded_at, invalidated_at,
+                        invalidated_by, supersedes,
+                        source_memory_id,
+                        resolution_method,
+                        activation, confidence,
+                        agent_affect,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY predicate_kind, predicate,
+                                         target_id, target_literal
+                            ORDER BY recorded_at DESC, id ASC
+                        ) AS rn
+                    FROM edges
+                    WHERE source_id = ?1
+                      AND namespace = ?2
+                      AND edge_kind = 'structural'
+                      AND recorded_at <= ?3
+                      AND (valid_from IS NULL OR valid_from <= ?3)
+                      AND (valid_to   IS NULL OR valid_to   >  ?3)
+                      AND (invalidated_at IS NULL OR invalidated_at > ?3)
+                )
+                SELECT
+                    id, source_id,
+                    predicate_kind, predicate,
+                    target_id, target_literal,
+                    summary,
+                    valid_from, valid_to, recorded_at, invalidated_at,
+                    invalidated_by, supersedes,
+                    source_memory_id,
+                    resolution_method,
+                    activation, confidence,
+                    agent_affect,
+                    created_at
+                FROM ranked
+                WHERE rn = 1
+                ORDER BY recorded_at DESC, id ASC",
+            )?;
+            let v: Vec<EdgeRowColumns> = stmt
+                .query_map(
+                    rusqlite::params![subject_text, self.namespace, at_unix],
+                    row_to_edge_columns_unified,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            v
+        } else {
+        let subject_blob = subject.as_bytes().to_vec();
 
         let mut stmt = self.conn.prepare_cached(
             "WITH ranked AS (
@@ -3729,12 +3791,14 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             WHERE rn = 1
             ORDER BY recorded_at DESC, id ASC",
         )?;
-        let cols: Vec<EdgeRowColumns> = stmt
+        let v: Vec<EdgeRowColumns> = stmt
             .query_map(
                 rusqlite::params![subject_blob, self.namespace, at_unix],
                 row_to_edge_columns,
             )?
             .collect::<Result<Vec<_>, _>>()?;
+        v
+        };
         cols.into_iter().map(decode_edge_row).collect()
     }
     fn traverse(
@@ -11328,6 +11392,108 @@ mod tests {
             assert_eq!(legacy.len(), expect_len, "{tag}: legacy len");
             assert_vec_parity(legacy, unified, tag);
         }
+    }
+
+    #[test]
+    fn t37g_a8_edges_as_of_unified_parity_with_legacy() {
+        // T37g A8: the bi-temporal "as of `at`" window query must return
+        // identical freshest-per-window rows through legacy graph_edges and
+        // unified edges. Seed two recorded_at versions of the same
+        // (subject, predicate, object) window so ROW_NUMBER() rn=1 dedup is
+        // actually exercised, plus a distinct-object edge and a
+        // future-recorded edge that the `recorded_at <= at` cutoff excludes.
+        let mut conn = fresh_conn();
+        let t0 = Utc::now() - chrono::Duration::days(30);
+        let t1 = Utc::now() - chrono::Duration::days(10);
+        let t_future = Utc::now() + chrono::Duration::days(5);
+        let as_of = Utc::now();
+
+        let (alice, acme, globex) = {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            let alice = insert_subject_entity(&mut store, "Alice");
+            let acme = insert_subject_entity(&mut store, "Acme");
+            let globex = insert_subject_entity(&mut store, "Globex");
+            (alice, acme, globex)
+        };
+
+        // Window 1, older version: Alice WorksAt Acme @ t0.
+        let mut e_old = Edge::new(
+            alice,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: acme },
+            Some(t0),
+            t0,
+        );
+        e_old.summary = "old".into();
+
+        // Window 1, fresher version: Alice WorksAt Acme @ t1 (same window —
+        // rn=1 must pick this one, dropping e_old).
+        let mut e_new = Edge::new(
+            alice,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: acme },
+            Some(t1),
+            t1,
+        );
+        e_new.summary = "new".into();
+
+        // Window 2, distinct object: Alice MemberOf Globex @ t1.
+        let mut e_other = Edge::new(
+            alice,
+            Predicate::Canonical(CanonicalPredicate::MemberOf),
+            EdgeEnd::Entity { id: globex },
+            Some(t1),
+            t1,
+        );
+        e_other.summary = "member".into();
+
+        // Future-recorded: excluded by recorded_at <= as_of.
+        let mut e_future = Edge::new(
+            alice,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: globex },
+            Some(t_future),
+            t_future,
+        );
+        e_future.summary = "future".into();
+
+        {
+            let mut store = SqliteGraphStore::new(&mut conn);
+            store.insert_edge(&e_old).expect("old");
+            store.insert_edge(&e_new).expect("new");
+            store.insert_edge(&e_other).expect("other");
+            store.insert_edge(&e_future).expect("future");
+        }
+
+        let legacy = {
+            let store = SqliteGraphStore::new(&mut conn);
+            store.edges_as_of(alice, as_of).expect("legacy edges_as_of")
+        };
+        let unified = {
+            let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+            store.edges_as_of(alice, as_of).expect("unified edges_as_of")
+        };
+
+        // Expect 2 windows survive: (WorksAt,Acme)=e_new and
+        // (MemberOf,Globex)=e_other. e_old loses rn=1, e_future is cut off.
+        assert_eq!(legacy.len(), 2, "legacy as_of window count");
+        let mut legacy_sorted = legacy.clone();
+        let mut unified_sorted = unified.clone();
+        legacy_sorted.sort_by_key(|e| e.id);
+        unified_sorted.sort_by_key(|e| e.id);
+        assert_eq!(legacy_sorted.len(), unified_sorted.len(), "as_of count parity");
+        for (l, u) in legacy_sorted.iter().zip(unified_sorted.iter()) {
+            assert_edge_core_eq(u, l);
+        }
+        // Sanity: the fresher version won within window 1.
+        assert!(
+            unified.iter().any(|e| e.summary == "new"),
+            "fresher version should survive rn=1"
+        );
+        assert!(
+            !unified.iter().any(|e| e.summary == "old" || e.summary == "future"),
+            "stale + future-recorded rows excluded"
+        );
     }
 
     #[test]
