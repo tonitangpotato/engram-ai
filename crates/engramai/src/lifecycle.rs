@@ -567,10 +567,17 @@ mod tests {
     #[test]
     fn test_count_orphan_memories() {
         let mut mem = test_memory();
-        // Insert a memory directly into DB without embeddings to guarantee orphan status
+        // Insert a memory directly into DB without embeddings to guarantee orphan status.
+        // Phase E-0 (ISS-197): count_orphan_memories now reads `nodes`, so mirror the
+        // raw insert into nodes too (this test bypasses the dual-write store path on
+        // purpose to construct a guaranteed-orphan row).
         let now = chrono::Utc::now().timestamp() as f64;
         mem.storage_mut().conn().execute(
             "INSERT INTO memories (id, content, memory_type, layer, importance, created_at, namespace) VALUES ('orphan-test-1', 'orphan memory', 'factual', 'working', 0.5, ?1, 'default')",
+            rusqlite::params![now],
+        ).unwrap();
+        mem.storage_mut().conn().execute(
+            "INSERT INTO nodes (id, node_kind, content, memory_type, layer, importance, created_at, updated_at, namespace) VALUES ('orphan-test-1', 'memory', 'orphan memory', 'factual', 'working', 0.5, ?1, ?1, 'default')",
             rusqlite::params![now],
         ).unwrap();
 

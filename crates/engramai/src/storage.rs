@@ -7923,7 +7923,9 @@ impl Storage {
 
     /// Count total memories in storage.
     pub fn count_memories(&self) -> Result<usize, rusqlite::Error> {
-        self.conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get::<_, i64>(0))
+        // Phase E-0 (ISS-197) Bucket B: cut to nodes; kind filter so the count
+        // matches the legacy memories total (excludes entity/other kinds).
+        self.conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_kind IN ('memory', 'insight')", [], |row| row.get::<_, i64>(0))
             .map(|c| c as usize)
     }
 
@@ -7998,7 +8000,10 @@ impl Storage {
 
     /// List distinct namespaces.
     pub fn list_namespaces(&self) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare("SELECT DISTINCT namespace FROM memories WHERE deleted_at IS NULL")?;
+        // Phase E-0 (ISS-197) Bucket B: cut to nodes; restrict to memory/insight
+        // kinds so the namespace set matches the legacy memories scan (nodes
+        // also holds entity kinds with their own namespaces).
+        let mut stmt = self.conn.prepare("SELECT DISTINCT namespace FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NULL")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect()
     }
@@ -8006,7 +8011,8 @@ impl Storage {
     /// Count memories without embeddings (orphans).
     pub fn count_orphan_memories(&self) -> Result<usize, rusqlite::Error> {
         self.conn.query_row(
-            "SELECT COUNT(*) FROM memories m WHERE m.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM memory_embeddings me WHERE me.memory_id = m.id)",
+            // Phase E-0 (ISS-197) Bucket B: live memory set → nodes.
+            "SELECT COUNT(*) FROM nodes m WHERE m.node_kind IN ('memory', 'insight') AND m.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM memory_embeddings me WHERE me.memory_id = m.id)",
             [],
             |row| row.get(0),
         )
@@ -8015,7 +8021,8 @@ impl Storage {
     /// Count Hebbian links referencing deleted/non-existent memories.
     pub fn count_dangling_hebbian(&self) -> Result<usize, rusqlite::Error> {
         self.conn.query_row(
-            "SELECT COUNT(*) FROM hebbian_links h WHERE NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = h.source_id AND m.deleted_at IS NULL) OR NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = h.target_id AND m.deleted_at IS NULL)",
+            // Phase E-0 (ISS-197) Bucket B: live memory set → nodes.
+            "SELECT COUNT(*) FROM hebbian_links h WHERE NOT EXISTS (SELECT 1 FROM nodes m WHERE m.id = h.source_id AND m.node_kind IN ('memory', 'insight') AND m.deleted_at IS NULL) OR NOT EXISTS (SELECT 1 FROM nodes m WHERE m.id = h.target_id AND m.node_kind IN ('memory', 'insight') AND m.deleted_at IS NULL)",
             [],
             |row| row.get(0),
         )
@@ -8024,7 +8031,8 @@ impl Storage {
     /// Get IDs of memories without embeddings.
     pub fn get_orphan_memory_ids(&self) -> Result<Vec<String>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT m.id FROM memories m WHERE m.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM memory_embeddings me WHERE me.memory_id = m.id)"
+            // Phase E-0 (ISS-197) Bucket B: live memory set → nodes.
+            "SELECT m.id FROM nodes m WHERE m.node_kind IN ('memory', 'insight') AND m.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM memory_embeddings me WHERE me.memory_id = m.id)"
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect()
@@ -8033,6 +8041,10 @@ impl Storage {
     /// Count clusters where >50% of members have been deleted or superseded.
     pub fn count_stale_clusters(&self) -> Result<usize, rusqlite::Error> {
         let count: i64 = self.conn.query_row(
+            // Phase E-0 (ISS-197) Bucket B: live memory set → nodes. superseded_by
+            // gotcha (§8.3): nodes uses NULL for not-superseded; the
+            // `IS NOT NULL AND != ''` test below is correct under both
+            // conventions ('' never occurs in nodes, NULL fails IS NOT NULL).
             "SELECT COUNT(*) FROM (
                 SELECT ca.cluster_id,
                        COUNT(*) AS total,
@@ -8041,7 +8053,7 @@ impl Storage {
                                 OR (m.superseded_by IS NOT NULL AND m.superseded_by != '')
                            THEN 1 ELSE 0 END) AS gone
                 FROM cluster_assignments ca
-                LEFT JOIN memories m ON ca.memory_id = m.id
+                LEFT JOIN nodes m ON ca.memory_id = m.id AND m.node_kind IN ('memory', 'insight')
                 GROUP BY ca.cluster_id
                 HAVING CAST(gone AS REAL) / total > 0.5
             )",
@@ -8054,7 +8066,8 @@ impl Storage {
     /// Clean up access_log entries for deleted/non-existent memories.
     pub fn cleanup_orphaned_access_log(&self) -> Result<usize, rusqlite::Error> {
         self.conn.execute(
-            "DELETE FROM access_log WHERE memory_id NOT IN (SELECT id FROM memories WHERE deleted_at IS NULL)",
+            // Phase E-0 (ISS-197) Bucket B: live memory set → nodes.
+            "DELETE FROM access_log WHERE memory_id NOT IN (SELECT id FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NULL)",
             [],
         )
     }
@@ -8062,7 +8075,8 @@ impl Storage {
     /// Clean up Hebbian links where either side is deleted/non-existent.
     pub fn cleanup_dangling_hebbian(&self) -> Result<usize, rusqlite::Error> {
         self.conn.execute(
-            "DELETE FROM hebbian_links WHERE source_id NOT IN (SELECT id FROM memories WHERE deleted_at IS NULL) OR target_id NOT IN (SELECT id FROM memories WHERE deleted_at IS NULL)",
+            // Phase E-0 (ISS-197) Bucket B: live memory set → nodes.
+            "DELETE FROM hebbian_links WHERE source_id NOT IN (SELECT id FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NULL) OR target_id NOT IN (SELECT id FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NULL)",
             [],
         )
     }
@@ -8070,7 +8084,8 @@ impl Storage {
     /// Clean up entity links for deleted/non-existent memories.
     pub fn cleanup_orphaned_entity_links(&self) -> Result<usize, rusqlite::Error> {
         self.conn.execute(
-            "DELETE FROM memory_entities WHERE memory_id NOT IN (SELECT id FROM memories WHERE deleted_at IS NULL)",
+            // Phase E-0 (ISS-197) Bucket B: live memory set → nodes.
+            "DELETE FROM memory_entities WHERE memory_id NOT IN (SELECT id FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NULL)",
             [],
         )
     }
@@ -8079,12 +8094,14 @@ impl Storage {
     pub fn count_memories_in_namespace(&self, namespace: Option<&str>) -> Result<usize, rusqlite::Error> {
         match namespace {
             Some(ns) => self.conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE namespace = ? AND deleted_at IS NULL",
+                // Phase E-0 (ISS-197) Bucket B: cut to nodes + kind filter.
+                "SELECT COUNT(*) FROM nodes WHERE node_kind IN ('memory', 'insight') AND namespace = ? AND deleted_at IS NULL",
                 params![ns],
                 |row| row.get(0),
             ),
             None => self.conn.query_row(
-                "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL",
+                // Phase E-0 (ISS-197) Bucket B: cut to nodes + kind filter.
+                "SELECT COUNT(*) FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NULL",
                 [],
                 |row| row.get(0),
             ),
