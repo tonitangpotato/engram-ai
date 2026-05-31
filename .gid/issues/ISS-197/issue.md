@@ -198,7 +198,88 @@ set was ~20 methods. The remainder were mis-classified:
       above (insight included; FTS-companion/RMW/migration-source/test reads are
       out of scope by design, not skipped).
 - [x] AC-2: backfill/verify/triple_backfill reads confirmed retained.
-- [ ] AC-3: T34a re-attempt — NEXT step.
+- [ ] AC-3: T34a re-attempt — **BLOCKED on a THIRD prerequisite (see below).**
 - [ ] AC-4: design §5.5 amendment — pending.
 - [x] AC-5: PHASE-E-PLAN.md §8 updated with E-0 sub-phase + §8.5/§8.6 blockers +
       status log.
+
+---
+
+# T34a RE-ATTEMPT OUTCOME (2026-05-31) — THIRD BLOCKER FOUND
+
+After E-0 read-cutover landed green (2075/0), T34a was re-attempted as the
+narrowly-scoped pure deletion: gate the `INSERT INTO memories` **and** its
+companion `INSERT INTO memories_fts` in `Storage::add` behind `if !unified`,
+keep the `insert_memory_node_row` survivor, touch nothing else (RMW UPDATE
+paths L6276/L7216 and `soft_delete` left writing `memories`, as scoped).
+
+Result: **`cargo test -p engramai --lib` → 2052 passed / 23 failed.**
+
+## Failure signature — uniform `FOREIGN KEY constraint failed`
+
+All 23 failures are the **same** root cause, NOT read-cutover gaps:
+
+```
+lifecycle::tests::test_list_namespaces  panicked … lifecycle.rs:557
+  Result::unwrap() on Err: "storage error: FOREIGN KEY constraint failed"
+```
+
+The failures cluster in `lifecycle::tests` (hebbian/sleep/forget/health),
+`memory::confidence_tests::test_broadcast_*` (hebbian spreading), and
+`knowledge_compile::candidates::tests` — every one of them adds a record via
+`Memory::add` (→ `Storage::add`, now `nodes`-only under unified) then writes a
+**retained child row** whose FK still `REFERENCES memories(id)`.
+
+## Root cause — retained FK-child tables still point at `memories`
+
+ISS-196 re-pointed **only** `access_log.memory_id` → `nodes(id)` (storage.rs
+`migrate_access_log_fk_to_nodes`, L1185+). But three other **retained** child
+tables — written during `add`/enrichment — still declare FKs into `memories`:
+
+- **`hebbian_links`** (storage.rs L1087-1088): `source_id`, `target_id`
+  `REFERENCES memories(id)`. Written by `record_coactivation*` during `add`'s
+  co-activation step → **this is the FK firing** for the lifecycle/broadcast
+  failures (those tests don't touch entities).
+- **`memory_entities`** (L1139): `memory_id REFERENCES memories(id)`. Written
+  during entity enrichment (`test_find_entity_overlap`, health/cluster tests).
+- **`synthesis_provenance`** (L1168-1169): `insight_id`, `source_id`
+  `REFERENCES memories(id)`. Written when synthesis insights land.
+
+With `PRAGMA foreign_keys=ON` (storage.rs:447) and `memories` no longer
+populated under unified mode, the legacy FK check fires on these child inserts
+**before** the unified `edges`/`nodes` dual-write can matter. These tables
+*do* dual-write to unified `edges`/`nodes` (T14/T16), but the legacy FK is
+still load-bearing because the legacy child table still exists with its old FK.
+
+## The true T34a prerequisite (broader than read-cutover)
+
+T34a's premise — "delete the `memories` write, `nodes` mirror already exists" —
+is correct for **reads** (E-0 fixed those) but incomplete for **referential
+integrity**. Deleting the `memories` write orphans every retained child table
+whose FK still targets `memories`. So T34a additionally requires:
+
+> **Re-point ALL retained child-table FKs from `memories(id)` to `nodes(id)`**
+> (the exact ISS-196 `access_log` table-rebuild pattern, applied to
+> `hebbian_links`, `memory_entities`, `synthesis_provenance`), so the child
+> inserts during `add`/enrichment validate against the populated `nodes` row.
+
+This is a bounded, mechanical migration (3 idempotent table rebuilds mirroring
+`migrate_access_log_fk_to_nodes`), but it is **NOT** what T34a was scoped to,
+and forcing it inside the T34a deletion commit would conflate two concerns.
+Recommend: a new sub-task **T34a-pre (FK re-point)** preceding T34a, OR widen
+ISS-196 to cover all retained child tables (ISS-196 currently only did
+`access_log`).
+
+## Stop-condition honoured
+
+Per "任何不确定先停记 issue 不硬干": did **not** mass-rewrite the 23 tests or
+disable FK enforcement to force T34a green. Uncommitted T34a edit reverted
+(`git checkout storage.rs`), tree clean at `225cd3a`, suite green 2075/0. No
+commits, no data touched. This finding captured for potato's disposition.
+
+## Open question for potato
+
+Should the FK re-point be **(a)** a widening of ISS-196 (it already owns the
+`access_log` re-point and the same rationale applies verbatim), or **(b)** a
+new T34a-pre sub-task in PHASE-E-PLAN §8? Either way the work is identical: 3
+more `migrate_*_fk_to_nodes` idempotent rebuilds before T34a's deletion.

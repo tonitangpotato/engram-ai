@@ -370,3 +370,40 @@ all readers epoch-native).
   - **T34a caution:** soft_delete + 6276 + 7216 still WRITE memories. T34a must
     delete ONLY the `INSERT INTO memories` in Storage::add — NOT these UPDATE paths
     (they retire later / need nodes-mirror first).
+
+### §8.7 — T34a RE-ATTEMPT BLOCKED: retained child-table FKs still target `memories` (2026-05-31)
+
+T34a was re-attempted with the correct narrow scope (gate `INSERT INTO memories`
++ `memories_fts` in `Storage::add` behind `if !unified`, keep
+`insert_memory_node_row`, leave RMW UPDATE paths + soft_delete writing memories).
+Result: **2052 passed / 23 failed**, all uniform `FOREIGN KEY constraint failed`.
+
+**Root cause (NOT a read-cutover gap):** ISS-196 re-pointed ONLY
+`access_log.memory_id` → `nodes(id)`. Three other RETAINED child tables, written
+during `add`/enrichment, still declare FKs into `memories(id)`:
+
+- `hebbian_links` (L1087-1088): `source_id`/`target_id` → `memories(id)`, written
+  by `record_coactivation*` during `add` co-activation → **the FK firing** for the
+  lifecycle/broadcast failures.
+- `memory_entities` (L1139): `memory_id` → `memories(id)`, written during entity
+  enrichment.
+- `synthesis_provenance` (L1168-1169): `insight_id`/`source_id` → `memories(id)`,
+  written when synthesis insights land.
+
+With `PRAGMA foreign_keys=ON` and `memories` no longer populated under unified,
+the legacy FK fires on the child insert before the unified `edges`/`nodes`
+dual-write matters. These tables DO dual-write to unified, but the legacy child
+table still exists with its old FK.
+
+**True T34a prerequisite (T34a-pre):** re-point ALL retained child-table FKs from
+`memories(id)` to `nodes(id)` — the exact `migrate_access_log_fk_to_nodes`
+table-rebuild pattern, applied to `hebbian_links`, `memory_entities`,
+`synthesis_provenance`. Bounded + mechanical (3 idempotent rebuilds), but NOT
+inside the T34a deletion commit (conflates concerns).
+
+**Stop-condition honoured:** did NOT rewrite the 23 tests or disable FK
+enforcement. Reverted uncommitted T34a edit (`git checkout storage.rs`), tree
+clean at `225cd3a`, suite green 2075/0. No commits, no data touched.
+
+**Open question (potato):** widen ISS-196 (it already owns the access_log
+re-point, same rationale) OR new T34a-pre sub-task here in §8?
