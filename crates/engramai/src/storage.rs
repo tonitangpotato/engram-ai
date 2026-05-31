@@ -4538,7 +4538,8 @@ impl Storage {
     /// Count soft-deleted memories.
     pub fn count_soft_deleted(&self) -> Result<usize, rusqlite::Error> {
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM memories WHERE deleted_at IS NOT NULL",
+            // Phase E-0 (ISS-197) Bucket B: cut to nodes + kind filter.
+            "SELECT COUNT(*) FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NOT NULL",
             [],
             |row| row.get(0),
         )?;
@@ -4547,6 +4548,15 @@ impl Storage {
 
     /// Get the deleted_at timestamp for a memory.
     pub fn get_deleted_at(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
+        // Phase E-0 (ISS-197): deliberately NOT cut to `nodes`. The column
+        // types differ — `memories.deleted_at` is TEXT (RFC3339) while
+        // `nodes.deleted_at` is REAL (epoch f64, see soft_delete dual-write
+        // which writes now_rfc to memories but now_epoch to nodes). This
+        // accessor returns Option<String>; reading the REAL nodes column as
+        // String errors in rusqlite. Cutting it over requires either changing
+        // the return type or an epoch→RFC3339 conversion — out of scope for
+        // a mechanical read-cutover. Stays on memories until T39 DROP, by
+        // which point the return type / format must be reconciled.
         let result: Option<String> = self.conn.query_row(
             "SELECT deleted_at FROM memories WHERE id = ?",
             params![id],
