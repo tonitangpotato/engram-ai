@@ -7377,23 +7377,43 @@ impl Storage {
             .collect();
         let in_clause = placeholders.join(", ");
         
-        // Query: find memory_ids that share entities, grouped with overlap count
-        // Filter by namespace via JOIN on memories table
+        // Query: find memory_ids that share entities, grouped with overlap count.
+        // Filter by namespace + soft-delete via a JOIN.
+        //
+        // ISS-199 (Phase E read-cutover): when `unified_substrate` is on,
+        // join the `nodes` table (`node_kind='memory'`) instead of the
+        // legacy `memories` table. T34a deletes the `memories` write under
+        // unified mode, so the namespace/deleted_at filter must read from
+        // `nodes` (which always carries the row via T12 dual-write). The
+        // `memory_entities`/`entities` join is unchanged — those tables key
+        // on `memory_id` which equals `nodes.id` for memory nodes.
+        let ns_placeholder = entity_names.len() + 1;
+        let join_where = if self.unified_substrate {
+            format!(
+                "JOIN nodes m ON me.memory_id = m.id
+                 WHERE e.name IN ({in_clause})
+                   AND m.node_kind = 'memory'
+                   AND m.namespace = ?{ns_placeholder}
+                   AND m.deleted_at IS NULL"
+            )
+        } else {
+            format!(
+                "JOIN memories m ON me.memory_id = m.id
+                 WHERE e.name IN ({in_clause})
+                   AND m.namespace = ?{ns_placeholder}
+                   AND m.deleted_at IS NULL"
+            )
+        };
         let sql = format!(
             r#"
             SELECT me.memory_id, COUNT(DISTINCT e.name) as overlap_count
             FROM memory_entities me
             JOIN entities e ON me.entity_id = e.id
-            JOIN memories m ON me.memory_id = m.id
-            WHERE e.name IN ({})
-              AND m.namespace = ?{}
-              AND m.deleted_at IS NULL
+            {join_where}
             GROUP BY me.memory_id
             ORDER BY overlap_count DESC
             LIMIT 10
-            "#,
-            in_clause,
-            entity_names.len() + 1
+            "#
         );
         
         let mut stmt = self.conn.prepare(&sql)?;
