@@ -1630,6 +1630,14 @@ impl Storage {
         // matching memory row, the COALESCE falls back to '' which
         // still produces a deterministic tuple ordering — better
         // than treating it as NULL and silently skipping the row.
+        //
+        // Phase E-0 (ISS-197): deliberately NOT cut to `nodes` — this
+        // dedup migration runs unconditionally (no unified_substrate
+        // guard) and must work against legacy-only connections where
+        // the `nodes` table does not exist (separate-file graph DB +
+        // pre-migration DBs). The namespace lookup here is advisory
+        // (COALESCE '' fallback), so it stays on `memories` until the
+        // table is dropped at T39.
         conn.execute(
             "UPDATE hebbian_links AS canonical \
              SET strength = MAX(canonical.strength, ( \
@@ -4596,10 +4604,13 @@ impl Storage {
     pub fn get_memories_without_embeddings(&self, model: &str) -> Result<Vec<String>, rusqlite::Error> {
         if self.unified_substrate {
             let mut stmt = self.conn.prepare(
+                // Phase E-0 (ISS-197) Bucket B: unified arm reads `nodes`
+                // (was still `FROM memories m` — incomplete T29 cut).
                 r#"
-                SELECT m.id FROM memories m
-                LEFT JOIN node_embeddings e ON m.id = e.node_id AND e.model = ?
+                SELECT n.id FROM nodes n
+                LEFT JOIN node_embeddings e ON n.id = e.node_id AND e.model = ?
                 WHERE e.node_id IS NULL
+                  AND n.node_kind IN ('memory', 'insight')
                 "#
             )?;
             let rows = stmt.query_map(params![model], |row| row.get(0))?;
@@ -4620,7 +4631,8 @@ impl Storage {
     /// Get embedding statistics, optionally filtered by model.
     pub fn embedding_stats(&self) -> Result<EmbeddingStats, rusqlite::Error> {
         let total_memories: usize = self.conn.query_row(
-            "SELECT COUNT(*) FROM memories",
+            // Phase E-0 (ISS-197) Bucket B: cut to nodes + kind filter.
+            "SELECT COUNT(*) FROM nodes WHERE node_kind IN ('memory', 'insight')",
             [],
             |row| row.get(0),
         )?;
@@ -6564,11 +6576,14 @@ impl Storage {
         limit: usize,
     ) -> Result<Vec<(String, String, String)>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
+            // Phase E-0 (ISS-197) Bucket B: cut to nodes + kind filter; joins
+            // legacy memory_entities by shared id (safe under dual-write).
             r#"
-            SELECT m.id, m.content, COALESCE(m.namespace, 'default') as ns
-            FROM memories m
-            LEFT JOIN memory_entities me ON m.id = me.memory_id
+            SELECT n.id, n.content, COALESCE(n.namespace, 'default') as ns
+            FROM nodes n
+            LEFT JOIN memory_entities me ON n.id = me.memory_id
             WHERE me.entity_id IS NULL
+              AND n.node_kind IN ('memory', 'insight')
             LIMIT ?1
             "#,
         )?;
