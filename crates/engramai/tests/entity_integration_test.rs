@@ -307,22 +307,22 @@ fn test_backfill_processes_unlinked() {
         "backfill should find 0 unlinked memories when all are already linked"
     );
 
-    // Now insert a memory directly via SQL (bypassing entity extraction)
+    // Now insert a memory directly via SQL (bypassing entity extraction).
+    // ISS-199 (Phase E read-cutover): `get_memories_without_entities`
+    // scans the unified `nodes` table (node_kind='memory'), which is the
+    // table-of-record under unified mode (the default for `Memory`).
+    // Insert the unlinked row there — a raw `memories` insert is invisible
+    // to the nodes-based backfill scan post-T34a.
     let conn = mem.connection();
     let raw_id = "backfill-test-001";
     conn.execute(
         r#"
-        INSERT INTO memories (id, content, memory_type, layer, created_at, 
-                              working_strength, core_strength, importance, namespace)
-        VALUES (?1, ?2, 'factual', 'working', strftime('%s','now'), 1.0, 0.0, 0.5, 'default')
+        INSERT INTO nodes (id, node_kind, content, memory_type, layer,
+                           importance, created_at, updated_at, namespace)
+        VALUES (?1, 'memory', ?2, 'factual', 'working',
+                0.5, strftime('%s','now'), strftime('%s','now'), 'default')
         "#,
         params![raw_id, "engramai is a memory system"],
-    )
-    .unwrap();
-    // Also insert into FTS
-    conn.execute(
-        "INSERT INTO memories_fts(content) VALUES (?1)",
-        params!["engramai is a memory system"],
     )
     .unwrap();
 

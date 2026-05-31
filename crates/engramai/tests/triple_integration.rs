@@ -59,6 +59,26 @@ fn insert_test_memory(storage: &Storage, content: &str) -> String {
          VALUES (?1, ?2, 'factual', 'working', ?3, 'default')",
         rusqlite::params![id, content, now],
     ).expect("insert memory");
+
+    // ISS-198 (batch-2, commit 1b0d703): `triples.memory_id` and the
+    // `graph_*` tables now `REFERENCES nodes(id)`, not `memories(id)`.
+    // Production memories always have a `nodes` row via the Phase-B
+    // dual-write; this fixture predates that and seeded `memories`
+    // only. Seed the matching `nodes` row so `store_triples` (and any
+    // graph-edge insert) stays FK-valid. Mirrors `insert_v1_row` in
+    // iss019_backfill_test.rs.
+    storage.connection().execute(
+        "INSERT OR IGNORE INTO nodes
+          (id, node_kind, namespace, layer, memory_type, content,
+           importance, created_at, updated_at, fts_rowid)
+         VALUES (?1, 'memory', 'default', 'working', 'factual', ?2, 0.5, ?3, ?3,
+           (SELECT next_value FROM fts_rowid_counter WHERE singleton=0))",
+        rusqlite::params![id, content, now],
+    ).expect("insert node");
+    storage.connection().execute(
+        "UPDATE fts_rowid_counter SET next_value = next_value + 1 WHERE singleton = 0",
+        [],
+    ).expect("advance fts counter");
     id
 }
 
@@ -67,6 +87,24 @@ fn uuid_simple() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     format!("{:x}{:x}", t.as_secs(), t.subsec_nanos())
+}
+
+/// Read the triple-extraction attempt counter for a memory.
+///
+/// ISS-199 (Phase E read-cutover): under unified mode (the default for
+/// `Memory`) the counter lives in `nodes.attributes` JSON under the
+/// reserved key `$._triple_extraction_attempts`, not in the legacy
+/// `memories.triple_extraction_attempts` column (which is no longer
+/// written). `COALESCE(..., 0)` mirrors the column's `DEFAULT 0`.
+fn triple_attempts(mem: &Memory, id: &str) -> i64 {
+    mem.connection()
+        .query_row(
+            "SELECT COALESCE(json_extract(attributes, '$._triple_extraction_attempts'), 0) \
+             FROM nodes WHERE id = ?1 AND node_kind IN ('memory', 'insight')",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .expect("query attempt counter")
 }
 
 // ===== Storage Tests =====
@@ -317,12 +355,7 @@ fn test_consolidate_with_failing_extractor_is_nonfatal() {
     mem.consolidate(1.0).expect("consolidate should succeed even with failing extractor");
     
     // Attempts should be incremented (1 < 3, so still in queue)
-    let attempts: i64 = mem.connection().query_row(
-        "SELECT triple_extraction_attempts FROM memories WHERE id = ?1",
-        rusqlite::params![id],
-        |row| row.get(0),
-    ).expect("query");
-    assert_eq!(attempts, 1);
+    assert_eq!(triple_attempts(&mem, &id), 1);
 }
 
 #[test]
@@ -348,24 +381,14 @@ fn test_consolidate_with_empty_extractor_increments_attempts() {
     assert_eq!(count, 0);
     
     // Attempt count should be 1
-    let attempts: i64 = mem.connection().query_row(
-        "SELECT triple_extraction_attempts FROM memories WHERE id = ?1",
-        rusqlite::params![id],
-        |row| row.get(0),
-    ).expect("query");
-    assert_eq!(attempts, 1);
+    assert_eq!(triple_attempts(&mem, &id), 1);
     
     // Run consolidation 2 more times to exhaust retries
     mem.consolidate(1.0).expect("consolidate 2");
     mem.consolidate(1.0).expect("consolidate 3");
     
     // Now attempts should be 3 (permanently skipped)
-    let attempts: i64 = mem.connection().query_row(
-        "SELECT triple_extraction_attempts FROM memories WHERE id = ?1",
-        rusqlite::params![id],
-        |row| row.get(0),
-    ).expect("query");
-    assert_eq!(attempts, 3);
+    assert_eq!(triple_attempts(&mem, &id), 3);
 }
 
 #[test]

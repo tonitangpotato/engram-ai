@@ -65,7 +65,7 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use engramai::graph::store::{GraphWrite, SqliteGraphStore};
-use engramai::graph::{init_graph_tables, EntityKind};
+use engramai::graph::EntityKind;
 use engramai::resolution::context::{DraftEntity, KindSource, PipelineContext};
 use engramai::resolution::decision::Decision;
 use engramai::resolution::stage_persist::{build_delta, EntityResolution};
@@ -164,24 +164,29 @@ fn kind_and_kind_source_round_trip_through_apply_graph_delta() {
     let dir = tempdir().expect("tempdir");
     let db_path = dir.path().join("iss072.db");
     {
+        // ISS-199: bootstrap the full schema via `Storage::new` rather
+        // than hand-rolling tables. `Storage::new` creates `nodes` (via
+        // `migrate_unified_nodes`) and the v0.3 graph tables (via
+        // `init_graph_tables`) in the correct order, and re-points the
+        // graph-mention FK to `nodes(id)`. The graph-mention rows now
+        // FK against `nodes`, so a hand-rolled minimal `nodes` table
+        // would be missing the columns `init_graph_tables` indexes
+        // (node_kind, namespace, …). Building once with Storage and then
+        // dropping it leaves the committed schema on disk for the raw
+        // `Connection` below.
+        let _ = engramai::storage::Storage::new(&db_path).expect("bootstrap schema");
+
         let mut conn = Connection::open(&db_path).expect("open db");
-        // Mirror the test-harness setup in `store.rs::fresh_conn`: enable
-        // foreign keys, create the v0.2 `memories` table that the graph
-        // mention rows FK back to, then init the v0.3 graph schema.
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL);",
-        )
-        .unwrap();
-        init_graph_tables(&conn).expect("init graph tables");
-        // Insert the memory row that the GraphDelta references, so the
+        // Insert the node row that the GraphDelta references, so the
         // mention-row FK on `graph_memory_entity_mentions.memory_id`
-        // resolves cleanly.
+        // resolves cleanly against `nodes(id)`.
         conn.execute(
-            "INSERT INTO memories (id, content) VALUES (?1, ?2)",
+            "INSERT INTO nodes (id, content, node_kind, namespace, created_at, updated_at) \
+             VALUES (?1, ?2, 'memory', 'default', 0.0, 0.0)",
             rusqlite::params!["mem-iss072", "ISS-072 regression fixture"],
         )
-        .expect("insert fixture memory");
+        .expect("insert fixture node");
 
         let mut store = SqliteGraphStore::new(&mut conn);
         let report = store.apply_graph_delta(&delta).expect("apply ok");

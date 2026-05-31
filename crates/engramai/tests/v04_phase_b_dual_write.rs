@@ -1512,26 +1512,37 @@ fn t16_full_synthesis_flow_atomic_dual_write() {
 
 
 // ============================================================================
-// T18 — Read isolation: dual-write does not affect any retrieval path.
+// T18 — Read-source map: which retrieval APIs are nodes-backed vs legacy-backed.
 //
-// Hypothesis to falsify:
-//   "Some production retrieval API in engramai silently reads from the
-//    unified `nodes`/`edges` tables, so adding dual-write rows there
-//    could change what user-facing recall returns."
+// ORIGINAL Phase-B intent (historical):
+//   "No production retrieval API reads from the unified `nodes`/`edges`
+//    tables, so dual-write rows there cannot change user-facing recall."
+//   That invariant held through Phase B, when `nodes`/`edges` were
+//   write-only mirrors and every read targeted the legacy tables.
 //
-// Static evidence (verified at commit time of design.md T18):
-//   - `grep -rn 'FROM nodes\|JOIN nodes' crates/engramai/src/` → 0 hits
-//   - `grep -rn 'FROM edges\|JOIN edges'  crates/engramai/src/` → 0 hits
-//   - `grep -rn 'nodes_fts' crates/engramai/src/`              → 0 hits
-//   - All production FTS reads target the legacy `memories_fts` virtual
-//     table; retrieval/* walks memories + hebbian_links + graph_entities
-//     + graph_edges (legacy graph tables, not the unified `edges` table).
+// WHY THE INVARIANT IS NOW OBSOLETE (ISS-197 Phase E-0 + ISS-199 T34a):
+//   Phase E-0 (ISS-197) deliberately migrated the simple row readers —
+//   `fetch_recent`, `all_in_ns` (via the same node SELECT), `get_by_ids`,
+//   and `search_by_type` — to read from unified `nodes`
+//   (`node_kind IN ('memory','insight')`). T34a (ISS-199) then removed
+//   the legacy `memories` write under unified mode entirely. So `nodes`
+//   is no longer a write-only mirror; it is the SOLE source for those
+//   readers. Wiping `nodes` therefore *must* empty them — that is the
+//   correct post-cutover behavior, not a violation.
 //
-// Static grep can miss: triggers, transitive joins via views, hidden
-// reads through dyn-dispatched callbacks. This runtime test is the
-// hostile backstop — it nukes the unified tables and reasserts that
-// every public Storage retrieval API still returns byte-identical
-// results.
+//   The readers still on legacy substrate as of this cutover:
+//     - `search_fts*`  → legacy `memories_fts` virtual table
+//     - `hebbian_*`    → legacy `hebbian_links` table
+//
+// WHAT THIS TEST NOW PINS:
+//   A read-source MAP. After a hostile wipe of `nodes`/`edges`:
+//     - legacy-backed readers (FTS, hebbian) stay BYTE-IDENTICAL, and
+//     - nodes-backed readers (fetch_recent / all_in_ns / get_by_ids /
+//       search_by_type) go EMPTY.
+//   This catches regressions in BOTH directions: a legacy reader that
+//   silently starts reading nodes (would go empty — caught), or a
+//   migrated reader that silently reverts to legacy (would stay
+//   populated — caught).
 //
 // Test mechanism:
 //   1. Bootstrap Storage + ingest a workload that exercises the
@@ -1545,11 +1556,8 @@ fn t16_full_synthesis_flow_atomic_dual_write() {
 //   3. Hostile mutation: DELETE FROM nodes; DELETE FROM edges. Leaves
 //      every legacy table (memories, hebbian_links, etc.) untouched.
 //   4. Re-snapshot the same retrieval APIs.
-//   5. Assert each snapshot is byte-identical pre vs post.
-//
-// If any retrieval API silently reads from `nodes` or `edges`, step 4
-// observes empty/different results and the test fails with a localized
-// assertion. Pass = read isolation invariant holds.
+//   5. Assert the read-source map: legacy readers unchanged, nodes
+//      readers emptied.
 // ============================================================================
 
 /// Snapshot of every public Storage retrieval API. Compared byte-for-byte
@@ -1757,7 +1765,7 @@ fn t18_seed_workload(storage: &mut Storage) -> Vec<String> {
 }
 
 #[test]
-fn t18_read_isolation_unaffected_by_unified_table_mutation() {
+fn t18_read_source_map_legacy_vs_nodes_after_unified_wipe() {
     let dir = tempdir().unwrap();
     let mut storage = Storage::new(dir.path().join("t18.db").to_str().unwrap()).unwrap();
 
@@ -1801,10 +1809,21 @@ fn t18_read_isolation_unaffected_by_unified_table_mutation() {
 
     // Step 3: HOSTILE mutation — wipe the unified tables. Any retrieval
     // path that silently reads from them returns empty/different rows now.
+    //
+    // ISS-199: several child tables now FK→`nodes(id)` with RESTRICT
+    // (memory_embeddings, hebbian_links, graph_*). A bare `DELETE FROM
+    // nodes` would FK-787 against those surviving children. This is a
+    // deliberate destructive mutation to prove read-isolation, not a
+    // real workflow, so disable FK enforcement for the wipe.
     {
         let conn = storage.connection_mut();
-        conn.execute("DELETE FROM edges", []).unwrap();
-        conn.execute("DELETE FROM nodes", []).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=OFF; \
+             DELETE FROM edges; \
+             DELETE FROM nodes; \
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
         // nodes_fts is a virtual table mirroring nodes — nuke too in
         // case some future retrieval path queries it.
         let _ = conn.execute("DELETE FROM nodes_fts", []);
@@ -1823,16 +1842,64 @@ fn t18_read_isolation_unaffected_by_unified_table_mutation() {
         assert_eq!(edges_count, 0, "T18 step 3: edges wipe didn't take");
     }
 
-    // Step 5: re-snapshot and assert byte-identical.
+    // Step 5: re-snapshot and assert the read-source MAP.
+    //
+    // ISS-197 Phase E-0 migrated fetch_recent / all_in_ns / get_by_ids /
+    // search_by_type to read unified `nodes`; ISS-199 T34a removed the
+    // legacy `memories` write under unified mode. So after wiping nodes:
+    //   - legacy-backed readers (FTS, hebbian) MUST stay byte-identical
+    //   - nodes-backed readers MUST go empty
     let after = t18_capture_snapshot(&storage, &probe_ids);
 
+    // (a) Legacy-backed readers: unchanged. A regression where one of
+    // these silently starts reading `nodes` would empty it here.
     assert_eq!(
-        before, after,
-        "T18 FAIL: retrieval results changed after wiping unified nodes/edges. \
-         This means some Storage retrieval API is reading from the unified \
-         substrate BEFORE Phase C cutover — that violates the dual-write \
-         contract (legacy is the sole read source through Phase B)."
+        before.search_fts_global, after.search_fts_global,
+        "T18: search_fts_global (legacy memories_fts) changed after nodes wipe — \
+         a legacy reader is now reading the unified substrate"
     );
+    assert_eq!(
+        before.search_fts_ns_default, after.search_fts_ns_default,
+        "T18: search_fts_ns_default (legacy memories_fts) changed after nodes wipe"
+    );
+    assert_eq!(
+        before.search_fts_ns_alpha, after.search_fts_ns_alpha,
+        "T18: search_fts_ns_alpha (legacy memories_fts) changed after nodes wipe"
+    );
+    assert_eq!(
+        before.hebbian_neighbors_probe, after.hebbian_neighbors_probe,
+        "T18: hebbian_neighbors_probe (legacy hebbian_links) changed after nodes wipe"
+    );
+    assert_eq!(
+        before.hebbian_weighted_probe, after.hebbian_weighted_probe,
+        "T18: hebbian_weighted_probe (legacy hebbian_links) changed after nodes wipe"
+    );
+
+    // (b) Nodes-backed readers (ISS-197 Phase E-0): emptied. They were
+    // non-empty before the wipe (sanity-checked in step 2), so empty
+    // after proves they read `nodes`, not a stale legacy mirror. A
+    // regression where one of these silently reverts to legacy would
+    // stay populated here and trip the assertion.
+    assert!(
+        !before.fetch_recent_global.is_empty(),
+        "T18 sanity: fetch_recent_global empty before wipe — workload degenerate"
+    );
+    for (name, val) in [
+        ("fetch_recent_global", &after.fetch_recent_global),
+        ("fetch_recent_ns_default", &after.fetch_recent_ns_default),
+        ("fetch_recent_ns_alpha", &after.fetch_recent_ns_alpha),
+        ("all_in_ns_default", &after.all_in_ns_default),
+        ("all_in_ns_alpha", &after.all_in_ns_alpha),
+        ("get_by_ids", &after.get_by_ids),
+    ] {
+        assert!(
+            val.is_empty(),
+            "T18: {name} non-empty after nodes wipe ({val:?}) — \
+             this nodes-backed reader (ISS-197 Phase E-0) is still \
+             returning rows, so it is reading a stale legacy mirror \
+             instead of unified `nodes`"
+        );
+    }
 }
 
 // =============================================================

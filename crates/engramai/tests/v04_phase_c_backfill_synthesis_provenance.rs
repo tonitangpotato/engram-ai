@@ -77,10 +77,14 @@ fn sample_record(id: &str) -> MemoryRecord {
 fn seed_legacy_memory(storage: &mut Storage, id: &str, namespace: &str) {
     let rec = sample_record(id);
     storage.add(&rec, namespace).expect("Storage::add");
-    storage
-        .conn()
-        .execute("DELETE FROM nodes WHERE id = ?", params![id])
-        .expect("strip nodes row");
+    // ISS-199: do NOT strip the Phase B dual-written `nodes` row.
+    // `synthesis_provenance.{insight_id,source_id}` now FK→`nodes(id)`
+    // (re-pointed by `migrate_synthesis_provenance_fk_to_nodes`) — the
+    // correct target, since provenance rows reference memories that
+    // already exist in `nodes`. Stripping the node would FK-787 at
+    // `seed_legacy_provenance` time. The dangling-endpoint scenario is
+    // seeded with FK enforcement OFF (legacy-row simulation) — see
+    // `t25_dangling_endpoint_skipped_and_recovers_after_t19`.
 }
 
 /// Seed a legacy `synthesis_provenance` row directly via SQL.
@@ -220,7 +224,18 @@ fn t25_dangling_endpoint_skipped_and_recovers_after_t19() {
         &storage, "prov-3", "ins-3", "src-3", "cluster-C",
         "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.5, None,
     );
-    // Skip T19 — both endpoints are dangling.
+    // ISS-199: provenance endpoints now FK→`nodes(id)`. Simulate a legacy
+    // row by dropping the nodes WITH FK enforcement OFF, leaving the
+    // provenance row pointing at absent nodes (the state a row written
+    // under the old `memories(id)` FK lands in before T19 lifts it).
+    storage
+        .conn()
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF; \
+             DELETE FROM nodes; \
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
 
     let run = backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
     assert_eq!(run.rows_read, 1);
@@ -503,9 +518,16 @@ fn t25_counter_invariant_holds_with_mixed_outcomes() {
     );
     // Project nodes only for the OK pair.
     run_node_prereq(&mut storage);
+    // ISS-199: drop the bad pair's nodes with FK OFF — they are still
+    // referenced by `prov-bad`, so a plain DELETE would FK-RESTRICT.
+    // This simulates the legacy dangling-endpoint state.
     storage
         .conn()
-        .execute("DELETE FROM nodes WHERE id IN ('ins-bad', 'src-bad')", [])
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF; \
+             DELETE FROM nodes WHERE id IN ('ins-bad', 'src-bad'); \
+             PRAGMA foreign_keys=ON;",
+        )
         .unwrap();
 
     let run = backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();

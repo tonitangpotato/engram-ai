@@ -236,9 +236,11 @@ fn test_association_failure_does_not_block_memory_storage() {
 
     assert!(!id.is_empty(), "memory should be stored");
 
-    // Verify memory exists in DB
+    // Verify memory exists in DB.
+    // ISS-199: under unified mode the row lives in `nodes`, not the legacy
+    // `memories` table. Read the canonical `nodes` table.
     let content: String = mem.connection().query_row(
-        "SELECT content FROM memories WHERE id = ?1",
+        "SELECT content FROM nodes WHERE id = ?1",
         rusqlite::params![id],
         |row| row.get(0),
     ).unwrap();

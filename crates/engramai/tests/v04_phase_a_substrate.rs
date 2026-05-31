@@ -173,16 +173,23 @@ fn seed_legacy_rows(path: &Path) -> Vec<(String, String, i64, i64, i64)> {
     .expect("insert legacy entity row");
 
     // And a hebbian edge. Composite PK (source_id, target_id), no id column.
-    conn.execute(
-        "INSERT INTO hebbian_links
-         (source_id, target_id, strength, coactivation_count,
-          temporal_forward, temporal_backward, direction,
-          created_at, namespace)
-         VALUES
-         ('mem-legacy-1', 'mem-legacy-1', 0.3, 1,
-          0, 0, 'bidirectional',
-          1.0, 'default')",
-        [],
+    //
+    // ISS-199: `hebbian_links.{source,target}` now FK→`nodes(id)`, but
+    // this fixture deliberately seeds pre-Phase-B legacy state where the
+    // `nodes` projection does not yet exist (raw `memories` row only).
+    // Insert with FK enforcement OFF to reproduce that legacy on-disk
+    // state — the very thing this test asserts survives a reopen.
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF; \
+         INSERT INTO hebbian_links \
+         (source_id, target_id, strength, coactivation_count, \
+          temporal_forward, temporal_backward, direction, \
+          created_at, namespace) \
+         VALUES \
+         ('mem-legacy-1', 'mem-legacy-1', 0.3, 1, \
+          0, 0, 'bidirectional', \
+          1.0, 'default'); \
+         PRAGMA foreign_keys=ON;",
     )
     .expect("insert legacy hebbian row");
 

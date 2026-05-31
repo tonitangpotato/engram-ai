@@ -438,10 +438,22 @@ fn backfill_drops_queue_for_already_v2_rows() {
         },
         "user": {}
     });
+    // ISS-199 (Phase E read-cutover): `backfill_dimensions` reads metadata
+    // via `Storage::get`, which under unified mode (the default for
+    // `Memory`) decodes `nodes.attributes`. Write the v2-shaped metadata to
+    // BOTH substrates so the "already upgraded by another write path"
+    // simulation is visible regardless of read mode.
+    let v2_json = serde_json::to_string(&v2_meta).unwrap();
     mem.connection()
         .execute(
             "UPDATE memories SET metadata = ? WHERE id = 'mem-1'",
-            params![serde_json::to_string(&v2_meta).unwrap()],
+            params![v2_json],
+        )
+        .unwrap();
+    mem.connection()
+        .execute(
+            "UPDATE nodes SET attributes = ? WHERE id = 'mem-1' AND node_kind = 'memory'",
+            params![v2_json],
         )
         .unwrap();
 

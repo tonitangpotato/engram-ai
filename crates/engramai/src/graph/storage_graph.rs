@@ -283,7 +283,11 @@ CREATE TABLE IF NOT EXISTS graph_edges (
     invalidated_by      BLOB REFERENCES graph_edges(id),
     supersedes          BLOB REFERENCES graph_edges(id),
     episode_id          BLOB,
-    memory_id           TEXT REFERENCES memories(id) ON DELETE RESTRICT,
+    -- ISS-199: FK targets `nodes(id)` (was `memories(id)`). This table is
+    -- written by the resolution pipeline inside the T34a→T39 window, after
+    -- the `memories` write is gone; the row's `memory_id` now exists only in
+    -- `nodes`. Existing DBs are migrated by `migrate_graph_tables_fk_to_nodes`.
+    memory_id           TEXT REFERENCES nodes(id) ON DELETE RESTRICT,
     resolution_method   TEXT NOT NULL,
     activation          REAL NOT NULL DEFAULT 0.0,
     confidence          REAL NOT NULL DEFAULT 0.5,
@@ -346,7 +350,8 @@ CREATE INDEX IF NOT EXISTS idx_extraction_failures_unresolved
 
 -- Memory ↔ Entity provenance join (GOAL-1.3, GOAL-1.7).
 CREATE TABLE IF NOT EXISTS graph_memory_entity_mentions (
-    memory_id       TEXT   NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    -- ISS-199: FK targets `nodes(id)` (was `memories(id)`); see graph_edges.
+    memory_id       TEXT   NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     entity_id       BLOB   NOT NULL REFERENCES graph_entities(id) ON DELETE RESTRICT,
     mention_span    TEXT,
     confidence      REAL   NOT NULL DEFAULT 1.0 CHECK (confidence BETWEEN 0.0 AND 1.0),
@@ -393,7 +398,8 @@ CREATE TABLE IF NOT EXISTS graph_pipeline_runs (
     -- `extraction_status(memory_id)` is a primary-key-driven query, not a
     -- JSON scan over `input_summary`. Both columns are nullable because
     -- `kind = 'knowledge_compile'` runs are not memory-scoped.
-    memory_id       TEXT REFERENCES memories(id) ON DELETE CASCADE,
+    -- ISS-199: FK targets `nodes(id)` (was `memories(id)`); see graph_edges.
+    memory_id       TEXT REFERENCES nodes(id) ON DELETE CASCADE,
     episode_id      BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_kind   ON graph_pipeline_runs(kind, started_at DESC);

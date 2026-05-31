@@ -6934,6 +6934,12 @@ mod tests {
             "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL);",
         )
         .unwrap();
+        // ISS-199: the graph tables' `memory_id` FK now targets `nodes(id)`,
+        // so the unit-test harness must provide a real `nodes` table for the
+        // FK to resolve at write time. Re-use the production DDL (idempotent)
+        // rather than a hand-rolled minimal copy that could drift.
+        crate::storage::Storage::migrate_unified_nodes(&conn)
+            .expect("init nodes table");
         init_graph_tables(&conn).expect("init graph tables");
         conn
     }
@@ -7460,13 +7466,10 @@ mod tests {
     fn insert_and_get_edge_roundtrip_canonical_entity_object() {
         // Full happy path: canonical predicate + entity object + every
         // optional field populated. Round-trip every persisted column.
-        // memory_id has FK → memories(id); seed the stub row.
+        // ISS-199: graph_edges.memory_id FK → nodes(id); seed via the
+        // dual-writing stub helper.
         let mut conn = fresh_conn();
-        conn.execute(
-            "INSERT INTO memories (id, content) VALUES (?1, ?2)",
-            rusqlite::params!["mem-1", "hello"],
-        )
-        .unwrap();
+        insert_stub_memory(&conn, "mem-1");
         let mut store = SqliteGraphStore::new(&mut conn);
         let now = Utc::now();
         let subj = insert_subject_entity(&mut store, "Alice");
@@ -8229,17 +8232,10 @@ mod tests {
         let subj = insert_subject_entity(&mut store, "Alice");
         let obj = insert_subject_entity(&mut store, "Acme");
 
-        // graph_edges.memory_id has FK → memories(id); seed the stub row.
-        conn.execute(
-            "INSERT INTO memories (id, content) VALUES (?1, ?2)",
-            rusqlite::params!["mem-1", "hello"],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO memories (id, content) VALUES (?1, ?2)",
-            rusqlite::params!["mem-2", "world"],
-        )
-        .unwrap();
+        // ISS-199: graph_edges.memory_id FK → nodes(id); seed via the
+        // dual-writing stub helper.
+        insert_stub_memory(&conn, "mem-1");
+        insert_stub_memory(&conn, "mem-2");
 
         let mut store = SqliteGraphStore::new(&mut conn);
         let mut e1 = Edge::new(
@@ -8897,6 +8893,16 @@ mod tests {
             rusqlite::params![id, format!("content-{}", id)],
         )
         .expect("insert stub memory");
+        // ISS-199: the graph tables' `memory_id` FK now targets `nodes(id)`,
+        // mirroring production (enrichment writes graph rows after the `add`
+        // dual-write into `nodes`). Seed the matching `nodes` row so the FK
+        // is satisfied.
+        conn.execute(
+            "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+             VALUES (?1, 'memory', ?2, 0.0, 0.0)",
+            rusqlite::params![id, format!("content-{}", id)],
+        )
+        .expect("insert stub node");
     }
 
     fn ts(secs: f64) -> DateTime<Utc> {
@@ -9861,6 +9867,16 @@ mod tests {
             .conn()
             .execute(
                 "INSERT INTO memories (id, content) VALUES (?1, ?2)",
+                rusqlite::params![id, "test content"],
+            )
+            .unwrap();
+        // ISS-199: graph tables' `memory_id` FK now targets `nodes(id)` —
+        // seed the matching node so the FK resolves at write time.
+        store
+            .conn()
+            .execute(
+                "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+                 VALUES (?1, 'memory', ?2, 0.0, 0.0)",
                 rusqlite::params![id, "test content"],
             )
             .unwrap();

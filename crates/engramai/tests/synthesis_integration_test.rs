@@ -32,16 +32,16 @@ fn add_memory(mem: &mut Memory, content: &str, importance: f64) -> String {
 
 /// Helper: create Hebbian links between memories via direct SQL.
 fn coactivate(mem: &mut Memory, id_a: &str, id_b: &str) {
-    let conn = mem.connection();
-    let now = chrono::Utc::now().timestamp() as f64;
-    conn.execute(
-        "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id_a, id_b, 3.0, 5, now],
-    ).unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO hebbian_links (source_id, target_id, strength, coactivation_count, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id_b, id_a, 3.0, 5, now],
-    ).unwrap();
+    // ISS-199: under unified mode the clustering path reads Hebbian links
+    // from `edges` (edge_kind='associative'), not the legacy `hebbian_links`
+    // table. Raw INSERTs into `hebbian_links` bypass the dual-write and are
+    // invisible to the unified read path. Drive co-activation through the
+    // production `record_coactivation` API, which dual-writes both tables.
+    // Threshold is 1 here; two calls form the link (first = tracking row,
+    // second = threshold crossing → strength=1.0 + associative edge).
+    let storage = mem.storage_mut();
+    storage.record_coactivation(id_a, id_b, 1).unwrap();
+    storage.record_coactivation(id_a, id_b, 1).unwrap();
 }
 
 #[test]

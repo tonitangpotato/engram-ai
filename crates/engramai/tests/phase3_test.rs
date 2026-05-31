@@ -50,8 +50,11 @@ fn test_cross_namespace_hebbian() {
     
     // Verify we got memories from both namespaces
     let namespaces: Vec<_> = result.memories.iter()
+        // ISS-199: under unified mode memory rows live in `nodes`, not the
+        // legacy `memories` table. Read the canonical `nodes` table so the
+        // test verifies the same row the production read path resolves.
         .filter_map(|r| mem.connection().query_row(
-            "SELECT namespace FROM memories WHERE id = ?",
+            "SELECT namespace FROM nodes WHERE id = ?",
             [&r.record.id],
             |row| row.get::<_, String>(0)
         ).ok())

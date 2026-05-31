@@ -148,17 +148,27 @@ fn t20_skips_orphan_embeddings_when_node_missing() {
     let tmp = tempdir().unwrap();
     let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
 
-    // Insert a legacy memory but strip the nodes row to simulate
-    // "T19 hasn't reached this namespace yet."
+    // Insert a legacy memory and seed its embedding WHILE the nodes
+    // row still exists, then strip the nodes row to simulate "T19
+    // hasn't reached this namespace yet."
+    //
+    // ISS-199: `memory_embeddings.memory_id` now FK→`nodes(id)`, so an
+    // embedding cannot be inserted against a missing node. To exercise
+    // the backfill's defensive dangling-endpoint skip we reproduce the
+    // legacy state by seeding first, then dropping the node with FK
+    // enforcement OFF (exactly the state a row written under the old
+    // `memories(id)` FK lands in before T19 lifts the node).
     let m = sample_record("mem-orphan");
     storage.add(&m, "ns-skipped").unwrap();
+    seed_legacy_embedding(&storage, "mem-orphan", "model-x", 4, "2026-01-01T00:00:00Z");
     storage
         .conn()
-        .execute("DELETE FROM nodes WHERE id = 'mem-orphan'", [])
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF; \
+             DELETE FROM nodes WHERE id = 'mem-orphan'; \
+             PRAGMA foreign_keys=ON;",
+        )
         .unwrap();
-
-    // Now seed an embedding for the orphan memory.
-    seed_legacy_embedding(&storage, "mem-orphan", "model-x", 4, "2026-01-01T00:00:00Z");
 
     // Also seed a normal memory + embedding (so the run has mixed state).
     let normal = sample_record("mem-normal");

@@ -89,13 +89,21 @@ fn sample_record(id: &str) -> MemoryRecord {
 fn seed_legacy_memory(storage: &mut Storage, id: &str, namespace: &str) {
     let rec = sample_record(id);
     storage.add(&rec, namespace).expect("Storage::add");
-    // Strip the Phase B dual-write so we exercise T19's backfill
-    // path (and the FK guard in T23 sees an initially-missing
-    // memory node until T19 runs).
-    storage
-        .conn()
-        .execute("DELETE FROM nodes WHERE id = ?", params![id])
-        .expect("strip nodes row");
+    // ISS-199: do NOT strip the Phase B dual-written `nodes` row.
+    //
+    // `memory_entities.memory_id` now FK→`nodes(id)` (re-pointed by
+    // `migrate_memory_entities_fk_to_nodes`), which is the correct
+    // target under T34a: enrichment writes `memory_entities` AFTER the
+    // `add`, by which point the `memories` write is gone and the id
+    // exists only in `nodes`. Stripping the node here would FK-787 at
+    // `seed_link` time, before the backfill even runs.
+    //
+    // The memory node is therefore always present. T19
+    // (`backfill_memories_to_nodes`) in `run_node_prereqs` is idempotent
+    // — it counts the existing node as `rows_skipped_existing` — so the
+    // T23 happy path is unaffected. The dangling-endpoint scenario is
+    // exercised entity-side instead (see
+    // `t23_skips_dangling_endpoint_and_recovers_after_prereqs`).
 }
 
 fn seed_legacy_entity(storage: &Storage, id: &str, name: &str, namespace: &str) {
@@ -337,7 +345,12 @@ fn t23_skips_dangling_endpoint_and_recovers_after_prereqs() {
     seed_legacy_memory(&mut storage, "mem-1", "default");
     seed_legacy_entity(&storage, "ent-1", "X", "default");
     seed_link(&storage, "mem-1", "ent-1", "mention");
-    // NOTE: do NOT run T19/T21 yet — endpoints are dangling.
+    // NOTE: ISS-199 — dangling is now exercised ENTITY-side. The memory
+    // node is present (seed_legacy_memory no longer strips it, since the
+    // link FK now targets nodes(id)), but the entity is only in the
+    // `entities` table — T21 (`backfill_entities_to_nodes`) has not run,
+    // so there is no `nodes` row for `ent-1`. T23's endpoint pre-check
+    // therefore sees the entity endpoint missing and skips the row.
 
     let run = backfill_memory_entities_to_edges(&mut storage, None).expect("T23");
     assert_eq!(run.rows_read, 1);

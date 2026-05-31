@@ -310,9 +310,12 @@ mod tests {
         // Append provenance
         mem.storage_mut().append_merge_provenance(&id, "donor-123", 0.92, true).unwrap();
         
-        // Read memory metadata directly
+        // Read memory metadata directly. `test_memory()` runs in unified
+        // mode (Memory::new → unified_substrate=true), so under T34a the
+        // legacy `memories` row is absent — the canonical JSON lives in
+        // `nodes.attributes` (== metadata + reserved keys). ISS-199.
         let meta_str: Option<String> = mem.storage().conn()
-            .query_row("SELECT metadata FROM memories WHERE id = ?",
+            .query_row("SELECT attributes FROM nodes WHERE id = ? AND node_kind = 'memory'",
                        rusqlite::params![id], |row| row.get(0)).unwrap();
         let meta: serde_json::Value = serde_json::from_str(meta_str.as_deref().unwrap()).unwrap();
         let history = meta

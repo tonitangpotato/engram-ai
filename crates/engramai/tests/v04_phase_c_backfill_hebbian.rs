@@ -79,10 +79,15 @@ fn sample_record(id: &str) -> MemoryRecord {
 fn seed_legacy_memory(storage: &mut Storage, id: &str, namespace: &str) {
     let rec = sample_record(id);
     storage.add(&rec, namespace).expect("Storage::add");
-    storage
-        .conn()
-        .execute("DELETE FROM nodes WHERE id = ?", params![id])
-        .expect("strip nodes row");
+    // ISS-199: do NOT strip the Phase B dual-written `nodes` row.
+    // `hebbian_links.{source_id,target_id}` now FK→`nodes(id)` (re-pointed
+    // by `migrate_hebbian_links_fk_to_nodes`) — the correct target, since
+    // `record_coactivation*` writes links between memories that already
+    // exist in `nodes`. Stripping the node would FK-787 at `seed_link`
+    // time. The memory node is therefore always present; T19 in
+    // `run_node_prereqs` is idempotent. The dangling-endpoint scenario is
+    // seeded with FK enforcement OFF (legacy-row simulation) — see
+    // `t24_dangling_endpoint_skipped_and_recovers_after_t19`.
 }
 
 /// Seed a Hebbian link row at the legacy table layer. Caller controls
@@ -351,9 +356,20 @@ fn t24_dangling_endpoint_skipped_and_recovers_after_t19() {
         1_700_000_000.0, "default", "corecall",
     );
 
-    // Run T24 BEFORE T19 — wipe nodes table (seed_legacy_memory
-    // already stripped per-id rows, but be defensive).
-    storage.conn().execute("DELETE FROM nodes", []).unwrap();
+    // ISS-199: `hebbian_links.{source,target}` now FK→`nodes(id)`, so a
+    // link cannot be inserted against a missing node. To exercise the
+    // backfill's defensive dangling-endpoint skip we simulate a legacy
+    // row: drop the node WITH FK enforcement OFF, leaving the link
+    // pointing at an absent node (exactly the state a row written under
+    // the old `memories(id)` FK lands in before T19 lifts the node).
+    storage
+        .conn()
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF; \
+             DELETE FROM nodes; \
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
 
     let run1 = backfill_hebbian_links_to_edges(&mut storage, None).expect("T24");
     assert_eq!(run1.rows_read, 1);

@@ -581,6 +581,21 @@ impl Storage {
         Self::migrate_memory_embeddings_fk_to_nodes(&conn)?;
         Self::migrate_triples_fk_to_nodes(&conn)?;
 
+        // v0.4 ISS-199 (T34a-pre, batch 3): re-point the three graph-layer
+        // tables (`graph_edges`, `graph_memory_entity_mentions`,
+        // `graph_pipeline_runs`) whose `memory_id` FK still targeted
+        // `memories(id)`. These are bootstrapped by `init_graph_tables`
+        // (GRAPH_DDL), not the v0.2 migrations, so the ISS-198 batch-1/2
+        // sweep missed them. The resolution pipeline writes all three inside
+        // the T34a→T39 window, so the FK fires once `memories` stops being
+        // populated (`begin_pipeline_run: FOREIGN KEY constraint failed`).
+        // Must run AFTER `init_graph_tables` (tables exist) and
+        // `migrate_unified_nodes` (`nodes` exists as the new parent). Uses the
+        // FK-safe rebuild (FK-OFF + post-check) because these tables are
+        // self-referential / cross-referenced by graph_resolution_traces.
+        // Idempotent (DDL-inspection guard).
+        Self::migrate_graph_tables_fk_to_nodes(&conn)?;
+
         // v0.4 unified substrate: bump schema_version (T09).
         // Runs last so a partial Phase A migration leaves the version
         // unchanged — re-opening then re-attempts the missing migrations
@@ -624,7 +639,13 @@ impl Storage {
     ///
     /// Schema version is **not** bumped here — T09 lands that after the full
     /// T05–T08 set is in place.
-    fn migrate_unified_nodes(conn: &Connection) -> SqlResult<()> {
+    /// `migrate_unified_nodes` is `pub(crate)` so the graph-layer unit tests
+    /// (`graph::store::tests`) can bootstrap the real `nodes` schema. Since
+    /// ISS-199 re-pointed the graph tables' `memory_id` FK to `nodes(id)`,
+    /// those tests need a genuine `nodes` table to satisfy the FK at write
+    /// time — re-using this idempotent DDL avoids a hand-rolled schema that
+    /// could drift from production.
+    pub(crate) fn migrate_unified_nodes(conn: &Connection) -> SqlResult<()> {
         conn.execute_batch(r#"
             CREATE TABLE IF NOT EXISTS nodes (
                 -- identity
@@ -1379,6 +1400,78 @@ impl Storage {
         Ok(())
     }
 
+    /// FK-safe variant of [`Self::rebuild_table_fk_to_nodes`] for tables that
+    /// are **self-referential** or **referenced by other tables**.
+    ///
+    /// The plain rebuild copies rows with `PRAGMA foreign_keys` left as the
+    /// caller set it (ON at `Storage::new`). That is correct for leaf child
+    /// tables (`access_log`, `memory_embeddings`, `triples`, `hebbian_links`,
+    /// `memory_entities`, `synthesis_provenance`) — no self-FK, no inbound
+    /// references, so the `INSERT…SELECT` and `DROP`/`RENAME` never trip a
+    /// constraint. The graph tables are different:
+    ///
+    ///   - `graph_edges` has **self-referential** FKs (`invalidated_by`,
+    ///     `supersedes` → `graph_edges(id)`). With FK enforcement ON, an
+    ///     `INSERT…SELECT` can copy a child row before its parent row,
+    ///     tripping `FOREIGN KEY constraint failed`.
+    ///   - `graph_edges` and `graph_pipeline_runs` are **referenced by**
+    ///     `graph_resolution_traces` (`edge_id`, `run_id`). Dropping the old
+    ///     table mid-rebuild would dangle those references under FK=ON.
+    ///
+    /// This follows SQLite's canonical "make other kinds of table schema
+    /// changes" recipe (<https://sqlite.org/lang_altertable.html#otheralter>):
+    /// turn FK enforcement OFF, do the table rebuild, run `foreign_key_check`
+    /// to prove no new violations were introduced, then turn FK back ON.
+    ///
+    /// `PRAGMA foreign_keys` is a no-op inside a transaction, so this MUST
+    /// run on the bare connection at `Storage::new` time (outside any open
+    /// tx) — which is where all the ISS-198 FK migrations are sequenced.
+    fn rebuild_table_fk_to_nodes_fk_safe(
+        conn: &Connection,
+        table: &str,
+        fk_cols: &[&str],
+        index_ddls: &[&str],
+    ) -> SqlResult<()> {
+        // Idempotency: if the DDL no longer references `memories`, skip the
+        // whole pragma dance (no-op on fresh DBs created pointing at nodes).
+        let needs: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match needs {
+            Some(sql) if sql.contains("REFERENCES memories") => {}
+            _ => return Ok(()),
+        }
+
+        conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+        let rebuilt = Self::rebuild_table_fk_to_nodes(conn, table, fk_cols, index_ddls);
+        // foreign_key_check reports any rows whose FK no longer resolves.
+        // Surface it as an error rather than silently re-enabling FK on a
+        // corrupt schema. Run before re-enabling so the check itself isn't
+        // affected by enforcement state.
+        let violations: i64 = if rebuilt.is_ok() {
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check()", [], |r| r.get(0))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        rebuilt?;
+        if violations > 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
+                Some(format!(
+                    "rebuild_table_fk_to_nodes_fk_safe({table}): {violations} dangling FK row(s) \
+                     after re-point; aborting to avoid schema corruption"
+                )),
+            ));
+        }
+        Ok(())
+    }
+
     /// ISS-198: re-point `hebbian_links.source_id` + `target_id` from
     /// `memories(id)` to `nodes(id)`. Written by `record_coactivation*`
     /// during `Storage::add`; without this T34a's `memories`-write deletion
@@ -1470,6 +1563,65 @@ impl Storage {
                 "CREATE INDEX IF NOT EXISTS idx_triples_object ON triples(object)",
             ],
         )
+    }
+
+    /// ISS-199 (T34a-pre, batch 3): re-point the three **graph-layer** tables
+    /// whose `memory_id` FK still targets `memories(id)` over to `nodes(id)`.
+    ///
+    /// These tables are bootstrapped by `graph::init_graph_tables`
+    /// (`storage_graph.rs` `GRAPH_DDL`), **not** by the v0.2 `create_schema`
+    /// migrations, which is why the ISS-198 batch-1/2 sweep missed them. All
+    /// three are written by the resolution pipeline (`begin_pipeline_run`,
+    /// edge persist, entity-mention persist) inside the T34a→T39 window, so
+    /// once the `memories` write is gone the FK fires (`begin_pipeline_run:
+    /// FOREIGN KEY constraint failed`).
+    ///
+    /// Uses [`Self::rebuild_table_fk_to_nodes_fk_safe`] because:
+    ///   - `graph_edges` is self-referential (`invalidated_by`/`supersedes`),
+    ///   - `graph_edges`/`graph_pipeline_runs` are referenced by
+    ///     `graph_resolution_traces`,
+    /// so the rebuild must run with FK enforcement OFF + a post-check.
+    ///
+    /// Fresh DBs created from the already-corrected `GRAPH_DDL` (which now
+    /// emits `REFERENCES nodes(id)`) hit the idempotency guard and no-op.
+    fn migrate_graph_tables_fk_to_nodes(conn: &Connection) -> SqlResult<()> {
+        Self::rebuild_table_fk_to_nodes_fk_safe(
+            conn,
+            "graph_edges",
+            &["memory_id"],
+            &[
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_subject        ON graph_edges(subject_id)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_object_entity  ON graph_edges(object_entity_id)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_predicate      ON graph_edges(predicate_label)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_namespace      ON graph_edges(namespace)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_recorded_at    ON graph_edges(recorded_at)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_invalidated_at ON graph_edges(invalidated_at)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_live ON graph_edges(subject_id, predicate_label) WHERE invalidated_at IS NULL",
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_subject_pred_recorded ON graph_edges(subject_id, predicate_label, recorded_at DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_edges_spo ON graph_edges(subject_id, predicate_label, object_kind, object_entity_id, invalidated_at)",
+            ],
+        )?;
+        Self::rebuild_table_fk_to_nodes_fk_safe(
+            conn,
+            "graph_memory_entity_mentions",
+            &["memory_id"],
+            &[
+                "CREATE INDEX IF NOT EXISTS idx_graph_mem_ent_by_memory ON graph_memory_entity_mentions(memory_id)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_mem_ent_by_entity ON graph_memory_entity_mentions(entity_id)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_mem_ent_ns        ON graph_memory_entity_mentions(namespace)",
+            ],
+        )?;
+        Self::rebuild_table_fk_to_nodes_fk_safe(
+            conn,
+            "graph_pipeline_runs",
+            &["memory_id"],
+            &[
+                "CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_kind   ON graph_pipeline_runs(kind, started_at DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_status ON graph_pipeline_runs(status) WHERE status != 'succeeded'",
+                "CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_memory ON graph_pipeline_runs(memory_id, started_at DESC) WHERE memory_id IS NOT NULL",
+            ],
+        )?;
+        Ok(())
     }
 
     fn migrate_v2(conn: &Connection) -> SqlResult<()> {
@@ -2154,36 +2306,46 @@ impl Storage {
         // after that deletion.
         Self::insert_memory_node_row(&tx, record, namespace, metadata_json.as_deref())?;
 
-        tx.execute(
-            r#"
-            INSERT INTO memories (
-                id, content, memory_type, layer, created_at,
-                working_strength, core_strength, importance, pinned,
-                consolidation_count, last_consolidated, source,
-                contradicts, contradicted_by, metadata, namespace,
-                occurred_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-            params![
-                record.id,
-                record.content,
-                record.memory_type.to_string(),
-                record.layer.to_string(),
-                datetime_to_f64(&record.created_at),
-                record.working_strength,
-                record.core_strength,
-                record.importance,
-                record.pinned as i32,
-                record.consolidation_count,
-                record.last_consolidated.map(|dt| datetime_to_f64(&dt)),
-                record.source,
-                record.contradicts.as_ref().unwrap_or(&String::new()),
-                record.contradicted_by.as_ref().unwrap_or(&String::new()),
-                metadata_json,
-                namespace,
-                record.occurred_at.map(|dt| datetime_to_f64(&dt)),
-            ],
-        )?;
+        // T34a (ISS-197 Phase E): under unified mode the legacy
+        // `memories`/`memories_fts` writes are removed — `nodes` is the
+        // table-of-record. All readers/RMW paths in `add`'s blast radius
+        // (find_entity_overlap, consolidation, append_merge_provenance,
+        // soft_delete/get_deleted_at) are cut over to `nodes` by ISS-199
+        // so this deletion is safe. `access_log.memory_id` already
+        // `REFERENCES nodes(id)` (ISS-196), so the access row still has a
+        // valid parent after the `memories` insert is gone.
+        if !self.unified_substrate {
+            tx.execute(
+                r#"
+                INSERT INTO memories (
+                    id, content, memory_type, layer, created_at,
+                    working_strength, core_strength, importance, pinned,
+                    consolidation_count, last_consolidated, source,
+                    contradicts, contradicted_by, metadata, namespace,
+                    occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+                params![
+                    record.id,
+                    record.content,
+                    record.memory_type.to_string(),
+                    record.layer.to_string(),
+                    datetime_to_f64(&record.created_at),
+                    record.working_strength,
+                    record.core_strength,
+                    record.importance,
+                    record.pinned as i32,
+                    record.consolidation_count,
+                    record.last_consolidated.map(|dt| datetime_to_f64(&dt)),
+                    record.source,
+                    record.contradicts.as_ref().unwrap_or(&String::new()),
+                    record.contradicted_by.as_ref().unwrap_or(&String::new()),
+                    metadata_json,
+                    namespace,
+                    record.occurred_at.map(|dt| datetime_to_f64(&dt)),
+                ],
+            )?;
+        }
         
         // Record initial access
         tx.execute(
@@ -2191,17 +2353,19 @@ impl Storage {
             params![record.id, datetime_to_f64(&record.created_at)],
         )?;
         
-        // Insert into FTS with CJK/ASCII boundary tokenization
-        let tokenized = tokenize_cjk_boundaries(&record.content);
-        let rowid: i64 = tx.query_row(
-            "SELECT rowid FROM memories WHERE id = ?",
-            params![record.id],
-            |row| row.get(0),
-        )?;
-        tx.execute(
-            "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
-            params![rowid, tokenized],
-        )?;
+        // Insert into FTS with CJK/ASCII boundary tokenization (legacy only).
+        if !self.unified_substrate {
+            let tokenized = tokenize_cjk_boundaries(&record.content);
+            let rowid: i64 = tx.query_row(
+                "SELECT rowid FROM memories WHERE id = ?",
+                params![record.id],
+                |row| row.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
+                params![rowid, tokenized],
+            )?;
+        }
 
         tx.commit()?;
         Ok(())
@@ -3004,6 +3168,20 @@ impl Storage {
     
     /// Inner update logic (always runs within a transaction context).
     fn update_inner(&self, record: &MemoryRecord, metadata_json: &Option<String>) -> Result<(), rusqlite::Error> {
+        // ISS-199 (Phase E read-cutover): under unified mode the legacy
+        // `memories` row never exists (T34a removes the write), so the
+        // `SELECT rowid FROM memories` below would `QueryReturnedNoRows`
+        // and abort the whole consolidation/RMW transaction. The
+        // canonical write is the `nodes` dual-write
+        // (`update_memory_node_row`); `nodes_fts` is refreshed by the
+        // `nodes_fts_au` trigger on `UPDATE OF content`. So under unified
+        // mode we update `nodes` only and skip the legacy `memories` /
+        // `memories_fts` maintenance entirely.
+        if self.unified_substrate {
+            Self::update_memory_node_row(&self.conn, record, metadata_json.as_deref())?;
+            return Ok(());
+        }
+
         // Get rowid for FTS update
         let rowid: i64 = self.conn.query_row(
             "SELECT rowid FROM memories WHERE id = ?",
@@ -3171,6 +3349,22 @@ impl Storage {
     
     /// Inner update_content logic (always runs within a transaction context).
     fn update_content_inner(&self, id: &str, new_content: &str, metadata_json: &Option<String>) -> Result<(), rusqlite::Error> {
+        // ISS-199 (Phase E read-cutover): mirror `update_inner`. Under
+        // unified mode the legacy `memories` row never exists (T34a
+        // removes the write), so the `SELECT rowid FROM memories` below
+        // would `QueryReturnedNoRows` and abort the whole RMW
+        // transaction (this is the `update_memory` v1→v2 upgrade path).
+        // The canonical write is the `nodes` content update
+        // (`update_memory_node_content`, which preserves ISS-119
+        // `_legacy_*` shim keys); `nodes_fts` is refreshed by the
+        // `nodes_fts_au` trigger on `UPDATE OF content`. So under unified
+        // mode we update `nodes` only and skip the legacy
+        // `memories` / `memories_fts` maintenance entirely.
+        if self.unified_substrate {
+            Self::update_memory_node_content(&self.conn, id, new_content, metadata_json.as_deref())?;
+            return Ok(());
+        }
+
         // Get rowid before updating
         let rowid: i64 = self.conn.query_row(
             "SELECT rowid FROM memories WHERE id = ?",
@@ -4511,10 +4705,13 @@ impl Storage {
     pub fn get_all_embeddings(&self, model: &str) -> Result<Vec<(String, Vec<f32>)>, rusqlite::Error> {
         let model = Self::normalize_model_id(model);
         if self.unified_substrate {
+            // ISS-199 (Phase E read-cutover): join `nodes`, not the
+            // T34a-removed legacy `memories` table (see
+            // `get_embeddings_in_namespace`).
             let mut stmt = self.conn.prepare(
                 r#"SELECT e.node_id, e.embedding FROM node_embeddings e
-                JOIN memories m ON e.node_id = m.id
-                WHERE e.model = ? AND m.deleted_at IS NULL
+                JOIN nodes m ON e.node_id = m.id
+                WHERE m.node_kind = 'memory' AND e.model = ? AND m.deleted_at IS NULL
                 AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
             )?;
             let rows = stmt.query_map(params![model], |row| {
@@ -4556,11 +4753,20 @@ impl Storage {
         }
 
         if self.unified_substrate {
+            // ISS-199 (Phase E read-cutover): join the unified `nodes`
+            // table for the namespace/liveness filter. The previous JOIN
+            // against `memories` returned zero rows once T34a removed the
+            // legacy `memories` write under unified mode — which silently
+            // disabled embedding-based dedup (`find_nearest_embedding`)
+            // and any namespace-scoped embedding scan. `node_embeddings`
+            // is the embedding table-of-record; `nodes` (node_kind='memory')
+            // always carries the row via T12 dual-write.
             let mut stmt = self.conn.prepare(
                 r#"
                 SELECT e.node_id, e.embedding FROM node_embeddings e
-                JOIN memories m ON e.node_id = m.id
-                WHERE m.namespace = ? AND e.model = ? AND m.deleted_at IS NULL
+                JOIN nodes m ON e.node_id = m.id
+                WHERE m.node_kind = 'memory' AND m.namespace = ? AND e.model = ?
+                AND m.deleted_at IS NULL
                 AND (m.superseded_by IS NULL OR m.superseded_by = '')
                 "#
             )?;
@@ -4609,10 +4815,16 @@ impl Storage {
         let now_epoch = datetime_to_f64(&now);
 
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "UPDATE memories SET deleted_at = ?1 WHERE id = ?2",
-            params![now_rfc, id],
-        )?;
+        // ISS-199: under unified mode the legacy `memories` row is absent
+        // (T34a). The `UPDATE memories` below would be a harmless 0-row
+        // no-op, but we gate it to make intent explicit and avoid touching
+        // the drop-bound table once it is no longer the table-of-record.
+        if !self.unified_substrate {
+            tx.execute(
+                "UPDATE memories SET deleted_at = ?1 WHERE id = ?2",
+                params![now_rfc, id],
+            )?;
+        }
         // ISS-121: dual-write to nodes. Predicate `node_kind = 'memory'`
         // is defensive — `id` is unique across nodes anyway, but the
         // predicate documents intent and matches the supersession
@@ -4768,16 +4980,33 @@ impl Storage {
     }
 
     /// Get the deleted_at timestamp for a memory.
+    ///
+    /// Returns the soft-delete instant as an RFC3339 string, or `None`
+    /// if the memory is live (not soft-deleted).
     pub fn get_deleted_at(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
-        // Phase E-0 (ISS-197): deliberately NOT cut to `nodes`. The column
-        // types differ — `memories.deleted_at` is TEXT (RFC3339) while
-        // `nodes.deleted_at` is REAL (epoch f64, see soft_delete dual-write
-        // which writes now_rfc to memories but now_epoch to nodes). This
-        // accessor returns Option<String>; reading the REAL nodes column as
-        // String errors in rusqlite. Cutting it over requires either changing
-        // the return type or an epoch→RFC3339 conversion — out of scope for
-        // a mechanical read-cutover. Stays on memories until T39 DROP, by
-        // which point the return type / format must be reconciled.
+        // ISS-199 (§8.6 reconciliation): the two substrates store
+        // `deleted_at` in different physical types —
+        // `memories.deleted_at` is TEXT (RFC3339) while
+        // `nodes.deleted_at` is REAL (epoch f64, see the `soft_delete`
+        // dual-write which writes `now_rfc` to memories but `now_epoch`
+        // to nodes). This accessor's contract is `Option<String>`
+        // (RFC3339), so under unified mode we read the REAL epoch column
+        // as `Option<f64>` and convert epoch → RFC3339 to preserve the
+        // return type. The conversion is lossless to the same instant
+        // (sub-second precision retained by `f64_to_datetime`).
+        if self.unified_substrate {
+            // Inner `Option<f64>`: NULL deleted_at (live row) → None.
+            let epoch: Option<f64> = self
+                .conn
+                .query_row(
+                    "SELECT deleted_at FROM nodes \
+                     WHERE id = ?1 AND node_kind = 'memory'",
+                    params![id],
+                    |row| row.get(0),
+                )?;
+            return Ok(epoch.map(|ts| f64_to_datetime(ts).to_rfc3339()));
+        }
+
         let result: Option<String> = self.conn.query_row(
             "SELECT deleted_at FROM memories WHERE id = ?",
             params![id],
@@ -7470,8 +7699,30 @@ impl Storage {
         similarity: f32,
         content_updated: bool,
     ) -> Result<(), rusqlite::Error> {
+        // ISS-199 (Phase E read-cutover): this is a read-modify-write on
+        // the memory's free-form JSON. Under unified mode the legacy
+        // `memories` row is absent (T34a), so we RMW `nodes.attributes`
+        // instead — which is the same JSON object as `memories.metadata`
+        // plus the reserved `_legacy_contradicts`/`_legacy_contradicted_by`
+        // keys (see `merge_legacy_memory_attributes`). The
+        // `engram.merge_history` path we append to is disjoint from those
+        // reserved keys, so the round-trip preserves them. `nodes.attributes`
+        // is NOT NULL DEFAULT '{}', so the read never yields SQL NULL.
+        let (read_sql, write_sql) = if self.unified_substrate {
+            (
+                "SELECT attributes FROM nodes WHERE id = ?1 AND node_kind = 'memory'",
+                "UPDATE nodes SET attributes = ?1, updated_at = ?2 \
+                 WHERE id = ?3 AND node_kind = 'memory'",
+            )
+        } else {
+            (
+                "SELECT metadata FROM memories WHERE id = ?1",
+                "UPDATE memories SET metadata = ?1 WHERE id = ?2",
+            )
+        };
+
         let metadata_str: Option<String> = self.conn.query_row(
-            "SELECT metadata FROM memories WHERE id = ?",
+            read_sql,
             params![target_id],
             |row| row.get(0),
         )?;
@@ -7503,10 +7754,17 @@ impl Storage {
         write_merge_tracking(&mut metadata, history, merge_count_prev);
         
         let metadata_str = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
-        self.conn.execute(
-            "UPDATE memories SET metadata = ? WHERE id = ?",
-            params![metadata_str, target_id],
-        )?;
+        if self.unified_substrate {
+            self.conn.execute(
+                write_sql,
+                params![metadata_str, now_f64(), target_id],
+            )?;
+        } else {
+            self.conn.execute(
+                write_sql,
+                params![metadata_str, target_id],
+            )?;
+        }
         
         Ok(())
     }
@@ -7890,24 +8148,62 @@ impl Storage {
     }
     
     /// Get memory IDs that need triple extraction (no triples, retry_count < max).
+    ///
+    /// **ISS-199 (Phase E read-cutover)**: under unified mode the legacy
+    /// `memories` table is no longer written (T34a). The attempt counter,
+    /// which lived in `memories.triple_extraction_attempts` (a column with
+    /// no equivalent on `nodes`), moves into the `nodes.attributes` JSON
+    /// under the reserved key `$._triple_extraction_attempts`. The
+    /// `COALESCE(..., 0)` mirrors the column's `DEFAULT 0` so rows that
+    /// have never been attempted are still eligible.
     pub fn get_unenriched_memory_ids(&self, limit: usize, max_retries: u32) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
+        let sql = if self.unified_substrate {
+            "SELECT id FROM nodes \
+             WHERE node_kind IN ('memory', 'insight') \
+               AND deleted_at IS NULL \
+               AND (superseded_by IS NULL OR superseded_by = '') \
+               AND id NOT IN (SELECT DISTINCT memory_id FROM triples) \
+               AND COALESCE(json_extract(attributes, '$._triple_extraction_attempts'), 0) < ?1 \
+             ORDER BY created_at DESC \
+             LIMIT ?2"
+        } else {
             "SELECT id FROM memories \
              WHERE id NOT IN (SELECT DISTINCT memory_id FROM triples) \
                AND triple_extraction_attempts < ?1 \
              ORDER BY created_at DESC \
              LIMIT ?2"
-        )?;
+        };
+        let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params![max_retries, limit], |row| row.get(0))?;
         rows.collect()
     }
     
     /// Increment the extraction attempt counter for a memory.
+    ///
+    /// **ISS-199 (Phase E read-cutover)**: under unified mode the counter
+    /// lives in `nodes.attributes` JSON (`$._triple_extraction_attempts`)
+    /// since `memories` is no longer written. The increment is a JSON
+    /// read-modify-write via `json_set` + `COALESCE` so a missing key is
+    /// treated as 0 (matching the legacy column default).
     pub fn increment_extraction_attempts(&self, memory_id: &str) -> Result<(), rusqlite::Error> {
-        self.conn.execute(
-            "UPDATE memories SET triple_extraction_attempts = triple_extraction_attempts + 1 WHERE id = ?1",
-            params![memory_id],
-        )?;
+        if self.unified_substrate {
+            self.conn.execute(
+                "UPDATE nodes \
+                 SET attributes = json_set( \
+                         attributes, \
+                         '$._triple_extraction_attempts', \
+                         COALESCE(json_extract(attributes, '$._triple_extraction_attempts'), 0) + 1 \
+                     ), \
+                     updated_at = ?2 \
+                 WHERE id = ?1 AND node_kind IN ('memory', 'insight')",
+                params![memory_id, datetime_to_f64(&Utc::now())],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE memories SET triple_extraction_attempts = triple_extraction_attempts + 1 WHERE id = ?1",
+                params![memory_id],
+            )?;
+        }
         Ok(())
     }
 
