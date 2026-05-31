@@ -130,8 +130,17 @@ Each cluster lists the prod-region statements it owns. Clusters are
 deletions happen, so the authoritative completeness check is the §6.1 grand-total
 grep (63 → 0), NOT a fixed per-cluster line map.
 
+- **T34-pre** — Phase B contract-test migration (NO prod code change). The
+  v04_phase_b_dual_write.rs t12 suite asserts dual-write (memories row == nodes row).
+  Those assertions' real value is *field-completeness* (no silent field loss), not
+  *two-table-equality*. Migrate 10 `FROM memories` assertions across the suite to
+  read from `nodes` instead, while dual-write still exists (so they pass immediately).
+  This decouples "rewrite tests" from "delete prod", making T34a a pure deletion.
+  Decision: option (b) from review — preserve field-completeness regression value,
+  narrow assertion target from memories→nodes. Sites: L94/L118 (scalar equality),
+  L268/290/323/372 (superseded_by), L1300/1779/1787/1949 (count/content).
 - **T34a** — `Storage::add()`: memories INSERT + FTS-rowid SELECT + memories_fts
-  INSERT. Survivor: insert_memory_node_row. (3 stmts; VERIFIED SAFE)
+  INSERT. Survivor: insert_memory_node_row. (3 stmts; VERIFIED SAFE; runs AFTER T34-pre)
 - **T34b** — `Storage::store_raw()`: legacy memories/FTS writes.
 - **T34c** — UPDATE family: all 14 `UPDATE memories` + superseded_by paths.
   Confirm each has ISS-124/T12 dual-update survivor.
