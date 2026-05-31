@@ -560,6 +560,19 @@ impl Storage {
         // Phase F (T39) DROP TABLE memories. Idempotent.
         Self::migrate_access_log_fk_to_nodes(&conn)?;
 
+        // v0.4 ISS-198 (T34a-pre): re-point the remaining write-active
+        // retained child-table FKs from memories(id) -> nodes(id). ISS-196
+        // only did `access_log`; its AC-2 assumed these three drop at T39 so
+        // no re-point was needed — true for the DROP edge, but they are still
+        // WRITTEN by add/enrichment in the T34a..T39 window, so the FK fires
+        // at write time once `memories` stops being populated. Same rebuild
+        // pattern as access_log. Must run AFTER migrate_unified_nodes and
+        // migrate_v2 (which adds hebbian_links.namespace on old DBs).
+        // Idempotent (DDL-inspection guard).
+        Self::migrate_hebbian_links_fk_to_nodes(&conn)?;
+        Self::migrate_memory_entities_fk_to_nodes(&conn)?;
+        Self::migrate_synthesis_provenance_fk_to_nodes(&conn)?;
+
         // v0.4 unified substrate: bump schema_version (T09).
         // Runs last so a partial Phase A migration leaves the version
         // unchanged — re-opening then re-attempts the missing migrations
@@ -1249,6 +1262,163 @@ impl Storage {
             "#,
         )?;
         Ok(())
+    }
+
+    /// ISS-198 (T34a-pre) generic table-rebuild that re-points one or more
+    /// FK columns of a retained child table from `memories(id)` to
+    /// `nodes(id)`. Mirrors [`Self::migrate_access_log_fk_to_nodes`] but is
+    /// **column-set-agnostic**: it introspects the live schema via
+    /// `PRAGMA table_info` and `sqlite_master`, so columns added by later
+    /// ALTERs (e.g. `hebbian_links.signal_source` / `signal_detail` from
+    /// `migrate_hebbian_signals`) are preserved on rebuild rather than
+    /// silently dropped.
+    ///
+    /// Strategy:
+    /// 1. Idempotency guard — if the stored DDL no longer mentions
+    ///    `REFERENCES memories`, this is a no-op (already migrated / fresh
+    ///    DB created pointing at `nodes`).
+    /// 2. Capture the current `CREATE TABLE` DDL and rewrite every
+    ///    `REFERENCES memories(` → `REFERENCES nodes(` and the FK-clause
+    ///    form `REFERENCES memories ` → `REFERENCES nodes `. The rest of the
+    ///    DDL (column list, types, defaults, PK, other FKs into `entities`)
+    ///    is preserved byte-for-byte, so any drifted columns survive.
+    /// 3. Copy rows whose re-pointed endpoints all exist in `nodes` (every
+    ///    such id has a `nodes` row via the Phase-B dual-write; rows whose
+    ///    endpoint was never mirrored are dropped — they would dangle).
+    /// 4. Drop the old table, rename the rebuilt one, recreate indices.
+    ///
+    /// `fk_cols` is the set of columns being re-pointed (used to build the
+    /// endpoint-validity WHERE filter). `index_ddls` recreates the table's
+    /// indices (SQLite drops them with the table).
+    ///
+    /// Must run AFTER `migrate_unified_nodes` (so `nodes` exists) and after
+    /// any ALTER-based column migrations on the target table.
+    fn rebuild_table_fk_to_nodes(
+        conn: &Connection,
+        table: &str,
+        fk_cols: &[&str],
+        index_ddls: &[&str],
+    ) -> SqlResult<()> {
+        let ddl: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let create_sql = match ddl {
+            Some(sql) if sql.contains("REFERENCES memories") => sql,
+            // Table absent (create_schema not run yet) or already re-pointed.
+            _ => return Ok(()),
+        };
+
+        // Rewrite the parent in every FK reference: both the inline-column
+        // form `REFERENCES memories(id)` and the table-constraint form
+        // `REFERENCES memories (id)` collapse to the same `memories(` /
+        // `memories ` prefixes once whitespace is considered, so handle
+        // both spellings. We deliberately do NOT touch `REFERENCES entities`
+        // (memory_entities.entity_id stays pointed at the live `entities`
+        // table, which is not on the drop set).
+        let new_table = format!("{table}_iss198_new");
+        let rebuilt_create = create_sql
+            .replacen(
+                &format!("CREATE TABLE IF NOT EXISTS {table}"),
+                &format!("CREATE TABLE {new_table}"),
+                1,
+            )
+            .replacen(&format!("CREATE TABLE {table}"), &format!("CREATE TABLE {new_table}"), 1)
+            .replace("REFERENCES memories(", "REFERENCES nodes(")
+            .replace("REFERENCES memories ", "REFERENCES nodes ");
+
+        // Defensive: the rewrite must have actually produced the new name
+        // and removed every `memories` parent reference.
+        debug_assert!(rebuilt_create.contains(&new_table));
+        debug_assert!(!rebuilt_create.contains("REFERENCES memories"));
+
+        // Column list for an explicit-column INSERT…SELECT (preserves order,
+        // tolerates differing column counts across schema versions).
+        let mut cols: Vec<String> = Vec::new();
+        {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            for c in rows {
+                cols.push(c?);
+            }
+        }
+        let col_list = cols.join(", ");
+
+        // Endpoint-validity filter: every re-pointed FK column must resolve
+        // to an existing `nodes` row, or the copy would create a dangling FK.
+        let where_clause = fk_cols
+            .iter()
+            .map(|c| format!("{c} IN (SELECT id FROM nodes)"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+
+        conn.execute_batch(&rebuilt_create)?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {new_table} ({col_list}) \
+                 SELECT {col_list} FROM {table} WHERE {where_clause}"
+            ),
+            [],
+        )?;
+        conn.execute(&format!("DROP TABLE {table}"), [])?;
+        conn.execute(&format!("ALTER TABLE {new_table} RENAME TO {table}"), [])?;
+        for ddl in index_ddls {
+            conn.execute(ddl, [])?;
+        }
+        Ok(())
+    }
+
+    /// ISS-198: re-point `hebbian_links.source_id` + `target_id` from
+    /// `memories(id)` to `nodes(id)`. Written by `record_coactivation*`
+    /// during `Storage::add`; without this T34a's `memories`-write deletion
+    /// makes every co-activation insert fail `FOREIGN KEY constraint failed`.
+    fn migrate_hebbian_links_fk_to_nodes(conn: &Connection) -> SqlResult<()> {
+        Self::rebuild_table_fk_to_nodes(
+            conn,
+            "hebbian_links",
+            &["source_id", "target_id"],
+            &[
+                "CREATE INDEX IF NOT EXISTS idx_hebbian_source ON hebbian_links(source_id)",
+                "CREATE INDEX IF NOT EXISTS idx_hebbian_target ON hebbian_links(target_id)",
+                "CREATE INDEX IF NOT EXISTS idx_hebbian_namespace ON hebbian_links(namespace)",
+                "CREATE INDEX IF NOT EXISTS idx_hebbian_signal_source ON hebbian_links(signal_source)",
+            ],
+        )
+    }
+
+    /// ISS-198: re-point `memory_entities.memory_id` from `memories(id)` to
+    /// `nodes(id)`. `entity_id REFERENCES entities(id)` is left untouched
+    /// (`entities` is not on the Phase-F drop set). Written during entity
+    /// enrichment.
+    fn migrate_memory_entities_fk_to_nodes(conn: &Connection) -> SqlResult<()> {
+        Self::rebuild_table_fk_to_nodes(
+            conn,
+            "memory_entities",
+            &["memory_id"],
+            &[
+                "CREATE INDEX IF NOT EXISTS idx_memory_entities_memory ON memory_entities(memory_id)",
+                "CREATE INDEX IF NOT EXISTS idx_memory_entities_entity ON memory_entities(entity_id)",
+            ],
+        )
+    }
+
+    /// ISS-198: re-point `synthesis_provenance.insight_id` + `source_id`
+    /// from `memories(id)` to `nodes(id)`. Written when synthesis insights
+    /// land (the insight and its source memories are both `nodes` rows under
+    /// the unified substrate).
+    fn migrate_synthesis_provenance_fk_to_nodes(conn: &Connection) -> SqlResult<()> {
+        Self::rebuild_table_fk_to_nodes(
+            conn,
+            "synthesis_provenance",
+            &["insight_id", "source_id"],
+            &[
+                "CREATE INDEX IF NOT EXISTS idx_provenance_insight ON synthesis_provenance(insight_id)",
+                "CREATE INDEX IF NOT EXISTS idx_provenance_source ON synthesis_provenance(source_id)",
+            ],
+        )
     }
 
     fn migrate_v2(conn: &Connection) -> SqlResult<()> {
@@ -11158,5 +11328,182 @@ mod tests {
         s.hard_delete_cascade("m1").expect("ISS-115: hard_delete_cascade must be idempotent");
         // And on an id that never existed.
         s.hard_delete_cascade("ghost").expect("ISS-115: deleting a never-seen id must not raise");
+    }
+
+    // ── ISS-198 (T34a-pre): write-active retained child-table FKs ────────
+    // re-pointed from `memories(id)` to `nodes(id)`. These tests prove the
+    // child inserts succeed against a NODES-only parent (no `memories` row),
+    // which is the exact post-T34a runtime condition.
+
+    /// Insert a bare `nodes` row (node_kind='memory') with NO matching
+    /// `memories` row — the post-T34a state.
+    fn iss198_seed_node(s: &Storage, id: &str, fts_rowid: i64) {
+        s.connection()
+            .execute(
+                "INSERT INTO nodes (id, node_kind, content, created_at, updated_at, fts_rowid) \
+                 VALUES (?1, 'memory', ?2, 0.0, 0.0, ?3)",
+                rusqlite::params![id, format!("content for {id}"), fts_rowid],
+            )
+            .unwrap();
+    }
+
+    fn iss198_unified_storage() -> Storage {
+        Storage::with_unified_substrate(":memory:", true).expect("unified in-memory storage")
+    }
+
+    /// No `memories` row must exist for a node id we seeded — guards that the
+    /// other ISS-198 tests are actually exercising the nodes-only path.
+    #[test]
+    fn iss198_seed_node_writes_no_memories_row() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_guard", 9001);
+        let in_memories: i64 = s
+            .connection()
+            .query_row("SELECT COUNT(*) FROM memories WHERE id = 'n_guard'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(in_memories, 0, "seed must NOT create a memories row");
+        let in_nodes: i64 = s
+            .connection()
+            .query_row("SELECT COUNT(*) FROM nodes WHERE id = 'n_guard'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(in_nodes, 1);
+    }
+
+    #[test]
+    fn iss198_hebbian_links_insert_succeeds_without_legacy_memories_row() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_a", 9101);
+        iss198_seed_node(&s, "n_b", 9102);
+        // FK now → nodes(id); both endpoints exist as nodes, no memories rows.
+        s.connection()
+            .execute(
+                "INSERT INTO hebbian_links \
+                 (source_id, target_id, strength, coactivation_count, created_at) \
+                 VALUES ('n_a', 'n_b', 1.0, 1, 0.0)",
+                [],
+            )
+            .expect("ISS-198: hebbian insert must validate against nodes, not memories");
+        // FK still enforced: a dangling endpoint must be rejected.
+        let err = s.connection().execute(
+            "INSERT INTO hebbian_links \
+             (source_id, target_id, strength, coactivation_count, created_at) \
+             VALUES ('n_a', 'ghost', 1.0, 1, 0.0)",
+            [],
+        );
+        assert!(err.is_err(), "ISS-198: dangling target_id must still trip the FK");
+    }
+
+    #[test]
+    fn iss198_memory_entities_insert_succeeds_without_legacy_memories_row() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_m", 9201);
+        s.connection()
+            .execute(
+                "INSERT INTO entities (id, name, entity_type, created_at, updated_at) \
+                 VALUES ('e1', 'Acme', 'org', 0.0, 0.0)",
+                [],
+            )
+            .unwrap();
+        s.connection()
+            .execute(
+                "INSERT INTO memory_entities (memory_id, entity_id, role) \
+                 VALUES ('n_m', 'e1', 'mention')",
+                [],
+            )
+            .expect("ISS-198: memory_entities.memory_id must validate against nodes");
+        // entity_id FK still points at `entities` (not on drop set) — verify
+        // it is still enforced.
+        let err = s.connection().execute(
+            "INSERT INTO memory_entities (memory_id, entity_id, role) \
+             VALUES ('n_m', 'ghost_entity', 'mention')",
+            [],
+        );
+        assert!(err.is_err(), "ISS-198: entity_id FK to entities must survive the rebuild");
+    }
+
+    #[test]
+    fn iss198_synthesis_provenance_insert_succeeds_without_legacy_memories_row() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_insight", 9301);
+        iss198_seed_node(&s, "n_src", 9302);
+        s.connection()
+            .execute(
+                "INSERT INTO synthesis_provenance \
+                 (id, insight_id, source_id, cluster_id, synthesis_timestamp, \
+                  gate_decision, confidence) \
+                 VALUES ('p1', 'n_insight', 'n_src', 'c1', '2026-05-31', 'accept', 0.9)",
+                [],
+            )
+            .expect("ISS-198: synthesis_provenance FKs must validate against nodes");
+    }
+
+    /// Re-running the migrations on an already-re-pointed schema is a no-op
+    /// and preserves rows. Also proves the DDL-inspection guard short-circuits.
+    #[test]
+    fn iss198_fk_repoint_is_idempotent() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_x", 9401);
+        iss198_seed_node(&s, "n_y", 9402);
+        s.connection()
+            .execute(
+                "INSERT INTO hebbian_links \
+                 (source_id, target_id, strength, coactivation_count, created_at) \
+                 VALUES ('n_x', 'n_y', 0.7, 3, 0.0)",
+                [],
+            )
+            .unwrap();
+
+        // Second invocation must be a clean no-op (guard sees no `REFERENCES
+        // memories` in the stored DDL) and must NOT drop the existing row.
+        Storage::migrate_hebbian_links_fk_to_nodes(s.connection()).unwrap();
+        Storage::migrate_memory_entities_fk_to_nodes(s.connection()).unwrap();
+        Storage::migrate_synthesis_provenance_fk_to_nodes(s.connection()).unwrap();
+
+        let surviving: i64 = s
+            .connection()
+            .query_row(
+                "SELECT coactivation_count FROM hebbian_links \
+                 WHERE source_id = 'n_x' AND target_id = 'n_y'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(surviving, 3, "idempotent re-run must not lose rows");
+
+        // The stored DDL must no longer mention the legacy parent.
+        for table in ["hebbian_links", "memory_entities", "synthesis_provenance"] {
+            let ddl: String = s
+                .connection()
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                !ddl.contains("REFERENCES memories"),
+                "ISS-198: {table} must reference nodes, not memories"
+            );
+            assert!(ddl.contains("REFERENCES nodes"), "ISS-198: {table} must reference nodes");
+        }
+    }
+
+    /// `signal_source` / `signal_detail` are added to `hebbian_links` by a
+    /// later ALTER (`migrate_hebbian_signals`). The introspection-based
+    /// rebuild must preserve them rather than silently dropping the columns.
+    #[test]
+    fn iss198_hebbian_rebuild_preserves_altered_columns() {
+        let s = iss198_unified_storage();
+        for col in ["signal_source", "signal_detail", "namespace"] {
+            let present: i64 = s
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('hebbian_links') WHERE name = ?1",
+                    [col],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(present, 1, "ISS-198: rebuilt hebbian_links must keep column `{col}`");
+        }
     }
 }
