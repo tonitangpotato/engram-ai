@@ -2708,7 +2708,7 @@ impl Storage {
     /// Get all memories.
     pub fn all(&self) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
-        let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind = 'memory' AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
+        let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
@@ -2732,7 +2732,7 @@ impl Storage {
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{}", i)).collect();
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         let sql = format!(
-            "SELECT * FROM nodes WHERE node_kind = 'memory' AND id IN ({}) AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')",
+            "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND id IN ({}) AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')",
             placeholders.join(", ")
         );
 
@@ -2981,7 +2981,7 @@ impl Storage {
         if ns == "*" {
             // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM nodes WHERE node_kind = 'memory' AND memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
+                "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
             )?;
             
             let rows = stmt.query_map(params![memory_type.to_string(), limit as i64], |row| {
@@ -2994,7 +2994,7 @@ impl Storage {
         } else {
             // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM nodes WHERE node_kind = 'memory' AND memory_type = ? AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
+                "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND memory_type = ? AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
             )?;
             
             let rows = stmt.query_map(params![memory_type.to_string(), ns, limit as i64], |row| {
@@ -3169,7 +3169,7 @@ impl Storage {
         if ns == "*" {
             // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM nodes WHERE node_kind = 'memory' AND (superseded_by IS NULL OR superseded_by = '') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?"
+                "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND (superseded_by IS NULL OR superseded_by = '') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?"
             )?;
             let rows = stmt.query_map(params![limit as i64], |row| {
                 let id: String = row.get("id")?;
@@ -3180,7 +3180,7 @@ impl Storage {
         } else {
             // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM nodes WHERE node_kind = 'memory' AND namespace = ? AND (superseded_by IS NULL OR superseded_by = '') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?"
+                "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND namespace = ? AND (superseded_by IS NULL OR superseded_by = '') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?"
             )?;
             let rows = stmt.query_map(params![ns, limit as i64], |row| {
                 let id: String = row.get("id")?;
@@ -3195,7 +3195,7 @@ impl Storage {
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         let mut stmt = self
             .conn
-            .prepare("SELECT * FROM nodes WHERE node_kind = 'memory' AND memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
+            .prepare("SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
         
         let rows = stmt.query_map(params![memory_type.to_string()], |row| {
             let id: String = row.get("id")?;
@@ -3863,7 +3863,7 @@ impl Storage {
         // `!= ''`; nodes uses NULL for not-superseded, never '').
         let query = if let Some(ns) = namespace {
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM nodes WHERE node_kind = 'memory' AND superseded_by IS NOT NULL AND namespace = ? AND deleted_at IS NULL ORDER BY created_at DESC"
+                "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND superseded_by IS NOT NULL AND namespace = ? AND deleted_at IS NULL ORDER BY created_at DESC"
             )?;
             let rows = stmt.query_map(params![ns], |row| {
                 let id: String = row.get("id")?;
@@ -3875,7 +3875,7 @@ impl Storage {
             rows.collect::<Result<Vec<_>, _>>()?
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM nodes WHERE node_kind = 'memory' AND superseded_by IS NOT NULL AND deleted_at IS NULL ORDER BY created_at DESC"
+                "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND superseded_by IS NOT NULL AND deleted_at IS NULL ORDER BY created_at DESC"
             )?;
             let rows = stmt.query_map([], |row| {
                 let id: String = row.get("id")?;
@@ -4017,7 +4017,7 @@ impl Storage {
         }
         
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
-        let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind = 'memory' AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
+        let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
         let rows = stmt.query_map(params![ns], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
@@ -4484,7 +4484,7 @@ impl Storage {
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         // soft_delete dual-writes deleted_at to nodes (storage.rs:4369).
         if ns == "*" {
-            let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind = 'memory' AND deleted_at IS NOT NULL")?;
+            let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND deleted_at IS NOT NULL")?;
             let rows = stmt.query_map([], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
@@ -4493,7 +4493,7 @@ impl Storage {
             rows.collect()
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM nodes WHERE node_kind = 'memory' AND namespace = ? AND deleted_at IS NOT NULL"
+                "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND namespace = ? AND deleted_at IS NOT NULL"
             )?;
             let rows = stmt.query_map(params![ns], |row| {
                 let id: String = row.get("id")?;
@@ -6479,6 +6479,42 @@ impl Storage {
         self.conn.execute(
             "UPDATE memories SET content = ?, importance = ?, metadata = ? WHERE id = ?",
             params![merged_content, merged_importance, metadata_str, existing_id],
+        )?;
+
+        // Phase E-0 (ISS-197) / Phase B gap fix: mirror the merge result
+        // onto the unified `nodes` row so node-backed reads (Storage::get,
+        // SqliteMemoryReader) see the merged content/importance/metadata.
+        // `metadata` → `attributes`, preserving the `_legacy_contradicts` /
+        // `_legacy_contradicted_by` shim keys via
+        // `merge_legacy_memory_attributes` (ISS-119). merge_enriched_into
+        // never touches contradicts, so carry the existing shim values.
+        let existing_legacy: Option<(Option<String>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT
+                    json_extract(attributes, '$._legacy_contradicts'),
+                    json_extract(attributes, '$._legacy_contradicted_by')
+                 FROM nodes WHERE id = ?1 AND node_kind IN ('memory', 'insight')",
+                params![existing_id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        let (carry_c, carry_cb) = existing_legacy.unwrap_or((None, None));
+        let merged_attributes = merge_legacy_memory_attributes(
+            Some(&metadata_str),
+            carry_c.as_deref(),
+            carry_cb.as_deref(),
+        );
+        self.conn.execute(
+            "UPDATE nodes SET content = ?, importance = ?, attributes = ?, updated_at = ? \
+             WHERE id = ? AND node_kind IN ('memory', 'insight')",
+            params![
+                merged_content,
+                merged_importance,
+                merged_attributes.unwrap_or_else(|| "{}".to_string()),
+                now_f64(),
+                existing_id
+            ],
         )?;
 
         log::info!(
@@ -8505,10 +8541,11 @@ pub fn fetch_memory_record(
 ) -> Result<Option<MemoryRecord>, rusqlite::Error> {
     let access_times = fetch_access_times(conn, id)?;
 
+    // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
     conn.query_row(
-        "SELECT * FROM memories WHERE id = ?",
+        "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND id = ?",
         params![id],
-        |row| row_to_record_impl(row, access_times.clone()),
+        |row| row_to_record_from_node_impl(row, access_times.clone()),
     )
     .optional()
 }
@@ -8528,15 +8565,13 @@ pub fn fetch_memory_record_with_namespace(
 ) -> Result<Option<(MemoryRecord, String)>, rusqlite::Error> {
     let access_times = fetch_access_times(conn, id)?;
 
+    // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
+    // `nodes` carries `namespace` as a first-class NOT NULL column.
     conn.query_row(
-        "SELECT *, namespace FROM memories WHERE id = ?",
+        "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND id = ?",
         params![id],
         |row| {
-            let record = row_to_record_impl(row, access_times.clone())?;
-            // `namespace` column is part of `SELECT *`, so reading it by
-            // name works even though we list it explicitly above.
-            // SQLite returns the FIRST matching column by name, which is
-            // the one from `SELECT *` — no duplication concern.
+            let record = row_to_record_from_node_impl(row, access_times.clone())?;
             let namespace: String = row.get("namespace")?;
             Ok((record, namespace))
         },
