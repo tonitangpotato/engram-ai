@@ -1,14 +1,26 @@
 ---
-title: "T34a read-path cutover: route soft_delete/get_deleted_at/find_entity_overlap/consolidation/append_merge_provenance off `memories` to `nodes`, then re-attempt T34a"
-status: open
+title: 'T34a read-path cutover: route soft_delete/get_deleted_at/find_entity_overlap/consolidation/append_merge_provenance off `memories` to `nodes`, then re-attempt T34a'
+status: resolved
 priority: P0
 severity: blocker
-labels: [v04-unified-substrate, phase-e, read-cutover, t34a]
+labels:
+- v04-unified-substrate
+- phase-e
+- read-cutover
+- t34a
 feature: v04-unified-substrate
 created: 2026-05-31
-relates_to: [ISS-196, ISS-197, ISS-198]
-blocks: [ISS-197]
-depends_on: [ISS-198]
+relates_to:
+- ISS-196
+- ISS-197
+- ISS-198
+blocks:
+- ISS-197
+depends_on:
+- ISS-198
+fixed_by:
+- 22333ad
+- e6fd8a3
 ---
 
 # Summary
@@ -79,14 +91,36 @@ unified-mode parity, in this order (cheapest → forced-reconciliation last):
 
 # Acceptance
 
-- [ ] AC-1: all 4 read/UPDATE/RMW paths cut over to `nodes` with per-path
-      contract tests (unified-mode parity vs the legacy-mode arm).
-- [ ] AC-2: `deleted_at` TEXT/REAL reconciliation resolved (§8.6); `get_deleted_at`
-      returns correct value reading `nodes`.
-- [ ] AC-3: T34a re-applied; `cargo test -p engramai --lib` green (0 failed).
-- [ ] AC-4: ISS-197 §8.7 + PHASE-E-PLAN.md updated; ISS-197 AC-3 unblocked.
+- [x] AC-1: all 5 read/UPDATE/RMW paths cut over to `nodes` with per-path
+      contract tests (unified-mode parity vs the legacy-mode arm). Paths:
+      soft_delete/get_deleted_at, find_entity_overlap (committed e6fd8a3),
+      consolidation update (get_unenriched_memory_ids + increment_extraction_
+      attempts), append_merge_provenance, plus the update_content_inner /
+      update_inner / get_embeddings_in_namespace / get_all_embeddings readers
+      surfaced once T34a was applied. Contract tests: iss199_* (5 files, 17
+      tests). [22333ad, e6fd8a3]
+- [x] AC-2: `deleted_at` TEXT/REAL reconciliation resolved (§8.6).
+      `get_deleted_at` under unified mode reads `nodes.deleted_at` (REAL epoch)
+      and converts epoch→RFC3339 via `f64_to_datetime(...).to_rfc3339()`,
+      preserving the `Option<String>` contract losslessly. [22333ad]
+- [x] AC-3: T34a confirmed applied (storage.rs L2317 `if !self.unified_substrate`
+      gate on the `memories`/`memories_fts` writes). FULL suite green with T34a
+      live: 2084 lib + 2694 integration = 4778 tests, 0 failed, 0 panics. The
+      gate exposed additional readers beyond the original 4 (embedding-dedup
+      JOINs, update_content_inner), all cut over in the same pass.
+- [x] AC-4: ISS-197 §8.7 + PHASE-E-PLAN.md updated; ISS-197 AC-3 unblocked.
 
-# Out of scope
+# Scope note (resolved larger than originally framed)
+
+The "out of scope" 3 `graph_*` tables (`graph_edges` /
+`graph_memory_entity_mentions` / `graph_pipeline_runs`) WERE cut over in this
+issue after all: their `memory_id` FK was re-pointed `memories(id)`→`nodes(id)`
+because they are written inside the T34a→T39 window when the row exists only in
+`nodes`, and the FK-787 broke the *integration* suite (the original scope was
+lib-only). `migrate_graph_tables_fk_to_nodes` migrates existing DBs;
+`GRAPH_DDL` was updated for fresh DBs.
+
+# Out of scope (original framing — superseded above)
 
 - The 3 `graph_*` tables (`graph_edges` / `graph_memory_entity_mentions` /
   `graph_pipeline_runs`) — they are bootstrapped in

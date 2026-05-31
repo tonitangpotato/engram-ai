@@ -1,0 +1,35 @@
+q4-PASS-control    plan=Factual n_candidates=10 retrieve_ms=1067
+   [0] score=0.8425 Memory { record: MemoryRecord { id: "e0f88bb3", content: "Melanie's family provided help and showed love and s
+   [1] score=0.7971 Memory { record: MemoryRecord { id: "6b9f45c1", content: "Caroline created a painting depicting her path as a 
+   [2] score=0.7900 Memory { record: MemoryRecord { id: "7dee4beb", content: "Caroline is learning to play the piano", memory_type
+   [3] score=0.8001 Memory { record: MemoryRecord { id: "b2a32eb3", content: "Caroline is adopting a child", memory_type: Episodic
+   [4] score=0.8349 Memory { record: MemoryRecord { id: "a33bcec1", content: "Caroline gave a talk about her personal journey, str
+   >>> gold-in-top10 rank: None
+q52                plan=Hybrid n_candidates=10 retrieve_ms=40
+   [0] score=0.0167 Memory { record: MemoryRecord { id: "01425a90", content: "Caroline finds art brings her joy and uses it to exp
+   [1] score=0.0161 Memory { record: MemoryRecord { id: "01fecbe5", content: "Melanie went camping with her family two weekends ag
+   [2] score=0.0149 Memory { record: MemoryRecord { id: "0cd116c6", content: "Caroline is considering pursuing counseling and ment
+   [3] score=0.0152 Memory { record: MemoryRecord { id: "0c0d2f3d", content: "Caroline previously recommended a book to Melanie.",
+   [4] score=0.0159 Memory { record: MemoryRecord { id: "03472efa", content: "Caroline: Glad you agree, Caroline. Appreciate the s
+   >>> gold-in-top10 rank: None
+q106               plan=Hybrid n_candidates=10 retrieve_ms=34
+   [0] score=0.0167 Memory { record: MemoryRecord { id: "01425a90", content: "Caroline finds art brings her joy and uses it to exp
+   [1] score=0.0161 Memory { record: MemoryRecord { id: "01fecbe5", content: "Melanie went camping with her family two weekends ag
+   [2] score=0.0149 Memory { record: MemoryRecord { id: "0cd116c6", content: "Caroline is considering pursuing counseling and ment
+   [3] score=0.0152 Memory { record: MemoryRecord { id: "0c0d2f3d", content: "Caroline previously recommended a book to Melanie.",
+   [4] score=0.0159 Memory { record: MemoryRecord { id: "03472efa", content: "Caroline: Glad you agree, Caroline. Appreciate the s
+   >>> gold-in-top10 rank: None
+q118               plan=Hybrid n_candidates=10 retrieve_ms=34
+   [0] score=0.0323 Memory { record: MemoryRecord { id: "03472efa", content: "Caroline: Glad you agree, Caroline. Appreciate the s
+   [1] score=0.0167 Memory { record: MemoryRecord { id: "01425a90", content: "Caroline finds art brings her joy and uses it to exp
+   [2] score=0.0211 Memory { record: MemoryRecord { id: "ab38c612", content: "Caroline went through a difficult transition and acc
+   [3] score=0.0238 Memory { record: MemoryRecord { id: "85f27ab1", content: "Caroline: Yeah, that's true! It's so freeing to just
+   [4] score=0.0225 Memory { record: MemoryRecord { id: "79fd71f2", content: "Caroline is committed to providing support and comfo
+   >>> gold-in-top10 rank: None
+q52-paraphrase     plan=Abstract n_candidates=10 retrieve_ms=134
+   [0] score=0.9463 Memory { record: MemoryRecord { id: "fb87604f", content: "Melanie: Hey Caroline! It's so good to hear from you
+   [1] score=0.9463 Memory { record: MemoryRecord { id: "d9273f14", content: "Melanie made a pottery piece in pottery class", memo
+   [2] score=0.9463 Memory { record: MemoryRecord { id: "ab38c612", content: "Caroline went through a difficult transition and acc
+   [3] score=0.9463 Memory { record: MemoryRecord { id: "382f38f0", content: "Melanie has two cats: Oliver and Bailey", memory_typ
+   [4] score=0.9463 Memory { record: MemoryRecord { id: "ee1e2d2d", content: "Melanie values family highly and has deepened this a
+   >>> gold-in-top10 rank: Some(3)

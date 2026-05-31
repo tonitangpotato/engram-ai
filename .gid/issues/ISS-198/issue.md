@@ -1,5 +1,7 @@
 ---
 relates_to: .gid/issues/ISS-196/issue.md
+fixed_by: 1b0d703
+status: resolved
 ---
 # .gid/issues/ISS-198/issue.md (issue)
 project: engram

@@ -2515,6 +2515,22 @@ below maps to a numbered sub-section in §5.5.3.
 
 ### 8.7 Phase F — drop legacy
 
+> **ISS-199 (read-path cutover) — RESOLVED 2026-05-31, commits `22333ad` +
+> `e6fd8a3`.** T34a (skip the legacy `memories`/`memories_fts` write under
+> unified mode) is **applied and live** (storage.rs L2317 `if !self.
+> unified_substrate`). All readers/RMW/FK paths in `add`'s blast radius now
+> target `nodes`: soft_delete/get_deleted_at (incl. the §8.6 deleted_at
+> TEXT↔REAL epoch reconciliation), find_entity_overlap, consolidation
+> (get_unenriched_memory_ids + increment_extraction_attempts — counter moved
+> to `nodes.attributes.$._triple_extraction_attempts`), append_merge_
+> provenance, embedding-dedup JOINs, and update_content_inner. The 3 `graph_*`
+> tables' `memory_id` FK was re-pointed `memories(id)`→`nodes(id)`
+> (`migrate_graph_tables_fk_to_nodes` for existing DBs, `GRAPH_DDL` for fresh).
+> FULL suite green with T34a live: **2084 lib + 2694 integration = 4778 tests,
+> 0 failed**. This closes the Phase E-0 read-cutover prerequisite (§8) and
+> unblocks ISS-197 AC-3. Phase F (T38–T41 below) is the remaining drop work,
+> gated on the T38 soak + T37g graph-store reader audit.
+
 See §5.6 for the full drop set, dependency-ordered drop sequence,
 migration script structure, and test fixture rewrite plan. Each task
 below maps to a numbered sub-section in §5.6.

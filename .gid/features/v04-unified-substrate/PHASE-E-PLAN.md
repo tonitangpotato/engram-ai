@@ -318,6 +318,12 @@ out of mechanical-cutover scope. Stays on `memories`. **The deleted_at type/form
 must be reconciled as a T39 prerequisite** (either make nodes store TEXT, or make
 all readers epoch-native).
 
+> **✅ RESOLVED (ISS-199, `22333ad`).** `get_deleted_at` now reads
+> `nodes.deleted_at` as `Option<f64>` under unified mode and converts
+> epoch→RFC3339 via `f64_to_datetime(ts).to_rfc3339()`, preserving the
+> `Option<String>` contract losslessly. No schema change to `nodes` was
+> needed; the conversion lives in the accessor.
+
 ---
 
 ## 7. STATUS LOG (append as we go)
@@ -413,3 +419,23 @@ That holds for the **drop edge** but missed the **pre-drop write window**:
 T34a empties `memories` while these tables still exist AND are still written by
 `add`/enrichment, so the FK fires at write time. ISS-198 corrects that AC-2
 assumption explicitly and blocks ISS-197 AC-3.
+
+- 2026-05-31 ISS-199 **RESOLVED** (`22333ad` + `e6fd8a3`): read-path cutover
+  complete, T34a applied and live (storage.rs L2317 `if !self.unified_substrate`
+  gate). All 5 coupled read/RMW/FK paths cut over to `nodes`:
+  soft_delete/get_deleted_at (§8.6 epoch→RFC3339 reconciliation),
+  find_entity_overlap (e6fd8a3), consolidation (get_unenriched_memory_ids +
+  increment_extraction_attempts — counter relocated to
+  `nodes.attributes.$._triple_extraction_attempts` via json_set RMW + COALESCE
+  mirroring legacy DEFAULT 0), append_merge_provenance, plus embedding-dedup
+  JOINs (get_embeddings_in_namespace / get_all_embeddings) and
+  update_content_inner/update_inner surfaced once the T34a gate was live.
+  3 `graph_*` tables' `memory_id` FK re-pointed `memories(id)`→`nodes(id)`
+  (`migrate_graph_tables_fk_to_nodes` existing DBs; `GRAPH_DDL` fresh) — this
+  resolves the "true T34a-pre prerequisite" noted above for the graph child
+  tables (ISS-198 closed the storage child tables; ISS-199 closed the graph
+  ones). v04_phase_b t18 rewritten from "legacy is sole read source" (obsolete
+  since ISS-197 Phase E-0) into a read-source MAP. **FULL suite green with T34a
+  live: 2084 lib + 2694 integration = 4778 tests, 0 failed, 0 panics.** Phase
+  E-0 read-cutover prerequisite CLOSED; ISS-197 AC-3 unblocked. Remaining: T38
+  soak + T37g graph-store reader audit before Phase F drops (T39+).

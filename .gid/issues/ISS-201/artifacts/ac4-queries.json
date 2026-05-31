@@ -1,0 +1,355 @@
+[
+{
+"id": "conv-26-q1",
+"question": "When did Melanie paint a sunrise?",
+"gold": "2022",
+"evidence": [
+"D1:12"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q5",
+"question": "When did Melanie run a charity race?",
+"gold": "The sunday before 25 May 2023",
+"evidence": [
+"D2:1"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q8",
+"question": "When did Caroline give a speech at a school?",
+"gold": "The week before 9 June 2023",
+"evidence": [
+"D3:1"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q9",
+"question": "When did Caroline meet up with her friends, family, and mentors?",
+"gold": "The week before 9 June 2023",
+"evidence": [
+"D3:11"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q13",
+"question": "What career path has Caroline decided to persue?",
+"gold": "counseling or mental health for Transgender people",
+"evidence": [
+"D4:13",
+"D1:11"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q15",
+"question": "What activities does Melanie partake in?",
+"gold": "pottery, camping, painting, swimming",
+"evidence": [
+"D5:4",
+"D9:1",
+"D1:12",
+"D1:18"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q18",
+"question": "Where has Melanie camped?",
+"gold": "beach, mountains, forest",
+"evidence": [
+"D6:16",
+"D4:6",
+"D8:32"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q21",
+"question": "When did Caroline have a picnic?",
+"gold": "The week before 6 July 2023",
+"evidence": [
+"D6:11"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q23",
+"question": "What books has Melanie read?",
+"gold": "\"Nothing is Impossible\", \"Charlotte's Web\"",
+"evidence": [
+"D7:8",
+"D6:10"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q24",
+"question": "What does Melanie do to destress?",
+"gold": "Running, pottery",
+"evidence": [
+"D7:22",
+"D5:4"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q28",
+"question": "When did Caroline go to the adoption meeting?",
+"gold": "The friday before 15 July 2023",
+"evidence": [
+"D8:9"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q29",
+"question": "When did Melanie go to the pottery workshop?",
+"gold": "The Friday before 15 July 2023",
+"evidence": [
+"D8:2"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q32",
+"question": "What LGBTQ+ events has Caroline participated in?",
+"gold": "Pride parade, school speech, support group",
+"evidence": [
+"D5:1",
+"D8:17",
+"D3:1",
+"D1:3"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q34",
+"question": "What events has Caroline participated in to help children?",
+"gold": "Mentoring program, school speech",
+"evidence": [
+"D9:2",
+"D3:3"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q36",
+"question": "When did Caroline join a mentorship program?",
+"gold": "The weekend before 17 July 2023",
+"evidence": [
+"D9:2"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q38",
+"question": "What activities has Melanie done with her family?",
+"gold": "Pottery, painting, camping, museum, swimming, hiking",
+"evidence": [
+"D8:4",
+"D8:6",
+"D9:1",
+"D6:4",
+"D1:18",
+"D3:14"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q39",
+"question": "In what ways is Caroline participating in the LGBTQ community?",
+"gold": "Joining activist group, going to pride parades, participating in an art show, mentoring program",
+"evidence": [
+"D10:3",
+"D5:1",
+"D9:12",
+"D9:2"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q41",
+"question": "When did Caroline join a new activist group?",
+"gold": "The Tuesday before 20 July 2023",
+"evidence": [
+"D10:3"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q43",
+"question": "What kind of art does Caroline make?",
+"gold": "abstract art",
+"evidence": [
+"D11:12",
+"D11:8",
+"D9:14"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q44",
+"question": "When is Melanie's daughter's birthday?",
+"gold": "13 August",
+"evidence": [
+"D11:1"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q47",
+"question": "Who supports Caroline when she has a negative experience?",
+"gold": "Her mentors, family, and friends",
+"evidence": [
+"D12:1",
+"D3:11"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q54",
+"question": "When did Caroline draw a self-portrait?",
+"gold": "The week before 23 August 2023",
+"evidence": [
+"D13:11"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q56",
+"question": "What symbols are important to Caroline?",
+"gold": "Rainbow flag, transgender symbol",
+"evidence": [
+"D14:15",
+"D4:1"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q57",
+"question": "When did Caroline encounter people on a hike and have a negative experience?",
+"gold": "The week before 25 August 2023",
+"evidence": [
+"D14:1"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q60",
+"question": "What instruments does Melanie play?",
+"gold": "clarinet and violin",
+"evidence": [
+"D15:26",
+"D2:5"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q66",
+"question": "What does Melanie do with her family on hikes?",
+"gold": "Roast marshmallows, tell stories",
+"evidence": [
+"D16:4",
+"D10:12"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q67",
+"question": "When did Caroline go biking with friends?",
+"gold": "The weekend before 13 September 2023",
+"evidence": [
+"D16:1"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q68",
+"question": "How long has Melanie been practicing art?",
+"gold": "Since 2016",
+"evidence": [
+"D16:8"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q69",
+"question": "What personality traits might Melanie say Caroline has?",
+"gold": "Thoughtful, authentic, driven",
+"evidence": [
+"D16:18",
+"D13:16",
+"D7:4"
+],
+"category": "open-domain"
+},
+{
+"id": "conv-26-q70",
+"question": "What transgender-specific events has Caroline attended?",
+"gold": "Poetry reading, conference",
+"evidence": [
+"D17:19",
+"D15:13"
+],
+"category": "single-hop"
+},
+{
+"id": "conv-26-q74",
+"question": "When did Melanie's family go on a roadtrip?",
+"gold": "The weekend before 20 October 2023",
+"evidence": [
+"D18:1"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q79",
+"question": "When did Caroline pass the adoption interview?",
+"gold": "The Friday before 22 October 2023",
+"evidence": [
+"D19:1"
+],
+"category": "multi-hop"
+},
+{
+"id": "conv-26-q84",
+"question": "How does Melanie prioritize self-care?",
+"gold": "by carving out some me-time each day for activities like running, reading, or playing the violin",
+"evidence": [
+"D2:5"
+],
+"category": "temporal"
+},
+{
+"id": "conv-26-q124",
+"question": "What pets does Melanie have?",
+"gold": "Two cats and a dog",
+"evidence": [
+"D13:4"
+],
+"category": "temporal"
+},
+{
+"id": "conv-26-q142",
+"question": "How do Melanie and Caroline describe their journey through life together?",
+"gold": "An ongoing adventure of learning and growing.",
+"evidence": [
+"D17:25"
+],
+"category": "temporal"
+},
+{
+"id": "conv-26-q149",
+"question": "What do Melanie's family give her?",
+"gold": "Strength and motivation",
+"evidence": [
+"D18:9"
+],
+"category": "temporal"
+}
+]
