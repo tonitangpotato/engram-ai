@@ -1176,6 +1176,25 @@ T34 → T35 → T36 (storage by complexity, low to high), then T37
 (graph/store.rs) last because it touches the knowledge-topic
 read path.
 
+**T33b (ISS-196) — FK re-point precursor (MUST land before T34).**
+The retained `access_log` table (kept per §3.5) declared
+`memory_id REFERENCES memories(id)` while `memories` is on the Phase F
+drop list, and `PRAGMA foreign_keys=ON` (storage.rs:447). Deleting the
+legacy `INSERT INTO memories` in `Storage::add`/`store_raw` (T34a/b)
+would then break the same-transaction `access_log` insert (FK parent
+gone), and T39 `DROP TABLE memories` would leave a dangling retained
+FK. Resolved by `Storage::migrate_access_log_fk_to_nodes` — a table
+rebuild that re-points the FK to `nodes(id)` — plus reordering
+`Storage::add` and `store_raw` so the unified `nodes` row is written
+before the `access_log` child. `nodes` and `access_log` always share
+the main `Storage` connection's file (storage.rs:540 creates `nodes`
+unconditionally), so the re-point is always valid (unlike the
+cross-file graph-store FKs of ISS-046). Test fixtures that seed legacy
+`memories` rows directly (`iss019_backfill_test::insert_v1_row`) were
+pulled forward to also seed the matching `nodes` row (§5.6.4 work).
+Filed + resolved as ISS-196. **No T34 legacy `memories`-write deletion
+may proceed until this is in place.**
+
 **T34 — `storage.rs` memory core (39 prod writes)**
 
 Drop legacy writes from the memory CRUD surface. Tables touched:

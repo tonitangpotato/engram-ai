@@ -554,6 +554,12 @@ impl Storage {
         Self::migrate_backfill_runs(&conn)?;
         Self::migrate_triple_backfill_checkpoint(&conn)?;
 
+        // v0.4 ISS-196: re-point access_log FK memories(id) -> nodes(id).
+        // Must run AFTER migrate_unified_nodes so `nodes` exists as the
+        // new FK parent. Unblocks Phase E (T34) legacy-write deletion and
+        // Phase F (T39) DROP TABLE memories. Idempotent.
+        Self::migrate_access_log_fk_to_nodes(&conn)?;
+
         // v0.4 unified substrate: bump schema_version (T09).
         // Runs last so a partial Phase A migration leaves the version
         // unchanged — re-opening then re-attempts the missing migrations
@@ -1177,6 +1183,74 @@ impl Storage {
     }
     
     /// Migrate existing databases to v2 schema (add namespace, ACL table).
+    /// ISS-196: re-point `access_log.memory_id` FK from the (drop-bound)
+    /// legacy `memories` table to the unified `nodes` table.
+    ///
+    /// `access_log` is a **retained** observability table (design §3.5)
+    /// but its `memory_id` column was declared
+    /// `REFERENCES memories(id) ON DELETE CASCADE`. Two problems follow
+    /// from that with `PRAGMA foreign_keys=ON` (storage.rs:447):
+    ///
+    /// 1. **Phase E (T34)** deletes the legacy `INSERT INTO memories` in
+    ///    `Storage::add`, but the same transaction still inserts into
+    ///    `access_log` — which would then reference a parent row that no
+    ///    longer exists → `FOREIGN KEY constraint failed` on every add.
+    /// 2. **Phase F (T39)** drops `memories` entirely; a retained child
+    ///    table cannot keep an FK into a dropped parent.
+    ///
+    /// Both `nodes` and `access_log` always live in the **same database
+    /// file** on the main `Storage` connection (storage.rs:540 creates
+    /// `nodes` unconditionally via `migrate_unified_nodes`), so the
+    /// re-point is always valid here — unlike the graph-store FKs which
+    /// are cross-file in separate-file mode (ISS-046).
+    ///
+    /// SQLite cannot `ALTER` an FK in place, so this is a table rebuild.
+    /// **Idempotent**: if `access_log`'s stored DDL no longer mentions
+    /// `memories(id)`, the migration is a no-op. Must run **after**
+    /// `migrate_unified_nodes` (so `nodes` exists as the new parent).
+    fn migrate_access_log_fk_to_nodes(conn: &Connection) -> SqlResult<()> {
+        // Idempotency guard: inspect the table's stored DDL. If it no
+        // longer references `memories`, we've already migrated (or a
+        // fresh DB created it pointing at `nodes` directly).
+        let ddl: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='access_log'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let needs_migration = match ddl {
+            Some(sql) => sql.contains("REFERENCES memories"),
+            None => return Ok(()), // table not created yet; create_schema points it at nodes
+        };
+        if !needs_migration {
+            return Ok(());
+        }
+
+        // Table rebuild inside a transaction. PRAGMA foreign_keys cannot
+        // be toggled inside an open transaction, so the caller-level
+        // pragma stays as-is; the rebuild order (create new → copy →
+        // drop old → rename) never leaves a dangling reference because
+        // the copy targets `nodes(id)` values that already exist (every
+        // access_log.memory_id was written for a memory that also has a
+        // `nodes` row via the Phase-B dual-write).
+        conn.execute_batch(
+            r#"
+            CREATE TABLE access_log_new (
+                memory_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                accessed_at REAL NOT NULL
+            );
+            INSERT INTO access_log_new (memory_id, accessed_at)
+                SELECT memory_id, accessed_at FROM access_log
+                WHERE memory_id IN (SELECT id FROM nodes);
+            DROP TABLE access_log;
+            ALTER TABLE access_log_new RENAME TO access_log;
+            CREATE INDEX IF NOT EXISTS idx_access_log_mid ON access_log(memory_id);
+            "#,
+        )?;
+        Ok(())
+    }
+
     fn migrate_v2(conn: &Connection) -> SqlResult<()> {
         // Check if namespace column exists in memories table
         let has_namespace: bool = conn.query_row(
@@ -1835,7 +1909,22 @@ impl Storage {
         let tx = self.conn.transaction()?;
         
         let metadata_json = record.metadata.as_ref().and_then(|m| serde_json::to_string(m).ok());
-        
+
+        // T12 — Phase B dual-write: every memory row also lands in
+        // `nodes` as `node_kind='memory'`. Delegates to
+        // `insert_memory_node_row`, the single source of truth for the
+        // memory→nodes projection (also used by the T19 Phase C backfill
+        // driver).
+        //
+        // ISS-196: this MUST run before the `access_log` insert below,
+        // because `access_log.memory_id` now `REFERENCES nodes(id)`
+        // (re-pointed off the drop-bound legacy `memories` table). The
+        // `nodes` parent row therefore has to exist first. Phase E (T34)
+        // will delete the legacy `memories`/`memories_fts` writes that
+        // follow; this ordering keeps the transaction valid before and
+        // after that deletion.
+        Self::insert_memory_node_row(&tx, record, namespace, metadata_json.as_deref())?;
+
         tx.execute(
             r#"
             INSERT INTO memories (
@@ -1884,15 +1973,6 @@ impl Storage {
             "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
             params![rowid, tokenized],
         )?;
-
-        // T12 — Phase B dual-write: every memory row also lands in
-        // `nodes` as `node_kind='memory'`. Delegates to
-        // `insert_memory_node_row`, which is the single source of
-        // truth for the memory→nodes projection (also used by the
-        // T19 Phase C backfill driver). Keeping the mapping in one
-        // place guarantees that dual-write and backfill stay in sync
-        // as the schema evolves.
-        Self::insert_memory_node_row(&tx, record, namespace, metadata_json.as_deref())?;
 
         tx.commit()?;
         Ok(())
@@ -6664,30 +6744,6 @@ impl Storage {
         metadata: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let now = datetime_to_f64(&Utc::now());
-        self.conn.execute(
-            r#"INSERT INTO memories (
-                id, content, memory_type, importance, layer,
-                working_strength, core_strength, source, created_at,
-                last_consolidated, consolidation_count, pinned, metadata, namespace
-            ) VALUES (?1, ?2, ?3, ?4, 'core', 0.5, 0.5, 'synthesis', ?5, NULL, 0, 0, ?6, 'default')"#,
-            params![id, content, memory_type, importance, now, metadata],
-        )?;
-        // Record initial access
-        self.conn.execute(
-            "INSERT INTO access_log (memory_id, accessed_at) VALUES (?, ?)",
-            params![id, now],
-        )?;
-        // Insert into FTS
-        let rowid: i64 = self.conn.query_row(
-            "SELECT rowid FROM memories WHERE id = ?",
-            params![id],
-            |row| row.get(0),
-        )?;
-        let tokenized = tokenize_cjk_boundaries(content);
-        self.conn.execute(
-            "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
-            params![rowid, tokenized],
-        )?;
 
         // T16 — Phase B dual-write: synthesis insights also land in
         // `nodes` as `node_kind='insight'` (design §4.5). `store_raw`
@@ -6699,6 +6755,13 @@ impl Storage {
         // If a future caller appears that uses `store_raw` for a
         // non-synthesis flow, the right fix is a new public ingest
         // entry point (per design §4.1 F4), not branching here.
+        //
+        // ISS-196: the `nodes` insert MUST precede the `access_log`
+        // insert below, because `access_log.memory_id` now
+        // `REFERENCES nodes(id)` (re-pointed off the drop-bound legacy
+        // `memories` table). Phase E (T34) will delete the legacy
+        // `memories`/`memories_fts` writes; this ordering keeps the
+        // statement sequence valid before and after that deletion.
         //
         // Statement-only INSERT (no inner transaction): when called
         // inside `store_insight_atomically`'s `begin_transaction`,
@@ -6737,6 +6800,31 @@ impl Storage {
             )
             "#,
             params![id, memory_type, content, metadata, now, importance, next_fts_rowid],
+        )?;
+
+        self.conn.execute(
+            r#"INSERT INTO memories (
+                id, content, memory_type, importance, layer,
+                working_strength, core_strength, source, created_at,
+                last_consolidated, consolidation_count, pinned, metadata, namespace
+            ) VALUES (?1, ?2, ?3, ?4, 'core', 0.5, 0.5, 'synthesis', ?5, NULL, 0, 0, ?6, 'default')"#,
+            params![id, content, memory_type, importance, now, metadata],
+        )?;
+        // Record initial access
+        self.conn.execute(
+            "INSERT INTO access_log (memory_id, accessed_at) VALUES (?, ?)",
+            params![id, now],
+        )?;
+        // Insert into FTS
+        let rowid: i64 = self.conn.query_row(
+            "SELECT rowid FROM memories WHERE id = ?",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let tokenized = tokenize_cjk_boundaries(content);
+        self.conn.execute(
+            "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
+            params![rowid, tokenized],
         )?;
 
         Ok(())
@@ -9689,6 +9777,126 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM fts_rowid_counter", [], |row| row.get(0))
             .unwrap();
         assert_eq!(counter_rows, 1);
+    }
+
+    // ─── ISS-196: access_log FK re-point memories(id) -> nodes(id) ───
+
+    /// Fresh DB: after migrations, `access_log`'s stored DDL must
+    /// reference `nodes`, not the drop-bound legacy `memories` table.
+    #[test]
+    fn iss196_access_log_fk_repointed_to_nodes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("iss196-repoint.db");
+        let s = Storage::new(&path).expect("open");
+        let ddl: String = s
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='access_log'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("access_log exists");
+        assert!(
+            ddl.contains("REFERENCES nodes"),
+            "access_log must FK-reference nodes after migration, got: {ddl}"
+        );
+        assert!(
+            !ddl.contains("REFERENCES memories"),
+            "access_log must NOT reference legacy memories after migration, got: {ddl}"
+        );
+        // Index must survive the table rebuild.
+        let idx: Option<String> = s
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_access_log_mid'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(idx.as_deref(), Some("idx_access_log_mid"));
+    }
+
+    /// `Storage::add` must still write an `access_log` row, now that the
+    /// FK targets `nodes`. This pins the ISS-196 ordering fix: the
+    /// `nodes` parent row is inserted before the `access_log` child.
+    #[test]
+    fn iss196_add_writes_access_log_against_nodes_parent() {
+        let mut s = Storage::new(":memory:").unwrap();
+        let now = Utc::now();
+        let rec = make_record("iss196_m1", "hello world", now);
+        s.add(&rec, "default").expect("add must succeed under re-pointed FK");
+
+        let logged: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM access_log WHERE memory_id = 'iss196_m1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(logged, 1, "add must record one access_log row");
+
+        // The parent must exist in nodes (the FK parent), proving order.
+        let node_rows: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE id = 'iss196_m1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(node_rows, 1, "nodes parent row must exist");
+    }
+
+    /// Simulate the Phase E (T34) future state: the legacy `memories`
+    /// row is GONE, only the unified `nodes` row exists. An
+    /// `access_log` insert against that memory id must succeed. This is
+    /// the exact scenario that failed pre-ISS-196 (FOREIGN KEY
+    /// constraint failed) and is what T34 will rely on.
+    #[test]
+    fn iss196_access_log_insert_succeeds_without_legacy_memories_row() {
+        let s = Storage::new(":memory:").unwrap();
+        let now = datetime_to_f64(&Utc::now());
+        // Insert a unified node only — no `memories` row at all.
+        s.conn
+            .execute(
+                "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at, fts_rowid) \
+                 VALUES ('orphan_of_legacy', 'memory', 'default', 'x', ?1, ?1, \
+                 (SELECT next_value FROM fts_rowid_counter WHERE singleton=0))",
+                params![now],
+            )
+            .unwrap();
+        // Pre-ISS-196 this raised FOREIGN KEY constraint failed because
+        // access_log pointed at the (now-absent) memories row.
+        s.conn
+            .execute(
+                "INSERT INTO access_log (memory_id, accessed_at) VALUES ('orphan_of_legacy', ?1)",
+                params![now],
+            )
+            .expect("access_log insert must succeed against nodes parent");
+    }
+
+    /// The re-point migration must be a no-op on the second open (no
+    /// duplicate-table / dangling-reference errors), and the FK target
+    /// must remain `nodes`.
+    #[test]
+    fn iss196_migration_idempotent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("iss196-idempotent.db");
+        {
+            let _s1 = Storage::new(&path).expect("first open");
+        }
+        let s2 = Storage::new(&path).expect("re-open must be idempotent");
+        let ddl: String = s2
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='access_log'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(ddl.contains("REFERENCES nodes"));
+        assert!(!ddl.contains("REFERENCES memories"));
     }
 
     #[test]

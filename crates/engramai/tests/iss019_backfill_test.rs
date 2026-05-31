@@ -104,6 +104,34 @@ fn insert_v1_row(
             ],
         )
         .unwrap();
+
+    // ISS-196: `access_log` now FK-references `nodes(id)`, and every
+    // production memory has a `nodes` row via the Phase-B dual-write.
+    // This fixture predates the cutover and seeded `memories` only; we
+    // now also seed the matching `nodes` row so merge/access paths
+    // (which write `access_log`) stay FK-valid. This is the §5.6.4
+    // "test fixtures rewritten to unified substrate" work, pulled
+    // forward to match the FK re-point precursor.
+    storage
+        .conn()
+        .execute(
+            "INSERT OR IGNORE INTO nodes
+              (id, node_kind, namespace, layer, memory_type, content,
+               importance, created_at, updated_at, fts_rowid)
+             VALUES (?, 'memory', 'default', 'working', 'episodic', ?, 0.5, ?, ?,
+               (SELECT next_value FROM fts_rowid_counter WHERE singleton=0))",
+            params![id, content, 1700000000_f64, 1700000000_f64],
+        )
+        .unwrap();
+    // Advance the FTS rowid counter so the next seeded node gets a
+    // distinct rowid (the trigger-maintained nodes_fts keys on it).
+    storage
+        .conn()
+        .execute(
+            "UPDATE fts_rowid_counter SET next_value = next_value + 1 WHERE singleton = 0",
+            [],
+        )
+        .unwrap();
 }
 
 /// Open a Memory engine against a concrete SQLite path (not :memory:)
