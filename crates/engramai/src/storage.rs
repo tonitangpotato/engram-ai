@@ -3057,14 +3057,16 @@ impl Storage {
         let fts_query = words.iter().map(|w| format!("\"{}\"", w)).collect::<Vec<_>>().join(" OR ");
 
         let sql = if self.unified_substrate {
+            // Phase E-0 (ISS-197) Bucket D: read purely from `nodes`
+            // (dropped the legacy `memories m` join; node decoder reads
+            // all columns from `nodes`).
             r#"
-            SELECT m.* FROM memories m
-            JOIN nodes n ON n.id = m.id
+            SELECT n.* FROM nodes n
             JOIN nodes_fts f ON n.fts_rowid = f.rowid
             WHERE nodes_fts MATCH ?
-              AND n.node_kind = 'memory'
-              AND m.deleted_at IS NULL
-              AND (m.superseded_by IS NULL OR m.superseded_by = '')
+              AND n.node_kind IN ('memory', 'insight')
+              AND n.deleted_at IS NULL
+              AND (n.superseded_by IS NULL OR n.superseded_by = '')
             ORDER BY rank LIMIT ?
             "#
         } else {
@@ -3079,10 +3081,15 @@ impl Storage {
 
         let mut stmt = self.conn.prepare(sql)?;
 
+        let unified = self.unified_substrate;
         let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
-            self.row_to_record(row, access_times)
+            if unified {
+                self.row_to_record_node(row, access_times)
+            } else {
+                self.row_to_record(row, access_times)
+            }
         })?;
 
         rows.collect()
@@ -3121,14 +3128,14 @@ impl Storage {
         // monotonically-increasing-is-better magnitude, then they pass
         // through the saturation helper for [0,1] normalisation.
         let sql = if self.unified_substrate {
+            // Phase E-0 (ISS-197) Bucket D: read purely from `nodes`.
             r#"
-            SELECT m.*, -bm25(nodes_fts) AS raw_bm25 FROM memories m
-            JOIN nodes n ON n.id = m.id
+            SELECT n.*, -bm25(nodes_fts) AS raw_bm25 FROM nodes n
             JOIN nodes_fts f ON n.fts_rowid = f.rowid
             WHERE nodes_fts MATCH ?
-              AND n.node_kind = 'memory'
-              AND m.deleted_at IS NULL
-              AND (m.superseded_by IS NULL OR m.superseded_by = '')
+              AND n.node_kind IN ('memory', 'insight')
+              AND n.deleted_at IS NULL
+              AND (n.superseded_by IS NULL OR n.superseded_by = '')
             ORDER BY rank LIMIT ?
             "#
         } else {
@@ -3142,10 +3149,15 @@ impl Storage {
             "#
         };
         let mut stmt = self.conn.prepare(sql)?;
+        let unified = self.unified_substrate;
         let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
-            let record = self.row_to_record(row, access_times)?;
+            let record = if unified {
+                self.row_to_record_node(row, access_times)?
+            } else {
+                self.row_to_record(row, access_times)?
+            };
             // raw_bm25 is monotonically-better-larger after the sign
             // flip in the SQL; clamp to >= 0 defensively.
             let raw: f64 = row.get::<_, f64>("raw_bm25").unwrap_or(0.0).max(0.0);
@@ -3943,14 +3955,14 @@ impl Storage {
         if ns == "*" {
             // Search all namespaces
             let sql = if self.unified_substrate {
+                // Phase E-0 (ISS-197) Bucket D: read purely from `nodes`.
                 r#"
-                SELECT m.* FROM memories m
-                JOIN nodes n ON n.id = m.id
+                SELECT n.* FROM nodes n
                 JOIN nodes_fts f ON n.fts_rowid = f.rowid
                 WHERE nodes_fts MATCH ?
-                  AND n.node_kind = 'memory'
-                  AND m.deleted_at IS NULL
-                  AND (m.superseded_by IS NULL OR m.superseded_by = '')
+                  AND n.node_kind IN ('memory', 'insight')
+                  AND n.deleted_at IS NULL
+                  AND (n.superseded_by IS NULL OR n.superseded_by = '')
                 ORDER BY rank LIMIT ?
                 "#
             } else {
@@ -3965,25 +3977,30 @@ impl Storage {
 
             let mut stmt = self.conn.prepare(sql)?;
 
+            let unified = self.unified_substrate;
             let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record(row, access_times)
+                if unified {
+                    self.row_to_record_node(row, access_times)
+                } else {
+                    self.row_to_record(row, access_times)
+                }
             })?;
 
             rows.collect()
         } else {
             // Search specific namespace
             let sql = if self.unified_substrate {
+                // Phase E-0 (ISS-197) Bucket D: read purely from `nodes`.
                 r#"
-                SELECT m.* FROM memories m
-                JOIN nodes n ON n.id = m.id
+                SELECT n.* FROM nodes n
                 JOIN nodes_fts f ON n.fts_rowid = f.rowid
                 WHERE nodes_fts MATCH ?
-                  AND n.node_kind = 'memory'
-                  AND m.namespace = ?
-                  AND m.deleted_at IS NULL
-                  AND (m.superseded_by IS NULL OR m.superseded_by = '')
+                  AND n.node_kind IN ('memory', 'insight')
+                  AND n.namespace = ?
+                  AND n.deleted_at IS NULL
+                  AND (n.superseded_by IS NULL OR n.superseded_by = '')
                 ORDER BY rank LIMIT ?
                 "#
             } else {
@@ -3998,10 +4015,15 @@ impl Storage {
 
             let mut stmt = self.conn.prepare(sql)?;
 
+            let unified = self.unified_substrate;
             let rows = stmt.query_map(params![fts_query, ns, limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record(row, access_times)
+                if unified {
+                    self.row_to_record_node(row, access_times)
+                } else {
+                    self.row_to_record(row, access_times)
+                }
             })?;
 
             rows.collect()
