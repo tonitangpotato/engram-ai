@@ -544,7 +544,11 @@ fn t13_insert_edge_dual_writes_to_unified_edges() {
         .expect("legacy graph_edges row");
     assert_eq!(legacy_summary, "Bob works at Acme");
 
-    // Unified edges row landed with edge_kind='assertion'.
+    // Unified edges row landed with edge_kind='structural'.
+    // ISS-195/T37f (commit 5a5ce76) remapped the dual-write edge_kind
+    // 'assertion' -> 'structural' so the factual plan's traversal filter
+    // (edge_kind IN ('structural','containment')) matches; predicate is
+    // preserved verbatim.
     let (edge_kind, source_id, target_id, predicate, summary): (
         String,
         String,
@@ -559,7 +563,7 @@ fn t13_insert_edge_dual_writes_to_unified_edges() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .expect("unified edges row");
-    assert_eq!(edge_kind, "assertion");
+    assert_eq!(edge_kind, "structural");
     assert_eq!(source_id, subj.to_string());
     assert_eq!(target_id.as_deref(), Some(obj.to_string().as_str()));
     assert_eq!(predicate, "works_at");
@@ -1580,7 +1584,7 @@ fn t16_full_synthesis_flow_atomic_dual_write() {
 //
 //   I1. memories          → nodes(kind='memory')     1:1 byte-equal id/content/created_at
 //   I2. graph_entities    → nodes(kind='entity')     1:1 byte-equal id
-//   I3. graph_edges       → nodes/edges(kind='assertion')   ≥1 by (src,tgt,predicate)
+//   I3. graph_edges       → nodes/edges(kind='structural') ≥1 by (src,tgt,predicate)
 //   I4. hebbian_links>0   → edges(kind='associative')        ≥1 by (src,tgt), weight ignored
 //   I5. synthesis_prov.   → edges(kind='provenance')         1:1 by id
 //
@@ -1608,7 +1612,7 @@ struct SeededNamespace {
     memory_ids: Vec<String>,
     /// graph_entities ids → also lands in nodes(kind='entity')
     entity_uuids: Vec<Uuid>,
-    /// graph_edges id → also lands in edges(kind='assertion')
+    /// graph_edges id → also lands in edges(kind='structural')
     edge_uuids: Vec<Uuid>,
     /// (a, b) for record_association → edges(kind='associative')
     hebbian_pairs: Vec<(String, String)>,
@@ -1842,7 +1846,7 @@ fn t17_assert_parity_invariants_for_namespace(storage: &Storage, ns: &str) {
     }
 
     // -------------------------------------------------------------------
-    // I3. graph_edges → edges(edge_kind='assertion')
+    // I3. graph_edges → edges(edge_kind='structural')
     //     For every legacy graph_edges row with object_kind='entity'
     //     in this namespace, ≥1 unified edges row matching
     //     (source_id, target_id, predicate). Literal-object edges are
@@ -1874,7 +1878,7 @@ fn t17_assert_parity_invariants_for_namespace(storage: &Storage, ns: &str) {
         let matches: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM edges \
-                 WHERE edge_kind = 'assertion' \
+                 WHERE edge_kind = 'structural' \
                    AND source_id = ?1 \
                    AND target_id = ?2 \
                    AND predicate = ?3 \
@@ -1885,7 +1889,7 @@ fn t17_assert_parity_invariants_for_namespace(storage: &Storage, ns: &str) {
             .unwrap();
         assert!(
             matches >= 1,
-            "{prefix} I3: no edges(assertion) for ({subj_uuid}, {obj_uuid}, {predicate_label})"
+            "{prefix} I3: no edges(structural) for ({subj_uuid}, {obj_uuid}, {predicate_label})"
         );
     }
 
