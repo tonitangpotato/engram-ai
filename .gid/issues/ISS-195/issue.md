@@ -1,12 +1,22 @@
 ---
 id: ISS-195
-title: "T37f prong 1 — default graph store to substrate file (stop the two-DB bleed at write time)"
-status: open
+title: T37f prong 1 — default graph store to substrate file (stop the two-DB bleed at write time)
+status: resolved
 priority: P0
 severity: architectural
-tags: [v0.4, unified-substrate, two-db, root-fix, T37f]
-relates_to: [v04-unified-substrate]
+tags:
+- v0.4
+- unified-substrate
+- two-db
+- root-fix
+- T37f
+relates_to:
+- v04-unified-substrate
 created: 2026-05-30
+fixed_by:
+- engram:5a5ce76
+- engram-bench:521848e
+- engram-bench:eecc2d1
 ---
 
 # T37f prong 1 — default graph store to the substrate file
@@ -85,3 +95,34 @@ directly into the substrate file's `nodes`/`edges`:
 
 `.gid/features/v04-unified-substrate/design.md` §8 T37f (root-fix reframe,
 prong 1) + locked edge_kind mapping table.
+
+## AC-1 / AC-5 live verification (2026-05-30)
+
+Closed the empirical gap. Single-file run (default `GRAPH_SINGLE_FILE` unset =
+ON), conv-26, K=10 temp=0 HyDE/entity off pipeline_pool=1, substrate dir
+`.tmpfc0rpw`:
+
+**AC-1 PASS** — substrate file populated, no separate graph.db:
+- tempdir contains **only `substrate.db`** — no `graph.db` created.
+- `nodes WHERE node_kind='entity'` = **694** (was 3 under separate-file).
+- `edges WHERE edge_kind='structural'` = **783** (was 0 under separate-file).
+
+**AC-5 PASS** — entity/edge parity vs the legacy tables in the SAME file
+(both populated because dual-write is still on this run):
+- legacy `graph_edges` = 783, unified `edges`(structural) = 783.
+- After normalizing legacy 16-byte blob ids → UUID text:
+  **783/783 edges match 1:1** (same population, id encoding differs:
+  legacy=BLOB, unified=TEXT UUID — the blob byte-sequence IS the UUID).
+- Entities: 691/697 legacy ids map to unified entity nodes; the remaining
+  **6 are present as `node_kind='topic'`** (dedup/merge promotion), NOT lost.
+  Unified is a *superset* per R2.
+
+Conclusion: the two-DB write-time bleed is closed. New ingestion lands the
+full semantic graph (694 entities / 783 structural edges) in the substrate
+file's own `nodes`/`edges`. Combined with T37g (reads switched to unified
+tables), the substrate is now genuinely single-file and single-table-family.
+
+Caveat: overall LOCOMO on this run = 0.243 — retrieval quality is unchanged
+(as expected; prong 1 + T37g are plumbing, not ranking). Quality work is
+downstream: ISS-186 (candidate pool recall) and ISS-070 (1-hop AssociativePlan
+traversal).
