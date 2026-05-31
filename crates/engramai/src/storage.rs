@@ -2979,26 +2979,28 @@ impl Storage {
         let ns = namespace.unwrap_or("default");
         
         if ns == "*" {
+            // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM memories WHERE memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
+                "SELECT * FROM nodes WHERE node_kind = 'memory' AND memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
             )?;
             
             let rows = stmt.query_map(params![memory_type.to_string(), limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record(row, access_times)
+                self.row_to_record_node(row, access_times)
             })?;
             
             rows.collect()
         } else {
+            // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM memories WHERE memory_type = ? AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
+                "SELECT * FROM nodes WHERE node_kind = 'memory' AND memory_type = ? AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
             )?;
             
             let rows = stmt.query_map(params![memory_type.to_string(), ns, limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record(row, access_times)
+                self.row_to_record_node(row, access_times)
             })?;
             
             rows.collect()
@@ -3165,37 +3167,40 @@ impl Storage {
         let ns = namespace.unwrap_or("default");
 
         if ns == "*" {
+            // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM memories WHERE (superseded_by IS NULL OR superseded_by = '') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?"
+                "SELECT * FROM nodes WHERE node_kind = 'memory' AND (superseded_by IS NULL OR superseded_by = '') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?"
             )?;
             let rows = stmt.query_map(params![limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record(row, access_times)
+                self.row_to_record_node(row, access_times)
             })?;
             rows.collect()
         } else {
+            // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM memories WHERE namespace = ? AND (superseded_by IS NULL OR superseded_by = '') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?"
+                "SELECT * FROM nodes WHERE node_kind = 'memory' AND namespace = ? AND (superseded_by IS NULL OR superseded_by = '') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?"
             )?;
             let rows = stmt.query_map(params![ns, limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record(row, access_times)
+                self.row_to_record_node(row, access_times)
             })?;
             rows.collect()
         }
     }
 
     pub fn search_by_type(&self, memory_type: MemoryType) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
+        // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         let mut stmt = self
             .conn
-            .prepare("SELECT * FROM memories WHERE memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
+            .prepare("SELECT * FROM nodes WHERE node_kind = 'memory' AND memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
         
         let rows = stmt.query_map(params![memory_type.to_string()], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
-            self.row_to_record(row, access_times)
+            self.row_to_record_node(row, access_times)
         })?;
         
         rows.collect()
