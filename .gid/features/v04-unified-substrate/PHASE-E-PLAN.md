@@ -204,6 +204,85 @@ retained `access_log`). Cross-check the count drops from 63 → 0 cluster-by-clu
 
 ---
 
+## 8. PHASE E-0 — READ-CUTOVER PREREQUISITE (ISS-197) ⚠️ MUST PRECEDE T34a
+
+### 8.0 Why this section exists
+
+T34a attempted as a pure deletion (2026-05-31) → **104 lib test failures**.
+Root cause (ISS-197): removing the legacy `memories` WRITE orphans the prod
+`SELECT FROM memories` READ sites that T29.7 deferred to "Phase F prep". Those
+reads must be cut over to `nodes` FIRST. The cutover is **independently
+shippable under the live dual-write** (reads from `nodes` return byte-identical
+rows because `nodes` is dual-written today). Only after all reads pass on
+`nodes` does T34a become a genuine pure deletion.
+
+**Decoder is already written**: `row_to_record_from_node_impl`
+(`storage.rs` ~L8651, currently `#[allow(dead_code)]`) decodes a `nodes`
+row → full `MemoryRecord` (reads `attributes` not `metadata`; extracts
+`_legacy_contradicts`/`_legacy_contradicted_by` from attributes JSON).
+`nodes` schema (L608) carries every column the decoder needs.
+
+### 8.1 NOT in scope (do NOT touch)
+
+- **FTS-write companion reads** — `SELECT rowid FROM memories WHERE id=?` at
+  L1968, L2778, L2874, L2945, L4417, L6820. These fetch the legacy `memories`
+  rowid solely to drive a `memories_fts` / `UPDATE memories` write. They
+  vanish *with* their paired write-deletion (T34a/T34c/T34d), NOT via read
+  cutover.
+- **Migration-source reads** — `substrate/backfill.rs` (9),
+  `substrate/verify.rs` (1), `substrate/triple_backfill.rs` (1). These read
+  `memories` *as the source of truth to migrate FROM*; they must keep reading
+  `memories` until T39 DROP.
+- **`rebuild_fts` legacy** (L1868 COUNT, L1882 rowid,content) — operates on the
+  legacy `memories_fts` index; retired with the FTS write, not cut over.
+
+### 8.2 IN scope — read-cutover buckets
+
+**Bucket A — `SELECT *` + decoder swap** (decode `nodes` via
+`row_to_record_from_node_impl`; rewrite `FROM memories` →
+`FROM nodes WHERE node_kind='memory'`, remap column-specific WHERE clauses):
+L2710, L2733, L2981, L2993, L3057(m.*), L3068(m.*), L3167, L3177, L3191,
+L3840, L3852, L3993, L4458, L4467, L8480, L8503(`*, namespace`),
+L8388/L8397 (`id, content, metadata` projections).
+
+**Bucket B — scalar single-column reads** (rewrite source table + column;
+`metadata`→`attributes` where applicable): L3657(namespace), L4491(deleted_at),
+L6180(content), L6218(content,metadata→attributes), L7019(created_at),
+L7118(metadata→attributes), L7275(id WHERE created_at/namespace),
+L7534(id), L3014(namespace) + lifecycle.rs L143/L171(COUNT) + L315(metadata)
++ graph/store.rs L6815(entity_ids,edge_ids — verify these live in nodes
+attributes vs T37c denormalised columns).
+
+**Bucket C — subquery liveness/dangling refs** (rewrite the
+`SELECT id FROM memories WHERE deleted_at IS NULL` truth-source subqueries):
+L1661, L1663, L1683, L1685 (namespace subqueries in edge insert), L7962,
+L7970, L7978 (rebalance dangling cleanup `NOT IN (SELECT id FROM memories)`),
+L1315/L1325 (soft-delete count/deleted_at), L1382/L1392 (id scans).
+
+**Bucket D — half-cut / anomalous** (inspect individually before touching):
+L3121 `search_fts` arm already joins `nodes_fts` via `n.fts_rowid` but still
+says `FROM memories m` with alias mismatch — likely an incomplete T29.6 cut;
+resolve to clean `FROM nodes n`. L3132 is the legacy `memories_fts` fallback
+arm (flag-gated) — confirm it retires with FTS write, not cut over.
+
+### 8.3 Per-site protocol (one site or one cohesive method at a time)
+
+1. Rewrite SELECT source + decoder + WHERE column remap.
+2. `cargo test -p engramai --lib` MUST stay green (2075+). Because dual-write
+   is live, `nodes` and `memories` hold identical rows → reads are byte-identical.
+3. Commit per bucket (or per method group) citing ISS-197 §8.2 + bucket id.
+4. After ALL buckets green → re-attempt T34a as pure deletion (ISS-197 AC-3).
+
+### 8.4 Exit gate (E-0 → T34a)
+
+`awk 'NR<TESTBOUNDARY' src | grep 'FROM memories'` over storage.rs +
+lifecycle.rs + graph/store.rs returns ONLY the §8.1 not-in-scope sites
+(FTS-companion + rebuild_fts). Migration-source files (backfill/verify/
+triple_backfill) excluded. Then T34a/T34c/T34d delete writes AND their
+paired FTS-companion reads together.
+
+---
+
 ## 7. STATUS LOG (append as we go)
 
 - 2026-05-31 r1: Plan written. Tag `pre-phase-e-2026-05-31` @ `099362a`.
@@ -213,3 +292,8 @@ retained `access_log`). Cross-check the count drops from 63 → 0 cluster-by-clu
 - 2026-05-31 r2-final: Applied review r2 (FINDING-7 clusters are organizational not
   arithmetic partitions; FINDING-8 memory_embeddings_v2 stop-condition for T36a).
   Plan is execution-ready. Awaiting potato go/no-go on T34a.
+- 2026-05-31 ISS-197: T34a attempted → 104 failures → reverted clean (suite 2075/0).
+  Discovered Phase E-0 read-cutover prerequisite. Added §8 with 66-site bucketed
+  inventory (Buckets A/B/C/D + not-in-scope FTS-companion/migration-source).
+  Confirmed decoder `row_to_record_from_node_impl` already exists. potato approved
+  Phase E-0. Starting Bucket A (lowest risk, decoder swap under live dual-write).

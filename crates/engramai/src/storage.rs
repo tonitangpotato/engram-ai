@@ -2707,11 +2707,12 @@ impl Storage {
 
     /// Get all memories.
     pub fn all(&self) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare("SELECT * FROM memories WHERE deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
+        // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
+        let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind = 'memory' AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
-            self.row_to_record(row, access_times)
+            self.row_to_record_node(row, access_times)
         })?;
         
         rows.collect()
@@ -2729,8 +2730,9 @@ impl Storage {
 
         // Build parameterized IN clause: WHERE id IN (?1, ?2, ?3, ...)
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{}", i)).collect();
+        // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         let sql = format!(
-            "SELECT * FROM memories WHERE id IN ({}) AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')",
+            "SELECT * FROM nodes WHERE node_kind = 'memory' AND id IN ({}) AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')",
             placeholders.join(", ")
         );
 
@@ -2739,7 +2741,7 @@ impl Storage {
         let rows = stmt.query_map(params.as_slice(), |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
-            self.row_to_record(row, access_times)
+            self.row_to_record_node(row, access_times)
         })?;
 
         rows.collect()
@@ -3648,6 +3650,22 @@ impl Storage {
         access_times: Vec<DateTime<Utc>>,
     ) -> SqlResult<MemoryRecord> {
         row_to_record_impl(row, access_times)
+    }
+
+    /// Decode a `nodes` (unified substrate) row into a `MemoryRecord`.
+    ///
+    /// Phase E-0 (ISS-197) companion to `row_to_record`: the read paths
+    /// are being cut over from the legacy `memories` table to
+    /// `nodes WHERE node_kind='memory'`. Delegates to the shared
+    /// `row_to_record_from_node_impl`, which reads `attributes` (not
+    /// `metadata`) and extracts the `_legacy_contradicts` /
+    /// `_legacy_contradicted_by` shim keys.
+    fn row_to_record_node(
+        &self,
+        row: &rusqlite::Row,
+        access_times: Vec<DateTime<Utc>>,
+    ) -> SqlResult<MemoryRecord> {
+        row_to_record_from_node_impl(row, access_times)
     }
     
     /// Get the namespace of a memory by ID.
