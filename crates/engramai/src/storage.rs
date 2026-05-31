@@ -3689,7 +3689,8 @@ impl Storage {
     pub fn get_namespace(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
         self.conn
             .query_row(
-                "SELECT namespace FROM memories WHERE id = ?",
+                // Phase E-0 (ISS-197) Bucket B: id-keyed point read → nodes.
+                "SELECT namespace FROM nodes WHERE id = ?",
                 params![id],
                 |row| row.get(0),
             )
@@ -6228,7 +6229,8 @@ impl Storage {
     /// Get first N chars of a memory's content.
     pub fn get_memory_content_preview(&self, id: &str, max_chars: usize) -> Result<String, rusqlite::Error> {
         let content: String = self.conn.query_row(
-            "SELECT content FROM memories WHERE id = ?1",
+            // Phase E-0 (ISS-197) Bucket B: id-keyed point read → nodes.
+            "SELECT content FROM nodes WHERE id = ?1",
             rusqlite::params![id],
             |row| row.get(0),
         )?;
@@ -7103,7 +7105,8 @@ impl Storage {
     pub fn get_memory_timestamp(&self, memory_id: &str) -> Result<Option<f64>, rusqlite::Error> {
         self.conn
             .query_row(
-                "SELECT created_at FROM memories WHERE id = ?1",
+                // Phase E-0 (ISS-197) Bucket B: id-keyed point read → nodes.
+                "SELECT created_at FROM nodes WHERE id = ?1",
                 params![memory_id],
                 |row| row.get(0),
             )
@@ -7359,7 +7362,12 @@ impl Storage {
         namespace: &str,
     ) -> Result<Vec<String>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT id FROM memories WHERE created_at >= ?1 AND namespace = ?2 \
+            // Phase E-0 (ISS-197) Bucket B: scan → nodes; add node_kind filter
+            // because `nodes` also holds entity/insight kinds the legacy
+            // `memories` scan never returned (memory + insight = the rows
+            // that lived in `memories`).
+            "SELECT id FROM nodes WHERE created_at >= ?1 AND namespace = ?2 \
+               AND node_kind IN ('memory', 'insight') \
              ORDER BY created_at DESC LIMIT 100"
         )?;
         let rows = stmt.query_map(params![since_timestamp, namespace], |row| {
