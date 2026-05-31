@@ -3858,26 +3858,29 @@ impl Storage {
 
     /// List all superseded memories, optionally filtered by namespace.
     pub fn list_superseded(&self, namespace: Option<&str>) -> Result<Vec<(MemoryRecord, String)>, rusqlite::Error> {
+        // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
+        // Node-native predicate: `superseded_by IS NOT NULL` (legacy used
+        // `!= ''`; nodes uses NULL for not-superseded, never '').
         let query = if let Some(ns) = namespace {
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM memories WHERE superseded_by != '' AND namespace = ? AND deleted_at IS NULL ORDER BY created_at DESC"
+                "SELECT * FROM nodes WHERE node_kind = 'memory' AND superseded_by IS NOT NULL AND namespace = ? AND deleted_at IS NULL ORDER BY created_at DESC"
             )?;
             let rows = stmt.query_map(params![ns], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                let record = self.row_to_record(row, access_times)?;
+                let record = self.row_to_record_node(row, access_times)?;
                 let superseded_by: String = row.get("superseded_by")?;
                 Ok((record, superseded_by))
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM memories WHERE superseded_by != '' AND deleted_at IS NULL ORDER BY created_at DESC"
+                "SELECT * FROM nodes WHERE node_kind = 'memory' AND superseded_by IS NOT NULL AND deleted_at IS NULL ORDER BY created_at DESC"
             )?;
             let rows = stmt.query_map([], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                let record = self.row_to_record(row, access_times)?;
+                let record = self.row_to_record_node(row, access_times)?;
                 let superseded_by: String = row.get("superseded_by")?;
                 Ok((record, superseded_by))
             })?;
@@ -4013,11 +4016,12 @@ impl Storage {
             return self.all();
         }
         
-        let mut stmt = self.conn.prepare("SELECT * FROM memories WHERE namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
+        // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
+        let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind = 'memory' AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
         let rows = stmt.query_map(params![ns], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
-            self.row_to_record(row, access_times)
+            self.row_to_record_node(row, access_times)
         })?;
         
         rows.collect()
@@ -4477,22 +4481,24 @@ impl Storage {
     /// List soft-deleted memories, optionally filtered by namespace.
     pub fn list_deleted(&self, namespace: Option<&str>) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         let ns = namespace.unwrap_or("default");
+        // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
+        // soft_delete dual-writes deleted_at to nodes (storage.rs:4369).
         if ns == "*" {
-            let mut stmt = self.conn.prepare("SELECT * FROM memories WHERE deleted_at IS NOT NULL")?;
+            let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind = 'memory' AND deleted_at IS NOT NULL")?;
             let rows = stmt.query_map([], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record(row, access_times)
+                self.row_to_record_node(row, access_times)
             })?;
             rows.collect()
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT * FROM memories WHERE namespace = ? AND deleted_at IS NOT NULL"
+                "SELECT * FROM nodes WHERE node_kind = 'memory' AND namespace = ? AND deleted_at IS NOT NULL"
             )?;
             let rows = stmt.query_map(params![ns], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record(row, access_times)
+                self.row_to_record_node(row, access_times)
             })?;
             rows.collect()
         }

@@ -265,9 +265,19 @@ says `FROM memories m` with alias mismatch — likely an incomplete T29.6 cut;
 resolve to clean `FROM nodes n`. L3132 is the legacy `memories_fts` fallback
 arm (flag-gated) — confirm it retires with FTS write, not cut over.
 
-### 8.3 Per-site protocol (one site or one cohesive method at a time)
+### 8.3 ⚠️ SEMANTIC GOTCHA — `superseded_by` NULL vs `''`
 
-1. Rewrite SELECT source + decoder + WHERE column remap.
+Legacy `memories.superseded_by` uses **`''`** (empty string) for "not
+superseded". Unified `nodes.superseded_by` is `TEXT REFERENCES nodes(id)` and
+uses **`NULL`** (never `''`; insert path always writes NULL, design L2020).
+When rewriting predicates:
+- "not superseded" filter `(superseded_by IS NULL OR superseded_by = '')`
+  works on `nodes` as-is (the `= ''` arm is harmlessly never-true).
+- "is superseded" filter `superseded_by != ''` MUST become
+  `superseded_by IS NOT NULL` (SQL `NULL != ''` is NULL/falsy, so a literal
+  swap is fragile — use the IS NOT NULL form). Applied in `list_superseded`.
+
+### 8.3b Per-site protocol (one site or one cohesive method at a time)1. Rewrite SELECT source + decoder + WHERE column remap.
 2. `cargo test -p engramai --lib` MUST stay green (2075+). Because dual-write
    is live, `nodes` and `memories` hold identical rows → reads are byte-identical.
 3. Commit per bucket (or per method group) citing ISS-197 §8.2 + bucket id.
