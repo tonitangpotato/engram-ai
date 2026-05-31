@@ -405,5 +405,11 @@ inside the T34a deletion commit (conflates concerns).
 enforcement. Reverted uncommitted T34a edit (`git checkout storage.rs`), tree
 clean at `225cd3a`, suite green 2075/0. No commits, no data touched.
 
-**Open question (potato):** widen ISS-196 (it already owns the access_log
-re-point, same rationale) OR new T34a-pre sub-task here in §8?
+**Decision (resolved):** filed as **NEW issue ISS-198** ("T34a-pre: re-point
+write-active retained child-table FKs"), not a re-open of ISS-196. Rationale:
+ISS-196 is resolved and correct *for what it claimed* — its AC-2 reasoned that
+these 3 tables are on the T39 drop set so their FK "vanishes with the table."
+That holds for the **drop edge** but missed the **pre-drop write window**:
+T34a empties `memories` while these tables still exist AND are still written by
+`add`/enrichment, so the FK fires at write time. ISS-198 corrects that AC-2
+assumption explicitly and blocks ISS-197 AC-3.

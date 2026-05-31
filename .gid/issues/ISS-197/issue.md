@@ -5,7 +5,9 @@ priority: P0
 severity: blocker
 labels: v04-unified-substrate, phase-e, phase-ordering
 created: 2026-05-31
-relates_to: [ISS-196]
+relates_to:
+- ISS-196
+depends_on: .gid/issues/ISS-198/issue.md
 ---
 
 # Summary
@@ -277,9 +279,10 @@ disable FK enforcement to force T34a green. Uncommitted T34a edit reverted
 (`git checkout storage.rs`), tree clean at `225cd3a`, suite green 2075/0. No
 commits, no data touched. This finding captured for potato's disposition.
 
-## Open question for potato
+## Open question for potato — RESOLVED
 
-Should the FK re-point be **(a)** a widening of ISS-196 (it already owns the
-`access_log` re-point and the same rationale applies verbatim), or **(b)** a
-new T34a-pre sub-task in PHASE-E-PLAN §8? Either way the work is identical: 3
-more `migrate_*_fk_to_nodes` idempotent rebuilds before T34a's deletion.
+Filed as **NEW issue ISS-198** (not a re-open of ISS-196). ISS-196 is resolved
+and correct for what it claimed; its AC-2 "drops ⇒ no re-point needed" reasoning
+held for the T39 drop edge but missed the pre-drop write window (T34a empties
+`memories` while these tables are still written by `add`/enrichment). ISS-198
+corrects that assumption explicitly and `blocks` this issue's AC-3.
