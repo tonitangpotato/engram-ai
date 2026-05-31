@@ -291,6 +291,33 @@ lifecycle.rs + graph/store.rs returns ONLY the §8.1 not-in-scope sites
 triple_backfill) excluded. Then T34a/T34c/T34d delete writes AND their
 paired FTS-companion reads together.
 
+### 8.5 ⚠️ BLOCKER (discovered during E-0) — hebbian-dedup namespace lookup stays on memories
+
+`merge_bidirectional_hebbian` (~L1661-1685) reads `m.namespace` to compute the
+canonical `(ns, id)` tuple ordering for dedup. It was cut to `nodes` and caused
+**212 test failures** with `no such table: nodes`, because this dedup SQL runs
+**unconditionally during migration** (no `unified_substrate` guard) at a point
+*before* `migrate_unified_nodes` is guaranteed to have created `nodes` — and on
+separate-file graph DB connections that never have `nodes`. Reverted. The lookup
+is advisory (COALESCE `''` fallback on missing rows), so it stays on `memories`
+until the table is dropped at T39. **Rule learned:** read-cutover only applies to
+reads behind a `unified_substrate` guard OR app-level `Storage`-method reads
+(Storage always has `nodes` via unconditional `migrate_unified_nodes`). Migration/
+maintenance SQL that runs during construction is OUT of scope.
+
+### 8.6 ⚠️ BLOCKER (discovered during E-0) — `get_deleted_at` column-type mismatch
+
+`memories.deleted_at` is **TEXT (RFC3339)** (L488 `ALTER TABLE memories ADD COLUMN
+deleted_at TEXT`) but `nodes.deleted_at` is **REAL (epoch f64)** (L649 schema).
+`soft_delete` dual-writes BOTH: `now_rfc` to memories, `now_epoch` to nodes (an
+existing, deliberate divergence — see comment at L8769 "reads deleted_at as REAL
+… not currently surfaced"). `get_deleted_at` returns `Option<String>`; reading the
+REAL nodes column as String errors in rusqlite (caught by `test_forget_targeted_soft`).
+Cutting it over requires changing the return type or an epoch→RFC3339 conversion —
+out of mechanical-cutover scope. Stays on `memories`. **The deleted_at type/format
+must be reconciled as a T39 prerequisite** (either make nodes store TEXT, or make
+all readers epoch-native).
+
 ---
 
 ## 7. STATUS LOG (append as we go)
@@ -307,3 +334,39 @@ paired FTS-companion reads together.
   inventory (Buckets A/B/C/D + not-in-scope FTS-companion/migration-source).
   Confirmed decoder `row_to_record_from_node_impl` already exists. potato approved
   Phase E-0. Starting Bucket A (lowest risk, decoder swap under live dual-write).
+- 2026-05-31 E-0 COMPLETE (read-cutover cohorts all green 2075/0). Commits:
+  - Bucket A: 99bfaae (all/get_by_ids) · 1cd72be (search_by_type/get_recent) ·
+    6e7bb2e (list_superseded/all_in_namespace/list_deleted) · 149412f (fetch
+    helpers + insight-predicate + merge_enriched_into nodes-mirror).
+  - Bucket D: cd12c66 (search_fts + search_fts_ns both arms → pure `FROM nodes n`,
+    dropped the `memories m JOIN` left over from incomplete T29.6).
+  - Bucket B: c94411c (get_namespace/get_memory_content_preview/get_memory_timestamp/
+    get_memory_ids_since) · 98ac819 (count_memories/list_namespaces/count_orphan_memories/
+    get_orphan_memory_ids/count_dangling_hebbian/count_stale_clusters/
+    count_memories_in_namespace + cleanup_orphaned_access_log/cleanup_dangling_hebbian/
+    cleanup_orphaned_entity_links) · 50f8157 (get_memories_without_embeddings unified
+    arm/embedding_stats total/get_memories_without_entities) · d4d3634
+    (count_soft_deleted + get_deleted_at blocker doc).
+  - **Predicate:** all scans use `node_kind IN ('memory','insight')` (legacy
+    `memories` held synthesis insights too — store_raw writes node_kind='insight').
+    id-keyed point reads need no kind filter.
+  - **Two NEW blockers found + documented (NOT forced):**
+    - §8.5: hebbian-dedup namespace subqueries (merge_bidirectional_hebbian
+      ~L1661-1685) run UNCONDITIONALLY during migration, before `nodes` is
+      guaranteed to exist (separate-file graph DB + migration ordering) → 212
+      `no such table: nodes` failures → reverted, stays on memories (advisory
+      COALESCE '' fallback, retires at T39).
+    - §8.6: `get_deleted_at` type mismatch — `memories.deleted_at` is TEXT/RFC3339
+      (L488 ALTER) but `nodes.deleted_at` is REAL/epoch (L649 schema); soft_delete
+      dual-writes BOTH formats. `get_deleted_at` returns Option<String>; reading
+      the REAL nodes column as String errors (test_forget_targeted_soft). Left on
+      memories — type/return reconciliation is a T39 prerequisite.
+  - **EXIT GATE PASSED:** residual `FROM memories` reads are ALL §8.1 not-in-scope:
+    FTS-companion rowid lookups, legacy `else`-arms of cut unified reads, RMW-paired-
+    with-write (6276 dedup content-evolution, 7216 append_merge_provenance — these
+    need a nodes-mirror like merge_enriched_into got, OR retire with their write),
+    enrichment-status (7637 triple_extraction_attempts), v1 migration-source
+    (8508/8517), test code. Ready to RE-ATTEMPT T34a.
+  - **T34a caution:** soft_delete + 6276 + 7216 still WRITE memories. T34a must
+    delete ONLY the `INSERT INTO memories` in Storage::add — NOT these UPDATE paths
+    (they retire later / need nodes-mirror first).

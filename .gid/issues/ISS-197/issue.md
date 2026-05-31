@@ -133,3 +133,72 @@ landed and green).
       correct the "deletion pass not a refactor" framing.
 - [ ] AC-5: PHASE-E-PLAN.md updated with the E-0 read-cutover sub-phase
       inserted before T34a.
+
+---
+
+# E-0 EXECUTION OUTCOME (2026-05-31)
+
+Phase E-0 read-cutover executed in cohorts under the live dual-write, each
+verified `cargo test -p engramai --lib` = **2075 passed / 0 failed**.
+
+## Commits
+
+- Bucket A (`SELECT *` + decoder swap): `99bfaae` · `1cd72be` · `6e7bb2e` ·
+  `149412f` (fetch helpers + insight-predicate fix + merge_enriched_into
+  nodes-mirror — a Phase B dual-write gap discovered en route).
+- Bucket D (FTS-join, was half-cut from T29.6): `cd12c66` — `search_fts` +
+  `search_fts_ns` both arms switched from `SELECT m.* FROM memories m JOIN nodes`
+  to pure `SELECT n.* FROM nodes n JOIN nodes_fts`.
+- Bucket B (scalar reads): `c94411c` · `98ac819` (health/housekeeping incl. the
+  `cleanup_*` orphan-prune DELETEs whose `NOT IN (SELECT id FROM memories…)`
+  subqueries would have pruned EVERY dependent row post-write-deletion) ·
+  `50f8157` · `d4d3634`.
+
+## Predicate correction (important)
+
+The read predicate is **`node_kind IN ('memory','insight')`**, NOT just
+`'memory'` as AC-1 originally implied. The legacy `memories` table held
+synthesis **insights** too (`store_raw` writes `node_kind='insight'`).
+Excluding insight broke parity (store_insight + merge tests). id-keyed point
+reads need no kind filter (id is unique PK).
+
+## Inventory correction
+
+The original "66 hot-read sites" over-counted. The real **in-scope hot-read**
+set was ~20 methods. The remainder were mis-classified:
+- FTS-companion `SELECT rowid FROM memories` (retire with their paired
+  `memories_fts` DELETE) — out of scope.
+- Legacy `else`-arms of already-cut `unified_substrate` reads — out of scope.
+- Read-modify-write paired with a `memories` write (dedup content-evolution
+  L6276, `append_merge_provenance` L7216) — these need a nodes-mirror like
+  `merge_enriched_into` got, OR retire with their write — out of read-cutover
+  scope.
+- Enrichment-status (`get_unenriched_memory_ids`, depends on the memories-only
+  `triple_extraction_attempts` column + paired UPDATE) — out of scope.
+- v1→v2 migration source (`list_v1_candidates_page` L8508/8517) — out of scope.
+- `lifecycle.rs` L143/171/315 are TEST assertions on the legacy table, not prod
+  reads.
+- `graph/store.rs` L6815 `entity_ids,edge_ids` — `nodes` has NO such columns
+  (unified models these as real `edges` rows); advisory cache, out of scope.
+
+## Two NEW blockers (documented, NOT forced — see PHASE-E-PLAN §8.5/§8.6)
+
+- **§8.5:** hebbian-dedup namespace subqueries (`merge_bidirectional_hebbian`
+  ~L1661-1685) run unconditionally during migration BEFORE `nodes` exists →
+  212 `no such table: nodes` failures → reverted, stays on memories (advisory).
+- **§8.6:** `get_deleted_at` type mismatch — `memories.deleted_at` TEXT/RFC3339
+  vs `nodes.deleted_at` REAL/epoch (soft_delete dual-writes both formats);
+  `Option<String>` read of REAL errors → left on memories. **T39 prerequisite:
+  reconcile the deleted_at type/format.**
+
+## AC status
+
+- [x] AC-1: all in-scope prod hot-read sites switched to `nodes`, byte-identical
+      under dual-write, suite green 2075/0 — with the scope/predicate corrections
+      above (insight included; FTS-companion/RMW/migration-source/test reads are
+      out of scope by design, not skipped).
+- [x] AC-2: backfill/verify/triple_backfill reads confirmed retained.
+- [ ] AC-3: T34a re-attempt — NEXT step.
+- [ ] AC-4: design §5.5 amendment — pending.
+- [x] AC-5: PHASE-E-PLAN.md §8 updated with E-0 sub-phase + §8.5/§8.6 blockers +
+      status log.
