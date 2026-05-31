@@ -160,3 +160,108 @@ endpoint-validity SELECT filter.
   FK parents still exist. Tracked in ISS-197 §8.1; not this issue.
 - `deleted_at` type mismatch (ISS-197 §8.6) and hebbian-dedup migration-ordering
   (§8.5) — T39 prerequisites, independent of this FK re-point.
+
+---
+
+# Batch 2 findings (2026-05-31, runtime-probed)
+
+## What landed (FK re-points, in scope)
+
+A runtime `sqlite_master` probe (entity_config OFF + dedup OFF, inside
+`Storage::add`) found **5** tables still `REFERENCES memories(id)` at runtime:
+`memory_embeddings`, `triples`, `graph_edges`,
+`graph_memory_entity_mentions`, `graph_pipeline_runs`.
+
+ROOT CAUSE of the original 23 T34a FK-on-write failures was confirmed to be
+**`store_embedding()` dual-writing `memory_embeddings` (FK→memories) on every
+`add` when an embedding exists** (production default when Ollama is reachable),
+NOT the access_log path (already →nodes via ISS-196).
+
+Two re-points were added in `Storage::new` (storage.rs ~L575, right after the
+existing 3 ISS-198 calls — placed there because `migrate_embeddings`/
+`migrate_triples` create those tables before `migrate_unified_nodes`, so both
+child + `nodes` parent exist):
+
+- `migrate_memory_embeddings_fk_to_nodes` (fk_col `memory_id`, idx on `model`)
+- `migrate_triples_fk_to_nodes` (fk_col `memory_id`, 3 `idx_triples_*`)
+
+`memory_embeddings_v2` needs NO re-point — it is migration-scratch
+(CREATE→populate→RENAME), never persists on a fresh DB, not in the runtime scan.
+
+The 3 `graph_*` tables are bootstrapped in `src/graph/storage_graph.rs`
+(`init_graph_tables`→`migrate_v04_substrate`), NOT in `Storage::new`. `test_memory()`
+wires no graph_store/job_queue, so they are not written in the lib-test
+`add`→enrichment window and did NOT fire. Production resolution pipeline does
+write them — if a prod-path FK fires later, a `migrate_*_fk_to_nodes` must be
+wired at the graph-init call site (deferred; out of scope for the lib-suite
+unblock).
+
+## VERDICT: T34a CANNOT land standalone — 5 residual failures are read-path coupling, not FK
+
+After the 2 re-points + T34a (`if !unified` gate) applied:
+`cargo test -p engramai --lib` → **2076 passed, 5 failed** (down from 23).
+Build clean. **All 5 remaining failures are `lifecycle::tests` and are NOT
+`FOREIGN KEY constraint failed`** — they are `QueryReturnedNoRows` /
+`assert!(result.is_some())` failures caused by methods that **read / UPDATE /
+RMW the `memories` table** which T34a now leaves empty:
+
+- `test_forget_targeted_soft` (L157) → `soft_delete` UPDATEs
+  `memories.deleted_at` (0 rows, row never inserted), then `get_deleted_at`
+  `SELECT deleted_at FROM memories` → `QueryReturnedNoRows`. **`get_deleted_at`
+  is documented (storage.rs:4785) to deliberately stay on `memories` until T39
+  because of the TEXT(RFC3339)/REAL(epoch) `deleted_at` type mismatch** — the
+  exact ISS-197 §8.6 reconciliation that is a T39 prereq.
+- `test_find_entity_overlap` (L208) → `find_entity_overlap` JOINs
+  `memory_entities … JOIN memories m` for namespace + `deleted_at IS NULL`
+  filter → empty `memories` → `None` → `assert!(result.is_some())` fails.
+- `test_append_merge_provenance` (L311) → `append_merge_provenance` is an
+  **RMW path** that reads `memories` (already flagged ISS-197 §8.1 out-of-scope);
+  test then `SELECT metadata FROM memories` directly.
+- `test_enhanced_sleep_cycle_phases` (L536) + `test_iss103_…historical_ingest`
+  (L480) → `sleep_cycle`→`run_consolidation_cycle` iterates `memories` rows
+  (decay/forget); a `query_row` returns no rows on empty `memories`
+  ("Consolidation failed, attempting FTS rebuild: Query returned no rows").
+
+**These are exactly the "residual `FROM memories` reads" my working-memory and
+ISS-197 §8.1/§8.6 already enumerated as OUT OF SCOPE for the mechanical
+read-cutover.** T34a's `if !unified` gate is correct in isolation, but it
+removes a write that these read/UPDATE/RMW paths still implicitly depend on.
+Per the "不确定先停记 issue, 不硬干" rule I did **NOT** force a fix.
+
+## Two clean ways forward (potato to choose — NOT auto-applied)
+
+1. **Cut the 4 read/UPDATE/RMW paths over to `nodes` first, then land T34a.**
+   - `soft_delete`: UPDATE `nodes.deleted_at` only (already dual-writes it);
+     `get_deleted_at`: read `nodes.deleted_at` (REAL) → return type / epoch→RFC
+     reconciliation (ISS-197 §8.6 — the T39 prereq, now forced earlier).
+   - `find_entity_overlap`: JOIN `nodes` instead of `memories` for namespace +
+     `deleted_at` filter.
+   - `run_consolidation_cycle`: iterate `nodes WHERE node_kind='memory'`.
+   - `append_merge_provenance`: RMW against `nodes.attributes` (Phase B
+     dual-write candidate, ISS-197 §8.1).
+   This is substantive read-path work, not mechanical — each needs its own
+   contract test. Effectively pulls ISS-197 §8.1+§8.6 forward as a T34a prereq.
+   **→ Now tracked as ISS-199.**
+
+2. **Keep T34a deferred; land ONLY the batch-2 FK re-points now (green at
+   2081/0 without T34a, per /tmp/iss198_full.log).** Then sequence the
+   read-path cutover (option 1) as its own issue before re-attempting T34a.
+   This keeps the suite green and the commits atomic. **Recommended** — it
+   matches the one-read-path-at-a-time §5.4 discipline and avoids folding a
+   type-reconciliation (§8.6) into a "delete a write" change.
+
+## AC status after batch 2
+
+- [x] AC-1 (extended): `memory_embeddings` + `triples` re-pointed (they ARE
+      written under unified mode before T39 — `store_embedding` + triple
+      extraction); `graph_*` flagged for graph-init call site if a prod FK fires.
+- [x] AC-2: idempotency + nodes-only-parent tests for the 2 new migrations
+      shipped — `iss198_memory_embeddings_insert_succeeds_without_legacy_memories_row`,
+      `iss198_triples_insert_succeeds_without_legacy_memories_row`,
+      `iss198_batch2_fk_repoint_is_idempotent` (storage.rs ~L11490). All 9
+      `iss198_*` tests green.
+- [ ] AC-4: **NOT met with T34a applied** — 5 read-path failures remain (above).
+      Met at **2081/0 WITHOUT T34a** (batch-2 FK re-points alone). **DECISION:
+      OPT2 taken — T34a reverted out of this issue's working tree; only the
+      batch-2 FK re-points (+ their 3 tests) land here. T34a re-attempt is
+      deferred to a new issue after the read-path cutover (OPT1 work).**

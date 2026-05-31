@@ -572,6 +572,14 @@ impl Storage {
         Self::migrate_hebbian_links_fk_to_nodes(&conn)?;
         Self::migrate_memory_entities_fk_to_nodes(&conn)?;
         Self::migrate_synthesis_provenance_fk_to_nodes(&conn)?;
+        // ISS-198 batch 2: `memory_embeddings` is the table that actually
+        // fired the 23-failure T34a regression (dual-written by
+        // `store_embedding` on every embedded add); `triples` is written
+        // during graph triple-extraction. Both pre-exist by this point
+        // (`migrate_embeddings` L456 / `migrate_triples` L472 run before the
+        // unified-substrate migrations) and `nodes` now exists. Idempotent.
+        Self::migrate_memory_embeddings_fk_to_nodes(&conn)?;
+        Self::migrate_triples_fk_to_nodes(&conn)?;
 
         // v0.4 unified substrate: bump schema_version (T09).
         // Runs last so a partial Phase A migration leaves the version
@@ -1417,6 +1425,49 @@ impl Storage {
             &[
                 "CREATE INDEX IF NOT EXISTS idx_provenance_insight ON synthesis_provenance(insight_id)",
                 "CREATE INDEX IF NOT EXISTS idx_provenance_source ON synthesis_provenance(source_id)",
+            ],
+        )
+    }
+
+    /// ISS-198 (T34a-pre, batch 2): re-point `memory_embeddings.memory_id`
+    /// from `memories(id)` to `nodes(id)`.
+    ///
+    /// This is the table that actually fired the 23-failure T34a regression:
+    /// `Storage::store_embedding` dual-writes `memory_embeddings` on **every**
+    /// add that has an embedding (i.e. the production default whenever Ollama
+    /// is reachable). With T34a removing the legacy `memories` insert, the
+    /// `memory_embeddings → memories(id)` FK has no parent row and the write
+    /// fails. Re-pointing to `nodes(id)` — which `Storage::add` always
+    /// populates via `insert_memory_node_row` — restores the parent.
+    ///
+    /// The companion unified write to `node_embeddings(node_id)` already
+    /// references `nodes(id)`; this only fixes the legacy-named table that
+    /// survives until the Phase-F drop. PK `(memory_id, model)` and the
+    /// `idx_embeddings_model` index are preserved by the full-DDL rebuild.
+    fn migrate_memory_embeddings_fk_to_nodes(conn: &Connection) -> SqlResult<()> {
+        Self::rebuild_table_fk_to_nodes(
+            conn,
+            "memory_embeddings",
+            &["memory_id"],
+            &["CREATE INDEX IF NOT EXISTS idx_embeddings_model ON memory_embeddings(model)"],
+        )
+    }
+
+    /// ISS-198 (T34a-pre, batch 2): re-point `triples.memory_id` from
+    /// `memories(id)` to `nodes(id)`. Written during triple extraction
+    /// (graph enrichment), which runs inside the T34a→T39 window, so the
+    /// parent must be a `nodes` row. `UNIQUE(memory_id, subject, predicate,
+    /// object)` and the three `idx_triples_*` indexes are preserved by the
+    /// full-DDL rebuild.
+    fn migrate_triples_fk_to_nodes(conn: &Connection) -> SqlResult<()> {
+        Self::rebuild_table_fk_to_nodes(
+            conn,
+            "triples",
+            &["memory_id"],
+            &[
+                "CREATE INDEX IF NOT EXISTS idx_triples_memory ON triples(memory_id)",
+                "CREATE INDEX IF NOT EXISTS idx_triples_subject ON triples(subject)",
+                "CREATE INDEX IF NOT EXISTS idx_triples_object ON triples(object)",
             ],
         )
     }
@@ -11435,6 +11486,112 @@ mod tests {
                 [],
             )
             .expect("ISS-198: synthesis_provenance FKs must validate against nodes");
+    }
+
+    /// Batch 2: `memory_embeddings.memory_id` re-pointed `memories`→`nodes`.
+    /// `store_embedding` dual-writes this table on every `add` when an
+    /// embedding exists (prod default), so its FK parent must be `nodes`
+    /// once T34a stops writing `memories`.
+    #[test]
+    fn iss198_memory_embeddings_insert_succeeds_without_legacy_memories_row() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_emb", 9501);
+        s.connection()
+            .execute(
+                "INSERT INTO memory_embeddings \
+                 (memory_id, model, embedding, dimensions, created_at) \
+                 VALUES ('n_emb', 'nomic', X'00', 1, '2026-05-31')",
+                [],
+            )
+            .expect("ISS-198: memory_embeddings FK must validate against nodes");
+        // FK still enforced: a dangling memory_id must be rejected.
+        let dangling = s.connection().execute(
+            "INSERT INTO memory_embeddings \
+             (memory_id, model, embedding, dimensions, created_at) \
+             VALUES ('nope', 'nomic', X'00', 1, '2026-05-31')",
+            [],
+        );
+        assert!(dangling.is_err(), "ISS-198: dangling memory_id must violate FK");
+    }
+
+    /// Batch 2: `triples.memory_id` re-pointed `memories`→`nodes`. Written
+    /// during triple extraction (graph enrichment) inside the T34a→T39
+    /// window, so the parent must be a `nodes` row.
+    #[test]
+    fn iss198_triples_insert_succeeds_without_legacy_memories_row() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_trip", 9601);
+        s.connection()
+            .execute(
+                "INSERT INTO triples \
+                 (memory_id, subject, predicate, object, confidence, source, created_at) \
+                 VALUES ('n_trip', 's', 'p', 'o', 1.0, 'llm', '2026-05-31')",
+                [],
+            )
+            .expect("ISS-198: triples FK must validate against nodes");
+        let dangling = s.connection().execute(
+            "INSERT INTO triples \
+             (memory_id, subject, predicate, object, confidence, source, created_at) \
+             VALUES ('nope', 's', 'p', 'o', 1.0, 'llm', '2026-05-31')",
+            [],
+        );
+        assert!(dangling.is_err(), "ISS-198: dangling memory_id must violate FK");
+    }
+
+    /// Batch 2: re-running the `memory_embeddings` / `triples` migrations on an
+    /// already-re-pointed schema is a no-op that preserves rows, and the
+    /// stored DDL references `nodes`, not `memories`.
+    #[test]
+    fn iss198_batch2_fk_repoint_is_idempotent() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_e", 9701);
+        s.connection()
+            .execute(
+                "INSERT INTO memory_embeddings \
+                 (memory_id, model, embedding, dimensions, created_at) \
+                 VALUES ('n_e', 'nomic', X'01', 1, '2026-05-31')",
+                [],
+            )
+            .unwrap();
+        s.connection()
+            .execute(
+                "INSERT INTO triples \
+                 (memory_id, subject, predicate, object, confidence, source, created_at) \
+                 VALUES ('n_e', 's', 'p', 'o', 1.0, 'llm', '2026-05-31')",
+                [],
+            )
+            .unwrap();
+
+        // Second invocation must be a clean no-op and must NOT drop rows.
+        Storage::migrate_memory_embeddings_fk_to_nodes(s.connection()).unwrap();
+        Storage::migrate_triples_fk_to_nodes(s.connection()).unwrap();
+
+        let emb_rows: i64 = s
+            .connection()
+            .query_row("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = 'n_e'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(emb_rows, 1, "idempotent re-run must not lose memory_embeddings rows");
+        let trip_rows: i64 = s
+            .connection()
+            .query_row("SELECT COUNT(*) FROM triples WHERE memory_id = 'n_e'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(trip_rows, 1, "idempotent re-run must not lose triples rows");
+
+        for table in ["memory_embeddings", "triples"] {
+            let ddl: String = s
+                .connection()
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                !ddl.contains("REFERENCES memories"),
+                "ISS-198: {table} must reference nodes, not memories"
+            );
+            assert!(ddl.contains("REFERENCES nodes"), "ISS-198: {table} must reference nodes");
+        }
     }
 
     /// Re-running the migrations on an already-re-pointed schema is a no-op
