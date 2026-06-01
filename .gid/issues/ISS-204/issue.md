@@ -1,6 +1,6 @@
 ---
 title: Event-time is not a first-class graph edge — temporal multi-hop queries degrade to vector recall
-status: open
+status: in_progress
 priority: P0
 labels: retrieval, graph, temporal, root-cause
 blocks:
@@ -145,30 +145,48 @@ Concrete sub-decisions to settle during design:
 
 ## Acceptance criteria
 
-- [ ] AC-1: extraction/projection emits an event-time edge for memories with a
-  resolved `temporal` date, as a literal-object edge
-  (`object_kind='literal'`, predicate `occurred_on`). DB-verified: for the
-  museum memory `3cf5c975`, the graph contains a traversable path
-  event-entity → occurred_on → 2023-07-05.
-- [ ] AC-2: a new canonical event-time predicate (`occurred_on`) exists and is
-  distinct from the abstract-semantic predicates; `from_str_lossy` round-trips it.
-- [ ] AC-3: event time is NOT written to `valid_from`/`valid_to` (those remain
-  bitemporal validity). The write clock is no longer stamped as event-validity:
-  `valid_from` for non-validity edges stays NULL (honest "no validity window
-  known") rather than back-filling `created_at`.
-- [ ] AC-3b: the retrieval Factual plan SEEDS and SURFACES the dated memory via
-  the `occurred_on` literal edge. DB+trace-verified: traversing from the event
-  anchor reaches the `occurred_on` edge AND the source memory is admitted to the
-  candidate pool (requires the ISS-202 `source_memory_id` dependency below).
+- [x] AC-1 (code): projection emits an event-time edge for memories with a
+  day-precision `temporal` mark, as a literal-object `DraftEdge`
+  (`DraftEdgeEnd::Literal`, predicate `OccurredOn`). Rides the existing
+  draft→resolve→persist path (pipeline.rs:776 → EdgeEnd::Literal). Commit
+  ff0f177e, unit test `day_precision_mark_emits_occurred_on_literal_edge`.
+  *DB-verification on a fresh conv-26 ingest (path museum-entity → occurred_on
+  → 2023-07-05 present in graph_edges) still pending — tracked by AC-4.*
+- [x] AC-2: canonical `OccurredOn` predicate exists (both `Predicate::OccurredOn`
+  in triple.rs and `CanonicalPredicate::OccurredOn` in graph/schema.rs, distinct
+  from abstract-semantic relations); `from_str_lossy` maps occurred_on/
+  happened_at/on_date/dated and `as_str` round-trips to "occurred_on". Adapter
+  `map_predicate` passes it through. Commit 56f81130, tests
+  `test_predicate_round_trip` + `map_predicate_full_coverage`.
+- [x] AC-3: event time is NOT written to `valid_from`/`valid_to`. `build_new_edge`
+  (stage_persist.rs) no longer stamps `valid_from = Some(now)` (the write clock);
+  it leaves `valid_from = None` (honest "no validity window known"). The ingest
+  timestamp remains in `recorded_at`. Commit ff0f177e. Full suite green confirms
+  no edge logic depended on the old write-clock stamp.
+- [x] AC-3b (code): the Factual plan KEEPS literal-object edges
+  (`traverse_anchors` sets `linked_entity = None` for `EdgeEnd::Literal` and
+  pushes the row rather than dropping it, factual.rs:771-781) AND seeds the
+  source memory unconditionally from `edge.memory_id` (factual.rs:586). ISS-202
+  is RESOLVED: `dual_write_edge_to_edges` now binds `source_memory_id` from
+  `edge.memory_id` via an FK-safe `(SELECT id FROM nodes WHERE id=?)` guard
+  (store.rs:1298), so the OccurredOn edge carries non-NULL provenance for any
+  memory in `nodes` (every real ingest) — the seed is live under unified reads.
+  *Live trace verification folded into AC-4.*
 - [ ] AC-4: conv-26 temporal multi-hop queries (q20, q62 first — they have clean
   `day` dates; q33, q35 after ISS-190/191 pins their `approx` interval) resolve
   by graph traversal, DB-verified by dumping the traversal path, not by score
-  alone.
+  alone. *Pending fresh conv-26 ingest run.*
 - [ ] AC-5: with event-time edges present, re-run the ISS-203 L1 A/B
   (V2 off vs on) WITH DB persistence; V2 multi-hop no longer regresses
   (Δ ≥ -0.03) → unblocks ISS-203 default-on decision.
-- [ ] AC-6: no regression on non-temporal queries (entity→entity traversal and
-  vector recall paths unchanged for memories with no resolved date).
+- [x] AC-6 (code): no regression on non-temporal queries. The OccurredOn edge is
+  only emitted when a day-precision mark exists AND a triple anchor exists
+  (tests `no_temporal_mark_emits_no_occurred_on_edge`,
+  `low_precision_mark_emits_no_occurred_on_edge`,
+  `day_precision_but_no_triple_emits_no_occurred_on_edge`); entity→entity
+  traversal pools are unchanged for dateless memories. Full engramai suite
+  (2098 lib + 84 integration binaries) green. *Empirical AC-6 confirmation on
+  the conv-26 non-temporal buckets folded into AC-4 run.*
 
 ## Notes
 
