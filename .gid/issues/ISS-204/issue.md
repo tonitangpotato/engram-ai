@@ -7,6 +7,7 @@ blocks:
 - ISS-203
 - .gid/issues/ISS-203/issue.md
 relates_to: ISS-190, ISS-191, ISS-201
+depends_on: .gid/issues/ISS-202/issue.md
 ---
 
 # Event-time is not a first-class graph edge
@@ -104,17 +105,21 @@ graph edge whose object is that time, e.g.:
 museum_visit  --occurred_on-->  2023-07-05    (object_kind = literal/time)
 ```
 
-or equivalently populate `valid_from`/`valid_to` on the event's edges with the
-*event-validity* time (not the write clock). Either way the date becomes
-traversable. Then a temporal multi-hop query resolves by graph traversal
-(event entity → occurred_on → date) instead of degrading to vector recall.
+The date becomes traversable as the *object* of that edge. Then a temporal
+multi-hop query resolves by graph traversal (event entity → occurred_on → date)
+instead of degrading to vector recall.
+
+**Do NOT use `valid_from`/`valid_to` for event time** (see CORRECTION below):
+those fields are *bitemporal validity* (when a fact is true), which is
+orthogonal to *event time* (when an event happened). Conflating them corrupts
+the `as-of-T` query semantics. Event time is a literal-object edge only.
 
 Concrete sub-decisions to settle during design:
 - **Object representation:** literal-time object (`object_kind='literal'`,
-  `object_literal = {"time":{...}}`) vs a dedicated time-entity node vs
-  populating `valid_from`. Leaning literal-time object — it's what the unused
-  `object_literal` column was built for, and it keeps time off the entity graph
-  (no "2023-07-05" entity nodes to canonicalize).
+  `object_literal = {"time":{...}}`) — settled. NOT a `valid_from` populate
+  (wrong dimension, see CORRECTION), NOT a time-entity node (would pollute the
+  entity graph with "2023-07-05" nodes to canonicalize). It's what the unused
+  `object_literal` column was built for.
 - **Predicate:** add an `occurred_on` / `valid_during` canonical predicate.
   `Predicate::from_str_lossy` already maps abstract relations; this needs a real
   new variant because event-time is semantically distinct, not a synonym.
@@ -141,15 +146,20 @@ Concrete sub-decisions to settle during design:
 ## Acceptance criteria
 
 - [ ] AC-1: extraction/projection emits an event-time edge for memories with a
-  resolved `temporal` date (literal-time object or `valid_from`/`valid_to`
-  populated with event-validity time, not write clock). DB-verified: for the
+  resolved `temporal` date, as a literal-object edge
+  (`object_kind='literal'`, predicate `occurred_on`). DB-verified: for the
   museum memory `3cf5c975`, the graph contains a traversable path
-  event-entity → 2023-07-05.
-- [ ] AC-2: a new canonical event-time predicate exists and is distinct from the
-  abstract-semantic predicates; `from_str_lossy` round-trips it.
-- [ ] AC-3: `valid_from` no longer carries the write clock for event edges (or
-  the write clock is moved to `recorded_at`/`created_at` only, with `valid_*`
-  reserved for event-validity time).
+  event-entity → occurred_on → 2023-07-05.
+- [ ] AC-2: a new canonical event-time predicate (`occurred_on`) exists and is
+  distinct from the abstract-semantic predicates; `from_str_lossy` round-trips it.
+- [ ] AC-3: event time is NOT written to `valid_from`/`valid_to` (those remain
+  bitemporal validity). The write clock is no longer stamped as event-validity:
+  `valid_from` for non-validity edges stays NULL (honest "no validity window
+  known") rather than back-filling `created_at`.
+- [ ] AC-3b: the retrieval Factual plan SEEDS and SURFACES the dated memory via
+  the `occurred_on` literal edge. DB+trace-verified: traversing from the event
+  anchor reaches the `occurred_on` edge AND the source memory is admitted to the
+  candidate pool (requires the ISS-202 `source_memory_id` dependency below).
 - [ ] AC-4: conv-26 temporal multi-hop queries (q20, q62 first — they have clean
   `day` dates; q33, q35 after ISS-190/191 pins their `approx` interval) resolve
   by graph traversal, DB-verified by dumping the traversal path, not by score
@@ -239,12 +249,59 @@ This is a REAL new variant, not a synonym — event-time is semantically distinc
 from the abstract-semantic relations. (Confirms the earlier note: vocabulary
 widening IS needed here, unlike ISS-203's possessive case.)
 
-### Component 3 — stop stamping the write clock as event-validity time
-`pipeline.rs:970`: for event-time edges, `valid_from` must be the event date
-(from the temporal mark), not `created_at`. Audit whether `created_at` should
-move to the edge's `recorded_at`/`created_at` columns only, leaving `valid_*`
-for event-validity. Non-event edges: decide whether to leave `valid_from` NULL
-(honest "no validity time known") rather than back-filling the write clock.
+### Component 3 (CORRECTED) — do NOT stamp event time into `valid_from`
+
+**Review correction 2026-06-01 (after reading `retrieval/plans/bitemporal.rs`).**
+The original Component 3 proposed putting the event date into `valid_from`. That
+is a CONCEPTUAL ERROR and is dropped. Reason:
+
+`bitemporal.rs` `valid_from`/`valid_to` encode **fact-validity** — *when a
+stated fact is true in the world* — and drive the `as-of-T` query
+(`valid_from <= T AND (valid_to IS NULL OR valid_to > T)`, bitemporal.rs:262).
+This is orthogonal to **event time** (*when an event happened*). If we set the
+museum edge's `valid_from = 2023-07-05`, the `as-of-T` projection would conclude
+"this edge did not hold before 2023-07-05," which is nonsense — the recorded
+fact (the museum visit) is valid as knowledge from the moment it's recorded.
+Event time belongs ONLY on the `occurred_on` literal edge's object.
+
+The actual bug to fix at `pipeline.rs:970`: `occurred_at = ctx.memory.created_at`
+stamps the WRITE CLOCK into `valid_from`. Fix = stop doing this. For edges with
+no known validity window, leave `valid_from` NULL (honest). The write timestamp
+lives in `recorded_at`/`created_at` columns where it belongs.
+
+### Component 4 — Factual plan must SEED + SURFACE the dated memory via the literal edge
+
+**Added in review 2026-06-01 (after reading `retrieval/plans/factual.rs`).**
+Storing the `occurred_on` edge is necessary but NOT sufficient — the read side
+must consume it. Findings from the code:
+
+- q20-style "when did X happen" routes to the **Factual plan** (1-hop entity
+  traversal), not the Bitemporal plan (which is fact-validity, not event time).
+- `FactualEdgeRow.linked_entity` is `Option<Uuid>` and is **`None` when the edge
+  points to a literal** (factual.rs:248-250) — so the plan already *recognizes*
+  literal-object edges, but its candidate **seeding** is driven by
+  `edge.memory_id` (the ISS-189 D1 edge-provenance seed), not by the literal
+  object.
+- The dated memory must be admitted to the candidate pool as the SOURCE of the
+  `occurred_on` edge, then surfaced so generation sees the date.
+
+Design work for Component 4:
+- verify `traverse_anchors` does not DROP literal-object edges as dead ends
+  (linked_entity = None must not silently discard the edge);
+- verify the `occurred_on` source memory is edge-seeded into the candidate pool;
+- confirm the literal date reaches generation (either via the seeded memory's
+  text — which already has it — or by surfacing the edge object directly).
+
+### Hard dependency on ISS-202 (`source_memory_id` is NULL)
+
+**Blocking prerequisite.** ISS-202 found that unified `edges.source_memory_id`
+is NULL for all 789 structural + 220 provenance edges. The Factual plan's
+edge-provenance seed (ISS-189 D1) admits the source memory **from the edge's
+memory_id**. If `occurred_on` edges are written with NULL source memory, Component
+4 cannot seed the dated memory and the whole fix is inert. So: the `occurred_on`
+edge MUST carry a populated `source_memory_id` (legacy `graph_edges.memory_id` is
+already SET; the unified projection must stop nulling it). Coordinate with
+ISS-202 — its fix is on the critical path for ISS-204 to work under unified reads.
 
 ### Dependency on ISS-190/191 for `approx` dates
 For `day`-precision memories (q20 museum, q62 park) the date is directly usable
