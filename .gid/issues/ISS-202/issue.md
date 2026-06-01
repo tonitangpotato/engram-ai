@@ -1,7 +1,7 @@
 ---
 id: ISS-202
 title: memory→entity edges never written to unified `edges` table on ingest — memories are graph islands, multi-hop/entity recall structurally impossible
-status: open
+status: in_progress
 priority: P0
 severity: architecture-defect
 tags:
@@ -245,3 +245,52 @@ from either mention table. The mention tables are only relevant to secondary
 defect (c) (consolidation) and to a future memory→entity-edge feature if one
 is ever needed — at which point `graph_memory_entity_mentions` is the
 comprehensive source.
+
+## Verification log — 2026-05-31 (commit 8aec6a3)
+
+**Code fix landed.** `dual_write_edge_to_edges` (graph/store.rs ~L1337)
+now binds `(SELECT id FROM nodes WHERE id = ?20)` with `edge.memory_id`
+(FK-safe: degrades to NULL when the memory isn't in `nodes`, never
+FK-fails under `PRAGMA foreign_keys=ON`). Backfill migration
+`migrate_backfill_edge_source_memory_id` (storage.rs ~L1665) registered in
+`Storage::new` after `migrate_graph_tables_fk_to_nodes`.
+
+**Tests (5, all green):**
+- store.rs: `iss202_dual_write_populates_source_memory_id_when_memory_in_nodes`,
+  `iss202_dual_write_source_memory_id_null_safe_when_no_provenance`
+- storage.rs: `iss202_backfill_populates_source_memory_id_from_graph_edges`,
+  `iss202_backfill_skips_when_memory_absent_from_nodes`,
+  `iss202_backfill_is_idempotent`
+- Full engramai lib suite: **2089 passed / 0 failed.**
+
+**Manual backfill verification on the live pre-fix conv-26 DB**
+(`.tmpa0Kbrm/substrate.db`, copied to `/tmp/iss202_backfill_test.db`):
+
+- Pre-fix: 789/789 structural edges `source_memory_id=NULL`; legacy
+  `graph_edges` 789/789 `memory_id` SET; `nodes` has 454 memory rows.
+- **BLOB↔TEXT join:** the hex()→hyphenated-UUID reconstruction matched
+  **789/789** rows on real data → answers the open question (the
+  reconstruction is correct against production-shaped ids).
+- **After running the migration's exact UPDATE:** 789/789 filled, **0
+  residual NULL**.
+- **Correctness:** full-table check `WHERE source_memory_id != memory_id`
+  → **0 mismatches**; every filled value equals the legacy
+  `graph_edges.memory_id`.
+- **Gold reachability (AC-3 core):** gold memory `ad15485c` now has **4
+  structural edges** pointing back to it — the exact subgraph from the
+  autopsy:
+  - `Caroline --uses--> Becoming Nicole` (source_memory_id=ad15485c)
+  - `Becoming Nicole --is_a--> true story`
+  - `Becoming Nicole --related_to--> trans girl`
+  - `Amy Ellis Nutt --implements--> Becoming Nicole`
+
+  Pre-fix these edges reported `source_memory_id=NULL` → `factual.rs:588`
+  seeded nothing → gold never entered the pool. Post-fix they carry the
+  provenance the factual plan seeds from.
+
+**AC status:** AC-1 ✅ (forward write populates), AC-2 ✅ (backfill
+idempotent + tests green + verified on live DB), AC-3 ✅ (gold reachable
+via populated edges — confirmed by SQL on live DB; full candidate-dump
+through the live `factual` plan deferred to the AC-4 A/B run).
+**AC-4 (single-hop lift A/B)** remains — the only claim that needs an
+end-to-end bench. **AC-5 ✅** (ISS-203 filed for canonicalization).
