@@ -1,0 +1,48 @@
+# ISS-203 L1 mechanism probe — do V2 triples retain the date?
+
+## q20 museum (gold 5 Jul 2023, ep 2023-07-06)
+   src: Melanie: Yesterday I took the kids to the museum - it was so cool spending time with them and seeing their eyes light up.
+  legacy (2 triples, date-token=false):
+    Melanie --[related_to]--> museum visit  (0.70)
+    museum visit --[leads_to]--> enjoyment  (0.75)
+  v2     (3 triples, date-token=false):
+    Melanie --[related_to]--> museum  (0.85)
+    kids --[related_to]--> Melanie  (0.90)
+    kids --[related_to]--> museum  (0.85)
+
+## q33 pride parade (gold week before 3 Jul, ep 2023-07-03)
+   src: Caroline: Since we last spoke, some big things have happened. Last week I went to an LGBTQ+ pride parade. Everyone was so happy and it made me feel like I belonged.
+  legacy (2 triples, date-token=false):
+    LGBTQ+ pride parade --[leads_to]--> sense of belonging  (0.85)
+    LGBTQ+ pride parade --[leads_to]--> happiness  (0.85)
+  v2     (3 triples, date-token=false):
+    Caroline --[part_of]--> LGBTQ+ pride parade  (0.90)
+    LGBTQ+ pride parade --[related_to]--> happiness  (0.85)
+    LGBTQ+ pride parade --[leads_to]--> sense of belonging  (0.80)
+
+## q35 camping (gold two weekends before 17 Jul, ep 2023-07-17)
+   src: Melanie: Hey Caroline, hope all's good! I had a quiet weekend after we went camping with my fam two weekends ago. It was great to unplug and hang with the kids.
+  legacy (0 triples, date-token=false):
+    (none)
+  v2     (3 triples, date-token=false):
+    Melanie --[related_to]--> camping  (0.85)
+    camping --[related_to]--> family  (0.80)
+    Melanie --[related_to]--> children  (0.85)
+
+## q62 park-ish camping (gold 27 Aug 2023)
+   src: Melanie: We went camping with the family on August 27th and it was a beautiful day at the park.
+  legacy (2 triples, date-token=false):
+    Melanie --[related_to]--> camping  (0.80)
+    camping --[part_of]--> park  (0.80)
+  v2     (2 triples, date-token=false):
+    camping --[related_to]--> family  (0.85)
+    camping --[part_of]--> park  (0.80)
+
+---
+SUMMARY: legacy date-bearing cases 0/4, v2 0/4
+NOTE: triples never carry the resolved date regardless of prompt -> the
+date lives only in the memory TEXT + temporal metadata, not in edges.
+If both are ~0, the multi-hop loss is NOT triple-fragmentation of the date;
+it's that V2 changes which MEMORIES win the top-K (entity edges crowd out
+the dated episode), a retrieval-ranking effect — refine target is ranking,
+not the extraction contract.

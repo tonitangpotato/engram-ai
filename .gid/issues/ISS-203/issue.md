@@ -338,3 +338,68 @@ purely a prompt-contract change; the vocabulary was already sufficient.
   (`draft_entity_from_triple_endpoint`) consumes subject/object strings verbatim;
   atomic endpoints flow through unchanged. Decomposition happens at the prompt
   layer (the LLM emits two atomic endpoints + a relation), not in `parse_triple_response`.
+
+---
+
+## L1 pilot result + AC-4 conclusion (2026-06-01, runs ISS203-L1-{A,B}-conv26-20260601T033540Z)
+
+Cheap staged validation (L0 8-sentence probe → L1 conv-26 two-arm → [L2/L3 not run]).
+Both arms on the same binary (engram-bench rebuilt against engramai 4a931ff,
+ISS-202 + ISS-203 both baked, gated). Only variable = `ENGRAM_TRIPLE_PROMPT_V2`.
+Each arm re-ingests its own graph (V2 changes extraction). Envelope = ISS-190.
+
+**Within-sweep A (V2 off) vs B (V2 on), conv-26 152q:**
+
+```
+               A(off)   B(on)    Δ
+overall       0.2829  0.2961  +0.0132
+  single-hop  0.0625  0.1250  +0.0625   PASS gate (>=+0.03)
+  multi-hop   0.2973  0.2162  -0.0811   FAIL gate (need >=-0.03)
+  open-domain 0.2308  0.3077  +0.0769
+  temporal    0.3857  0.4143  +0.0286
+```
+
+**Per-query flips (the real signal, not the aggregate):**
+- single-hop: **2 gains, 0 losses** (q48, q78) — clean win, no harm.
+- multi-hop: **1 gain (q6), 4 losses** (q20, q33, q35, q62) — the -8pp.
+
+**All 4 multi-hop losses are date questions** where A retrieved the dated
+episode and answered correctly, and B answered "I don't know" — the dated
+memory fell out of the top-K.
+
+### Mechanism confirmed (artifact: artifacts/l1-mechanism-probe-20260601.txt)
+
+Hypothesis "V2 shreds the dated clause into fragments" → **FALSIFIED.**
+Extracted the 4 real dated sentences under both prompts: the resolved date
+appears in **0/4 triples under EITHER prompt**. Dates never live in entity
+edges — they live in the memory text + temporal metadata. V2 does not damage
+the date.
+
+What V2 actually does: produces **denser entity edges** per memory (q20 2→3,
+q35 0→3, etc.). The dated episodes are unchanged, but the now-richer
+entity-anchored memories **out-compete them in top-K retrieval**. This is a
+**retrieval-ranking competition effect**, not an extraction defect — and it is
+the same date-stranding root cause already tracked in ISS-190/191/201/q0,
+intensified by stronger entity-edge competitors.
+
+### Conclusion
+- **AC-4: gate NOT cleared on conv-26 → V2 stays flag-gated, default OFF.**
+  No regression to anything shipped (legacy prompt untouched and default).
+- **V2 is NOT abandoned.** It is structurally correct (the root fix for entity
+  fragmentation): L0 probe proved decomposition is right, this probe proved it
+  doesn't harm dates, and L1 shows a clean +2/0 single-hop lift. Its only cost
+  is a ranking-layer interaction with the pre-existing date-stranding weakness.
+- **Do NOT weaken the extraction contract** (e.g. "don't decompose dated
+  statements") — that fixes the wrong layer and would discard correct edges.
+- **L2 (conv-26 full multi-hop focus) and L3 (conv-44) NOT run** — they would
+  re-measure the same ranking interaction at greater cost without new info.
+
+- [x] AC-4: conv-26 A/B run; gate not cleared; V2 correctly stays default-off.
+
+### Follow-up (ranking layer, separate issue)
+The blocker to flipping V2 default-on is: **dated episodes must not be crowded
+out of top-K by entity-relation edges.** This is a retrieval/temporal ranking
+fix (ensure date-bearing episodes retain a top-K slot for temporal queries),
+tied to the existing date-stranding track (ISS-190/191/201/q0_root_cause).
+File as a new ISS once that track's direction is settled. Until then V2 remains
+an opt-in correctness improvement for entity-anchored workloads.
