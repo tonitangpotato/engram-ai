@@ -46,11 +46,32 @@ fn default_status() -> String {
 fn suggest_target(snippets: &[String]) -> String {
     let combined = snippets.join(" ").to_lowercase();
 
-    let soul_keywords = ["principle", "always", "never", "rule", "belief", "value", "identity"];
-    let procedural_keywords = ["how to", "step", "procedure", "workflow", "process", "method"];
+    let soul_keywords = [
+        "principle",
+        "always",
+        "never",
+        "rule",
+        "belief",
+        "value",
+        "identity",
+    ];
+    let procedural_keywords = [
+        "how to",
+        "step",
+        "procedure",
+        "workflow",
+        "process",
+        "method",
+    ];
 
-    let soul_score: usize = soul_keywords.iter().filter(|k| combined.contains(*k)).count();
-    let proc_score: usize = procedural_keywords.iter().filter(|k| combined.contains(*k)).count();
+    let soul_score: usize = soul_keywords
+        .iter()
+        .filter(|k| combined.contains(*k))
+        .count();
+    let proc_score: usize = procedural_keywords
+        .iter()
+        .filter(|k| combined.contains(*k))
+        .count();
 
     if soul_score >= 2 {
         "SOUL.md".to_string()
@@ -74,7 +95,10 @@ fn candidate_id(member_ids: &[String]) -> String {
 }
 
 /// Find connected components via BFS in an adjacency list.
-fn connected_components(adj: &HashMap<String, HashSet<String>>, nodes: &HashSet<String>) -> Vec<Vec<String>> {
+fn connected_components(
+    adj: &HashMap<String, HashSet<String>>,
+    nodes: &HashSet<String>,
+) -> Vec<Vec<String>> {
     let mut visited = HashSet::new();
     let mut components = Vec::new();
 
@@ -131,8 +155,12 @@ pub fn detect_promotable_clusters(
         if let Ok(links) = storage.get_hebbian_links_weighted(&mem.id) {
             for (target_id, weight) in links {
                 if weight > config.min_hebbian_weight && core_ids.contains(&target_id) {
-                    adj.entry(mem.id.clone()).or_default().insert(target_id.clone());
-                    adj.entry(target_id.clone()).or_default().insert(mem.id.clone());
+                    adj.entry(mem.id.clone())
+                        .or_default()
+                        .insert(target_id.clone());
+                    adj.entry(target_id.clone())
+                        .or_default()
+                        .insert(mem.id.clone());
 
                     let pair = if mem.id < target_id {
                         (mem.id.clone(), target_id.clone())
@@ -191,7 +219,9 @@ pub fn detect_promotable_clusters(
         let component_set: HashSet<&str> = component.iter().map(|s| s.as_str()).collect();
         let internal_link_count = link_pairs
             .iter()
-            .filter(|(a, b)| component_set.contains(a.as_str()) && component_set.contains(b.as_str()))
+            .filter(|(a, b)| {
+                component_set.contains(a.as_str()) && component_set.contains(b.as_str())
+            })
             .count();
 
         let snippets: Vec<String> = members
@@ -244,7 +274,13 @@ mod tests {
     use crate::types::{MemoryLayer, MemoryRecord, MemoryType};
     use chrono::{Duration, Utc};
 
-    fn make_record(id: &str, content: &str, core_strength: f64, importance: f64, days_ago: i64) -> MemoryRecord {
+    fn make_record(
+        id: &str,
+        content: &str,
+        core_strength: f64,
+        importance: f64,
+        days_ago: i64,
+    ) -> MemoryRecord {
         MemoryRecord {
             id: id.to_string(),
             content: content.to_string(),
@@ -362,7 +398,10 @@ mod tests {
 
         // Second detection should find 0 (already promoted)
         let candidates2 = detect_promotable_clusters(&storage, &config).unwrap();
-        assert!(candidates2.is_empty(), "Same cluster should not be detected again");
+        assert!(
+            candidates2.is_empty(),
+            "Same cluster should not be detected again"
+        );
     }
 
     #[test]
@@ -398,7 +437,11 @@ mod tests {
     fn test_candidate_id_deterministic() {
         let ids1 = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let ids2 = vec!["c".to_string(), "a".to_string(), "b".to_string()];
-        assert_eq!(candidate_id(&ids1), candidate_id(&ids2), "Order should not matter");
+        assert_eq!(
+            candidate_id(&ids1),
+            candidate_id(&ids2),
+            "Order should not matter"
+        );
     }
 
     #[test]

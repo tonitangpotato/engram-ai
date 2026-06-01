@@ -177,10 +177,7 @@ pub trait V02CompatSurface {
     /// - Simple time-ordered SELECT on `memories.created_at`.
     /// - Unchanged across v0.2 → v0.3 — no graph signals, no ACT-R
     ///   adjustment.
-    fn recall_recent_v02(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<Self::MemoryRecord>, Self::Error>;
+    fn recall_recent_v02(&self, limit: usize) -> Result<Vec<Self::MemoryRecord>, Self::Error>;
 
     /// `recall_with_associations(query)` — recall + Hebbian-linked neighbors.
     ///
@@ -255,8 +252,7 @@ pub const BEHAVIORAL_CONTRACT: &[MethodContract] = &[
     },
     MethodContract {
         method: "recall",
-        v02_documented_behavior:
-            "Returns vector-ranked memories with ACT-R activation adjustment.",
+        v02_documented_behavior: "Returns vector-ranked memories with ACT-R activation adjustment.",
         v03_on_migrated_db:
             "Routes through v03-retrieval's default plan (v03-retrieval §4); ranking \
              contract preserved (dot-product vector + ACT-R).",
@@ -264,18 +260,14 @@ pub const BEHAVIORAL_CONTRACT: &[MethodContract] = &[
     },
     MethodContract {
         method: "recall_recent",
-        v02_documented_behavior:
-            "Returns N most-recently-stored memories, newest first.",
-        v03_on_migrated_db:
-            "Unchanged — simple time-ordered SELECT on `memories.created_at`.",
+        v02_documented_behavior: "Returns N most-recently-stored memories, newest first.",
+        v03_on_migrated_db: "Unchanged — simple time-ordered SELECT on `memories.created_at`.",
         v03_on_fresh_db: "Same.",
     },
     MethodContract {
         method: "recall_with_associations",
-        v02_documented_behavior:
-            "Returns memories + their Hebbian-linked neighbors.",
-        v03_on_migrated_db:
-            "Unchanged — reads `hebbian_links` table directly, same query as v0.2.",
+        v02_documented_behavior: "Returns memories + their Hebbian-linked neighbors.",
+        v03_on_migrated_db: "Unchanged — reads `hebbian_links` table directly, same query as v0.2.",
         v03_on_fresh_db: "Same.",
     },
 ];
@@ -362,10 +354,7 @@ mod tests {
             Ok(hits)
         }
 
-        fn recall_recent_v02(
-            &self,
-            limit: usize,
-        ) -> Result<Vec<Self::MemoryRecord>, Self::Error> {
+        fn recall_recent_v02(&self, limit: usize) -> Result<Vec<Self::MemoryRecord>, Self::Error> {
             Ok(self
                 .stored
                 .iter()
@@ -413,7 +402,12 @@ mod tests {
         // §7.1 freezes exactly these four — no fewer, no more.
         assert_eq!(
             V02_FROZEN_METHODS,
-            &["store", "recall", "recall_recent", "recall_with_associations"]
+            &[
+                "store",
+                "recall",
+                "recall_recent",
+                "recall_with_associations"
+            ]
         );
     }
 
@@ -450,7 +444,10 @@ mod tests {
         let mut m = StubMemory::default();
         let id_a = m.store_v02("alpha").unwrap();
         let id_b = m.store_v02("beta").unwrap();
-        assert_ne!(id_a, id_b, "consecutive store calls must yield distinct IDs");
+        assert_ne!(
+            id_a, id_b,
+            "consecutive store calls must yield distinct IDs"
+        );
         assert_eq!(m.stored.len(), 2);
     }
 
@@ -499,7 +496,9 @@ mod tests {
 
         let recall = contract_for("recall").unwrap();
         assert!(recall.v02_documented_behavior.contains("ACT-R"));
-        assert!(recall.v03_on_migrated_db.contains("ranking contract preserved"));
+        assert!(recall
+            .v03_on_migrated_db
+            .contains("ranking contract preserved"));
 
         let recent = contract_for("recall_recent").unwrap();
         assert!(recent.v03_on_migrated_db.contains("created_at"));

@@ -36,7 +36,10 @@ pub trait KnowledgeStore {
     fn save_compilation_record(&self, record: &CompilationRecord) -> Result<(), KcError>;
 
     /// Retrieve all compilation records for a given topic.
-    fn get_compilation_records(&self, topic_id: &TopicId) -> Result<Vec<CompilationRecord>, KcError>;
+    fn get_compilation_records(
+        &self,
+        topic_id: &TopicId,
+    ) -> Result<Vec<CompilationRecord>, KcError>;
 
     /// Fetch all pages with a given status.
     fn get_pages_by_status(&self, status: TopicStatus) -> Result<Vec<TopicPage>, KcError>;
@@ -51,7 +54,8 @@ pub trait KnowledgeStore {
     fn get_stale_pages(&self, stale_days: u32) -> Result<Vec<TopicPage>, KcError>;
 
     /// Replace the set of source-memory references for a topic.
-    fn save_source_refs(&self, topic_id: &TopicId, refs: &[SourceMemoryRef]) -> Result<(), KcError>;
+    fn save_source_refs(&self, topic_id: &TopicId, refs: &[SourceMemoryRef])
+        -> Result<(), KcError>;
 
     /// Retrieve all source-memory references for a topic.
     fn get_source_refs(&self, topic_id: &TopicId) -> Result<Vec<SourceMemoryRef>, KcError>;
@@ -113,8 +117,7 @@ impl SqliteKnowledgeStore {
 
     /// Open (or create) a database at `path`.
     pub fn open(path: &std::path::Path) -> Result<Self, KcError> {
-        let conn =
-            Connection::open(path).map_err(|e| KcError::Storage(format!("open: {e}")))?;
+        let conn = Connection::open(path).map_err(|e| KcError::Storage(format!("open: {e}")))?;
         Ok(Self { conn })
     }
 
@@ -330,10 +333,7 @@ impl KnowledgeStore for SqliteKnowledgeStore {
 
         let changed = self
             .conn
-            .execute(
-                "DELETE FROM kc_topic_pages WHERE id = ?1",
-                params![id.0],
-            )
+            .execute("DELETE FROM kc_topic_pages WHERE id = ?1", params![id.0])
             .map_err(|e| KcError::Storage(format!("delete_topic_page: {e}")))?;
 
         Ok(changed > 0)
@@ -423,9 +423,7 @@ impl KnowledgeStore for SqliteKnowledgeStore {
 
         let mut pages = Vec::new();
         for row in rows {
-            pages.push(
-                row.map_err(|e| KcError::Storage(format!("get_pages_by_status row: {e}")))?,
-            );
+            pages.push(row.map_err(|e| KcError::Storage(format!("get_pages_by_status row: {e}")))?);
         }
         Ok(pages)
     }
@@ -493,8 +491,7 @@ impl KnowledgeStore for SqliteKnowledgeStore {
 
         let mut pages = Vec::new();
         for row in rows {
-            pages
-                .push(row.map_err(|e| KcError::Storage(format!("get_stale_pages row: {e}")))?);
+            pages.push(row.map_err(|e| KcError::Storage(format!("get_stale_pages row: {e}")))?);
         }
         Ok(pages)
     }
@@ -566,9 +563,7 @@ impl KnowledgeStore for SqliteKnowledgeStore {
 
         let mut out = Vec::new();
         for row in rows {
-            out.push(
-                row.map_err(|e| KcError::Storage(format!("get_source_refs row: {e}")))?,
-            );
+            out.push(row.map_err(|e| KcError::Storage(format!("get_source_refs row: {e}")))?);
         }
         Ok(out)
     }
@@ -633,7 +628,10 @@ mod tests {
         let page = sample_page("t1");
         store.create_topic_page(&page).unwrap();
 
-        let got = store.get_topic_page(&TopicId("t1".into())).unwrap().unwrap();
+        let got = store
+            .get_topic_page(&TopicId("t1".into()))
+            .unwrap()
+            .unwrap();
         assert_eq!(got.id, page.id);
         assert_eq!(got.title, page.title);
         assert_eq!(got.metadata.tags, vec!["rust".to_owned()]);
@@ -661,7 +659,10 @@ mod tests {
         store.create_topic_page(&sample_page("d1")).unwrap();
         assert!(store.delete_topic_page(&TopicId("d1".into())).unwrap());
         assert!(!store.delete_topic_page(&TopicId("d1".into())).unwrap());
-        assert!(store.get_topic_page(&TopicId("d1".into())).unwrap().is_none());
+        assert!(store
+            .get_topic_page(&TopicId("d1".into()))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -679,7 +680,9 @@ mod tests {
         };
         store.save_compilation_record(&rec).unwrap();
 
-        let recs = store.get_compilation_records(&TopicId("cr1".into())).unwrap();
+        let recs = store
+            .get_compilation_records(&TopicId("cr1".into()))
+            .unwrap();
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].source_count, 5);
     }
@@ -715,7 +718,9 @@ mod tests {
                 added_at: Utc::now(),
             },
         ];
-        store.save_source_refs(&TopicId("sr1".into()), &refs).unwrap();
+        store
+            .save_source_refs(&TopicId("sr1".into()), &refs)
+            .unwrap();
 
         let got = store.get_source_refs(&TopicId("sr1".into())).unwrap();
         assert_eq!(got.len(), 2);
@@ -728,19 +733,31 @@ mod tests {
         let store = make_store();
         store.create_topic_page(&sample_page("ma1")).unwrap();
 
-        store.update_activity_score(&TopicId("ma1".into()), 0.42).unwrap();
-        let p = store.get_topic_page(&TopicId("ma1".into())).unwrap().unwrap();
+        store
+            .update_activity_score(&TopicId("ma1".into()), 0.42)
+            .unwrap();
+        let p = store
+            .get_topic_page(&TopicId("ma1".into()))
+            .unwrap()
+            .unwrap();
         assert!((p.metadata.quality_score.unwrap() - 0.42).abs() < 1e-9);
 
-        store.mark_archived(&TopicId("ma1".into()), "no longer relevant").unwrap();
-        let p2 = store.get_topic_page(&TopicId("ma1".into())).unwrap().unwrap();
+        store
+            .mark_archived(&TopicId("ma1".into()), "no longer relevant")
+            .unwrap();
+        let p2 = store
+            .get_topic_page(&TopicId("ma1".into()))
+            .unwrap()
+            .unwrap();
         assert_eq!(p2.status, TopicStatus::Archived);
     }
 
     #[test]
     fn get_nonexistent_returns_none() {
         let store = make_store();
-        let result = store.get_topic_page(&TopicId("does-not-exist".into())).unwrap();
+        let result = store
+            .get_topic_page(&TopicId("does-not-exist".into()))
+            .unwrap();
         assert!(result.is_none());
     }
 
@@ -765,7 +782,9 @@ mod tests {
     fn list_multiple_pages() {
         let store = make_store();
         for i in 0..5 {
-            store.create_topic_page(&sample_page(&format!("multi-{i}"))).unwrap();
+            store
+                .create_topic_page(&sample_page(&format!("multi-{i}")))
+                .unwrap();
         }
         let all = store.list_topic_pages().unwrap();
         assert_eq!(all.len(), 5);
@@ -775,7 +794,9 @@ mod tests {
     fn compilation_records_empty() {
         let store = make_store();
         store.create_topic_page(&sample_page("no-recs")).unwrap();
-        let recs = store.get_compilation_records(&TopicId("no-recs".into())).unwrap();
+        let recs = store
+            .get_compilation_records(&TopicId("no-recs".into()))
+            .unwrap();
         assert!(recs.is_empty());
     }
 
@@ -791,19 +812,27 @@ mod tests {
                 source_count: i + 1,
                 duration_ms: 100 * (i as u64 + 1),
                 quality_score: 0.7 + (i as f64 * 0.1),
-                recompile_reason: if i == 0 { None } else { Some(format!("reason-{i}")) },
+                recompile_reason: if i == 0 {
+                    None
+                } else {
+                    Some(format!("reason-{i}"))
+                },
             };
             store.save_compilation_record(&rec).unwrap();
         }
 
-        let recs = store.get_compilation_records(&TopicId("multi-rec".into())).unwrap();
+        let recs = store
+            .get_compilation_records(&TopicId("multi-rec".into()))
+            .unwrap();
         assert_eq!(recs.len(), 3);
     }
 
     #[test]
     fn pages_by_status_empty_result() {
         let store = make_store();
-        store.create_topic_page(&sample_page("only-active")).unwrap();
+        store
+            .create_topic_page(&sample_page("only-active"))
+            .unwrap();
         let stale = store.get_pages_by_status(TopicStatus::Stale).unwrap();
         assert!(stale.is_empty());
     }
@@ -811,7 +840,9 @@ mod tests {
     #[test]
     fn source_refs_replace_on_save() {
         let store = make_store();
-        store.create_topic_page(&sample_page("ref-replace")).unwrap();
+        store
+            .create_topic_page(&sample_page("ref-replace"))
+            .unwrap();
         let tid = TopicId("ref-replace".into());
 
         // Save first batch
@@ -860,17 +891,18 @@ mod tests {
         // Storage always returns Vec::new() for sections.
         let store = make_store();
         let mut page = sample_page("with-sections");
-        page.sections = vec![
-            TopicSection {
-                heading: "Intro".into(),
-                body: "First section".into(),
-                user_edited: false,
-                edited_at: None,
-            },
-        ];
+        page.sections = vec![TopicSection {
+            heading: "Intro".into(),
+            body: "First section".into(),
+            user_edited: false,
+            edited_at: None,
+        }];
         store.create_topic_page(&page).unwrap();
 
-        let got = store.get_topic_page(&TopicId("with-sections".into())).unwrap().unwrap();
+        let got = store
+            .get_topic_page(&TopicId("with-sections".into()))
+            .unwrap()
+            .unwrap();
         // Sections are not persisted — always empty on read from storage
         assert!(got.sections.is_empty());
         // But other fields round-trip fine

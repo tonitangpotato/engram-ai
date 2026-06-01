@@ -112,11 +112,7 @@ pub enum FailureKind {
 ///                                           we let the normal max_retries
 ///                                           handle the cap)
 /// - Any other 4xx (400, 404, 422, …)      → permanent, give up immediately
-pub fn classify_retry(
-    failure: FailureKind,
-    attempt: u8,
-    cfg: &RetryConfig,
-) -> RetryDecision {
+pub fn classify_retry(failure: FailureKind, attempt: u8, cfg: &RetryConfig) -> RetryDecision {
     // Exhausted budget?
     if attempt > cfg.max_retries {
         return RetryDecision::GiveUp;
@@ -125,10 +121,10 @@ pub fn classify_retry(
     let retryable = match failure {
         FailureKind::Transport => true,
         FailureKind::HttpStatus(code) => match code {
-            408 | 429 => true,                  // timeout / rate-limited
-            500..=599 => true,                  // upstream brown-out
-            401 | 403 => true,                  // observed transient on OAuth
-            _ => false,                         // 400, 404, 422, … permanent
+            408 | 429 => true, // timeout / rate-limited
+            500..=599 => true, // upstream brown-out
+            401 | 403 => true, // observed transient on OAuth
+            _ => false,        // 400, 404, 422, … permanent
         },
     };
 
@@ -226,7 +222,11 @@ where
                 .filter_map(|v| match v {
                     Value::String(s) => {
                         let t = s.trim();
-                        if t.is_empty() { None } else { Some(t.to_string()) }
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t.to_string())
+                        }
                     }
                     Value::Null => None,
                     other => Some(other.to_string()),
@@ -259,34 +259,74 @@ pub struct ExtractedFact {
     /// Core fact — the essential information (required). Maps to MemoryRecord.content.
     pub core_fact: String,
     /// Participants — who was involved
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub participants: Option<String>,
     /// Temporal — when it happened
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub temporal: Option<String>,
     /// Location / source
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub location: Option<String>,
     /// Background / surrounding situation
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub context: Option<String>,
     /// Cause / motivation
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub causation: Option<String>,
     /// Result / impact
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub outcome: Option<String>,
     /// How it was done / steps
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub method: Option<String>,
     /// Connections to other known things
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub relations: Option<String>,
     /// Emotional expression if present (e.g., frustrated, excited)
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sentiment: Option<String>,
     /// Opinion / preference / position (e.g., prefers X over Y)
-    #[serde(default, deserialize_with = "deserialize_flexible_string", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub stance: Option<String>,
     /// Importance score (0.0–1.0)
     pub importance: f64,
@@ -547,14 +587,14 @@ impl AnthropicExtractor {
     pub fn new(auth_token: &str, is_oauth: bool) -> Self {
         Self::with_config(auth_token, is_oauth, AnthropicExtractorConfig::default())
     }
-    
+
     /// Create with a static token and custom config.
     pub fn with_config(auth_token: &str, is_oauth: bool, config: AnthropicExtractorConfig) -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
             .expect("failed to create HTTP client");
-        
+
         Self {
             config,
             token_provider: Box::new(StaticToken(auth_token.to_string())),
@@ -576,7 +616,7 @@ impl AnthropicExtractor {
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
             .expect("failed to create HTTP client");
-        
+
         Self {
             config,
             token_provider: provider,
@@ -584,11 +624,14 @@ impl AnthropicExtractor {
             client,
         }
     }
-    
+
     /// Build the request headers based on auth type.
     fn build_headers(&self) -> Result<reqwest::header::HeaderMap, Box<dyn Error + Send + Sync>> {
         let token = self.token_provider.get_token()?;
-        Ok(crate::anthropic_client::build_anthropic_headers(&token, self.is_oauth))
+        Ok(crate::anthropic_client::build_anthropic_headers(
+            &token,
+            self.is_oauth,
+        ))
     }
 }
 
@@ -604,7 +647,7 @@ impl MemoryExtractor for AnthropicExtractor {
             reference_preamble(reference),
             text
         );
-        
+
         let body = serde_json::json!({
             "model": self.config.model,
             "max_tokens": self.config.max_tokens,
@@ -616,7 +659,7 @@ impl MemoryExtractor for AnthropicExtractor {
                 }
             ]
         });
-        
+
         let url = format!("{}/v1/messages", self.config.api_url);
 
         // ISS-176: retry loop. `attempt` is 1-indexed and counts attempts
@@ -631,11 +674,7 @@ impl MemoryExtractor for AnthropicExtractor {
             let mut attempt: u8 = 0;
             loop {
                 let headers = self.build_headers()?;
-                let send_result = self.client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send();
+                let send_result = self.client.post(&url).headers(headers).json(&body).send();
 
                 match send_result {
                     Ok(resp) if resp.status().is_success() => break resp,
@@ -661,11 +700,9 @@ impl MemoryExtractor for AnthropicExtractor {
                             RetryDecision::GiveUp => {
                                 let status = resp.status();
                                 let body = resp.text().unwrap_or_default();
-                                return Err(format!(
-                                    "Anthropic API error {}: {}",
-                                    status, body
-                                )
-                                .into());
+                                return Err(
+                                    format!("Anthropic API error {}: {}", status, body).into()
+                                );
                             }
                         }
                     }
@@ -692,7 +729,7 @@ impl MemoryExtractor for AnthropicExtractor {
         };
 
         let response_json: serde_json::Value = response.json()?;
-        
+
         // Extract the text content from the response
         let content_text = response_json
             .get("content")
@@ -701,7 +738,7 @@ impl MemoryExtractor for AnthropicExtractor {
             .and_then(|item| item.get("text"))
             .and_then(|t| t.as_str())
             .ok_or("Invalid response structure from Anthropic API")?;
-        
+
         parse_extraction_response(content_text)
     }
 }
@@ -750,7 +787,7 @@ impl OllamaExtractor {
             ..Default::default()
         })
     }
-    
+
     /// Create a new OllamaExtractor with custom host and model.
     pub fn with_host(model: &str, host: &str) -> Self {
         Self::with_config(OllamaExtractorConfig {
@@ -759,14 +796,14 @@ impl OllamaExtractor {
             ..Default::default()
         })
     }
-    
+
     /// Create a new OllamaExtractor with full config.
     pub fn with_config(config: OllamaExtractorConfig) -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
             .expect("failed to create HTTP client");
-        
+
         Self { config, client }
     }
 }
@@ -783,7 +820,7 @@ impl MemoryExtractor for OllamaExtractor {
             reference_preamble(reference),
             text
         );
-        
+
         let body = serde_json::json!({
             "model": self.config.model,
             "messages": [
@@ -794,7 +831,7 @@ impl MemoryExtractor for OllamaExtractor {
             ],
             "stream": false
         });
-        
+
         let url = format!("{}/api/chat", self.config.host);
 
         // ISS-176: retry loop. Mirrors AnthropicExtractor::extract — see
@@ -804,7 +841,8 @@ impl MemoryExtractor for OllamaExtractor {
         let response = {
             let mut attempt: u8 = 0;
             loop {
-                let send_result = self.client
+                let send_result = self
+                    .client
                     .post(&url)
                     .header("content-type", "application/json")
                     .json(&body)
@@ -834,11 +872,7 @@ impl MemoryExtractor for OllamaExtractor {
                             RetryDecision::GiveUp => {
                                 let status = resp.status();
                                 let body = resp.text().unwrap_or_default();
-                                return Err(format!(
-                                    "Ollama API error {}: {}",
-                                    status, body
-                                )
-                                .into());
+                                return Err(format!("Ollama API error {}: {}", status, body).into());
                             }
                         }
                     }
@@ -865,14 +899,14 @@ impl MemoryExtractor for OllamaExtractor {
         };
 
         let response_json: serde_json::Value = response.json()?;
-        
+
         // Extract the message content from Ollama response
         let content_text = response_json
             .get("message")
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
             .ok_or("Invalid response structure from Ollama API")?;
-        
+
         parse_extraction_response(content_text)
     }
 }
@@ -884,7 +918,9 @@ impl MemoryExtractor for OllamaExtractor {
 /// - Path 2: Legacy format `[{content, memory_type, importance, tags}]`
 ///
 /// Handles common LLM quirks: markdown-wrapped JSON, extra whitespace.
-fn parse_extraction_response(content: &str) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
+fn parse_extraction_response(
+    content: &str,
+) -> Result<Vec<ExtractedFact>, Box<dyn Error + Send + Sync>> {
     // Strip markdown code blocks if present
     let json_str = content
         .trim()
@@ -896,7 +932,8 @@ fn parse_extraction_response(content: &str) -> Result<Vec<ExtractedFact>, Box<dy
 
     // Path 1: Try new dimensional format {"memories": [...]}
     if let Ok(dimensional) = serde_json::from_str::<DimensionalResponse>(json_str) {
-        let valid: Vec<ExtractedFact> = dimensional.memories
+        let valid: Vec<ExtractedFact> = dimensional
+            .memories
             .into_iter()
             .map(|mut f| {
                 f.importance = f.importance.clamp(0.0, 1.0);
@@ -935,7 +972,10 @@ fn parse_extraction_response(content: &str) -> Result<Vec<ExtractedFact>, Box<dy
 
     // Path 2: Legacy format [{content, memory_type, importance, ...}]
     // Handle empty array case
-    if json_str.trim() == "[]" || json_str.contains(r#""memories": []"#) || json_str.contains(r#""memories":[]"#) {
+    if json_str.trim() == "[]"
+        || json_str.contains(r#""memories": []"#)
+        || json_str.contains(r#""memories":[]"#)
+    {
         return Ok(vec![]);
     }
 
@@ -969,7 +1009,11 @@ fn parse_extraction_response(content: &str) -> Result<Vec<ExtractedFact>, Box<dy
             Ok(valid_facts)
         }
         Err(e) => {
-            log::warn!("Failed to parse extraction JSON: {} - content: {}", e, json_to_parse);
+            log::warn!(
+                "Failed to parse extraction JSON: {} - content: {}",
+                e,
+                json_to_parse
+            );
             Ok(vec![])
         }
     }
@@ -1034,7 +1078,7 @@ mod tests {
         assert_eq!(facts[0].stance.as_deref(), Some("prefers tea"));
         assert!((facts[0].importance - 0.6).abs() < 0.001);
     }
-    
+
     #[test]
     fn test_parse_new_format_array_without_wrapper() {
         let response = r#"[{"core_fact": "Meeting at 3pm", "temporal": "3pm today", "importance": 0.7, "tags": ["meeting"], "confidence": "confident", "valence": 0.0, "domain": "communication"}]"#;
@@ -1043,7 +1087,7 @@ mod tests {
         assert_eq!(facts[0].core_fact, "Meeting at 3pm");
         assert_eq!(facts[0].temporal.as_deref(), Some("3pm today"));
     }
-    
+
     #[test]
     fn test_parse_markdown_wrapped_new_format() {
         let response = r#"```json
@@ -1053,7 +1097,7 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].core_fact, "Meeting scheduled for Friday");
     }
-    
+
     #[test]
     fn test_parse_legacy_format() {
         let response = r#"[{"content": "User prefers tea over coffee", "memory_type": "relational", "importance": 0.6}]"#;
@@ -1064,7 +1108,7 @@ mod tests {
         assert!(facts[0].participants.is_none());
         assert!(facts[0].temporal.is_none());
     }
-    
+
     #[test]
     fn test_parse_legacy_with_surrounding_text() {
         let response = r#"Here are the extracted facts:
@@ -1074,28 +1118,28 @@ Hope this helps!"#;
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].core_fact, "Project deadline is next week");
     }
-    
+
     #[test]
     fn test_parse_empty_array() {
         let response = "[]";
         let facts = parse_extraction_response(response).unwrap();
         assert!(facts.is_empty());
     }
-    
+
     #[test]
     fn test_parse_empty_memories() {
         let response = r#"{"memories": []}"#;
         let facts = parse_extraction_response(response).unwrap();
         assert!(facts.is_empty());
     }
-    
+
     #[test]
     fn test_parse_invalid_json() {
         let response = "This is not JSON at all";
         let facts = parse_extraction_response(response).unwrap();
         assert!(facts.is_empty());
     }
-    
+
     #[test]
     fn test_parse_clamps_importance() {
         let response = r#"{"memories": [
@@ -1107,7 +1151,7 @@ Hope this helps!"#;
         assert_eq!(facts[0].importance, 0.0);
         assert_eq!(facts[1].importance, 1.0);
     }
-    
+
     #[test]
     fn test_parse_filters_empty_core_fact() {
         let response = r#"{"memories": [
@@ -1129,7 +1173,7 @@ Hope this helps!"#;
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].core_fact, "Valid fact");
     }
-    
+
     #[test]
     fn test_parse_multiple_dimensional_facts() {
         let response = r#"{"memories": [
@@ -1176,11 +1220,14 @@ Hope this helps!"#;
         assert_eq!(f.method.as_deref(), Some("spent evening coding"));
         assert_eq!(f.relations.as_deref(), Some("related to engramai project"));
         assert_eq!(f.sentiment.as_deref(), Some("excited"));
-        assert_eq!(f.stance.as_deref(), Some("prefers Rust over Python for perf"));
+        assert_eq!(
+            f.stance.as_deref(),
+            Some("prefers Rust over Python for perf")
+        );
         assert_eq!(f.valence, 0.6);
         assert_eq!(f.domain, "coding");
     }
-    
+
     #[test]
     fn test_extraction_prompt_format() {
         assert!(EXTRACTION_PROMPT.contains("core_fact"));
@@ -1234,7 +1281,8 @@ Hope this helps!"#;
     #[test]
     fn test_flexible_dim_accepts_single_string() {
         // Normal case still works
-        let json = r#"[{"core_fact": "Test", "participants": "Alice", "importance": 0.5, "tags": []}]"#;
+        let json =
+            r#"[{"core_fact": "Test", "participants": "Alice", "importance": 0.5, "tags": []}]"#;
         let facts = parse_extraction_response(json).unwrap();
         assert_eq!(facts[0].participants.as_deref(), Some("Alice"));
     }
@@ -1277,16 +1325,26 @@ Hope this helps!"#;
     #[ignore] // Requires Ollama running locally
     fn test_ollama_extraction() {
         let extractor = OllamaExtractor::new("llama3.2:3b");
-        let facts = extractor.extract("I really love pizza, especially pepperoni. My favorite restaurant is Mario's.", None).unwrap();
+        let facts = extractor
+            .extract(
+                "I really love pizza, especially pepperoni. My favorite restaurant is Mario's.",
+                None,
+            )
+            .unwrap();
         println!("Extracted facts: {:?}", facts);
     }
-    
+
     #[test]
     #[ignore] // Requires Anthropic API key
     fn test_anthropic_extraction() {
         let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY not set");
         let extractor = AnthropicExtractor::new(&api_key, false);
-        let facts = extractor.extract("我昨天和小明一起去吃了火锅，很好吃。小明说他下周要去上海出差。", None).unwrap();
+        let facts = extractor
+            .extract(
+                "我昨天和小明一起去吃了火锅，很好吃。小明说他下周要去上海出差。",
+                None,
+            )
+            .unwrap();
         println!("Extracted facts: {:?}", facts);
     }
 

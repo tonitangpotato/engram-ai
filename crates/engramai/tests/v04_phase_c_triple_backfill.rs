@@ -14,9 +14,7 @@ use std::time::Instant;
 
 use chrono::{TimeZone, Utc};
 use engramai::storage::Storage;
-use engramai::substrate::triple_backfill::{
-    backfill_triples_from_memories, TripleBackfillOpts,
-};
+use engramai::substrate::triple_backfill::{backfill_triples_from_memories, TripleBackfillOpts};
 use engramai::triple::{Predicate, Triple, TripleSource};
 use engramai::triple_extractor::{NoopTripleExtractor, TripleExtractor};
 use engramai::types::{MemoryLayer, MemoryRecord, MemoryType};
@@ -80,10 +78,7 @@ impl CountingMockExtractor {
 }
 
 impl TripleExtractor for CountingMockExtractor {
-    fn extract_triples(
-        &self,
-        content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         *self.calls.lock().unwrap() += 1;
         let mut remaining = self.fail_first_n.lock().unwrap();
         if *remaining > 0 {
@@ -92,7 +87,7 @@ impl TripleExtractor for CountingMockExtractor {
         }
         // Single deterministic triple derived from content prefix.
         let subject = format!("subj_of_{}", content.chars().take(4).collect::<String>());
-        let object = format!("obj_of_{}",  content.chars().take(4).collect::<String>());
+        let object = format!("obj_of_{}", content.chars().take(4).collect::<String>());
         Ok(vec![Triple {
             subject,
             predicate: Predicate::RelatedTo,
@@ -119,7 +114,7 @@ fn t26a_noop_extractor_zero_inserts_clean_audit() {
     let tmp = tempdir().unwrap();
     let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
     seed_memory(&mut storage, "m-1", "alpha content", "default");
-    seed_memory(&mut storage, "m-2", "beta content",  "default");
+    seed_memory(&mut storage, "m-2", "beta content", "default");
 
     let opts = TripleBackfillOpts::default();
     let run = backfill_triples_from_memories(&storage, &NoopTripleExtractor::new(), &opts)
@@ -132,19 +127,25 @@ fn t26a_noop_extractor_zero_inserts_clean_audit() {
     assert_eq!(run.rows_failed, 0);
 
     // Checkpoint flipped to completed.
-    let status: String = storage.conn().query_row(
-        "SELECT status FROM triple_backfill_checkpoint WHERE run_id = ?",
-        params![run.run_id],
-        |r| r.get(0),
-    ).unwrap();
+    let status: String = storage
+        .conn()
+        .query_row(
+            "SELECT status FROM triple_backfill_checkpoint WHERE run_id = ?",
+            params![run.run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(status, "completed");
 
     // Audit row finished_at set.
-    let finished: Option<f64> = storage.conn().query_row(
-        "SELECT finished_at FROM backfill_runs WHERE run_id = ?",
-        params![run.run_id],
-        |r| r.get(0),
-    ).unwrap();
+    let finished: Option<f64> = storage
+        .conn()
+        .query_row(
+            "SELECT finished_at FROM backfill_runs WHERE run_id = ?",
+            params![run.run_id],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert!(finished.is_some(), "finished_at populated");
 }
 
@@ -166,9 +167,10 @@ fn t26a_mock_extractor_inserts_triples_and_counts_correctly() {
     assert_eq!(mock.call_count(), 3);
 
     // Triples landed in the legacy table.
-    let triple_count: i64 = storage.conn().query_row(
-        "SELECT COUNT(*) FROM triples", [], |r| r.get(0),
-    ).unwrap();
+    let triple_count: i64 = storage
+        .conn()
+        .query_row("SELECT COUNT(*) FROM triples", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(triple_count, 3);
 }
 
@@ -193,7 +195,11 @@ fn t26a_skips_memories_that_already_have_triples() {
     assert_eq!(run2.rows_read, 2);
     assert_eq!(run2.rows_inserted, 0);
     assert_eq!(run2.rows_skipped_existing, 2);
-    assert_eq!(mock2.call_count(), 0, "extractor not called for already-extracted memories");
+    assert_eq!(
+        mock2.call_count(),
+        0,
+        "extractor not called for already-extracted memories"
+    );
 }
 
 #[test]
@@ -247,8 +253,10 @@ fn t26a_resume_picks_up_after_crashed_run() {
     seed_memory(&mut storage, "m-3", "c", "default");
 
     // Simulate a previous in-progress run that processed up through m-1.
-    storage.conn().execute(
-        r#"
+    storage
+        .conn()
+        .execute(
+            r#"
         INSERT INTO triple_backfill_checkpoint (
             run_id, last_memory_id, memories_processed, triples_inserted,
             memories_failed, status, started_at, updated_at,
@@ -256,16 +264,20 @@ fn t26a_resume_picks_up_after_crashed_run() {
         ) VALUES ('ckpt-prior', 'm-1', 1, 1, 0, 'in_progress',
                   1747000000.0, 1747000000.0, NULL, '{}')
         "#,
-        [],
-    ).unwrap();
+            [],
+        )
+        .unwrap();
     // Seed the triple row that the prior run "wrote" for m-1.
-    storage.conn().execute(
-        r#"INSERT INTO triples (memory_id, subject, predicate, object,
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO triples (memory_id, subject, predicate, object,
               confidence, source, created_at)
             VALUES ('m-1', 's', 'related_to', 'o', 0.9, 'llm',
                     '2026-05-14T12:00:00Z')"#,
-        [],
-    ).unwrap();
+            [],
+        )
+        .unwrap();
 
     // New run: should resume past m-1 (m-1 also has triple row → would
     // skip anyway, but the cursor handoff is the contract under test).
@@ -275,10 +287,16 @@ fn t26a_resume_picks_up_after_crashed_run() {
 
     // The new run iterates m-2 and m-3 (m-1 already-extracted →
     // either skipped-via-cursor or skipped-via-existing-triples).
-    assert!(run.rows_inserted >= 2, "at least m-2 and m-3 freshly extracted");
+    assert!(
+        run.rows_inserted >= 2,
+        "at least m-2 and m-3 freshly extracted"
+    );
     // m-1 should NOT be re-extracted by the mock.
     let m1_extracted = mock.call_count() < 3;
-    assert!(m1_extracted, "mock should have been called <3 times — m-1 skipped");
+    assert!(
+        m1_extracted,
+        "mock should have been called <3 times — m-1 skipped"
+    );
 }
 
 #[test]
@@ -300,10 +318,14 @@ fn t26a_namespace_filter_restricts_scope() {
     assert_eq!(mock.call_count(), 2);
 
     // ns-b memory got no triples.
-    let ns_b_triples: i64 = storage.conn().query_row(
-        "SELECT COUNT(*) FROM triples WHERE memory_id = 'm-b1'",
-        [], |r| r.get(0),
-    ).unwrap();
+    let ns_b_triples: i64 = storage
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM triples WHERE memory_id = 'm-b1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(ns_b_triples, 0);
 }
 
@@ -333,7 +355,11 @@ fn t26a_rate_limit_enforces_lower_bound_interval() {
         elapsed.as_millis()
     );
     // Generous upper bound to keep CI from flaking.
-    assert!(elapsed.as_millis() < 2_000, "elapsed too high: {}ms", elapsed.as_millis());
+    assert!(
+        elapsed.as_millis() < 2_000,
+        "elapsed too high: {}ms",
+        elapsed.as_millis()
+    );
 }
 
 #[test]
@@ -362,13 +388,16 @@ fn t26a_counter_invariant_holds() {
     seed_memory(&mut storage, "m-3", "fresh", "default");
 
     // m-1 already has triples → skipped path.
-    storage.conn().execute(
-        r#"INSERT INTO triples (memory_id, subject, predicate, object,
+    storage
+        .conn()
+        .execute(
+            r#"INSERT INTO triples (memory_id, subject, predicate, object,
               confidence, source, created_at)
             VALUES ('m-1', 's', 'related_to', 'o', 0.9, 'llm',
                     '2026-05-14T00:00:00Z')"#,
-        [],
-    ).unwrap();
+            [],
+        )
+        .unwrap();
 
     // Programmed: first call fails, then succeeds. With max_retries=1
     // → m-2 succeeds on 2nd attempt; m-3 succeeds on 1st attempt
@@ -445,7 +474,10 @@ fn iss128_clean_run_has_empty_failed_ids_array() {
         .and_then(|v| v.as_array())
         .expect("failed_memory_ids array present");
     assert!(failed_ids.is_empty(), "clean run must have no failed IDs");
-    assert_eq!(notes["failed_ids_truncated"], serde_json::Value::Bool(false));
+    assert_eq!(
+        notes["failed_ids_truncated"],
+        serde_json::Value::Bool(false)
+    );
     assert_eq!(notes["last_error_message"], serde_json::Value::Null);
 }
 
@@ -477,7 +509,10 @@ fn iss128_failed_memories_recorded_in_notes() {
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
     assert_eq!(failed_ids, vec!["m-1", "m-2", "m-3"]);
-    assert_eq!(notes["failed_ids_truncated"], serde_json::Value::Bool(false));
+    assert_eq!(
+        notes["failed_ids_truncated"],
+        serde_json::Value::Bool(false)
+    );
     assert_eq!(
         notes["last_error_message"].as_str().unwrap(),
         "simulated upstream failure"
@@ -535,8 +570,12 @@ fn iss128_failed_ids_survive_resume() {
     let run1 = backfill_triples_from_memories(&storage, &mock1, &opts).expect("backfill 1");
     assert_eq!(run1.rows_failed, 2);
     let notes1 = read_run_notes(&storage, &run1.run_id);
-    let ids1: Vec<String> = notes1["failed_memory_ids"].as_array().unwrap().iter()
-        .map(|v| v.as_str().unwrap().to_string()).collect();
+    let ids1: Vec<String> = notes1["failed_memory_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
     assert_eq!(ids1, vec!["m-1", "m-2"]);
 
     // Second run: fresh storage state has both memories already
@@ -549,12 +588,19 @@ fn iss128_failed_ids_survive_resume() {
     assert_eq!(run2.rows_failed, 0);
     let notes2 = read_run_notes(&storage, &run2.run_id);
     let ids2 = notes2["failed_memory_ids"].as_array().unwrap();
-    assert!(ids2.is_empty(), "run2 has no failures, its notes must be clean");
+    assert!(
+        ids2.is_empty(),
+        "run2 has no failures, its notes must be clean"
+    );
 
     // Cross-check: run1's notes must NOT have been mutated by run2.
     let notes1_after = read_run_notes(&storage, &run1.run_id);
-    let ids1_after: Vec<String> = notes1_after["failed_memory_ids"].as_array().unwrap().iter()
-        .map(|v| v.as_str().unwrap().to_string()).collect();
+    let ids1_after: Vec<String> = notes1_after["failed_memory_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
     assert_eq!(ids1_after, vec!["m-1", "m-2"], "run1 notes immutable");
 }
 

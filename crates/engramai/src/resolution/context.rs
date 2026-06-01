@@ -11,9 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::entities::ExtractedEntity;
-use crate::graph::{
-    Edge, Entity, EntityKind, Predicate, ResolutionMethod, SomaticFingerprint,
-};
+use crate::graph::{Edge, Entity, EntityKind, Predicate, ResolutionMethod, SomaticFingerprint};
 use crate::triple::Triple;
 use crate::types::MemoryRecord;
 

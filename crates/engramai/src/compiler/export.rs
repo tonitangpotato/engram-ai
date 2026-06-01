@@ -260,7 +260,10 @@ mod tests {
 
         match output {
             ExportOutput::Json(json) => {
-                assert!(json.contains("Rust Basics"), "JSON should contain 'Rust Basics'");
+                assert!(
+                    json.contains("Rust Basics"),
+                    "JSON should contain 'Rust Basics'"
+                );
                 assert!(
                     json.contains("Error Handling"),
                     "JSON should contain 'Error Handling'"
@@ -291,16 +294,21 @@ mod tests {
         };
 
         let output =
-            ExportEngine::export(&store, &privacy, &ctx, &filter, ExportFormat::Markdown)
-                .unwrap();
+            ExportEngine::export(&store, &privacy, &ctx, &filter, ExportFormat::Markdown).unwrap();
 
         match output {
             ExportOutput::Markdown(files) => {
                 assert_eq!(files.len(), 1);
                 let file = &files[0];
                 assert_eq!(file.path, "t1.md");
-                assert!(file.content.contains("---"), "Should have frontmatter delimiters");
-                assert!(file.content.contains("id: t1"), "Should have id in frontmatter");
+                assert!(
+                    file.content.contains("---"),
+                    "Should have frontmatter delimiters"
+                );
+                assert!(
+                    file.content.contains("id: t1"),
+                    "Should have id in frontmatter"
+                );
                 assert!(
                     file.content.contains("title: \"Rust Basics\""),
                     "Should have title in frontmatter"
@@ -448,7 +456,10 @@ mod tests {
                     !json.contains("alice@example.com"),
                     "Email should be redacted"
                 );
-                assert!(json.contains("[EMAIL-1]"), "Should have redaction placeholder");
+                assert!(
+                    json.contains("[EMAIL-1]"),
+                    "Should have redaction placeholder"
+                );
             }
             _ => panic!("Expected JSON output"),
         }
@@ -486,9 +497,15 @@ mod tests {
         let privacy = make_privacy();
         let ctx = export_context();
 
-        store.create_topic_page(&sample_page("pick-1", "First", vec![])).unwrap();
-        store.create_topic_page(&sample_page("pick-2", "Second", vec![])).unwrap();
-        store.create_topic_page(&sample_page("skip-3", "Third", vec![])).unwrap();
+        store
+            .create_topic_page(&sample_page("pick-1", "First", vec![]))
+            .unwrap();
+        store
+            .create_topic_page(&sample_page("pick-2", "Second", vec![]))
+            .unwrap();
+        store
+            .create_topic_page(&sample_page("skip-3", "Third", vec![]))
+            .unwrap();
 
         let filter = ExportFilter {
             topics: Some(vec![TopicId("pick-1".into()), TopicId("pick-2".into())]),
@@ -497,7 +514,8 @@ mod tests {
             since: None,
         };
 
-        let output = ExportEngine::export(&store, &privacy, &ctx, &filter, ExportFormat::Json).unwrap();
+        let output =
+            ExportEngine::export(&store, &privacy, &ctx, &filter, ExportFormat::Json).unwrap();
         match output {
             ExportOutput::Json(json) => {
                 let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
@@ -513,12 +531,22 @@ mod tests {
         let privacy = make_privacy();
         let ctx = export_context();
 
-        store.create_topic_page(&sample_page("md-1", "First Topic", vec!["tag1"])).unwrap();
-        store.create_topic_page(&sample_page("md-2", "Second Topic", vec!["tag2"])).unwrap();
+        store
+            .create_topic_page(&sample_page("md-1", "First Topic", vec!["tag1"]))
+            .unwrap();
+        store
+            .create_topic_page(&sample_page("md-2", "Second Topic", vec!["tag2"]))
+            .unwrap();
 
-        let filter = ExportFilter { topics: None, status: None, tags: None, since: None };
+        let filter = ExportFilter {
+            topics: None,
+            status: None,
+            tags: None,
+            since: None,
+        };
 
-        let output = ExportEngine::export(&store, &privacy, &ctx, &filter, ExportFormat::Markdown).unwrap();
+        let output =
+            ExportEngine::export(&store, &privacy, &ctx, &filter, ExportFormat::Markdown).unwrap();
         match output {
             ExportOutput::Markdown(files) => {
                 assert_eq!(files.len(), 2);

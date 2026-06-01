@@ -8,9 +8,9 @@
 //! - `provenance`: Provenance tracking and undo
 //! - `engine`: Full synthesis engine orchestration
 
-pub mod types;
 pub mod cluster;
+pub mod engine;
 pub mod gate;
 pub mod insight;
 pub mod provenance;
-pub mod engine;
+pub mod types;

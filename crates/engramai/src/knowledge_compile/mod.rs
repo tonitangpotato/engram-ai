@@ -75,10 +75,12 @@ pub mod summarizer;
 pub mod synthesis;
 
 pub use candidates::{select_candidates, CandidateMemory};
-pub use clusterer::{Clusterer, ClusterError, EmbeddingInfomapClusterer, ProtoCluster};
+pub use clusterer::{ClusterError, Clusterer, EmbeddingInfomapClusterer, ProtoCluster};
 pub use config::KnowledgeCompileConfig;
 pub use metrics::CompileMetrics;
-pub use summarizer::{Embedder, EmbedError, FirstSentenceSummarizer, IdentityEmbedder, Summarizer, SummarizeError};
+pub use summarizer::{
+    EmbedError, Embedder, FirstSentenceSummarizer, IdentityEmbedder, SummarizeError, Summarizer,
+};
 pub use synthesis::{persist_cluster, PersistOutcome};
 
 // Re-export the aggregate report from its current location in `memory.rs`.
@@ -254,7 +256,10 @@ where
             embedder,
             metrics,
         ) {
-            Ok(PersistOutcome { superseded_old, llm_calls_made }) => {
+            Ok(PersistOutcome {
+                superseded_old,
+                llm_calls_made,
+            }) => {
                 topics_written += 1;
                 if superseded_old.is_some() {
                     topics_superseded += 1;

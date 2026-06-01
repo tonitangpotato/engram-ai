@@ -14,13 +14,11 @@
 //!
 //! Idempotence (GOAL-2.1) on `reextract` is verified end-to-end.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use engramai::memory::Memory;
-use engramai::resolution::{
-    BoundedJobQueue, EnqueueError, JobMode, JobQueue, PipelineJob,
-};
+use engramai::resolution::{BoundedJobQueue, EnqueueError, JobMode, JobQueue, PipelineJob};
 use engramai::store_api::{RawStoreOutcome, StorageMeta};
 
 // ---------------------------------------------------------------------
@@ -165,7 +163,9 @@ fn reextract_failed_returns_zero_when_no_failed_runs_recorded() {
     let q = ModeRecorder::new(8);
     mem.set_job_queue(Arc::clone(&q) as Arc<dyn JobQueue>);
 
-    let count = mem.reextract_failed().expect("query succeeds even if empty");
+    let count = mem
+        .reextract_failed()
+        .expect("query succeeds even if empty");
     assert_eq!(count, 0);
     assert_eq!(q.enqueue_count(), 0);
 }

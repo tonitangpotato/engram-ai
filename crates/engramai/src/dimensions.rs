@@ -290,7 +290,12 @@ impl std::fmt::Display for TemporalMark {
             TemporalMark::Exact(dt) => write!(f, "{}", dt.format("%Y-%m-%d")),
             TemporalMark::Day(d) => write!(f, "{}", d.format("%Y-%m-%d")),
             TemporalMark::Range { start, end } => {
-                write!(f, "{}..{}", start.format("%Y-%m-%d"), end.format("%Y-%m-%d"))
+                write!(
+                    f,
+                    "{}..{}",
+                    start.format("%Y-%m-%d"),
+                    end.format("%Y-%m-%d")
+                )
             }
             TemporalMark::Approx {
                 start,
@@ -961,9 +966,15 @@ mod tests {
 
     #[test]
     fn confidence_from_loose_str() {
-        assert_eq!(Confidence::from_loose_str("confident"), Confidence::Confident);
+        assert_eq!(
+            Confidence::from_loose_str("confident"),
+            Confidence::Confident
+        );
         assert_eq!(Confidence::from_loose_str("likely"), Confidence::Likely);
-        assert_eq!(Confidence::from_loose_str("uncertain"), Confidence::Uncertain);
+        assert_eq!(
+            Confidence::from_loose_str("uncertain"),
+            Confidence::Uncertain
+        );
         assert_eq!(Confidence::from_loose_str("???"), Confidence::Uncertain);
     }
 
@@ -1159,10 +1170,7 @@ mod tests {
         b.participants = Some("bob, carol".to_string());
         let merged = a.union(b, MergeWeights::EQUAL);
         // BTreeSet ordering → "alice, bob, carol"
-        assert_eq!(
-            merged.participants.as_deref(),
-            Some("alice, bob, carol")
-        );
+        assert_eq!(merged.participants.as_deref(), Some("alice, bob, carol"));
     }
 
     #[test]
@@ -1484,8 +1492,8 @@ mod tests {
         // Build a dimensions, serialize via EnrichedMemory::to_legacy_metadata
         // (which now emits the v2 layout), then parse back via the
         // dual-path reader `from_stored_metadata` and assert fields match.
-        use crate::enriched::EnrichedMemory;
         use crate::dimensions::Importance;
+        use crate::enriched::EnrichedMemory;
 
         let mut d = Dimensions::minimal("a round-trip fact").unwrap();
         d.participants = Some("alice, bob".to_string());

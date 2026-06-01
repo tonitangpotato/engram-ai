@@ -60,9 +60,21 @@ fn iss147_scores_are_positive_and_ranked_for_unified() {
 
     {
         let mut s = Storage::new(&path).unwrap();
-        seed(&mut s, "m-sweden", "necklace from grandma in my home country, Sweden");
-        seed(&mut s, "m-coffee", "coffee shop downtown on Tuesday morning");
-        seed(&mut s, "m-camping", "camping at the beach last summer with the kids");
+        seed(
+            &mut s,
+            "m-sweden",
+            "necklace from grandma in my home country, Sweden",
+        );
+        seed(
+            &mut s,
+            "m-coffee",
+            "coffee shop downtown on Tuesday morning",
+        );
+        seed(
+            &mut s,
+            "m-camping",
+            "camping at the beach last summer with the kids",
+        );
     }
 
     let unified = Storage::with_unified_substrate(&path, true).unwrap();
@@ -146,7 +158,10 @@ fn iss147_empty_query_returns_empty_vec() {
 
     let unified = Storage::with_unified_substrate(&path, true).unwrap();
     assert!(unified.search_fts_with_scores("", 10).unwrap().is_empty());
-    assert!(unified.search_fts_with_scores("   ", 10).unwrap().is_empty());
+    assert!(unified
+        .search_fts_with_scores("   ", 10)
+        .unwrap()
+        .is_empty());
 }
 
 /// AC: legacy (non-unified) path also returns positive scores using
@@ -160,8 +175,16 @@ fn iss147_scores_are_positive_and_ranked_for_legacy() {
 
     {
         let mut s = Storage::new(&path).unwrap();
-        seed(&mut s, "m-sweden", "necklace from grandma in my home country, Sweden");
-        seed(&mut s, "m-coffee", "coffee shop downtown on Tuesday morning");
+        seed(
+            &mut s,
+            "m-sweden",
+            "necklace from grandma in my home country, Sweden",
+        );
+        seed(
+            &mut s,
+            "m-coffee",
+            "coffee shop downtown on Tuesday morning",
+        );
     }
 
     // Default Storage::new => unified_substrate=false (legacy arm).

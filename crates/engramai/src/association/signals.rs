@@ -151,7 +151,11 @@ mod tests {
         let a = vec!["cat".to_string(), "dog".to_string()];
         let b = vec!["fish".to_string(), "bird".to_string()];
         let score = SignalComputer::entity_jaccard(&a, &b);
-        assert!((score - 0.0).abs() < f64::EPSILON, "disjoint sets should be 0.0, got {}", score);
+        assert!(
+            (score - 0.0).abs() < f64::EPSILON,
+            "disjoint sets should be 0.0, got {}",
+            score
+        );
     }
 
     #[test]
@@ -159,7 +163,11 @@ mod tests {
         let a = vec!["cat".to_string(), "dog".to_string()];
         let b = vec!["dog".to_string(), "cat".to_string()];
         let score = SignalComputer::entity_jaccard(&a, &b);
-        assert!((score - 1.0).abs() < f64::EPSILON, "identical sets should be 1.0, got {}", score);
+        assert!(
+            (score - 1.0).abs() < f64::EPSILON,
+            "identical sets should be 1.0, got {}",
+            score
+        );
     }
 
     #[test]
@@ -168,7 +176,11 @@ mod tests {
         let b = vec!["dog".to_string(), "bird".to_string()];
         // intersection = {dog} = 1, union = {cat, dog, fish, bird} = 4
         let score = SignalComputer::entity_jaccard(&a, &b);
-        assert!((score - 0.25).abs() < f64::EPSILON, "partial overlap should be 0.25, got {}", score);
+        assert!(
+            (score - 0.25).abs() < f64::EPSILON,
+            "partial overlap should be 0.25, got {}",
+            score
+        );
     }
 
     #[test]
@@ -176,7 +188,11 @@ mod tests {
         let a: Vec<String> = vec![];
         let b: Vec<String> = vec![];
         let score = SignalComputer::entity_jaccard(&a, &b);
-        assert!((score - 0.0).abs() < f64::EPSILON, "both empty should be 0.0, got {}", score);
+        assert!(
+            (score - 0.0).abs() < f64::EPSILON,
+            "both empty should be 0.0, got {}",
+            score
+        );
     }
 
     // --- Embedding cosine tests ---
@@ -185,7 +201,11 @@ mod tests {
     fn test_embedding_cosine_identical() {
         let v = vec![1.0f32, 2.0, 3.0];
         let score = SignalComputer::embedding_cosine(Some(&v), Some(&v));
-        assert!((score - 1.0).abs() < 1e-6, "identical vectors should be ~1.0, got {}", score);
+        assert!(
+            (score - 1.0).abs() < 1e-6,
+            "identical vectors should be ~1.0, got {}",
+            score
+        );
     }
 
     #[test]
@@ -193,7 +213,11 @@ mod tests {
         let a = vec![1.0f32, 0.0, 0.0];
         let b = vec![0.0f32, 1.0, 0.0];
         let score = SignalComputer::embedding_cosine(Some(&a), Some(&b));
-        assert!(score.abs() < 1e-6, "orthogonal vectors should be ~0.0, got {}", score);
+        assert!(
+            score.abs() < 1e-6,
+            "orthogonal vectors should be ~0.0, got {}",
+            score
+        );
     }
 
     #[test]
@@ -210,7 +234,11 @@ mod tests {
     fn test_temporal_same_time() {
         let t = 1700000000.0;
         let score = SignalComputer::temporal_proximity(t, t, 3.0);
-        assert!((score - 1.0).abs() < f64::EPSILON, "same time should be 1.0, got {}", score);
+        assert!(
+            (score - 1.0).abs() < f64::EPSILON,
+            "same time should be 1.0, got {}",
+            score
+        );
     }
 
     #[test]
@@ -219,7 +247,11 @@ mod tests {
         let t2 = t1 + 30.0 * 86400.0; // 30 days apart
         let score = SignalComputer::temporal_proximity(t1, t2, 3.0);
         // exp(-30*86400 / (3*86400)) = exp(-10) ≈ 0.0000454
-        assert!(score < 0.001, "30 days apart should be near 0, got {}", score);
+        assert!(
+            score < 0.001,
+            "30 days apart should be near 0, got {}",
+            score
+        );
         assert!(score > 0.0, "should still be positive");
     }
 

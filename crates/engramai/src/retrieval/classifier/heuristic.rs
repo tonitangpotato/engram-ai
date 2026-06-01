@@ -350,10 +350,7 @@ pub fn score_affective(query: &str) -> f64 {
 /// `[0.0, 1.0]`, but we clamp defensively for forward-compat with future
 /// non-binary signals).
 pub fn score_associative(entity: f64, temporal: f64, abstract_: f64, affective: f64) -> f64 {
-    let m = entity
-        .max(temporal)
-        .max(abstract_)
-        .max(affective);
+    let m = entity.max(temporal).max(abstract_).max(affective);
     (1.0 - m).clamp(0.0, 1.0)
 }
 
@@ -414,12 +411,7 @@ mod tests {
 
     impl StubLookup {
         fn with(pairs: &[(&str, EntityMatch)]) -> Self {
-            Self(
-                pairs
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), *v))
-                    .collect(),
-            )
+            Self(pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect())
         }
     }
 
@@ -457,10 +449,8 @@ mod tests {
 
     #[test]
     fn entity_takes_max_across_tokens() {
-        let lookup = StubLookup::with(&[
-            ("alice", EntityMatch::Fuzzy),
-            ("bob", EntityMatch::Exact),
-        ]);
+        let lookup =
+            StubLookup::with(&[("alice", EntityMatch::Fuzzy), ("bob", EntityMatch::Exact)]);
         assert_eq!(score_entity("alice and bob", &lookup), 1.0);
     }
 

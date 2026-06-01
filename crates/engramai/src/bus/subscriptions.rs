@@ -93,7 +93,7 @@ impl<'a> SubscriptionManager<'a> {
             unified_substrate,
         })
     }
-    
+
     /// Initialize subscription tables.
     fn init_tables(conn: &Connection) -> SqlResult<()> {
         conn.execute_batch(
@@ -116,7 +116,7 @@ impl<'a> SubscriptionManager<'a> {
         )?;
         Ok(())
     }
-    
+
     /// Subscribe an agent to a namespace.
     ///
     /// # Arguments
@@ -131,7 +131,7 @@ impl<'a> SubscriptionManager<'a> {
         min_importance: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let clamped = min_importance.clamp(0.0, 1.0);
-        
+
         self.conn.execute(
             r#"
             INSERT OR REPLACE INTO subscriptions (subscriber_id, namespace, min_importance, created_at)
@@ -144,10 +144,10 @@ impl<'a> SubscriptionManager<'a> {
                 now_f64(),
             ],
         )?;
-        
+
         Ok(())
     }
-    
+
     /// Unsubscribe an agent from a namespace.
     pub fn unsubscribe(
         &self,
@@ -158,10 +158,10 @@ impl<'a> SubscriptionManager<'a> {
             "DELETE FROM subscriptions WHERE subscriber_id = ? AND namespace = ?",
             params![agent_id, namespace],
         )?;
-        
+
         Ok(affected > 0)
     }
-    
+
     /// List all subscriptions for an agent.
     pub fn list_subscriptions(
         &self,
@@ -170,7 +170,7 @@ impl<'a> SubscriptionManager<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT subscriber_id, namespace, min_importance, created_at FROM subscriptions WHERE subscriber_id = ?"
         )?;
-        
+
         let rows = stmt.query_map(params![agent_id], |row| {
             let created_at_f64: f64 = row.get(3)?;
             Ok(Subscription {
@@ -180,10 +180,10 @@ impl<'a> SubscriptionManager<'a> {
                 created_at: f64_to_datetime(created_at_f64),
             })
         })?;
-        
+
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
-    
+
     /// Helper to query notifications for a subscription.
     fn query_notifications_for_sub(
         &self,
@@ -222,18 +222,21 @@ impl<'a> SubscriptionManager<'a> {
                 );
                 let mut stmt = self.conn.prepare(&sql)?;
 
-                let rows = stmt.query_map(params![datetime_to_f64(since_dt), sub.min_importance], |row| {
-                    let created_at_f64: f64 = row.get(4)?;
-                    Ok(Notification {
-                        memory_id: row.get(0)?,
-                        namespace: row.get(1)?,
-                        content: row.get(2)?,
-                        importance: row.get(3)?,
-                        created_at: f64_to_datetime(created_at_f64),
-                        subscription_namespace: sub.namespace.clone(),
-                        threshold: sub.min_importance,
-                    })
-                })?;
+                let rows = stmt.query_map(
+                    params![datetime_to_f64(since_dt), sub.min_importance],
+                    |row| {
+                        let created_at_f64: f64 = row.get(4)?;
+                        Ok(Notification {
+                            memory_id: row.get(0)?,
+                            namespace: row.get(1)?,
+                            content: row.get(2)?,
+                            importance: row.get(3)?,
+                            created_at: f64_to_datetime(created_at_f64),
+                            subscription_namespace: sub.namespace.clone(),
+                            threshold: sub.min_importance,
+                        })
+                    },
+                )?;
 
                 for notif in rows.flatten() {
                     notifications.push(notif);
@@ -274,7 +277,11 @@ impl<'a> SubscriptionManager<'a> {
                 let mut stmt = self.conn.prepare(&sql)?;
 
                 let rows = stmt.query_map(
-                    params![datetime_to_f64(since_dt), sub.min_importance, &sub.namespace],
+                    params![
+                        datetime_to_f64(since_dt),
+                        sub.min_importance,
+                        &sub.namespace
+                    ],
                     |row| {
                         let created_at_f64: f64 = row.get(4)?;
                         Ok(Notification {
@@ -286,7 +293,7 @@ impl<'a> SubscriptionManager<'a> {
                             subscription_namespace: sub.namespace.clone(),
                             threshold: sub.min_importance,
                         })
-                    }
+                    },
                 )?;
 
                 for notif in rows.flatten() {
@@ -300,31 +307,28 @@ impl<'a> SubscriptionManager<'a> {
                 );
                 let mut stmt = self.conn.prepare(&sql)?;
 
-                let rows = stmt.query_map(
-                    params![sub.min_importance, &sub.namespace],
-                    |row| {
-                        let created_at_f64: f64 = row.get(4)?;
-                        Ok(Notification {
-                            memory_id: row.get(0)?,
-                            namespace: row.get(1)?,
-                            content: row.get(2)?,
-                            importance: row.get(3)?,
-                            created_at: f64_to_datetime(created_at_f64),
-                            subscription_namespace: sub.namespace.clone(),
-                            threshold: sub.min_importance,
-                        })
-                    }
-                )?;
+                let rows = stmt.query_map(params![sub.min_importance, &sub.namespace], |row| {
+                    let created_at_f64: f64 = row.get(4)?;
+                    Ok(Notification {
+                        memory_id: row.get(0)?,
+                        namespace: row.get(1)?,
+                        content: row.get(2)?,
+                        importance: row.get(3)?,
+                        created_at: f64_to_datetime(created_at_f64),
+                        subscription_namespace: sub.namespace.clone(),
+                        threshold: sub.min_importance,
+                    })
+                })?;
 
                 for notif in rows.flatten() {
                     notifications.push(notif);
                 }
             }
         }
-        
+
         Ok(notifications)
     }
-    
+
     /// Check for notifications since last check.
     ///
     /// Returns new memories that exceed the subscription thresholds.
@@ -334,82 +338,84 @@ impl<'a> SubscriptionManager<'a> {
         agent_id: &str,
     ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
         // Get last checked timestamp
-        let last_checked: Option<f64> = self.conn
+        let last_checked: Option<f64> = self
+            .conn
             .query_row(
                 "SELECT last_checked FROM notification_cursor WHERE agent_id = ?",
                 params![agent_id],
                 |row| row.get(0),
             )
             .ok();
-        
+
         let last_checked_dt = last_checked.map(f64_to_datetime);
-        
+
         // Get agent's subscriptions
         let subscriptions = self.list_subscriptions(agent_id)?;
-        
+
         if subscriptions.is_empty() {
             return Ok(vec![]);
         }
-        
+
         let mut notifications = Vec::new();
-        
+
         for sub in &subscriptions {
             let sub_notifs = self.query_notifications_for_sub(sub, last_checked_dt.as_ref())?;
             notifications.extend(sub_notifs);
         }
-        
+
         // Update cursor
         self.conn.execute(
             "INSERT OR REPLACE INTO notification_cursor (agent_id, last_checked) VALUES (?, ?)",
             params![agent_id, now_f64()],
         )?;
-        
+
         // Deduplicate by memory_id (in case multiple subscriptions match same memory)
         notifications.sort_by(|a, b| a.memory_id.cmp(&b.memory_id));
         notifications.dedup_by(|a, b| a.memory_id == b.memory_id);
-        
+
         // Sort by created_at descending
         notifications.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        
+
         Ok(notifications)
     }
-    
+
     /// Peek at notifications without updating cursor.
     pub fn peek_notifications(
         &self,
         agent_id: &str,
     ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
         // Get last checked timestamp
-        let last_checked: Option<f64> = self.conn
+        let last_checked: Option<f64> = self
+            .conn
             .query_row(
                 "SELECT last_checked FROM notification_cursor WHERE agent_id = ?",
                 params![agent_id],
                 |row| row.get(0),
             )
             .ok();
-        
+
         let last_checked_dt = last_checked.map(f64_to_datetime);
-        
+
         let subscriptions = self.list_subscriptions(agent_id)?;
-        
+
         if subscriptions.is_empty() {
             return Ok(vec![]);
         }
-        
+
         let mut notifications = Vec::new();
-        
+
         for sub in &subscriptions {
             let sub_notifs = self.query_notifications_for_sub(sub, last_checked_dt.as_ref())?;
             notifications.extend(sub_notifs);
         }
-        
+
         notifications.sort_by(|a, b| a.memory_id.cmp(&b.memory_id));
         notifications.dedup_by(|a, b| a.memory_id == b.memory_id);
         notifications.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        
+
         Ok(notifications)
     }
-    
+
     /// Reset notification cursor (useful for testing or re-checking everything).
     pub fn reset_cursor(&self, agent_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         self.conn.execute(
@@ -423,10 +429,10 @@ impl<'a> SubscriptionManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     fn setup_test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        
+
         // Create memories table
         conn.execute_batch(
             r#"
@@ -449,139 +455,140 @@ mod tests {
                 namespace TEXT NOT NULL DEFAULT 'default'
             );
             "#,
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         conn
     }
-    
+
     #[test]
     fn test_subscribe_unsubscribe() {
         let conn = setup_test_db();
         let mgr = SubscriptionManager::new(&conn, false).unwrap();
-        
+
         // Subscribe
         mgr.subscribe("ceo", "trading", 0.8).unwrap();
-        
+
         let subs = mgr.list_subscriptions("ceo").unwrap();
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].namespace, "trading");
         assert!((subs[0].min_importance - 0.8).abs() < 0.01);
-        
+
         // Unsubscribe
         let removed = mgr.unsubscribe("ceo", "trading").unwrap();
         assert!(removed);
-        
+
         let subs = mgr.list_subscriptions("ceo").unwrap();
         assert!(subs.is_empty());
     }
-    
+
     #[test]
     fn test_subscribe_wildcard() {
         let conn = setup_test_db();
         let mgr = SubscriptionManager::new(&conn, false).unwrap();
-        
+
         mgr.subscribe("ceo", "*", 0.9).unwrap();
-        
+
         let subs = mgr.list_subscriptions("ceo").unwrap();
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].namespace, "*");
     }
-    
+
     #[test]
     fn test_notifications_basic() {
         let conn = setup_test_db();
         let mgr = SubscriptionManager::new(&conn, false).unwrap();
-        
+
         // Subscribe to trading namespace with threshold 0.7
         mgr.subscribe("ceo", "trading", 0.7).unwrap();
-        
+
         // Add a high-importance memory
         conn.execute(
             "INSERT INTO memories (id, content, memory_type, layer, created_at, importance, namespace)
              VALUES ('m1', 'Oil price spike', 'factual', 'working', strftime('%s','now'), 0.9, 'trading')",
             [],
         ).unwrap();
-        
+
         // Check notifications
         let notifs = mgr.check_notifications("ceo").unwrap();
         assert_eq!(notifs.len(), 1);
         assert_eq!(notifs[0].memory_id, "m1");
         assert_eq!(notifs[0].namespace, "trading");
-        
+
         // Check again - should be empty (cursor updated)
         let notifs = mgr.check_notifications("ceo").unwrap();
         assert!(notifs.is_empty());
     }
-    
+
     #[test]
     fn test_notifications_threshold() {
         let conn = setup_test_db();
         let mgr = SubscriptionManager::new(&conn, false).unwrap();
-        
+
         mgr.subscribe("ceo", "trading", 0.8).unwrap();
-        
+
         // Add low-importance memory
         conn.execute(
             "INSERT INTO memories (id, content, memory_type, layer, created_at, importance, namespace)
              VALUES ('m1', 'Minor update', 'factual', 'working', strftime('%s','now'), 0.3, 'trading')",
             [],
         ).unwrap();
-        
+
         // Should not trigger notification
         let notifs = mgr.check_notifications("ceo").unwrap();
         assert!(notifs.is_empty());
     }
-    
+
     #[test]
     fn test_notifications_wildcard() {
         let conn = setup_test_db();
         let mgr = SubscriptionManager::new(&conn, false).unwrap();
-        
+
         // Subscribe to all namespaces
         mgr.subscribe("ceo", "*", 0.8).unwrap();
-        
+
         // Add memories to different namespaces
         conn.execute(
             "INSERT INTO memories (id, content, memory_type, layer, created_at, importance, namespace)
              VALUES ('m1', 'Trading alert', 'factual', 'working', strftime('%s','now'), 0.9, 'trading')",
             [],
         ).unwrap();
-        
+
         conn.execute(
             "INSERT INTO memories (id, content, memory_type, layer, created_at, importance, namespace)
              VALUES ('m2', 'Engine alert', 'factual', 'working', strftime('%s','now'), 0.85, 'engine')",
             [],
         ).unwrap();
-        
+
         let notifs = mgr.check_notifications("ceo").unwrap();
         assert_eq!(notifs.len(), 2);
     }
-    
+
     #[test]
     fn test_peek_notifications() {
         let conn = setup_test_db();
         let mgr = SubscriptionManager::new(&conn, false).unwrap();
-        
+
         mgr.subscribe("ceo", "trading", 0.7).unwrap();
-        
+
         conn.execute(
             "INSERT INTO memories (id, content, memory_type, layer, created_at, importance, namespace)
              VALUES ('m1', 'Test', 'factual', 'working', strftime('%s','now'), 0.9, 'trading')",
             [],
         ).unwrap();
-        
+
         // Peek should not update cursor
         let notifs = mgr.peek_notifications("ceo").unwrap();
         assert_eq!(notifs.len(), 1);
-        
+
         // Peek again - should still return same results
         let notifs = mgr.peek_notifications("ceo").unwrap();
         assert_eq!(notifs.len(), 1);
-        
+
         // Now check (updates cursor)
         let notifs = mgr.check_notifications("ceo").unwrap();
         assert_eq!(notifs.len(), 1);
-        
+
         // Check again - empty
         let notifs = mgr.check_notifications("ceo").unwrap();
         assert!(notifs.is_empty());
@@ -675,7 +682,10 @@ mod tests {
                 ua.importance,
             );
             assert_eq!(la.created_at, ua.created_at, "created_at");
-            assert_eq!(la.subscription_namespace, ua.subscription_namespace, "sub_ns");
+            assert_eq!(
+                la.subscription_namespace, ua.subscription_namespace,
+                "sub_ns"
+            );
             assert!(
                 (la.threshold - ua.threshold).abs() < f64::EPSILON,
                 "threshold mismatch",
@@ -698,9 +708,9 @@ mod tests {
         // ts is seconds since epoch; tests use small integers to keep
         // intent obvious.
         insert_memory_dual(&conn, "m1", "trading", "buy signal alpha", 0.9, 100.0);
-        insert_memory_dual(&conn, "m2", "trading", "noise",            0.4, 200.0);
-        insert_memory_dual(&conn, "m3", "ops",     "deploy started",   0.95, 300.0);
-        insert_memory_dual(&conn, "m4", "ops",     "log noise",        0.2, 400.0);
+        insert_memory_dual(&conn, "m2", "trading", "noise", 0.4, 200.0);
+        insert_memory_dual(&conn, "m3", "ops", "deploy started", 0.95, 300.0);
+        insert_memory_dual(&conn, "m4", "ops", "log noise", 0.2, 400.0);
 
         // Branch A: specific namespace, no `since` filter.
         let sub_specific = Subscription {
@@ -709,16 +719,32 @@ mod tests {
             min_importance: 0.5,
             created_at: Utc::now(),
         };
-        let l = mgr_legacy.query_notifications_for_sub(&sub_specific, None).unwrap();
-        let u = mgr_unified.query_notifications_for_sub(&sub_specific, None).unwrap();
-        assert_eq!(l.len(), 1, "specific+nosince: only m1 exceeds 0.5 in trading");
+        let l = mgr_legacy
+            .query_notifications_for_sub(&sub_specific, None)
+            .unwrap();
+        let u = mgr_unified
+            .query_notifications_for_sub(&sub_specific, None)
+            .unwrap();
+        assert_eq!(
+            l.len(),
+            1,
+            "specific+nosince: only m1 exceeds 0.5 in trading"
+        );
         assert_notifications_eq(&l, &u);
 
         // Branch B: specific namespace, WITH `since` filter (cuts off m1@100).
         let since = f64_to_datetime(150.0);
-        let l = mgr_legacy.query_notifications_for_sub(&sub_specific, Some(&since)).unwrap();
-        let u = mgr_unified.query_notifications_for_sub(&sub_specific, Some(&since)).unwrap();
-        assert_eq!(l.len(), 0, "specific+since=150: m1@100 cut off, m2 below threshold");
+        let l = mgr_legacy
+            .query_notifications_for_sub(&sub_specific, Some(&since))
+            .unwrap();
+        let u = mgr_unified
+            .query_notifications_for_sub(&sub_specific, Some(&since))
+            .unwrap();
+        assert_eq!(
+            l.len(),
+            0,
+            "specific+since=150: m1@100 cut off, m2 below threshold"
+        );
         assert_notifications_eq(&l, &u);
 
         // Branch C: wildcard namespace, no `since`.
@@ -728,16 +754,32 @@ mod tests {
             min_importance: 0.8,
             created_at: Utc::now(),
         };
-        let l = mgr_legacy.query_notifications_for_sub(&sub_wild, None).unwrap();
-        let u = mgr_unified.query_notifications_for_sub(&sub_wild, None).unwrap();
-        assert_eq!(l.len(), 2, "wildcard+nosince: m1 (0.9) and m3 (0.95) exceed 0.8");
+        let l = mgr_legacy
+            .query_notifications_for_sub(&sub_wild, None)
+            .unwrap();
+        let u = mgr_unified
+            .query_notifications_for_sub(&sub_wild, None)
+            .unwrap();
+        assert_eq!(
+            l.len(),
+            2,
+            "wildcard+nosince: m1 (0.9) and m3 (0.95) exceed 0.8"
+        );
         assert_notifications_eq(&l, &u);
 
         // Branch D: wildcard namespace, WITH `since`.
         let since = f64_to_datetime(250.0);
-        let l = mgr_legacy.query_notifications_for_sub(&sub_wild, Some(&since)).unwrap();
-        let u = mgr_unified.query_notifications_for_sub(&sub_wild, Some(&since)).unwrap();
-        assert_eq!(l.len(), 1, "wildcard+since=250: only m3 (0.95@300) survives both filters");
+        let l = mgr_legacy
+            .query_notifications_for_sub(&sub_wild, Some(&since))
+            .unwrap();
+        let u = mgr_unified
+            .query_notifications_for_sub(&sub_wild, Some(&since))
+            .unwrap();
+        assert_eq!(
+            l.len(),
+            1,
+            "wildcard+since=250: only m3 (0.95@300) survives both filters"
+        );
         assert_notifications_eq(&l, &u);
     }
 
@@ -769,7 +811,11 @@ mod tests {
             created_at: Utc::now(),
         };
         let notifs = mgr_unified.query_notifications_for_sub(&sub, None).unwrap();
-        assert_eq!(notifs.len(), 1, "only mem1 should surface — entity row is filtered by node_kind");
+        assert_eq!(
+            notifs.len(),
+            1,
+            "only mem1 should surface — entity row is filtered by node_kind"
+        );
         assert_eq!(notifs[0].memory_id, "mem1");
     }
 
@@ -797,4 +843,3 @@ mod tests {
         assert_notifications_eq(&l, &u);
     }
 }
-

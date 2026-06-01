@@ -27,9 +27,7 @@
 
 use chrono::{TimeZone, Utc};
 use engramai::storage::Storage;
-use engramai::substrate::backfill::{
-    backfill_memories_to_nodes, fetch_backfill_run, BackfillRun,
-};
+use engramai::substrate::backfill::{backfill_memories_to_nodes, fetch_backfill_run, BackfillRun};
 use engramai::types::{MemoryLayer, MemoryRecord, MemoryType};
 use rusqlite::params;
 use tempfile::tempdir;
@@ -97,7 +95,11 @@ fn t19_backfill_inserts_missing_rows_and_skips_existing() {
             .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
             .unwrap();
         let nodes_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM nodes WHERE node_kind='memory'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE node_kind='memory'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(mem_count, 3, "fixture has 3 memories");
         assert_eq!(nodes_count, 1, "fixture has 1 pre-existing nodes row (C)");
@@ -107,16 +109,29 @@ fn t19_backfill_inserts_missing_rows_and_skips_existing() {
 
     assert_eq!(run.legacy_table, "memories");
     assert_eq!(run.rows_read, 3, "every legacy memory should be iterated");
-    assert_eq!(run.rows_inserted, 2, "A and B should be newly inserted (C already there)");
-    assert_eq!(run.rows_skipped_existing, 1, "C should be skipped as existing");
+    assert_eq!(
+        run.rows_inserted, 2,
+        "A and B should be newly inserted (C already there)"
+    );
+    assert_eq!(
+        run.rows_skipped_existing, 1,
+        "C should be skipped as existing"
+    );
     assert_eq!(run.rows_failed, 0);
 
     // After backfill: all 3 memories should have a matching nodes row.
     let conn = storage.conn();
     let nodes_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM nodes WHERE node_kind='memory'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE node_kind='memory'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert_eq!(nodes_count, 3, "every memory must have a matching node after backfill");
+    assert_eq!(
+        nodes_count, 3,
+        "every memory must have a matching node after backfill"
+    );
 
     // Idempotency: a second run should insert zero rows.
     let run2 = backfill_memories_to_nodes(&mut storage, None).expect("backfill rerun");
@@ -133,7 +148,10 @@ fn t19_backfill_inserts_missing_rows_and_skips_existing() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert!(finished.is_some(), "finished_at must be set after a successful run");
+    assert!(
+        finished.is_some(),
+        "finished_at must be set after a successful run"
+    );
     assert!(
         finished.unwrap() >= started,
         "finished_at ({}) must be >= started_at ({})",
@@ -142,7 +160,10 @@ fn t19_backfill_inserts_missing_rows_and_skips_existing() {
     );
     let notes_json: serde_json::Value = serde_json::from_str(&notes).unwrap();
     assert_eq!(notes_json["driver"], "backfill_memories_to_nodes");
-    assert!(notes_json["namespace_filter"].is_null(), "no filter = JSON null");
+    assert!(
+        notes_json["namespace_filter"].is_null(),
+        "no filter = JSON null"
+    );
 
     // fetch_backfill_run round-trip.
     let fetched = fetch_backfill_run(&storage, &run.run_id).unwrap().unwrap();
@@ -244,10 +265,24 @@ fn t19_parity_with_t12_dual_write_byte_equal_node_rows() {
     // Compare every column relevant to the memory→nodes projection.
     let conn = storage.conn();
     let read_row = |id: &str| -> (
-        String, String, String, String, String, String, String,
-        Option<f64>, f64, f64, Option<f64>,
-        f64, f64, f64,
-        i64, i64, String, Option<String>,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<f64>,
+        f64,
+        f64,
+        Option<f64>,
+        f64,
+        f64,
+        f64,
+        i64,
+        i64,
+        String,
+        Option<String>,
     ) {
         conn.query_row(
             r#"
@@ -261,10 +296,24 @@ fn t19_parity_with_t12_dual_write_byte_equal_node_rows() {
             params![id],
             |r| {
                 Ok((
-                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?,
-                    r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?,
-                    r.get(11)?, r.get(12)?, r.get(13)?,
-                    r.get(14)?, r.get(15)?, r.get(16)?, r.get(17)?,
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
+                    r.get(12)?,
+                    r.get(13)?,
+                    r.get(14)?,
+                    r.get(15)?,
+                    r.get(16)?,
+                    r.get(17)?,
                 ))
             },
         )
@@ -311,7 +360,10 @@ fn t19_namespace_filter_does_not_touch_other_namespaces() {
     seed_legacy_only(&mut storage, &b, "ns-b");
 
     let run = backfill_memories_to_nodes(&mut storage, Some("ns-a")).expect("backfill");
-    assert_eq!(run.rows_read, 1, "filter should restrict iteration to ns-a only");
+    assert_eq!(
+        run.rows_read, 1,
+        "filter should restrict iteration to ns-a only"
+    );
     assert_eq!(run.rows_inserted, 1);
 
     let conn = storage.conn();
@@ -330,7 +382,10 @@ fn t19_namespace_filter_does_not_touch_other_namespaces() {
         )
         .unwrap();
     assert_eq!(ns_a_present, 1, "ns-a row should be inserted");
-    assert_eq!(ns_b_present, 0, "ns-b row must NOT be touched by a filtered backfill");
+    assert_eq!(
+        ns_b_present, 0,
+        "ns-b row must NOT be touched by a filtered backfill"
+    );
 
     // Audit row should record the filter.
     let conn = storage.conn();
@@ -358,7 +413,10 @@ fn t19_empty_table_completes_cleanly() {
 
     // Audit row should still exist with finished_at set.
     let fetched = fetch_backfill_run(&storage, &run.run_id).unwrap();
-    assert!(fetched.is_some(), "empty-table runs must still record an audit row");
+    assert!(
+        fetched.is_some(),
+        "empty-table runs must still record an audit row"
+    );
 }
 
 #[test]
@@ -560,8 +618,5 @@ fn iss112_b_t19_metadata_legacy_key_passes_through_when_column_null() {
          (pins documented soft behavior — break this loudly if a formal \
          reserved-key gate is added; see storage.rs:1969)",
     );
-    assert_eq!(
-        parsed.get("tag").and_then(|v| v.as_str()),
-        Some("phase-c"),
-    );
+    assert_eq!(parsed.get("tag").and_then(|v| v.as_str()), Some("phase-c"),);
 }

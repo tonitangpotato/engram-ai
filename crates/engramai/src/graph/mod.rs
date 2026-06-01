@@ -41,8 +41,8 @@ pub mod topic;
 pub use affect::SomaticFingerprint;
 pub use audit::{ExtractionFailure, PipelineKind, PipelineRun, ResolutionTrace, RunStatus};
 pub use delta::{
-    ApplyReport, EdgeInvalidation, EntityMerge, GraphDelta, MemoryEntityMention,
-    ProposedPredicate, StageFailureRow, GRAPH_DELTA_SCHEMA_VERSION,
+    ApplyReport, EdgeInvalidation, EntityMerge, GraphDelta, MemoryEntityMention, ProposedPredicate,
+    StageFailureRow, GRAPH_DELTA_SCHEMA_VERSION,
 };
 pub use edge::{ConfidenceSource, Edge, EdgeEnd, ResolutionMethod};
 pub use entity::{validate_attributes, Entity, EntityKind, HistoryEntry, RESERVED_ATTRIBUTE_KEYS};
@@ -68,26 +68,47 @@ mod public_api_smoke {
         // Importing the names is the assertion; no runtime check needed.
         #[allow(unused_imports)]
         use crate::graph::{
-            // entity
-            Entity, EntityKind, HistoryEntry, RESERVED_ATTRIBUTE_KEYS,
+            emit_operational_load,
+            emit_pressure_if_crossed,
+            ApplyReport,
+            CanonicalPredicate,
+            ConfidenceSource,
+            Directionality,
             // edge
-            Edge, EdgeEnd, ConfidenceSource, ResolutionMethod,
-            // schema
-            Predicate, CanonicalPredicate, Directionality,
+            Edge,
+            EdgeEnd,
+            EdgeInvalidation,
+            // entity
+            Entity,
+            EntityKind,
+            EntityMerge,
+            ExtractionFailure,
             // delta
-            GraphDelta, EntityMerge, EdgeInvalidation, MemoryEntityMention,
-            ProposedPredicate, StageFailureRow, ApplyReport, GRAPH_DELTA_SCHEMA_VERSION,
-            // topic
-            KnowledgeTopic,
-            // affect
-            SomaticFingerprint,
-            // audit
-            PipelineRun, PipelineKind, RunStatus, ExtractionFailure, ResolutionTrace,
-            // telemetry
-            TelemetrySink, NoopSink, WatermarkTracker,
-            emit_operational_load, emit_pressure_if_crossed,
+            GraphDelta,
             // error
             GraphError,
+            HistoryEntry,
+            // topic
+            KnowledgeTopic,
+            MemoryEntityMention,
+            NoopSink,
+            PipelineKind,
+            // audit
+            PipelineRun,
+            // schema
+            Predicate,
+            ProposedPredicate,
+            ResolutionMethod,
+            ResolutionTrace,
+            RunStatus,
+            // affect
+            SomaticFingerprint,
+            StageFailureRow,
+            // telemetry
+            TelemetrySink,
+            WatermarkTracker,
+            GRAPH_DELTA_SCHEMA_VERSION,
+            RESERVED_ATTRIBUTE_KEYS,
         };
         // Concrete construction smoke: build one of each "easy" type to ensure the
         // re-exports are not just type aliases that lost their constructors.

@@ -89,17 +89,10 @@ fn extract_domain(url: &str) -> String {
         .unwrap_or(url);
 
     // Take everything before the first '/'
-    let domain = without_scheme
-        .split('/')
-        .next()
-        .unwrap_or(without_scheme);
+    let domain = without_scheme.split('/').next().unwrap_or(without_scheme);
 
     // Strip port if present
-    domain
-        .split(':')
-        .next()
-        .unwrap_or(domain)
-        .to_owned()
+    domain.split(':').next().unwrap_or(domain).to_owned()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -188,10 +181,7 @@ impl ContentExtractor for GenericExtractor {
 
         let resp = client
             .get(url)
-            .header(
-                "User-Agent",
-                "engram-ai/1.0 (knowledge-compiler intake)",
-            )
+            .header("User-Agent", "engram-ai/1.0 (knowledge-compiler intake)")
             .send()
             .map_err(|e| KcError::ImportError(format!("HTTP request failed: {}", e)))?;
 
@@ -208,8 +198,7 @@ impl ContentExtractor for GenericExtractor {
             .map_err(|e| KcError::ImportError(format!("Failed to read response: {}", e)))?;
 
         // Attempt to extract a title from <title> tag
-        let title = extract_html_title(&body)
-            .unwrap_or_else(|| extract_domain(url));
+        let title = extract_html_title(&body).unwrap_or_else(|| extract_domain(url));
 
         // Strip HTML tags for a rough text extraction
         let content = strip_html_tags(&body);
@@ -398,10 +387,8 @@ impl ContentExtractor for YtDlpExtractor {
             )));
         }
 
-        let meta_json: serde_json::Value =
-            serde_json::from_slice(&meta_output.stdout).map_err(|e| {
-                KcError::ImportError(format!("Failed to parse yt-dlp JSON: {}", e))
-            })?;
+        let meta_json: serde_json::Value = serde_json::from_slice(&meta_output.stdout)
+            .map_err(|e| KcError::ImportError(format!("Failed to parse yt-dlp JSON: {}", e)))?;
 
         let title = meta_json
             .get("title")
@@ -637,8 +624,7 @@ impl ContentExtractor for GithubExtractor {
             }
             403 => {
                 return Err(KcError::ImportError(
-                    "GitHub API rate limit exceeded. Provide a token for higher limits."
-                        .to_owned(),
+                    "GitHub API rate limit exceeded. Provide a token for higher limits.".to_owned(),
                 ));
             }
             s if s >= 400 => {
@@ -650,9 +636,9 @@ impl ContentExtractor for GithubExtractor {
             _ => {}
         }
 
-        let repo_json: serde_json::Value = repo_resp
-            .json()
-            .map_err(|e| KcError::ImportError(format!("Failed to parse GitHub API response: {}", e)))?;
+        let repo_json: serde_json::Value = repo_resp.json().map_err(|e| {
+            KcError::ImportError(format!("Failed to parse GitHub API response: {}", e))
+        })?;
 
         let full_name = repo_json
             .get("full_name")
@@ -688,10 +674,7 @@ impl ContentExtractor for GithubExtractor {
             .unwrap_or_default();
 
         // 2. Fetch README
-        let readme_url = format!(
-            "https://api.github.com/repos/{}/{}/readme",
-            owner, repo
-        );
+        let readme_url = format!("https://api.github.com/repos/{}/{}/readme", owner, repo);
         let readme_req = self.add_auth(
             client
                 .get(&readme_url)
@@ -701,9 +684,7 @@ impl ContentExtractor for GithubExtractor {
 
         let readme_content = match readme_req.send() {
             Ok(resp) if resp.status().is_success() => {
-                let readme_json: serde_json::Value = resp
-                    .json()
-                    .unwrap_or(serde_json::Value::Null);
+                let readme_json: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
                 readme_json
                     .get("content")
                     .and_then(|v| v.as_str())
@@ -795,12 +776,7 @@ impl IntakePipeline {
             .extractors
             .iter()
             .find(|e| e.can_handle(url))
-            .ok_or_else(|| {
-                KcError::ImportError(format!(
-                    "No extractor can handle URL: {}",
-                    url
-                ))
-            })?;
+            .ok_or_else(|| KcError::ImportError(format!("No extractor can handle URL: {}", url)))?;
 
         let content = extractor.extract(url)?;
         let content_length = content.content.len();
@@ -818,10 +794,7 @@ impl IntakePipeline {
             metadata: HashMap::from([
                 ("source_url".to_owned(), content.url.clone()),
                 ("platform".to_owned(), content.platform.clone()),
-                (
-                    "intake_timestamp".to_owned(),
-                    Utc::now().to_rfc3339(),
-                ),
+                ("intake_timestamp".to_owned(), Utc::now().to_rfc3339()),
             ]),
         };
 
@@ -977,12 +950,10 @@ mod tests {
         // First extractor doesn't handle, second does, third does too
         pipeline.add_extractor(Box::new(MockExtractor::new(false, "Skip", "skip")));
         pipeline.add_extractor(Box::new(
-            MockExtractor::new(true, "Second", "second content")
-                .with_platform("second-platform"),
+            MockExtractor::new(true, "Second", "second content").with_platform("second-platform"),
         ));
         pipeline.add_extractor(Box::new(
-            MockExtractor::new(true, "Third", "third content")
-                .with_platform("third-platform"),
+            MockExtractor::new(true, "Third", "third content").with_platform("third-platform"),
         ));
 
         let report = pipeline.ingest("https://example.com/article").unwrap();
@@ -1025,12 +996,16 @@ mod tests {
                 .with_platform("blog.example.com"),
         ));
 
-        let report = pipeline.ingest("https://blog.example.com/rust-guide").unwrap();
+        let report = pipeline
+            .ingest("https://blog.example.com/rust-guide")
+            .unwrap();
         let candidate = &report.memory_candidate;
 
         // Content format: # Title\n\nSource: url\nAuthor: author\n\ncontent
         assert!(candidate.content.starts_with("# Rust Guide"));
-        assert!(candidate.content.contains("Source: https://blog.example.com/rust-guide"));
+        assert!(candidate
+            .content
+            .contains("Source: https://blog.example.com/rust-guide"));
         assert!(candidate.content.contains("Author: Alice"));
         assert!(candidate.content.contains("Learn Rust programming."));
 
@@ -1056,9 +1031,7 @@ mod tests {
     #[test]
     fn test_extracted_content_unknown_author() {
         let mut pipeline = IntakePipeline::new();
-        pipeline.add_extractor(Box::new(
-            MockExtractor::new(true, "Title", "Body"),
-        ));
+        pipeline.add_extractor(Box::new(MockExtractor::new(true, "Title", "Body")));
 
         let report = pipeline.ingest("https://example.com/page").unwrap();
         // When no author is set, should show "unknown"
@@ -1104,8 +1077,14 @@ mod tests {
     #[test]
     fn test_extract_domain() {
         assert_eq!(extract_domain("https://example.com/path"), "example.com");
-        assert_eq!(extract_domain("http://sub.example.com/a/b"), "sub.example.com");
-        assert_eq!(extract_domain("https://example.com:8080/path"), "example.com");
+        assert_eq!(
+            extract_domain("http://sub.example.com/a/b"),
+            "sub.example.com"
+        );
+        assert_eq!(
+            extract_domain("https://example.com:8080/path"),
+            "example.com"
+        );
         assert_eq!(extract_domain("https://example.com"), "example.com");
         assert_eq!(extract_domain("no-scheme.com/path"), "no-scheme.com");
     }
@@ -1169,11 +1148,17 @@ mod tests {
 
         let r1 = pipeline.ingest("https://example.com/same").unwrap();
         let r2 = pipeline.ingest("https://example.com/same").unwrap();
-        assert_eq!(r1.memory_candidate.content_hash, r2.memory_candidate.content_hash);
+        assert_eq!(
+            r1.memory_candidate.content_hash,
+            r2.memory_candidate.content_hash
+        );
 
         // Different URL should produce different hash
         let r3 = pipeline.ingest("https://example.com/different").unwrap();
-        assert_ne!(r1.memory_candidate.content_hash, r3.memory_candidate.content_hash);
+        assert_ne!(
+            r1.memory_candidate.content_hash,
+            r3.memory_candidate.content_hash
+        );
     }
 
     // ── YtDlpExtractor URL matching ─────────────────────────────────────
@@ -1275,7 +1260,8 @@ mod tests {
             GithubExtractor::parse_owner_repo("https://github.com/user/repo/tree/main/src");
         assert_eq!(result, Some(("user".to_owned(), "repo".to_owned())));
 
-        let result = GithubExtractor::parse_owner_repo("https://github.com/user/repo/blob/main/README.md");
+        let result =
+            GithubExtractor::parse_owner_repo("https://github.com/user/repo/blob/main/README.md");
         assert_eq!(result, Some(("user".to_owned(), "repo".to_owned())));
 
         // Invalid URLs

@@ -14,8 +14,8 @@
 //!
 //! See `.gid/features/v03-resolution/design.md` §3.1, §6.3.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use engramai::memory::Memory;
 use engramai::resolution::{
@@ -215,9 +215,7 @@ fn store_raw_survives_queue_full_per_guard_1() {
 #[test]
 fn extraction_status_returns_not_started_for_unknown_id() {
     let mut mem = new_mem();
-    let st = mem
-        .extraction_status("unknown-memory-id")
-        .expect("read ok");
+    let st = mem.extraction_status("unknown-memory-id").expect("read ok");
     assert!(matches!(st, ExtractionStatus::NotStarted));
 }
 

@@ -163,7 +163,10 @@ fn compile_knowledge_restores_embedder_on_success() {
     let mut m = memory_with_dummy_embedder();
     let summarizer = FirstSentenceSummarizer;
 
-    assert!(m.has_embedding_support(), "precondition: embedder installed");
+    assert!(
+        m.has_embedding_support(),
+        "precondition: embedder installed"
+    );
     let _ = m
         .compile_knowledge_with("test-ns", &summarizer)
         .expect("compile ok");

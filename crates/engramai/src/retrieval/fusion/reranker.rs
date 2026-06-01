@@ -227,9 +227,9 @@ fn same_ordering(a: &[ScoredResult], b: &[ScoredResult]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).all(|(x, y)| {
-        key_of(x) == key_of(y) && x.score().to_bits() == y.score().to_bits()
-    })
+    a.iter()
+        .zip(b.iter())
+        .all(|(x, y)| key_of(x) == key_of(y) && x.score().to_bits() == y.score().to_bits())
 }
 
 // ---------------------------------------------------------------------------

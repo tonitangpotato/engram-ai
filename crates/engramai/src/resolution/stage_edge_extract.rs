@@ -17,9 +17,7 @@
 use crate::graph::audit::CATEGORY_EXTRACTOR_ERROR;
 use crate::graph::ResolutionMethod;
 use crate::resolution::adapters::map_predicate;
-use crate::resolution::context::{
-    DraftEdge, DraftEdgeEnd, PipelineContext, PipelineStage,
-};
+use crate::resolution::context::{DraftEdge, DraftEdgeEnd, PipelineContext, PipelineStage};
 use crate::resolution::stage_extract::StageError;
 use crate::triple_extractor::TripleExtractor;
 
@@ -52,11 +50,7 @@ pub fn extract_edges(
                 "edge extraction failed: memory_id={} error={}",
                 memory_id, msg
             );
-            ctx.record_failure(
-                PipelineStage::EdgeExtract,
-                CATEGORY_EXTRACTOR_ERROR,
-                msg,
-            );
+            ctx.record_failure(PipelineStage::EdgeExtract, CATEGORY_EXTRACTOR_ERROR, msg);
             return Err(StageError);
         }
     };
@@ -167,18 +161,8 @@ mod tests {
     #[test]
     fn drafts_one_per_triple_in_order() {
         let extractor = StaticExtractor(vec![
-            Triple::new(
-                "Alice".into(),
-                V02Predicate::Uses,
-                "Rust".into(),
-                0.9,
-            ),
-            Triple::new(
-                "Bob".into(),
-                V02Predicate::IsA,
-                "Engineer".into(),
-                0.8,
-            ),
+            Triple::new("Alice".into(), V02Predicate::Uses, "Rust".into(), 0.9),
+            Triple::new("Bob".into(), V02Predicate::IsA, "Engineer".into(), 0.8),
         ]);
         let mut ctx = ctx_for("Alice uses Rust. Bob is an engineer.");
         extract_edges(&extractor, &mut ctx).unwrap();

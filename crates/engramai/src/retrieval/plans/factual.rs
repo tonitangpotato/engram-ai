@@ -343,9 +343,7 @@ impl FactualOutcome {
                 query_tokens: vec![],
             },
             FactualOutcome::Cutoff if !results_empty => RetrievalOutcome::Ok,
-            FactualOutcome::Cutoff => {
-                RetrievalOutcome::EntityFoundNoEdges { entities: vec![] }
-            }
+            FactualOutcome::Cutoff => RetrievalOutcome::EntityFoundNoEdges { entities: vec![] },
         }
     }
 }
@@ -628,8 +626,8 @@ impl FactualPlan {
         let effective_limit = if inputs.requested_k == 0 {
             inputs.memory_limit_per_entity.max(1)
         } else {
-            let total_budget = FactualPlanInputs::OVERFETCH_RATIO
-                .saturating_mul(inputs.requested_k);
+            let total_budget =
+                FactualPlanInputs::OVERFETCH_RATIO.saturating_mul(inputs.requested_k);
             let per_anchor = total_budget / anchors.len().max(1);
             per_anchor.clamp(1, inputs.memory_limit_per_entity.max(1))
         };
@@ -665,10 +663,7 @@ impl FactualPlan {
                 );
             }
             for mid in hits {
-                memories
-                    .entry(mid)
-                    .or_default()
-                    .insert(anchor.entity_id);
+                memories.entry(mid).or_default().insert(anchor.entity_id);
             }
             if budget.outer_should_cutoff() {
                 budget.end_stage();
@@ -684,10 +679,7 @@ impl FactualPlan {
         for linked in &linked_entities {
             let hits = graph.memories_mentioning_entity(*linked, limit)?;
             for mid in hits {
-                memories
-                    .entry(mid)
-                    .or_default()
-                    .insert(*linked);
+                memories.entry(mid).or_default().insert(*linked);
             }
             if budget.outer_should_cutoff() {
                 budget.end_stage();
@@ -925,10 +917,7 @@ mod tests {
         ) -> Result<Vec<Entity>, GraphError> {
             unimplemented!()
         }
-        fn search_candidates(
-            &self,
-            _: &CandidateQuery,
-        ) -> Result<Vec<CandidateMatch>, GraphError> {
+        fn search_candidates(&self, _: &CandidateQuery) -> Result<Vec<CandidateMatch>, GraphError> {
             unimplemented!()
         }
         fn resolve_alias(&self, _: &str) -> Result<Option<Uuid>, GraphError> {
@@ -952,11 +941,7 @@ mod tests {
             predicate: Option<&Predicate>,
             include_invalidated: bool,
         ) -> Result<Vec<Edge>, GraphError> {
-            let edges = self
-                .edges_of_map
-                .get(&subject)
-                .cloned()
-                .unwrap_or_default();
+            let edges = self.edges_of_map.get(&subject).cloned().unwrap_or_default();
             let mut filtered: Vec<Edge> = edges
                 .into_iter()
                 .filter(|e| include_invalidated || e.invalidated_at.is_none())
@@ -1152,11 +1137,7 @@ mod tests {
         let result = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
         assert_eq!(result.anchors.len(), 3);
         // Strongest match_strengths should win (sorted descending).
-        let strengths: Vec<f32> = result
-            .anchors
-            .iter()
-            .map(|a| a.match_strength)
-            .collect();
+        let strengths: Vec<f32> = result.anchors.iter().map(|a| a.match_strength).collect();
         assert!(strengths.windows(2).all(|w| w[0] >= w[1]));
         // Memory lookup ran for exactly 3 anchors (no linked entities).
         assert_eq!(*graph.memories_calls.borrow(), 3);
@@ -1199,7 +1180,9 @@ mod tests {
         }]);
 
         let mut b = budget();
-        let result = plan.execute(&make_inputs("alice"), &resolver, &graph, &mut b).unwrap();
+        let result = plan
+            .execute(&make_inputs("alice"), &resolver, &graph, &mut b)
+            .unwrap();
 
         assert_eq!(result.outcome, FactualOutcome::Ok);
         assert_eq!(result.anchors.len(), 1);
@@ -1264,7 +1247,9 @@ mod tests {
 
         // Default mode (Now): superseded edge filtered.
         let mut b = budget();
-        let r1 = plan.execute(&make_inputs("a"), &resolver, &graph, &mut b).unwrap();
+        let r1 = plan
+            .execute(&make_inputs("a"), &resolver, &graph, &mut b)
+            .unwrap();
         assert_eq!(r1.edges.len(), 1);
         assert!(r1.edges.iter().all(|e| e.projected.is_live));
 
@@ -1275,7 +1260,10 @@ mod tests {
         let r2 = plan.execute(&inputs, &resolver, &graph, &mut b2).unwrap();
         assert_eq!(r2.edges.len(), 2);
         let any_dead = r2.edges.iter().any(|e| !e.projected.is_live);
-        assert!(any_dead, "superseded edge must be present and annotated dead");
+        assert!(
+            any_dead,
+            "superseded edge must be present and annotated dead"
+        );
         // GUARD-3: superseded row carries its `superseded_at` for audit.
         let dead = r2
             .edges
@@ -1344,11 +1332,7 @@ mod tests {
         assert_eq!(r.anchors.len(), 1);
         assert_eq!(r.anchors[0].entity_id, a);
         // Only the allowed entity's memories were fetched.
-        let mids: Vec<&str> = r
-            .memories
-            .iter()
-            .map(|m| m.memory_id.as_str())
-            .collect();
+        let mids: Vec<&str> = r.memories.iter().map(|m| m.memory_id.as_str()).collect();
         assert_eq!(mids, vec!["ma"]);
     }
 
@@ -1373,7 +1357,9 @@ mod tests {
             },
         ]);
         let mut bg = budget();
-        let r = plan.execute(&make_inputs("q"), &resolver, &graph, &mut bg).unwrap();
+        let r = plan
+            .execute(&make_inputs("q"), &resolver, &graph, &mut bg)
+            .unwrap();
         assert_eq!(r.anchors[0].entity_id, id_lo);
         assert_eq!(r.anchors[1].entity_id, id_hi);
     }
@@ -1394,8 +1380,7 @@ mod tests {
         ));
         // No-entity-resolved → NoEntityFound (T12).
         assert!(matches!(
-            FactualOutcome::DowngradedNoEntity { reason: "x" }
-                .to_retrieval_outcome(false),
+            FactualOutcome::DowngradedNoEntity { reason: "x" }.to_retrieval_outcome(false),
             RetrievalOutcome::NoEntityFound { .. }
         ));
         // No-edges → EntityFoundNoEdges.
@@ -1726,7 +1711,12 @@ mod tests {
 
         let mut b = budget();
         let result = plan
-            .execute(&make_inputs("which year audrey adopt dogs"), &resolver, &graph, &mut b)
+            .execute(
+                &make_inputs("which year audrey adopt dogs"),
+                &resolver,
+                &graph,
+                &mut b,
+            )
             .unwrap();
 
         assert_eq!(result.outcome, FactualOutcome::Ok);

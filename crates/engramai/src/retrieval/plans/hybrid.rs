@@ -119,10 +119,8 @@ pub fn select_subplans(
         (SignalKind::Affective, scores.affective),
     ];
 
-    let mut strong: Vec<(SignalKind, f64)> = all
-        .into_iter()
-        .filter(|(_, s)| *s >= tau_high)
-        .collect();
+    let mut strong: Vec<(SignalKind, f64)> =
+        all.into_iter().filter(|(_, s)| *s >= tau_high).collect();
 
     // Highest score first; ties broken by SignalKind ordinal (stable).
     strong.sort_by(|a, b| {
@@ -213,11 +211,13 @@ impl HybridItemId {
 
 impl Ord for HybridItemId {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.kind_tag().cmp(&other.kind_tag()).then_with(|| match (self, other) {
-            (HybridItemId::Memory(a), HybridItemId::Memory(b)) => a.cmp(b),
-            (HybridItemId::Topic(a), HybridItemId::Topic(b)) => a.cmp(b),
-            _ => Ordering::Equal,
-        })
+        self.kind_tag()
+            .cmp(&other.kind_tag())
+            .then_with(|| match (self, other) {
+                (HybridItemId::Memory(a), HybridItemId::Memory(b)) => a.cmp(b),
+                (HybridItemId::Topic(a), HybridItemId::Topic(b)) => a.cmp(b),
+                _ => Ordering::Equal,
+            })
     }
 }
 
@@ -375,7 +375,9 @@ pub struct HybridPlan {
 
 impl Default for HybridPlan {
     fn default() -> Self {
-        Self { rrf_k: DEFAULT_RRF_K }
+        Self {
+            rrf_k: DEFAULT_RRF_K,
+        }
     }
 }
 
@@ -786,7 +788,10 @@ mod tests {
             &mut exec,
         );
 
-        assert_eq!(res.executed, vec![SubPlanKind::Affective, SubPlanKind::Factual]);
+        assert_eq!(
+            res.executed,
+            vec![SubPlanKind::Affective, SubPlanKind::Factual]
+        );
         let ids: Vec<_> = res.items.iter().map(|r| r.item.clone()).collect();
         assert!(!ids.contains(&mem("must_not_appear")));
         assert!(!ids.iter().any(|i| matches!(i, HybridItem::Topic(_))));

@@ -69,12 +69,24 @@ fn t29_5p3_list_entities_matches_with_mentions() {
     // Link: Alice mentioned in mem-0, mem-1, mem-2 (3 mentions)
     //       Bob   mentioned in mem-0          (1 mention)
     //       Widget mentioned in mem-3, mem-4  (2 mentions)
-    storage.link_memory_entity("mem-0", &alice, "mention").unwrap();
-    storage.link_memory_entity("mem-1", &alice, "mention").unwrap();
-    storage.link_memory_entity("mem-2", &alice, "mention").unwrap();
-    storage.link_memory_entity("mem-0", &bob, "mention").unwrap();
-    storage.link_memory_entity("mem-3", &widget, "mention").unwrap();
-    storage.link_memory_entity("mem-4", &widget, "mention").unwrap();
+    storage
+        .link_memory_entity("mem-0", &alice, "mention")
+        .unwrap();
+    storage
+        .link_memory_entity("mem-1", &alice, "mention")
+        .unwrap();
+    storage
+        .link_memory_entity("mem-2", &alice, "mention")
+        .unwrap();
+    storage
+        .link_memory_entity("mem-0", &bob, "mention")
+        .unwrap();
+    storage
+        .link_memory_entity("mem-3", &widget, "mention")
+        .unwrap();
+    storage
+        .link_memory_entity("mem-4", &widget, "mention")
+        .unwrap();
 
     let legacy = Storage::with_unified_substrate(&db, false)
         .unwrap()
@@ -156,8 +168,7 @@ fn t29_5p3_list_entities_type_filter_matches() {
     let u_ids: std::collections::HashSet<String> =
         unified.iter().map(|(r, _)| r.id.clone()).collect();
 
-    let expected: std::collections::HashSet<String> =
-        [alice, bob].into_iter().collect();
+    let expected: std::collections::HashSet<String> = [alice, bob].into_iter().collect();
     assert_eq!(l_ids, expected, "legacy type=person");
     assert_eq!(u_ids, expected, "unified type=person");
 }

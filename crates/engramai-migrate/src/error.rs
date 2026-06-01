@@ -174,9 +174,7 @@ pub enum MigrationError {
     CheckpointDigestMismatch { phase: String },
 
     /// Backfill batch exceeded `--batch-timeout-secs` twice.
-    #[error(
-        "backfill batch stuck after two timeouts; last attempted memories.id = {last_id}"
-    )]
+    #[error("backfill batch stuck after two timeouts; last attempted memories.id = {last_id}")]
     BatchStuck { last_id: String },
 
     /// `--mid-rollback` invoked on a DB where `migration_complete = 1`.
@@ -220,13 +218,9 @@ impl MigrationError {
             MigrationError::GateReached { .. } => ExitCode::GateReached,
             MigrationError::LockHeld { .. } => ExitCode::LockHeld,
             MigrationError::LockStale { .. } => ExitCode::LockStale,
-            MigrationError::CheckpointDigestMismatch { .. } => {
-                ExitCode::CheckpointDigestMismatch
-            }
+            MigrationError::CheckpointDigestMismatch { .. } => ExitCode::CheckpointDigestMismatch,
             MigrationError::BatchStuck { .. } => ExitCode::BatchStuck,
-            MigrationError::RollbackOnCompletedMigration => {
-                ExitCode::RollbackOnCompletedMigration
-            }
+            MigrationError::RollbackOnCompletedMigration => ExitCode::RollbackOnCompletedMigration,
             MigrationError::DryRunWouldFail(_) => ExitCode::DryRunWouldFail,
             MigrationError::InsufficientDiskSpace { .. } => ExitCode::DiskFull,
         }
@@ -246,13 +240,9 @@ impl MigrationError {
             MigrationError::GateReached { .. } => ErrorTag::GateReached,
             MigrationError::LockHeld { .. } => ErrorTag::LockHeld,
             MigrationError::LockStale { .. } => ErrorTag::LockStale,
-            MigrationError::CheckpointDigestMismatch { .. } => {
-                ErrorTag::CheckpointDigestMismatch
-            }
+            MigrationError::CheckpointDigestMismatch { .. } => ErrorTag::CheckpointDigestMismatch,
             MigrationError::BatchStuck { .. } => ErrorTag::BatchStuck,
-            MigrationError::RollbackOnCompletedMigration => {
-                ErrorTag::RollbackCompletedMigration
-            }
+            MigrationError::RollbackOnCompletedMigration => ErrorTag::RollbackCompletedMigration,
             MigrationError::DryRunWouldFail(_) => ErrorTag::DryRunWouldFail,
             MigrationError::InsufficientDiskSpace { .. } => ErrorTag::DiskFull,
         }
@@ -273,16 +263,16 @@ impl MigrationError {
 
             // Yes / Partial / Maybe
             MigrationError::BackupFailed { .. } => true, // Yes (re-run from scratch)
-            MigrationError::DdlFailed(_) => true,         // Maybe (MIG_INTERNAL_ERROR)
+            MigrationError::DdlFailed(_) => true,        // Maybe (MIG_INTERNAL_ERROR)
             MigrationError::InvariantViolated(_) => true, // Maybe (MIG_INTERNAL_ERROR)
-            MigrationError::CorruptSource(_) => true,     // Yes (after repair)
-            MigrationError::BackfillFatal(_) => true,     // Yes (DiskFull → resume)
-            MigrationError::Paused => true,               // Yes
+            MigrationError::CorruptSource(_) => true,    // Yes (after repair)
+            MigrationError::BackfillFatal(_) => true,    // Yes (DiskFull → resume)
+            MigrationError::Paused => true,              // Yes
             MigrationError::FailuresPresent { .. } => true, // Partial (retry-failed)
-            MigrationError::GateReached { .. } => true,   // Yes
-            MigrationError::LockStale { .. } => true,     // Yes (after --force-unlock)
+            MigrationError::GateReached { .. } => true,  // Yes
+            MigrationError::LockStale { .. } => true,    // Yes (after --force-unlock)
             MigrationError::CheckpointDigestMismatch { .. } => true, // Yes (with flag)
-            MigrationError::BatchStuck { .. } => true,    // Yes
+            MigrationError::BatchStuck { .. } => true,   // Yes
             MigrationError::InsufficientDiskSpace { .. } => true, // Yes (free space + retry)
         }
     }
@@ -386,9 +376,7 @@ mod tests {
                 "MIG_FAILURES_PRESENT",
             ),
             (
-                MigrationError::GateReached {
-                    phase: "p".into(),
-                },
+                MigrationError::GateReached { phase: "p".into() },
                 ExitCode::GateReached,
                 "MIG_GATE_REACHED",
             ),
@@ -403,9 +391,7 @@ mod tests {
                 "MIG_LOCK_STALE",
             ),
             (
-                MigrationError::CheckpointDigestMismatch {
-                    phase: "p".into(),
-                },
+                MigrationError::CheckpointDigestMismatch { phase: "p".into() },
                 ExitCode::CheckpointDigestMismatch,
                 "MIG_CHECKPOINT_DIGEST_MISMATCH",
             ),
@@ -501,10 +487,7 @@ mod tests {
         // §10.4 "Yes" / "Partial" / "Maybe"
         assert!(MigrationError::Paused.is_resumable());
         assert!(MigrationError::FailuresPresent { count: 1 }.is_resumable());
-        assert!(MigrationError::GateReached {
-            phase: "p".into()
-        }
-        .is_resumable());
+        assert!(MigrationError::GateReached { phase: "p".into() }.is_resumable());
         assert!(MigrationError::LockStale { pid: 1 }.is_resumable());
         assert!(MigrationError::CorruptSource("x".into()).is_resumable());
         assert!(MigrationError::BackfillFatal("x".into()).is_resumable());
@@ -527,6 +510,9 @@ mod tests {
         };
         // thiserror #[source] should expose the io::Error.
         let src = std::error::Error::source(&err);
-        assert!(src.is_some(), "BackupFailed must expose io::Error as source");
+        assert!(
+            src.is_some(),
+            "BackupFailed must expose io::Error as source"
+        );
     }
 }

@@ -71,19 +71,38 @@ fn iss124_update_dual_writes_to_nodes() {
 
     // Verify nodes row reflects the mutation.
     let (content, mtype, layer, importance, working, core, pinned, consol, source): (
-        String, String, String, f64, f64, f64, i64, i64, String,
-    ) = s.conn().query_row(
-        "SELECT content, memory_type, layer, importance,
+        String,
+        String,
+        String,
+        f64,
+        f64,
+        f64,
+        i64,
+        i64,
+        String,
+    ) = s
+        .conn()
+        .query_row(
+            "SELECT content, memory_type, layer, importance,
                 working_strength, core_strength, pinned,
                 consolidation_count, source
          FROM nodes WHERE id = ?1 AND node_kind = 'memory'",
-        params!["m-1"],
-        |row| Ok((
-            row.get(0)?, row.get(1)?, row.get(2)?,
-            row.get(3)?, row.get(4)?, row.get(5)?,
-            row.get(6)?, row.get(7)?, row.get(8)?,
-        )),
-    ).expect("nodes row missing");
+            params!["m-1"],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .expect("nodes row missing");
 
     assert_eq!(content, "new content");
     assert_eq!(mtype, "episodic");
@@ -105,33 +124,44 @@ fn iss124_update_content_dual_writes_to_nodes() {
     let r = rec("m-2", "before");
     s.add(&r, "default").expect("add");
 
-    s.update_content("m-2", "after", None).expect("update_content");
+    s.update_content("m-2", "after", None)
+        .expect("update_content");
 
     // (1) Column on nodes reflects the new content.
-    let content: String = s.conn().query_row(
-        "SELECT content FROM nodes WHERE id = ?1 AND node_kind = 'memory'",
-        params!["m-2"],
-        |row| row.get(0),
-    ).expect("nodes row missing");
+    let content: String = s
+        .conn()
+        .query_row(
+            "SELECT content FROM nodes WHERE id = ?1 AND node_kind = 'memory'",
+            params!["m-2"],
+            |row| row.get(0),
+        )
+        .expect("nodes row missing");
     assert_eq!(content, "after");
 
     // (2) FTS on the unified substrate finds the new content, not the old.
     let unified = Storage::with_unified_substrate(&path, true).unwrap();
-    let hits: Vec<String> = unified.search_fts("after", 10)
+    let hits: Vec<String> = unified
+        .search_fts("after", 10)
         .expect("unified search")
         .into_iter()
         .map(|r| r.id)
         .collect();
-    assert_eq!(hits, vec!["m-2".to_string()],
-        "ISS-124: unified search_fts must find updated content");
+    assert_eq!(
+        hits,
+        vec!["m-2".to_string()],
+        "ISS-124: unified search_fts must find updated content"
+    );
 
-    let stale: Vec<String> = unified.search_fts("before", 10)
+    let stale: Vec<String> = unified
+        .search_fts("before", 10)
         .expect("unified search before")
         .into_iter()
         .map(|r| r.id)
         .collect();
-    assert!(stale.is_empty(),
-        "ISS-124: unified search_fts must NOT find pre-update content");
+    assert!(
+        stale.is_empty(),
+        "ISS-124: unified search_fts must NOT find pre-update content"
+    );
 }
 
 #[test]
@@ -146,14 +176,20 @@ fn iss124_update_importance_dual_writes_to_nodes() {
 
     s.update_importance("m-3", 0.9).expect("update_importance");
 
-    let importance: f64 = s.conn().query_row(
-        "SELECT importance FROM nodes WHERE id = ?1 AND node_kind = 'memory'",
-        params!["m-3"],
-        |row| row.get(0),
-    ).expect("nodes row missing");
+    let importance: f64 = s
+        .conn()
+        .query_row(
+            "SELECT importance FROM nodes WHERE id = ?1 AND node_kind = 'memory'",
+            params!["m-3"],
+            |row| row.get(0),
+        )
+        .expect("nodes row missing");
 
-    assert!((importance - 0.9).abs() < 1e-9,
-        "ISS-124: update_importance must mirror onto nodes (got {})", importance);
+    assert!(
+        (importance - 0.9).abs() < 1e-9,
+        "ISS-124: update_importance must mirror onto nodes (got {})",
+        importance
+    );
 }
 
 #[test]
@@ -172,11 +208,14 @@ fn iss124_update_idempotent_no_divergence() {
     s.update(&r2).expect("update 1");
     s.update(&r2).expect("update 2");
 
-    let importance: f64 = s.conn().query_row(
-        "SELECT importance FROM nodes WHERE id = ?1",
-        params!["m-4"],
-        |row| row.get(0),
-    ).expect("nodes row missing");
+    let importance: f64 = s
+        .conn()
+        .query_row(
+            "SELECT importance FROM nodes WHERE id = ?1",
+            params!["m-4"],
+            |row| row.get(0),
+        )
+        .expect("nodes row missing");
     assert!((importance - 0.7).abs() < 1e-9);
 }
 
@@ -196,27 +235,33 @@ fn iss124_update_on_missing_node_is_silent_noop() {
     s.add(&r, "default").expect("add");
 
     // Wipe the nodes row to simulate the legacy-only state.
-    s.conn().execute(
-        "DELETE FROM nodes WHERE id = ?1",
-        params!["m-5"],
-    ).expect("wipe nodes");
+    s.conn()
+        .execute("DELETE FROM nodes WHERE id = ?1", params!["m-5"])
+        .expect("wipe nodes");
 
     // update / update_content / update_importance must all succeed
     // even though the nodes mirror has no row to update.
     let mut r2 = r.clone();
     r2.importance = 0.9;
     s.update(&r2).expect("update on missing node");
-    s.update_content("m-5", "new", None).expect("update_content on missing node");
-    s.update_importance("m-5", 0.5).expect("update_importance on missing node");
+    s.update_content("m-5", "new", None)
+        .expect("update_content on missing node");
+    s.update_importance("m-5", 0.5)
+        .expect("update_importance on missing node");
 
     // Confirm: still no nodes row (no accidental re-creation).
-    let count: i64 = s.conn().query_row(
-        "SELECT COUNT(*) FROM nodes WHERE id = ?1",
-        params!["m-5"],
-        |row| row.get(0),
-    ).unwrap();
-    assert_eq!(count, 0,
-        "ISS-124: UPDATE family must NOT INSERT nodes rows — backfill owns that");
+    let count: i64 = s
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id = ?1",
+            params!["m-5"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "ISS-124: UPDATE family must NOT INSERT nodes rows — backfill owns that"
+    );
 }
 
 #[test]
@@ -234,27 +279,46 @@ fn iss124_update_content_preserves_legacy_shim_keys() {
     s.add(&r, "default").expect("add");
 
     // Verify the shim key landed in nodes.attributes.
-    let attrs_before: Option<String> = s.conn().query_row(
-        "SELECT attributes FROM nodes WHERE id = ?1",
-        params!["m-6"],
-        |row| row.get(0),
-    ).unwrap();
+    let attrs_before: Option<String> = s
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id = ?1",
+            params!["m-6"],
+            |row| row.get(0),
+        )
+        .unwrap();
     let attrs_before = attrs_before.expect("attributes JSON missing");
-    assert!(attrs_before.contains("_legacy_contradicts"),
-        "ISS-119 precondition: _legacy_contradicts must be stamped on insert. Got: {}", attrs_before);
+    assert!(
+        attrs_before.contains("_legacy_contradicts"),
+        "ISS-119 precondition: _legacy_contradicts must be stamped on insert. Got: {}",
+        attrs_before
+    );
 
     // update_content with new metadata that does NOT contain the shim key.
-    s.update_content("m-6", "rewritten", Some(serde_json::json!({"user_tag": "v2"})))
-        .expect("update_content");
+    s.update_content(
+        "m-6",
+        "rewritten",
+        Some(serde_json::json!({"user_tag": "v2"})),
+    )
+    .expect("update_content");
 
-    let attrs_after: Option<String> = s.conn().query_row(
-        "SELECT attributes FROM nodes WHERE id = ?1",
-        params!["m-6"],
-        |row| row.get(0),
-    ).unwrap();
+    let attrs_after: Option<String> = s
+        .conn()
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id = ?1",
+            params!["m-6"],
+            |row| row.get(0),
+        )
+        .unwrap();
     let attrs_after = attrs_after.expect("attributes JSON missing post-update");
-    assert!(attrs_after.contains("_legacy_contradicts"),
-        "ISS-124+ISS-119: update_content must preserve _legacy_* shim keys. Got: {}", attrs_after);
-    assert!(attrs_after.contains("\"user_tag\""),
-        "ISS-124: update_content must apply the new user metadata. Got: {}", attrs_after);
+    assert!(
+        attrs_after.contains("_legacy_contradicts"),
+        "ISS-124+ISS-119: update_content must preserve _legacy_* shim keys. Got: {}",
+        attrs_after
+    );
+    assert!(
+        attrs_after.contains("\"user_tag\""),
+        "ISS-124: update_content must apply the new user metadata. Got: {}",
+        attrs_after
+    );
 }

@@ -499,10 +499,7 @@ fn driver_specs() -> Vec<DriverSpec> {
     ]
 }
 
-fn check_count_parity(
-    conn: &Connection,
-    ns: Option<&str>,
-) -> rusqlite::Result<Vec<DriverCounts>> {
+fn check_count_parity(conn: &Connection, ns: Option<&str>) -> rusqlite::Result<Vec<DriverCounts>> {
     let specs = driver_specs();
     let mut out = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -557,11 +554,7 @@ fn driver_count(
 /// not namespace-filtered because it has no namespace column; that
 /// limitation is documented on `DriverSpec::legacy_has_namespace`
 /// above.
-fn count_unified(
-    conn: &Connection,
-    fp: &Fingerprint,
-    ns: Option<&str>,
-) -> rusqlite::Result<u64> {
+fn count_unified(conn: &Connection, fp: &Fingerprint, ns: Option<&str>) -> rusqlite::Result<u64> {
     match fp {
         Fingerprint::NodeKind { value } => {
             let (sql, has_ns_param) = match ns {
@@ -634,9 +627,8 @@ fn count_edges_predicate_in(
     } else {
         ""
     };
-    let sql = format!(
-        "SELECT COUNT(*) FROM edges WHERE edge_kind = ? {predicate_clause}{ns_clause}"
-    );
+    let sql =
+        format!("SELECT COUNT(*) FROM edges WHERE edge_kind = ? {predicate_clause}{ns_clause}");
     let ns_owned = ns.map(|s| s.to_string());
     let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 + predicates.len());
     params.push(&kind);
@@ -672,9 +664,9 @@ fn build_union_sql(a: &Fingerprint, b: &Fingerprint, with_ns: bool) -> String {
                     placeholders
                 )
             }
-            other => panic!(
-                "Fingerprint::Union only supports EdgeKindPredicateIn leaves; got {other:?}"
-            ),
+            other => {
+                panic!("Fingerprint::Union only supports EdgeKindPredicateIn leaves; got {other:?}")
+            }
         }
     }
     let ns_clause = if with_ns { " AND namespace = ?" } else { "" };
@@ -789,8 +781,7 @@ fn check_audit_consistency(conn: &Connection) -> rusqlite::Result<Vec<AuditViola
         let rows_inserted: i64 = row.get(3)?;
         let rows_skipped_existing: i64 = row.get(4)?;
         let rows_failed: i64 = row.get(5)?;
-        let computed_sum =
-            (rows_inserted + rows_skipped_existing + rows_failed).max(0) as u64;
+        let computed_sum = (rows_inserted + rows_skipped_existing + rows_failed).max(0) as u64;
         Ok(AuditViolation {
             run_id: row.get(0)?,
             legacy_table: row.get(1)?,
@@ -1105,8 +1096,10 @@ fn check_idempotency(
     };
 
     let mut violations = Vec::new();
-    type DriverFn =
-        fn(&mut crate::storage::Storage, Option<&str>) -> rusqlite::Result<crate::substrate::backfill::BackfillRun>;
+    type DriverFn = fn(
+        &mut crate::storage::Storage,
+        Option<&str>,
+    ) -> rusqlite::Result<crate::substrate::backfill::BackfillRun>;
     let drivers: Vec<(&'static str, DriverFn)> = vec![
         ("memories", backfill_memories_to_nodes),
         ("memory_embeddings", backfill_embeddings_to_node_embeddings),
@@ -1114,7 +1107,10 @@ fn check_idempotency(
         ("entity_relations", backfill_entity_relations_to_edges),
         ("memory_entities", backfill_memory_entities_to_edges),
         ("hebbian_links", backfill_hebbian_links_to_edges),
-        ("synthesis_provenance", backfill_synthesis_provenance_to_edges),
+        (
+            "synthesis_provenance",
+            backfill_synthesis_provenance_to_edges,
+        ),
     ];
 
     for (legacy_table, driver) in drivers {
@@ -1210,8 +1206,7 @@ fn parse_legacy_embedding_created_at(text: &str) -> (f64, bool) {
     match chrono::DateTime::parse_from_rfc3339(text) {
         Ok(dt) => {
             let dt_utc = dt.with_timezone(&chrono::Utc);
-            let epoch = dt_utc.timestamp() as f64
-                + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9);
+            let epoch = dt_utc.timestamp() as f64 + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9);
             (epoch, true)
         }
         Err(_) => (0.0, false),
@@ -1250,8 +1245,7 @@ fn spot_check_node_embeddings(
                 rusqlite::params![memory_id, model],
                 |row| {
                     let created_at_text: String = row.get(4)?;
-                    let (epoch, _ok) =
-                        parse_legacy_embedding_created_at(&created_at_text);
+                    let (epoch, _ok) = parse_legacy_embedding_created_at(&created_at_text);
                     Ok(EmbeddingRow {
                         memory_id: row.get(0)?,
                         model: row.get(1)?,
@@ -1339,10 +1333,16 @@ fn compare_embedding_rows(
             legacy_table: "memory_embeddings".into(),
             row_id: row_id.to_string(),
             field: "embedding".into(),
-            legacy: format!("{} bytes (hash {:?})", l.embedding.len(),
-                            blake_short(&l.embedding)),
-            unified: format!("{} bytes (hash {:?})", u.embedding.len(),
-                             blake_short(&u.embedding)),
+            legacy: format!(
+                "{} bytes (hash {:?})",
+                l.embedding.len(),
+                blake_short(&l.embedding)
+            ),
+            unified: format!(
+                "{} bytes (hash {:?})",
+                u.embedding.len(),
+                blake_short(&u.embedding)
+            ),
         });
     }
 
@@ -1483,11 +1483,7 @@ fn spot_check_entities(
     Ok(())
 }
 
-fn compare_entity_rows(
-    l: &EntityRow,
-    u: &EntityRow,
-    out: &mut Vec<ContentMismatch>,
-) {
+fn compare_entity_rows(l: &EntityRow, u: &EntityRow, out: &mut Vec<ContentMismatch>) {
     macro_rules! cmp_field {
         ($field:ident) => {
             if l.$field != u.$field {
@@ -1538,10 +1534,10 @@ fn compare_entity_rows(
     //   (a) JSON values are equal (key-order tolerant)
     //   (b) FINDING-1 invariant: unified.attributes.entity_type ==
     //       legacy.entity_type COLUMN (NOT legacy.metadata.entity_type)
-    let l_attr: serde_json::Value = serde_json::from_str(&l.metadata_or_attributes_json)
-        .unwrap_or(serde_json::Value::Null);
-    let u_attr: serde_json::Value = serde_json::from_str(&u.metadata_or_attributes_json)
-        .unwrap_or(serde_json::Value::Null);
+    let l_attr: serde_json::Value =
+        serde_json::from_str(&l.metadata_or_attributes_json).unwrap_or(serde_json::Value::Null);
+    let u_attr: serde_json::Value =
+        serde_json::from_str(&u.metadata_or_attributes_json).unwrap_or(serde_json::Value::Null);
 
     // (b) FINDING-1: column wins.
     let unified_entity_type = u_attr
@@ -1617,9 +1613,11 @@ fn sample_synthesis_provenance_ids(
     use rand::SeedableRng;
 
     let sql = match ns {
-        Some(_) => "SELECT sp.id FROM synthesis_provenance sp
+        Some(_) => {
+            "SELECT sp.id FROM synthesis_provenance sp
                     INNER JOIN memories mi ON mi.id = sp.insight_id
-                    WHERE mi.namespace = ?",
+                    WHERE mi.namespace = ?"
+        }
         None => "SELECT id FROM synthesis_provenance",
     };
     let mut stmt = conn.prepare(sql)?;
@@ -1673,8 +1671,7 @@ fn spot_check_synthesis_provenance(
                 rusqlite::params![id],
                 |row| {
                     let synth_ts: String = row.get(5)?;
-                    let (epoch, _) =
-                        parse_legacy_embedding_created_at(&synth_ts);
+                    let (epoch, _) = parse_legacy_embedding_created_at(&synth_ts);
 
                     // Re-derive expected attributes JSON per the
                     // T25 driver formula (§5.3): {gate_decision,
@@ -1715,9 +1712,8 @@ fn spot_check_synthesis_provenance(
                             );
                         }
                     }
-                    let attrs_json = serde_json::to_string(
-                        &serde_json::Value::Object(attrs),
-                    ).unwrap_or_else(|_| "{}".to_string());
+                    let attrs_json = serde_json::to_string(&serde_json::Value::Object(attrs))
+                        .unwrap_or_else(|_| "{}".to_string());
 
                     Ok(SynthesisProvenanceRow {
                         id: row.get(0)?,
@@ -1822,10 +1818,10 @@ fn compare_synthesis_rows(
         });
     }
 
-    let l_attr: serde_json::Value = serde_json::from_str(&l.attributes_json)
-        .unwrap_or(serde_json::Value::Null);
-    let u_attr: serde_json::Value = serde_json::from_str(&u.attributes_json)
-        .unwrap_or(serde_json::Value::Null);
+    let l_attr: serde_json::Value =
+        serde_json::from_str(&l.attributes_json).unwrap_or(serde_json::Value::Null);
+    let u_attr: serde_json::Value =
+        serde_json::from_str(&u.attributes_json).unwrap_or(serde_json::Value::Null);
     if l_attr != u_attr {
         out.push(ContentMismatch {
             legacy_table: "synthesis_provenance".into(),
@@ -2123,10 +2119,12 @@ fn sample_memory_entities_triples(
     use rand::SeedableRng;
 
     let sql = match ns {
-        Some(_) => "SELECT me.memory_id, me.entity_id, me.role
+        Some(_) => {
+            "SELECT me.memory_id, me.entity_id, me.role
                     FROM memory_entities me
                     INNER JOIN memories m ON m.id = me.memory_id
-                    WHERE m.namespace = ?",
+                    WHERE m.namespace = ?"
+        }
         None => "SELECT memory_id, entity_id, role FROM memory_entities",
     };
     let mut stmt = conn.prepare(sql)?;
@@ -2170,17 +2168,10 @@ fn spot_check_hebbian_links(
     opts: &VerifyOpts,
     out: &mut Vec<ContentMismatch>,
 ) -> rusqlite::Result<()> {
-    use crate::substrate::backfill::{
-        backfill_hebbian_links_to_edges_hash_input, uuid_from_hash,
-    };
+    use crate::substrate::backfill::{backfill_hebbian_links_to_edges_hash_input, uuid_from_hash};
     use rusqlite::OptionalExtension;
 
-    let rows = sample_hebbian_rows(
-        conn,
-        ns,
-        opts.spot_check_sample_size,
-        opts.spot_check_seed,
-    )?;
+    let rows = sample_hebbian_rows(conn, ns, opts.spot_check_sample_size, opts.spot_check_seed)?;
 
     for (source_id, target_id, namespace, signal_source, strength, coact, tfwd, tbwd) in rows {
         let (lo, hi) = if source_id < target_id {
@@ -2188,9 +2179,8 @@ fn spot_check_hebbian_links(
         } else {
             (target_id.clone(), source_id.clone())
         };
-        let hash_input = backfill_hebbian_links_to_edges_hash_input(
-            &lo, &hi, &namespace, &signal_source,
-        );
+        let hash_input =
+            backfill_hebbian_links_to_edges_hash_input(&lo, &hi, &namespace, &signal_source);
         let expected_id = uuid_from_hash(&hash_input);
 
         let unified: Option<(String, String, String, String, f64, i64, i64, i64)> = conn
@@ -2324,14 +2314,18 @@ fn sample_hebbian_rows(
     use rand::SeedableRng;
 
     let sql = match ns {
-        Some(_) => "SELECT source_id, target_id, namespace,
+        Some(_) => {
+            "SELECT source_id, target_id, namespace,
                            COALESCE(signal_source, 'corecall') AS signal_source,
                            strength, coactivation_count, temporal_forward, temporal_backward
-                    FROM hebbian_links WHERE namespace = ?",
-        None => "SELECT source_id, target_id, namespace,
+                    FROM hebbian_links WHERE namespace = ?"
+        }
+        None => {
+            "SELECT source_id, target_id, namespace,
                         COALESCE(signal_source, 'corecall') AS signal_source,
                         strength, coactivation_count, temporal_forward, temporal_backward
-                 FROM hebbian_links",
+                 FROM hebbian_links"
+        }
     };
     let mut stmt = conn.prepare(sql)?;
     let rows: Vec<_> = match ns {

@@ -97,7 +97,16 @@ fn t12_add_memory_dual_writes_to_nodes() {
                 "SELECT importance, working_strength, core_strength, pinned,
                         consolidation_count, source FROM nodes WHERE id = ?1",
                 params![rec.id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
             )
             .unwrap();
         assert!((n_imp - rec.importance).abs() < 1e-12, "importance drift");
@@ -176,7 +185,10 @@ fn t12_add_memory_dual_writes_to_nodes() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(fts_rows, 1, "nodes_fts got a duplicate row after failed second add");
+    assert_eq!(
+        fts_rows, 1,
+        "nodes_fts got a duplicate row after failed second add"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -348,11 +360,11 @@ fn t12_supersede_bulk_dual_writes_to_nodes() {
 // T13 — ResolutionPipeline entity + edge dual-write
 // ===========================================================================
 
+use engramai::graph::storage_graph::init_graph_tables;
+use engramai::graph::store::SqliteGraphStore;
 use engramai::graph::{
     CanonicalPredicate, Edge, EdgeEnd, Entity, EntityKind, Predicate, ResolutionMethod,
 };
-use engramai::graph::store::SqliteGraphStore;
-use engramai::graph::storage_graph::init_graph_tables;
 use rusqlite::Connection;
 use uuid::Uuid;
 
@@ -393,8 +405,7 @@ fn t13_insert_entity_dual_writes_to_nodes_kind_entity() {
     let eid = e.id;
     {
         let mut store = SqliteGraphStore::new(&mut conn);
-        engramai::graph::store::GraphWrite::insert_entity(&mut store, &e)
-            .expect("insert_entity");
+        engramai::graph::store::GraphWrite::insert_entity(&mut store, &e).expect("insert_entity");
     }
 
     // Legacy row landed.
@@ -449,10 +460,8 @@ fn t13_insert_edge_dual_writes_to_unified_edges() {
     // inserted memory_id is NULL. init_graph_tables does NOT create
     // `memories` (that's owned by Storage::open in the legacy
     // bootstrap), so we create a minimal stub here. No rows needed.
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, content TEXT);",
-    )
-    .unwrap();
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, content TEXT);")
+        .unwrap();
 
     let subj_e = sample_entity("Bob");
     let obj_e = sample_entity("Acme");
@@ -581,7 +590,14 @@ fn t14_record_association_dual_writes_to_edges() {
     let (a, b) = seed_two_memories(&mut storage);
 
     storage
-        .record_association(&a, &b, 0.5, "entity", r#"{"entity_overlap":0.4}"#, "default")
+        .record_association(
+            &a,
+            &b,
+            0.5,
+            "entity",
+            r#"{"entity_overlap":0.4}"#,
+            "default",
+        )
         .unwrap();
 
     let conn = storage.conn();
@@ -600,7 +616,12 @@ fn t14_record_association_dual_writes_to_edges() {
 
     // Unified edges row exists with expected typing + payload.
     let (edge_kind, predicate, weight, sig_source, sig_detail, coact): (
-        String, String, f64, String, String, i64,
+        String,
+        String,
+        f64,
+        String,
+        String,
+        i64,
     ) = conn
         .query_row(
             "SELECT edge_kind, predicate, weight, \
@@ -611,13 +632,28 @@ fn t14_record_association_dual_writes_to_edges() {
              WHERE (source_id = ?1 AND target_id = ?2) \
                 OR (source_id = ?2 AND target_id = ?1)",
             params![a, b],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .unwrap();
 
     assert_eq!(edge_kind, "associative", "edge_kind must be 'associative'");
-    assert_eq!(predicate, "co_activated", "predicate must be 'co_activated'");
-    assert!((weight - 0.5).abs() < 1e-9, "first-write weight = delta_weight");
+    assert_eq!(
+        predicate, "co_activated",
+        "predicate must be 'co_activated'"
+    );
+    assert!(
+        (weight - 0.5).abs() < 1e-9,
+        "first-write weight = delta_weight"
+    );
     assert_eq!(sig_source, "entity", "signal_source round-trips");
     assert_eq!(
         sig_detail, r#"{"entity_overlap":0.4}"#,
@@ -736,8 +772,14 @@ fn t14_distinct_signal_source_creates_separate_row() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!((entity_w - 0.5).abs() < 1e-9, "entity weight unaffected by temporal write");
-    assert!((temporal_w - 0.4).abs() < 1e-9, "temporal weight unaffected by entity write");
+    assert!(
+        (entity_w - 0.5).abs() < 1e-9,
+        "entity weight unaffected by temporal write"
+    );
+    assert!(
+        (temporal_w - 0.4).abs() < 1e-9,
+        "temporal weight unaffected by entity write"
+    );
 }
 
 #[test]
@@ -789,7 +831,10 @@ fn t14_reverse_direction_collapses_to_same_row() {
         (weight - 0.7).abs() < 1e-9,
         "weight sums across both directions: 0.4 + 0.3 = 0.7, got {weight}"
     );
-    assert_eq!(coact, 2, "coactivation_count counts both directional writes");
+    assert_eq!(
+        coact, 2,
+        "coactivation_count counts both directional writes"
+    );
 
     // The stored row uses canonical (min, max) ordering — verify.
     let (stored_src, stored_tgt): (String, String) = storage
@@ -824,9 +869,15 @@ fn t14_record_coactivation_ns_dual_writes_with_corecall_signal() {
     // does not "form" the link (strength stays 0), but dual-write still
     // produces one edges row with weight = 3 × 0.1 = 0.3 and
     // coactivation_count = 3. signal_source must be 'corecall'.
-    let _ = storage.record_coactivation_ns(&a, &b, 5, "default").unwrap();
-    let _ = storage.record_coactivation_ns(&a, &b, 5, "default").unwrap();
-    let _ = storage.record_coactivation_ns(&a, &b, 5, "default").unwrap();
+    let _ = storage
+        .record_coactivation_ns(&a, &b, 5, "default")
+        .unwrap();
+    let _ = storage
+        .record_coactivation_ns(&a, &b, 5, "default")
+        .unwrap();
+    let _ = storage
+        .record_coactivation_ns(&a, &b, 5, "default")
+        .unwrap();
 
     let (weight, coact, sig_source): (f64, i64, String) = storage
         .conn()
@@ -843,12 +894,18 @@ fn t14_record_coactivation_ns_dual_writes_with_corecall_signal() {
         )
         .unwrap();
 
-    assert_eq!(sig_source, "corecall", "record_coactivation_ns must tag signal_source='corecall'");
+    assert_eq!(
+        sig_source, "corecall",
+        "record_coactivation_ns must tag signal_source='corecall'"
+    );
     assert!(
         (weight - 0.3).abs() < 1e-9,
         "weight = 3 × 0.1 = 0.3 (sum-accumulating), got {weight}"
     );
-    assert_eq!(coact, 3, "coactivation_count counts every call, regardless of threshold");
+    assert_eq!(
+        coact, 3,
+        "coactivation_count counts every call, regardless of threshold"
+    );
 
     // Legacy hebbian_links still in tracking phase (strength = 0, count = 3).
     let (legacy_strength, legacy_count): (f64, i32) = storage
@@ -1025,8 +1082,7 @@ fn t15_upsert_topic_containment_writes_one_edge_per_member() {
     {
         let conn = storage.connection_mut();
         let mut store = SqliteGraphStore::new(conn).with_namespace("default");
-        engramai::graph::store::GraphWrite::upsert_topic(&mut store, &topic)
-            .expect("upsert_topic");
+        engramai::graph::store::GraphWrite::upsert_topic(&mut store, &topic).expect("upsert_topic");
     }
 
     // Now run the containment dual-write.
@@ -1067,8 +1123,14 @@ fn t15_upsert_topic_containment_writes_one_edge_per_member() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert!((weight - 1.0).abs() < 1e-9, "weight = 1.0 (boolean membership)");
-    assert_eq!(pkind, "canonical", "predicate_kind = 'canonical' for containment");
+    assert!(
+        (weight - 1.0).abs() < 1e-9,
+        "weight = 1.0 (boolean membership)"
+    );
+    assert_eq!(
+        pkind, "canonical",
+        "predicate_kind = 'canonical' for containment"
+    );
     assert_eq!(ns, "default");
 
     // Targets must be the seeded memory ids (no other members snuck in).
@@ -1104,10 +1166,7 @@ fn t15_upsert_topic_containment_is_idempotent() {
         let conn = storage.connection_mut();
         let mut store = SqliteGraphStore::new(conn).with_namespace("default");
         engramai::graph::store::GraphWrite::upsert_topic_containment(
-            &mut store,
-            topic_uuid,
-            &members,
-            "default",
+            &mut store, topic_uuid, &members, "default",
         )
         .expect("upsert_topic_containment");
     }
@@ -1218,7 +1277,13 @@ fn t16_store_raw_dual_writes_with_node_kind_insight() {
     let storage = Storage::new(dir.path().join("t16a.db").to_str().unwrap()).unwrap();
     let insight_id = "t16a-insight";
     storage
-        .store_raw(insight_id, "an insight about ferments", "factual", 0.7, None)
+        .store_raw(
+            insight_id,
+            "an insight about ferments",
+            "factual",
+            0.7,
+            None,
+        )
         .expect("store_raw");
 
     let (node_kind, memory_type, source, content, importance): (
@@ -1237,7 +1302,10 @@ fn t16_store_raw_dual_writes_with_node_kind_insight() {
         )
         .expect("nodes row for insight");
 
-    assert_eq!(node_kind, "insight", "store_raw must dual-write node_kind='insight'");
+    assert_eq!(
+        node_kind, "insight",
+        "store_raw must dual-write node_kind='insight'"
+    );
     assert_eq!(memory_type, "factual");
     assert_eq!(source, "synthesis");
     assert_eq!(content, "an insight about ferments");
@@ -1285,17 +1353,32 @@ fn t16_record_provenance_dual_writes_to_edges() {
 
     // Unified edge present with correct shape.
     let (src, tgt, ek, pk, pred, conf, weight, ns): (
-        String, String, String, String, String, f64, f64, String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        f64,
+        f64,
+        String,
     ) = storage
         .conn()
         .query_row(
             "SELECT source_id, target_id, edge_kind, predicate_kind, predicate, \
                     confidence, weight, namespace FROM edges WHERE id = ?1",
             params!["prov-1"],
-            |r| Ok((
-                r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
-                r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?,
-            )),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
         )
         .expect("unified edges row");
 
@@ -1304,8 +1387,14 @@ fn t16_record_provenance_dual_writes_to_edges() {
     assert_eq!(ek, "provenance");
     assert_eq!(pk, "canonical");
     assert_eq!(pred, "derived_from");
-    assert!((conf - 0.91).abs() < 1e-9, "confidence column = record.confidence");
-    assert!((weight - 1.0).abs() < 1e-9, "provenance weight = 1.0 (presence, not strength)");
+    assert!(
+        (conf - 0.91).abs() < 1e-9,
+        "confidence column = record.confidence"
+    );
+    assert!(
+        (weight - 1.0).abs() < 1e-9,
+        "provenance weight = 1.0 (presence, not strength)"
+    );
     assert_eq!(ns, "default");
 }
 
@@ -1371,7 +1460,10 @@ fn t16_provenance_edge_attributes_embed_gate_metadata_as_nested_json() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!((quality - 0.5).abs() < 1e-9, "gate_scores.quality decodes as f64, not string");
+    assert!(
+        (quality - 0.5).abs() < 1e-9,
+        "gate_scores.quality decodes as f64, not string"
+    );
 
     let member_count: i64 = storage
         .conn()
@@ -1425,7 +1517,10 @@ fn t16_provenance_null_gate_scores_roundtrips_as_null() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(gate_scores_type, "null", "missing gate_scores stored as JSON null");
+    assert_eq!(
+        gate_scores_type, "null",
+        "missing gate_scores stored as JSON null"
+    );
 
     let soi_type: String = storage
         .conn()
@@ -1464,7 +1559,9 @@ fn t16_full_synthesis_flow_atomic_dual_write() {
             confidence: 0.7,
             source_original_importance: Some(0.5),
         };
-        storage.record_provenance(&prov).expect("record_provenance in tx");
+        storage
+            .record_provenance(&prov)
+            .expect("record_provenance in tx");
     }
     storage.commit_transaction().expect("commit tx");
 
@@ -1509,7 +1606,6 @@ fn t16_full_synthesis_flow_atomic_dual_write() {
     expected.sort();
     assert_eq!(targets, expected);
 }
-
 
 // ============================================================================
 // T18 — Read-source map: which retrieval APIs are nodes-backed vs legacy-backed.
@@ -1930,11 +2026,7 @@ fn count_assoc_edges(conn: &rusqlite::Connection, a: &str, b: &str) -> i64 {
 }
 
 /// Fetch (weight, signal_source, coactivation_count) for one edge.
-fn assoc_edge_attrs(
-    conn: &rusqlite::Connection,
-    a: &str,
-    b: &str,
-) -> Option<(f64, String, i64)> {
+fn assoc_edge_attrs(conn: &rusqlite::Connection, a: &str, b: &str) -> Option<(f64, String, i64)> {
     conn.query_row(
         "SELECT weight, \
                 json_extract(attributes, '$.signal_source'), \
@@ -1962,25 +2054,45 @@ fn iss116_record_coactivation_dual_writes_to_edges() {
     let formed = storage.record_coactivation(&a, &b, 2).unwrap();
     assert!(!formed, "threshold=2 not reached on first call");
 
-    assert_eq!(count_assoc_edges(storage.conn(), &a, &b), 1, "one assoc edge after first call");
+    assert_eq!(
+        count_assoc_edges(storage.conn(), &a, &b),
+        1,
+        "one assoc edge after first call"
+    );
     let (w1, sig, coact1) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
-    assert!((w1 - 0.1).abs() < 1e-9, "first call seeds weight=0.1, got {w1}");
-    assert_eq!(sig, "corecall", "signal_source='corecall' for record_coactivation");
+    assert!(
+        (w1 - 0.1).abs() < 1e-9,
+        "first call seeds weight=0.1, got {w1}"
+    );
+    assert_eq!(
+        sig, "corecall",
+        "signal_source='corecall' for record_coactivation"
+    );
     assert_eq!(coact1, 1, "coactivation_count starts at 1");
 
     // Second call — threshold crossed on legacy (strength→1.0).
     // Edges accumulates: weight+=0.1, coactivation_count+=1.
     let formed = storage.record_coactivation(&a, &b, 2).unwrap();
     assert!(formed, "threshold=2 reached on second call");
-    assert_eq!(count_assoc_edges(storage.conn(), &a, &b), 1, "still single row after second call");
+    assert_eq!(
+        count_assoc_edges(storage.conn(), &a, &b),
+        1,
+        "still single row after second call"
+    );
     let (w2, _, coact2) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
-    assert!((w2 - 0.2).abs() < 1e-9, "weight accumulates: 0.1+0.1=0.2, got {w2}");
+    assert!(
+        (w2 - 0.2).abs() < 1e-9,
+        "weight accumulates: 0.1+0.1=0.2, got {w2}"
+    );
     assert_eq!(coact2, 2, "coactivation_count=2 after two calls");
 
     // Third call — legacy strengthens (0.1 cap). Edges keeps adding.
     storage.record_coactivation(&a, &b, 2).unwrap();
     let (w3, _, coact3) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
-    assert!((w3 - 0.3).abs() < 1e-9, "weight=0.3 after three calls, got {w3}");
+    assert!(
+        (w3 - 0.3).abs() < 1e-9,
+        "weight=0.3 after three calls, got {w3}"
+    );
     assert_eq!(coact3, 3);
 }
 
@@ -2000,7 +2112,8 @@ fn iss116_decay_hebbian_links_mirrors_to_edges() {
         .unwrap();
     let (w_pre, _, _) = assoc_edge_attrs(storage.conn(), &a, &b).unwrap();
     assert!((w_pre - 0.5).abs() < 1e-9, "pre-decay edge weight=0.5");
-    let strength_pre: f64 = storage.conn()
+    let strength_pre: f64 = storage
+        .conn()
         .query_row(
             "SELECT strength FROM hebbian_links \
              WHERE (source_id=?1 AND target_id=?2) OR (source_id=?2 AND target_id=?1)",
@@ -2017,7 +2130,8 @@ fn iss116_decay_hebbian_links_mirrors_to_edges() {
         (w_post - 0.4).abs() < 1e-9,
         "edges.weight decayed 0.5 * 0.8 = 0.4, got {w_post}"
     );
-    let strength_post: f64 = storage.conn()
+    let strength_post: f64 = storage
+        .conn()
         .query_row(
             "SELECT strength FROM hebbian_links \
              WHERE (source_id=?1 AND target_id=?2) OR (source_id=?2 AND target_id=?1)",
@@ -2025,7 +2139,10 @@ fn iss116_decay_hebbian_links_mirrors_to_edges() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!((strength_post - 0.4).abs() < 1e-9, "legacy strength matches");
+    assert!(
+        (strength_post - 0.4).abs() < 1e-9,
+        "legacy strength matches"
+    );
 
     // Decay to below 0.1 threshold → prune on both sides.
     // 0.4 * 0.2 = 0.08 < 0.1 → both rows deleted.
@@ -2077,10 +2194,16 @@ fn iss116_decay_hebbian_links_differential_mirrors_to_edges() {
     let conn = storage.conn();
     // AB (corecall): 0.6 * 0.9 = 0.54 — preserved
     let (w_ab, _, _) = assoc_edge_attrs(conn, a, b).unwrap();
-    assert!((w_ab - 0.54).abs() < 1e-9, "corecall edge: 0.6*0.9=0.54, got {w_ab}");
+    assert!(
+        (w_ab - 0.54).abs() < 1e-9,
+        "corecall edge: 0.6*0.9=0.54, got {w_ab}"
+    );
     // AC (entity → else branch): 0.6 * 0.3 = 0.18 — preserved
     let (w_ac, _, _) = assoc_edge_attrs(conn, a, c).unwrap();
-    assert!((w_ac - 0.18).abs() < 1e-9, "entity edge: 0.6*0.3=0.18, got {w_ac}");
+    assert!(
+        (w_ac - 0.18).abs() < 1e-9,
+        "entity edge: 0.6*0.3=0.18, got {w_ac}"
+    );
     // Legacy and unified track the same numbers.
     let strength_ab: f64 = conn
         .query_row(
@@ -2131,7 +2254,10 @@ fn iss116_merge_hebbian_links_mirrors_donor_repoint_to_edges() {
     assert_eq!(count_assoc_edges(conn0, "target", "peer1"), 1);
 
     let transferred = storage.merge_hebbian_links("donor", "target").unwrap();
-    assert!(transferred >= 2, "expect 2 donor neighbours transferred, got {transferred}");
+    assert!(
+        transferred >= 2,
+        "expect 2 donor neighbours transferred, got {transferred}"
+    );
 
     let conn = storage.conn();
     // Donor side completely cleared on both substrates.
@@ -2154,7 +2280,10 @@ fn iss116_merge_hebbian_links_mirrors_donor_repoint_to_edges() {
     // Max-weight semantics: target→peer1 was 0.4, donor→peer1 was 0.7
     // → merged value is 0.7.
     let (w_p1, _, _) = assoc_edge_attrs(conn, "target", "peer1").unwrap();
-    assert!((w_p1 - 0.7).abs() < 1e-9, "max(0.4, 0.7)=0.7 on edges, got {w_p1}");
+    assert!(
+        (w_p1 - 0.7).abs() < 1e-9,
+        "max(0.4, 0.7)=0.7 on edges, got {w_p1}"
+    );
     // target→peer2 is freshly minted at donor's weight (0.3).
     let (w_p2, _, _) = assoc_edge_attrs(conn, "target", "peer2").unwrap();
     assert!((w_p2 - 0.3).abs() < 1e-9, "fresh minted at 0.3, got {w_p2}");
@@ -2198,7 +2327,8 @@ fn iss116_merge_hebbian_links_rejects_self_merge() {
         1,
         "self-merge must NOT wipe the survivor's hebbian neighborhood"
     );
-    let strength: f64 = storage.conn()
+    let strength: f64 = storage
+        .conn()
         .query_row(
             "SELECT strength FROM hebbian_links \
              WHERE (source_id=?1 AND target_id=?2) OR (source_id=?2 AND target_id=?1)",

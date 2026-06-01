@@ -145,13 +145,8 @@ pub struct StorageMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum StoreOutcome {
-    Inserted {
-        id: MemoryId,
-    },
-    Merged {
-        id: MemoryId,
-        similarity: f32,
-    },
+    Inserted { id: MemoryId },
+    Merged { id: MemoryId, similarity: f32 },
 }
 
 impl StoreOutcome {

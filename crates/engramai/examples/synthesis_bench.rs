@@ -20,7 +20,8 @@ fn main() {
         .filter(|m| {
             !m.access_times.is_empty()
                 && m.importance >= config.min_importance
-                && !m.metadata
+                && !m
+                    .metadata
                     .as_ref()
                     .and_then(|md: &serde_json::Value| md.get("is_synthesis"))
                     .and_then(|v: &serde_json::Value| v.as_bool())
@@ -40,7 +41,11 @@ fn main() {
     .expect("cluster discovery failed");
     let total_elapsed = total_start.elapsed();
 
-    println!("[{:.3}s] Complete — {} clusters found", total_elapsed.as_secs_f64(), clusters.len());
+    println!(
+        "[{:.3}s] Complete — {} clusters found",
+        total_elapsed.as_secs_f64(),
+        clusters.len()
+    );
 
     if !clusters.is_empty() {
         println!("\n--- Top 10 clusters ---");
@@ -56,7 +61,11 @@ fn main() {
 
         let sizes: Vec<usize> = clusters.iter().map(|c| c.members.len()).collect();
         let total_clustered: usize = sizes.iter().sum();
-        println!("\nMemories in clusters: {} / {} candidates", total_clustered, candidates.len());
+        println!(
+            "\nMemories in clusters: {} / {} candidates",
+            total_clustered,
+            candidates.len()
+        );
         println!(
             "Cluster sizes: min={}, max={}, median={}",
             sizes.iter().min().unwrap(),

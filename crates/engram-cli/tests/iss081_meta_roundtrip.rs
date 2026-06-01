@@ -92,7 +92,10 @@ fn store_and_recall_round_trips_meta_flag() {
     // Find the row we just stored — could be wrapped in an array of
     // RecallResult, each with a `record.metadata` field.
     let arr = results.as_array().expect("recall --json returns an array");
-    assert!(!arr.is_empty(), "recall returned no rows; stdout was:\n{stdout}");
+    assert!(
+        !arr.is_empty(),
+        "recall returned no rows; stdout was:\n{stdout}"
+    );
 
     let row = arr
         .iter()
@@ -122,7 +125,10 @@ fn store_and_recall_round_trips_meta_flag() {
         user_meta.get("turn_index")
     );
     assert_eq!(
-        user_meta.get("tags").and_then(|v| v.as_array()).map(|a| a.len()),
+        user_meta
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len()),
         Some(2),
         "JSON array must be parsed as array; got {:?}",
         user_meta.get("tags")
@@ -148,7 +154,11 @@ fn meta_repeated_key_is_last_write_wins() {
         ])
         .output()
         .expect("spawn store");
-    assert!(store.status.success(), "store failed: {}", String::from_utf8_lossy(&store.stderr));
+    assert!(
+        store.status.success(),
+        "store failed: {}",
+        String::from_utf8_lossy(&store.stderr)
+    );
 
     let recall = Command::new(engram_bin())
         .args([
@@ -164,8 +174,7 @@ fn meta_repeated_key_is_last_write_wins() {
         .expect("spawn recall");
     assert!(recall.status.success());
 
-    let arr: serde_json::Value =
-        serde_json::from_slice(&recall.stdout).expect("recall json");
+    let arr: serde_json::Value = serde_json::from_slice(&recall.stdout).expect("recall json");
     let row = arr
         .as_array()
         .and_then(|a| a.first())
@@ -174,7 +183,11 @@ fn meta_repeated_key_is_last_write_wins() {
     let k = row
         .pointer("/record/metadata/user/k")
         .and_then(|v| v.as_str());
-    assert_eq!(k, Some("second"), "last-write-wins: expected 'second', got {k:?}");
+    assert_eq!(
+        k,
+        Some("second"),
+        "last-write-wins: expected 'second', got {k:?}"
+    );
 }
 
 #[test]

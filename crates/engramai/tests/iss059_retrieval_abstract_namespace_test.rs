@@ -210,8 +210,8 @@ fn iss059_abstract_query_without_namespace_uses_default() {
         .with_graph_store(&graph_db)
         .expect("install graph store");
 
-    let q = GraphQuery::new("explain the engram architecture overview")
-        .with_intent(Intent::Abstract);
+    let q =
+        GraphQuery::new("explain the engram architecture overview").with_intent(Intent::Abstract);
     // Note: no .with_namespace().
 
     let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
@@ -222,5 +222,8 @@ fn iss059_abstract_query_without_namespace_uses_default() {
          `default` and find the planted topic; got {:?}",
         resp.outcome
     );
-    assert!(!resp.results.is_empty(), "expected at least one scored result");
+    assert!(
+        !resp.results.is_empty(),
+        "expected at least one scored result"
+    );
 }

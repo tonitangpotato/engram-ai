@@ -114,7 +114,10 @@ fn iss199_full_overlap_matches_on_both() {
     // Perfect overlap: |{john,google} ∩ {john,google}| / |union| = 2/2 = 1.0
     assert!((ljac - 1.0).abs() < 1e-9, "legacy jaccard = {ljac}");
     assert!((ujac - 1.0).abs() < 1e-9, "unified jaccard = {ujac}");
-    assert!((ljac - ujac).abs() < 1e-9, "substrates must agree on jaccard");
+    assert!(
+        (ljac - ujac).abs() < 1e-9,
+        "substrates must agree on jaccard"
+    );
 }
 
 #[test]

@@ -294,18 +294,12 @@ fn classify_conflict<P: PidAliveCheck>(
     if existing.hostname != our_hostname {
         // Different host: cannot prove liveness. Always require explicit
         // operator action (LockStale → --force-unlock --i-know-what-im-doing).
-        return MigrationError::LockStale {
-            pid: existing.pid,
-        };
+        return MigrationError::LockStale { pid: existing.pid };
     }
     if liveness.is_alive(existing.pid) {
-        MigrationError::LockHeld {
-            pid: existing.pid,
-        }
+        MigrationError::LockHeld { pid: existing.pid }
     } else {
-        MigrationError::LockStale {
-            pid: existing.pid,
-        }
+        MigrationError::LockStale { pid: existing.pid }
     }
 }
 
@@ -446,8 +440,7 @@ mod tests {
         MigrationLock::acquire(&c, 100, OTHER_HOST, TOOL, T1, &alive_always()).unwrap();
         // Even though we report "alive_always", the foreign-host branch wins
         // before the liveness check (we cannot prove remote liveness).
-        let err =
-            MigrationLock::acquire(&c, 200, HOST, TOOL, T2, &alive_always()).unwrap_err();
+        let err = MigrationLock::acquire(&c, 200, HOST, TOOL, T2, &alive_always()).unwrap_err();
         match err {
             MigrationError::LockStale { pid } => assert_eq!(pid, 100),
             other => panic!("expected LockStale (foreign host), got {:?}", other),
@@ -470,9 +463,8 @@ mod tests {
     fn force_unlock_replaces_holder() {
         let c = fresh();
         MigrationLock::acquire(&c, 100, HOST, TOOL, T1, &alive_always()).unwrap();
-        let acq =
-            MigrationLock::force_unlock_and_acquire(&c, 200, HOST, TOOL, T2, &alive_always())
-                .unwrap();
+        let acq = MigrationLock::force_unlock_and_acquire(&c, 200, HOST, TOOL, T2, &alive_always())
+            .unwrap();
         assert_eq!(acq.holder.pid, 200);
         let h = MigrationLock::load(&c).unwrap().unwrap();
         assert_eq!(h.pid, 200);
@@ -482,9 +474,8 @@ mod tests {
     #[test]
     fn force_unlock_on_unlocked_db_just_acquires() {
         let c = fresh();
-        let acq =
-            MigrationLock::force_unlock_and_acquire(&c, 200, HOST, TOOL, T2, &alive_always())
-                .unwrap();
+        let acq = MigrationLock::force_unlock_and_acquire(&c, 200, HOST, TOOL, T2, &alive_always())
+            .unwrap();
         assert_eq!(acq.holder.pid, 200);
     }
 

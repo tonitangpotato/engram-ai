@@ -111,11 +111,9 @@ pub fn detect_schema_version(conn: &Connection) -> Result<SchemaState, Migration
 
     // schema_version table exists — read MAX(version).
     let version: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(version) FROM schema_version",
-            [],
-            |row| row.get::<_, Option<i64>>(0),
-        )
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get::<_, Option<i64>>(0)
+        })
         .map_err(map_sqlite)?;
 
     match version {
@@ -165,9 +163,7 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool, MigrationError> {
 /// `DISK_SPACE_MULTIPLIER_NUM/DEN` to avoid floating-point drift in the
 /// reported error message.
 pub fn required_free_bytes(db_size_bytes: u64) -> u64 {
-    db_size_bytes
-        .saturating_mul(DISK_SPACE_MULTIPLIER_NUM)
-        / DISK_SPACE_MULTIPLIER_DEN
+    db_size_bytes.saturating_mul(DISK_SPACE_MULTIPLIER_NUM) / DISK_SPACE_MULTIPLIER_DEN
 }
 
 /// Verify the disk has at least 1.1× DB-size free.
@@ -180,10 +176,7 @@ pub fn required_free_bytes(db_size_bytes: u64) -> u64 {
 /// via `std::fs::metadata` — kept out of this fn so tests can stub it).
 /// `available_bytes` is the free space on the partition holding the DB
 /// (caller measures via `statvfs` / equivalent — same rationale).
-pub fn check_disk_space(
-    db_size_bytes: u64,
-    available_bytes: u64,
-) -> Result<(), MigrationError> {
+pub fn check_disk_space(db_size_bytes: u64, available_bytes: u64) -> Result<(), MigrationError> {
     let needed = required_free_bytes(db_size_bytes);
     if available_bytes < needed {
         return Err(MigrationError::InsufficientDiskSpace {
@@ -314,10 +307,8 @@ mod tests {
     }
 
     fn seed_v02_db(conn: &Connection, with_schema_version: bool) {
-        conn.execute_batch(
-            "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT)",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT)")
+            .unwrap();
         if with_schema_version {
             conn.execute_batch(
                 "CREATE TABLE schema_version (\

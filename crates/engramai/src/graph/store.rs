@@ -65,10 +65,10 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::graph::{
+    affect::SomaticFingerprint,
     audit::{ExtractionFailure, PipelineKind, ResolutionTrace, RunStatus},
     delta::{ApplyReport, GraphDelta, GRAPH_DELTA_SCHEMA_VERSION},
     edge::{Edge, EdgeEnd, ResolutionMethod},
-    affect::SomaticFingerprint,
     entity::{normalize_alias, validate_attributes, Entity, EntityKind, HistoryEntry},
     error::GraphError,
     schema::Predicate,
@@ -264,10 +264,7 @@ pub trait GraphRead {
     /// `idx_graph_entities_embed_scan`. Acceptable while entity counts
     /// per namespace stay below ~10⁵. ANN / sqlite-vec integration is a
     /// future ISS — the trait signature does not change when that lands.
-    fn search_candidates(
-        &self,
-        query: &CandidateQuery,
-    ) -> Result<Vec<CandidateMatch>, GraphError>;
+    fn search_candidates(&self, query: &CandidateQuery) -> Result<Vec<CandidateMatch>, GraphError>;
 
     // -------------------------------------------------- Alias / identity
     fn resolve_alias(&self, normalized: &str) -> Result<Option<Uuid>, GraphError>;
@@ -330,11 +327,7 @@ pub trait GraphRead {
     ) -> Result<Vec<Edge>, GraphError>;
     /// As-of query (GOAL-1.5). Edges "believed true" for `subject` at
     /// real-world time `at`. See design §4.2.
-    fn edges_as_of(
-        &self,
-        subject: Uuid,
-        at: DateTime<Utc>,
-    ) -> Result<Vec<Edge>, GraphError>;
+    fn edges_as_of(&self, subject: Uuid, at: DateTime<Utc>) -> Result<Vec<Edge>, GraphError>;
     /// BFS over canonical predicates only (GOAL-1.9). See design §4.2 for
     /// the contract (bounded output, cycle handling, ordering).
     fn traverse(
@@ -351,19 +344,13 @@ pub trait GraphRead {
     fn mentions_of_entity(&self, entity: Uuid) -> Result<EntityMentions, GraphError>;
 
     // ---------------------------------------- Memory ↔ Entity provenance
-    fn entities_linked_to_memory(
-        &self,
-        memory_id: &str,
-    ) -> Result<Vec<Uuid>, GraphError>;
+    fn entities_linked_to_memory(&self, memory_id: &str) -> Result<Vec<Uuid>, GraphError>;
     fn memories_mentioning_entity(
         &self,
         entity: Uuid,
         limit: usize,
     ) -> Result<Vec<String>, GraphError>;
-    fn edges_sourced_from_memory(
-        &self,
-        memory_id: &str,
-    ) -> Result<Vec<Edge>, GraphError>;
+    fn edges_sourced_from_memory(&self, memory_id: &str) -> Result<Vec<Edge>, GraphError>;
 
     // ------------------------------------------------- L5 Knowledge Topics
     fn get_topic(&self, id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError>;
@@ -415,10 +402,7 @@ pub trait GraphRead {
     ) -> Result<Vec<ProposedPredicateStats>, GraphError>;
 
     // ----------------------------------- Visible failures (GOAL-1.12)
-    fn list_failed_episodes(
-        &self,
-        unresolved_only: bool,
-    ) -> Result<Vec<Uuid>, GraphError>;
+    fn list_failed_episodes(&self, unresolved_only: bool) -> Result<Vec<Uuid>, GraphError>;
 
     // -------------------------------------- Namespaces (§4.1 lifecycle)
     fn list_namespaces(&self) -> Result<Vec<String>, GraphError>;
@@ -444,11 +428,7 @@ pub trait GraphWrite: GraphRead {
         identity_confidence: f64,
         agent_affect: Option<Json>,
     ) -> Result<(), GraphError>;
-    fn touch_entity_last_seen(
-        &mut self,
-        id: Uuid,
-        ts: DateTime<Utc>,
-    ) -> Result<(), GraphError>;
+    fn touch_entity_last_seen(&mut self, id: Uuid, ts: DateTime<Utc>) -> Result<(), GraphError>;
 
     // ------------------------------------ Candidate retrieval (ISS-033)
     /// Update the embedding blob for an existing entity (ISS-033).
@@ -571,10 +551,7 @@ pub trait GraphWrite: GraphRead {
         output_summary: Option<Json>,
         error_detail: Option<&str>,
     ) -> Result<(), GraphError>;
-    fn record_resolution_trace(
-        &mut self,
-        t: &ResolutionTrace,
-    ) -> Result<(), GraphError>;
+    fn record_resolution_trace(&mut self, t: &ResolutionTrace) -> Result<(), GraphError>;
 
     // -------------------------------------- Schema registry (GOAL-1.10)
     fn record_predicate_use(
@@ -585,10 +562,7 @@ pub trait GraphWrite: GraphRead {
     ) -> Result<(), GraphError>;
 
     // ----------------------------------- Visible failures (GOAL-1.12)
-    fn record_extraction_failure(
-        &mut self,
-        f: &ExtractionFailure,
-    ) -> Result<(), GraphError>;
+    fn record_extraction_failure(&mut self, f: &ExtractionFailure) -> Result<(), GraphError>;
     fn mark_failure_resolved(
         &mut self,
         failure_id: Uuid,
@@ -614,10 +588,7 @@ pub trait GraphWrite: GraphRead {
     /// This is the **only** intended writer for v03-resolution's
     /// `stage_persist`. Direct CRUD methods on this trait remain available
     /// for tests, migrations, and v03-migration backfill.
-    fn apply_graph_delta(
-        &mut self,
-        delta: &GraphDelta,
-    ) -> Result<ApplyReport, GraphError>;
+    fn apply_graph_delta(&mut self, delta: &GraphDelta) -> Result<ApplyReport, GraphError>;
 
     // ----------------------------------------------- Namespace stamping
     /// Set the namespace tag that subsequent writes (and `search_candidates`
@@ -764,49 +735,46 @@ impl<'a> SqliteGraphStore<'a> {
                AND node_kind IN ('entity','topic')",
         )?;
         let row = stmt
-            .query_row(
-                rusqlite::params![id.to_string(), self.namespace],
-                |row| {
-                    let id_text: String = row.get(0)?;
-                    let node_kind: String = row.get(1)?;
-                    let content: String = row.get(2)?;
-                    let summary: String = row.get(3)?;
-                    let attributes_json: String = row.get(4)?;
-                    let first_seen: f64 = row.get(5)?;
-                    let last_seen: f64 = row.get(6)?;
-                    let created_at: f64 = row.get(7)?;
-                    let updated_at: f64 = row.get(8)?;
-                    let activation: f64 = row.get(9)?;
-                    let agent_affect_json: Option<String> = row.get(10)?;
-                    let arousal: f64 = row.get(11)?;
-                    let importance: f64 = row.get(12)?;
-                    let confidence: f64 = row.get(13)?;
-                    let fp_blob: Option<Vec<u8>> = row.get(14)?;
-                    let history_json: String = row.get(15)?;
-                    let superseded_by: Option<String> = row.get(16)?;
-                    let embedding_blob: Option<Vec<u8>> = row.get(17)?;
-                    Ok((
-                        id_text,
-                        node_kind,
-                        content,
-                        summary,
-                        attributes_json,
-                        first_seen,
-                        last_seen,
-                        created_at,
-                        updated_at,
-                        activation,
-                        agent_affect_json,
-                        arousal,
-                        importance,
-                        confidence,
-                        fp_blob,
-                        history_json,
-                        superseded_by,
-                        embedding_blob,
-                    ))
-                },
-            )
+            .query_row(rusqlite::params![id.to_string(), self.namespace], |row| {
+                let id_text: String = row.get(0)?;
+                let node_kind: String = row.get(1)?;
+                let content: String = row.get(2)?;
+                let summary: String = row.get(3)?;
+                let attributes_json: String = row.get(4)?;
+                let first_seen: f64 = row.get(5)?;
+                let last_seen: f64 = row.get(6)?;
+                let created_at: f64 = row.get(7)?;
+                let updated_at: f64 = row.get(8)?;
+                let activation: f64 = row.get(9)?;
+                let agent_affect_json: Option<String> = row.get(10)?;
+                let arousal: f64 = row.get(11)?;
+                let importance: f64 = row.get(12)?;
+                let confidence: f64 = row.get(13)?;
+                let fp_blob: Option<Vec<u8>> = row.get(14)?;
+                let history_json: String = row.get(15)?;
+                let superseded_by: Option<String> = row.get(16)?;
+                let embedding_blob: Option<Vec<u8>> = row.get(17)?;
+                Ok((
+                    id_text,
+                    node_kind,
+                    content,
+                    summary,
+                    attributes_json,
+                    first_seen,
+                    last_seen,
+                    created_at,
+                    updated_at,
+                    activation,
+                    agent_affect_json,
+                    arousal,
+                    importance,
+                    confidence,
+                    fp_blob,
+                    history_json,
+                    superseded_by,
+                    embedding_blob,
+                ))
+            })
             .optional()?;
 
         let Some(r) = row else { return Ok(None) };
@@ -826,11 +794,9 @@ impl<'a> SqliteGraphStore<'a> {
         };
         let history: Vec<HistoryEntry> = serde_json::from_str(&r.15)?;
         let merged_into: Option<Uuid> = match r.16 {
-            Some(s) => Some(
-                Uuid::parse_str(&s).map_err(|_| {
-                    GraphError::Invariant("nodes.superseded_by is not a valid uuid string")
-                })?,
-            ),
+            Some(s) => Some(Uuid::parse_str(&s).map_err(|_| {
+                GraphError::Invariant("nodes.superseded_by is not a valid uuid string")
+            })?),
             None => None,
         };
         let embedding = entity_embedding_from_blob(r.17, self.embedding_dim)?;
@@ -931,15 +897,13 @@ impl<'a> SqliteGraphStore<'a> {
     /// (text→`EntityKind`, blob→`Vec<f32>`, etc.) happens after the
     /// rusqlite closure to keep the closure infallible w.r.t.
     /// `GraphError`.
-    fn map_candidate_row(
-        row: &rusqlite::Row<'_>,
-    ) -> rusqlite::Result<CandidateRowProjection> {
+    fn map_candidate_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CandidateRowProjection> {
         Ok((
-            row.get::<_, String>(1)?,                      // kind
-            row.get::<_, String>(2)?,                      // canonical_name
-            row.get::<_, f64>(3)?,                         // last_seen
-            row.get::<_, f64>(4)?,                         // identity_confidence
-            row.get::<_, Option<Vec<u8>>>(5)?,             // embedding blob
+            row.get::<_, String>(1)?,          // kind
+            row.get::<_, String>(2)?,          // canonical_name
+            row.get::<_, f64>(3)?,             // last_seen
+            row.get::<_, f64>(4)?,             // identity_confidence
+            row.get::<_, Option<Vec<u8>>>(5)?, // embedding blob
         ))
     }
 
@@ -1279,9 +1243,7 @@ fn dual_write_edge_to_edges(
     // mirroring the legacy `graph_edges` CHECK, so any edge that
     // passes the legacy INSERT will pass here too.
     let target_id_text: Option<String> = match object_entity_blob {
-        Some(blob) if blob.len() == 16 => {
-            Some(Uuid::from_slice(blob).unwrap().to_string())
-        }
+        Some(blob) if blob.len() == 16 => Some(Uuid::from_slice(blob).unwrap().to_string()),
         Some(_) => return Err(GraphError::Invariant("object_entity_id blob length != 16")),
         None => None,
     };
@@ -1467,15 +1429,7 @@ pub(crate) fn dual_write_hebbian_to_edges(
                 )
             )
         "#,
-        rusqlite::params![
-            id,
-            lo,
-            hi,
-            attributes_json,
-            delta_weight,
-            now,
-            namespace,
-        ],
+        rusqlite::params![id, lo, hi, attributes_json, delta_weight, now, namespace,],
     )?;
     Ok(())
 }
@@ -1548,7 +1502,6 @@ pub(crate) fn dual_write_containment_to_edges(
     Ok(())
 }
 
-
 /// `Other("foo")` and the canonical variants both round-trip exactly the
 /// way they do over the wire (single source of truth: the serde derive on
 /// `EntityKind`). For canonical variants this yields a JSON string like
@@ -1618,7 +1571,11 @@ pub(crate) fn merge_legacy_entity_kind(
         // `Entity::attributes` (a JSON object) so this shouldn't fire.
         // If it does, fail loud rather than silently dropping the
         // kind stamp.
-        _ => return Err(GraphError::Invariant("entity attributes must be a JSON object")),
+        _ => {
+            return Err(GraphError::Invariant(
+                "entity attributes must be a JSON object",
+            ))
+        }
     };
     let kind_value = serde_json::to_value(kind)?;
     map.insert(LEGACY_KIND_KEY.to_string(), kind_value);
@@ -1800,7 +1757,9 @@ fn predicate_to_columns(p: &Predicate) -> Result<(&'static str, String), GraphEr
             let label = json
                 .strip_prefix('"')
                 .and_then(|s| s.strip_suffix('"'))
-                .ok_or(GraphError::Invariant("canonical predicate label not a JSON string"))?
+                .ok_or(GraphError::Invariant(
+                    "canonical predicate label not a JSON string",
+                ))?
                 .to_string();
             Ok(("canonical", label))
         }
@@ -1842,8 +1801,8 @@ fn validate_failure_closed_sets(stage: &str, category: &str) -> Result<(), Graph
         CATEGORY_LLM_INVALID_OUTPUT, CATEGORY_LLM_TIMEOUT, CATEGORY_MISSING_CANONICAL,
         CATEGORY_NO_FACTS_EXTRACTED, CATEGORY_QUEUE_FULL, CATEGORY_TIEBREAK_FALLBACK,
         CATEGORY_UNRESOLVED_DEFER, CATEGORY_UNRESOLVED_OBJECT, CATEGORY_UNRESOLVED_SUBJECT,
-        STAGE_DEDUP, STAGE_EDGE_EXTRACT,
-        STAGE_ENTITY_EXTRACT, STAGE_INGEST, STAGE_KNOWLEDGE_COMPILE, STAGE_PERSIST, STAGE_RESOLVE,
+        STAGE_DEDUP, STAGE_EDGE_EXTRACT, STAGE_ENTITY_EXTRACT, STAGE_INGEST,
+        STAGE_KNOWLEDGE_COMPILE, STAGE_PERSIST, STAGE_RESOLVE,
     };
     const STAGES: &[&str] = &[
         STAGE_INGEST,
@@ -2053,9 +2012,7 @@ fn row_to_edge_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<EdgeRowColum
 ///   `"entity"`, else `"literal"`.
 /// * `episode_id` has no unified home (R3) → always `None`.
 /// * `memory_id` ← `source_memory_id` (R4, Phase-B NULL).
-fn row_to_edge_columns_unified(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<EdgeRowColumns> {
+fn row_to_edge_columns_unified(row: &rusqlite::Row<'_>) -> rusqlite::Result<EdgeRowColumns> {
     let id_text: String = row.get(0)?;
     let source_id_text: String = row.get(1)?;
     let predicate_kind: String = row.get(2)?;
@@ -2096,11 +2053,10 @@ fn row_to_edge_columns_unified(
 
     // R5: derive object_kind + the legacy (object_entity_id, object_literal)
     // pair from the unified (target_id, target_literal) discriminator.
-    let (object_kind, object_entity_id): (String, Option<Vec<u8>>) =
-        match &target_id_text {
-            Some(t) => ("entity".to_string(), Some(uuid_text_to_blob(t, 4)?)),
-            None => ("literal".to_string(), None),
-        };
+    let (object_kind, object_entity_id): (String, Option<Vec<u8>>) = match &target_id_text {
+        Some(t) => ("entity".to_string(), Some(uuid_text_to_blob(t, 4)?)),
+        None => ("literal".to_string(), None),
+    };
 
     let invalidated_by_blob: Option<Vec<u8>> = match &invalidated_by_text {
         Some(s) => Some(uuid_text_to_blob(s, 11)?),
@@ -2112,27 +2068,27 @@ fn row_to_edge_columns_unified(
     };
 
     Ok((
-        id_blob,           // 0: id
-        source_id_blob,    // 1: subject_id
-        predicate_kind,    // 2
-        predicate_label,   // 3
-        object_kind,       // 4
-        object_entity_id,  // 5
-        target_literal,    // 6: object_literal
-        summary,           // 7
-        valid_from,        // 8
-        valid_to,          // 9
-        recorded_at,       // 10
-        invalidated_at,    // 11
+        id_blob,             // 0: id
+        source_id_blob,      // 1: subject_id
+        predicate_kind,      // 2
+        predicate_label,     // 3
+        object_kind,         // 4
+        object_entity_id,    // 5
+        target_literal,      // 6: object_literal
+        summary,             // 7
+        valid_from,          // 8
+        valid_to,            // 9
+        recorded_at,         // 10
+        invalidated_at,      // 11
         invalidated_by_blob, // 12
-        supersedes_blob,   // 13
-        None,              // 14: episode_id — no unified home (R3)
-        source_memory_id,  // 15: memory_id ← source_memory_id (R4)
-        resolution_method, // 16
-        activation,        // 17
-        confidence,        // 18
-        agent_affect,      // 19
-        created_at,        // 20
+        supersedes_blob,     // 13
+        None,                // 14: episode_id — no unified home (R3)
+        source_memory_id,    // 15: memory_id ← source_memory_id (R4)
+        resolution_method,   // 16
+        activation,          // 17
+        confidence,          // 18
+        agent_affect,        // 19
+        created_at,          // 20
     ))
 }
 
@@ -2141,8 +2097,8 @@ fn row_to_edge_columns_unified(
 /// because §4.1 has no column for it yet (DevNote #5); migrated edges
 /// will set it explicitly once the migration path lands.
 fn decode_edge_row(c: EdgeRowColumns) -> Result<Edge, GraphError> {
-    let id = Uuid::from_slice(&c.0)
-        .map_err(|_| GraphError::Invariant("edge id blob length != 16"))?;
+    let id =
+        Uuid::from_slice(&c.0).map_err(|_| GraphError::Invariant("edge id blob length != 16"))?;
     let subject_id = Uuid::from_slice(&c.1)
         .map_err(|_| GraphError::Invariant("edge subject_id blob length != 16"))?;
     let predicate = columns_to_predicate(&c.2, &c.3)?;
@@ -2263,8 +2219,8 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             .optional()?;
 
         let Some(r) = row else { return Ok(None) };
-        let id_decoded = Uuid::from_slice(&r.0)
-            .map_err(|_| GraphError::Invariant("uuid blob length != 16"))?;
+        let id_decoded =
+            Uuid::from_slice(&r.0).map_err(|_| GraphError::Invariant("uuid blob length != 16"))?;
         let kind = text_to_kind(&r.2)?;
         let attributes: Json = serde_json::from_str(&r.4)?;
         let agent_affect: Option<Json> = match r.10 {
@@ -2356,9 +2312,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 .map(|s| {
                     Uuid::parse_str(&s)
                         .map(|u| u.as_bytes().to_vec())
-                        .map_err(|_| {
-                            GraphError::Invariant("nodes.id is not a valid uuid string")
-                        })
+                        .map_err(|_| GraphError::Invariant("nodes.id is not a valid uuid string"))
                 })
                 .collect::<Result<_, _>>()?
         } else {
@@ -2389,10 +2343,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         Ok(out)
     }
 
-    fn search_candidates(
-        &self,
-        query: &CandidateQuery,
-    ) -> Result<Vec<CandidateMatch>, GraphError> {
+    fn search_candidates(&self, query: &CandidateQuery) -> Result<Vec<CandidateMatch>, GraphError> {
         // ---- Stage 1: hard cap on top_k. Caller-side `top_k` may be huge;
         // we always bound at MAX_TOP_K to keep memory and latency bounded
         // (§4.2 contract). top_k = 0 is a degenerate but legal request →
@@ -2408,9 +2359,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         // a system-wide misconfiguration.
         if let Some(emb) = query.mention_embedding.as_deref() {
             if emb.len() != self.embedding_dim {
-                return Err(GraphError::Invariant(
-                    "entity embedding dim mismatch",
-                ));
+                return Err(GraphError::Invariant("entity embedding dim mismatch"));
             }
         }
 
@@ -2463,16 +2412,14 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                  LIMIT 1",
             )?;
             let blob: Option<Vec<u8>> = stmt
-                .query_row(
-                    rusqlite::params![&query.namespace, &alias_norm],
-                    |row| row.get::<_, Vec<u8>>(0),
-                )
+                .query_row(rusqlite::params![&query.namespace, &alias_norm], |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })
                 .optional()?;
             match blob {
                 Some(b) => Some(
-                    Uuid::from_slice(&b).map_err(|_| {
-                        GraphError::Invariant("uuid blob length != 16")
-                    })?,
+                    Uuid::from_slice(&b)
+                        .map_err(|_| GraphError::Invariant("uuid blob length != 16"))?,
                 ),
                 None => None,
             }
@@ -2501,8 +2448,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         }
 
         let mut raw: Vec<RawCandidate> = Vec::new();
-        let mut seen_ids: std::collections::HashSet<Uuid> =
-            std::collections::HashSet::new();
+        let mut seen_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
 
         // Alias hit fetch (if any).
         if let Some(aid) = alias_hit_id {
@@ -2586,8 +2532,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             };
             if let Some((kind_text, name, ls, ic, eb)) = row_opt {
                 let kind = text_to_kind(&kind_text)?;
-                let embedding =
-                    entity_embedding_from_blob(eb, self.embedding_dim)?;
+                let embedding = entity_embedding_from_blob(eb, self.embedding_dim)?;
                 raw.push(RawCandidate {
                     id: aid,
                     kind,
@@ -2693,25 +2638,22 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 ))
             };
             let mut stmt = self.conn.prepare_cached(sql)?;
-            let rows: Vec<CandidateScanRow> =
-                if let Some(kp) = &cohort_kind_param {
-                    stmt.query_map(rusqlite::params![&query.namespace, kp], &map_row)?
-                        .collect::<Result<_, _>>()?
-                } else {
-                    stmt.query_map(rusqlite::params![&query.namespace], &map_row)?
-                        .collect::<Result<_, _>>()?
-                };
+            let rows: Vec<CandidateScanRow> = if let Some(kp) = &cohort_kind_param {
+                stmt.query_map(rusqlite::params![&query.namespace, kp], &map_row)?
+                    .collect::<Result<_, _>>()?
+            } else {
+                stmt.query_map(rusqlite::params![&query.namespace], &map_row)?
+                    .collect::<Result<_, _>>()?
+            };
 
             for (id_blob, kind_text, name, ls, ic, eb) in rows {
-                let id = Uuid::from_slice(&id_blob).map_err(|_| {
-                    GraphError::Invariant("uuid blob length != 16")
-                })?;
+                let id = Uuid::from_slice(&id_blob)
+                    .map_err(|_| GraphError::Invariant("uuid blob length != 16"))?;
                 if seen_ids.contains(&id) {
                     continue;
                 }
                 let kind = text_to_kind(&kind_text)?;
-                let embedding =
-                    entity_embedding_from_blob(eb, self.embedding_dim)?;
+                let embedding = entity_embedding_from_blob(eb, self.embedding_dim)?;
                 raw.push(RawCandidate {
                     id,
                     kind,
@@ -2737,40 +2679,33 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         // - embedding_score: cosine vs mention_embedding, or None.
         // - recency_score: linear decay over recency_window, clamped 0..=1.
 
-        let mention_emb_norm = query
-            .mention_embedding
-            .as_ref()
-            .map(|v| Self::l2_norm(v));
+        let mention_emb_norm = query.mention_embedding.as_ref().map(|v| Self::l2_norm(v));
 
         // Recency window seconds; None = unbounded (we use the candidate
         // set's own (max_last_seen - min_last_seen) span as the scale).
-        let recency_window_secs: Option<f64> =
-            query.recency_window.map(|d| d.as_secs_f64());
+        let recency_window_secs: Option<f64> = query.recency_window.map(|d| d.as_secs_f64());
 
         // For unbounded windows, derive the scale from the candidate set.
-        let (min_ls, max_ls) = raw.iter().fold(
-            (f64::INFINITY, f64::NEG_INFINITY),
-            |(lo, hi), c| (lo.min(c.last_seen), hi.max(c.last_seen)),
-        );
+        let (min_ls, max_ls) = raw
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), c| {
+                (lo.min(c.last_seen), hi.max(c.last_seen))
+            });
         let unbounded_span = (max_ls - min_ls).max(1.0); // guard /0
 
         let mut scored: Vec<CandidateMatch> = raw
             .into_iter()
             .map(|c| {
                 let alias_match = alias_hit_id == Some(c.id);
-                let embedding_score = match (
-                    query.mention_embedding.as_ref(),
-                    c.embedding.as_ref(),
-                ) {
+                let embedding_score = match (query.mention_embedding.as_ref(), c.embedding.as_ref())
+                {
                     (Some(mq), Some(ce)) => {
                         // Defensive dim check. Already guarded at decode,
                         // but if someone reuses these structs across stores
                         // configured for different dims, a runtime check
                         // here is cheap and prevents nonsense scores.
                         if mq.len() != ce.len() {
-                            return Err(GraphError::Invariant(
-                                "entity embedding dim mismatch",
-                            ));
+                            return Err(GraphError::Invariant("entity embedding dim mismatch"));
                         }
                         let mq_norm = mention_emb_norm.unwrap_or(1.0);
                         Some(Self::cosine(mq, ce, mq_norm))
@@ -2815,10 +2750,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         }
         Ok(scored)
     }
-    fn resolve_alias(
-        &self,
-        normalized: &str,
-    ) -> Result<Option<Uuid>, GraphError> {
+    fn resolve_alias(&self, normalized: &str) -> Result<Option<Uuid>, GraphError> {
         let norm = normalize_alias(normalized);
         let mut stmt = self.conn.prepare_cached(
             "SELECT canonical_id FROM graph_entity_aliases
@@ -2827,14 +2759,13 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
              LIMIT 1",
         )?;
         let blob: Option<Vec<u8>> = stmt
-            .query_row(
-                rusqlite::params![self.namespace, norm],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
+            .query_row(rusqlite::params![self.namespace, norm], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
             .optional()?;
         let Some(b) = blob else { return Ok(None) };
-        let id = Uuid::from_slice(&b)
-            .map_err(|_| GraphError::Invariant("uuid blob length != 16"))?;
+        let id =
+            Uuid::from_slice(&b).map_err(|_| GraphError::Invariant("uuid blob length != 16"))?;
         Ok(Some(id))
     }
 
@@ -2936,9 +2867,9 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                  AND edge_kind = 'structural'
                                  AND predicate_kind = ?3 AND predicate = ?4
                                ORDER BY recorded_at DESC, id ASC";
-                let mut stmt = self
-                    .conn
-                    .prepare_cached(if valid_only { sql_live } else { sql_all })?;
+                let mut stmt =
+                    self.conn
+                        .prepare_cached(if valid_only { sql_live } else { sql_all })?;
                 let v: Vec<EdgeRowColumns> = stmt
                     .query_map(
                         rusqlite::params![
@@ -2992,9 +2923,9 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                WHERE subject_id = ?1 AND namespace = ?2
                                  AND predicate_kind = ?3 AND predicate_label = ?4
                                ORDER BY recorded_at DESC, id ASC";
-                let mut stmt = self
-                    .conn
-                    .prepare_cached(if valid_only { sql_live } else { sql_all })?;
+                let mut stmt =
+                    self.conn
+                        .prepare_cached(if valid_only { sql_live } else { sql_all })?;
                 let v: Vec<EdgeRowColumns> = stmt
                     .query_map(
                         rusqlite::params![
@@ -3015,8 +2946,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 // discriminator is the (target_id, target_literal) XOR (R5):
                 // an entity object matches `target_id = ?`; a literal object
                 // matches `target_id IS NULL AND target_literal = ?`.
-                let (_object_kind, object_entity_blob, object_literal) =
-                    edge_end_to_columns(obj)?;
+                let (_object_kind, object_entity_blob, object_literal) = edge_end_to_columns(obj)?;
                 let cap = MAX_FIND_EDGES_RESULTS as i64;
 
                 match (&object_entity_blob, &object_literal) {
@@ -3026,9 +2956,9 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                         // legacy blob, to avoid a re-decode round-trip).
                         let target_text = match obj {
                             EdgeEnd::Entity { id } => id.to_string(),
-                            EdgeEnd::Literal { .. } => unreachable!(
-                                "object_entity_blob=Some implies EdgeEnd::Entity"
-                            ),
+                            EdgeEnd::Literal { .. } => {
+                                unreachable!("object_entity_blob=Some implies EdgeEnd::Entity")
+                            }
                         };
                         let sql_live = "SELECT id, source_id,
                                                predicate_kind, predicate,
@@ -3067,9 +2997,11 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                          AND target_id = ?5
                                        ORDER BY recorded_at DESC, id ASC
                                        LIMIT ?6";
-                        let mut stmt = self
-                            .conn
-                            .prepare_cached(if valid_only { sql_live } else { sql_all })?;
+                        let mut stmt = self.conn.prepare_cached(if valid_only {
+                            sql_live
+                        } else {
+                            sql_all
+                        })?;
                         let v: Vec<EdgeRowColumns> = stmt
                             .query_map(
                                 rusqlite::params![
@@ -3126,9 +3058,11 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                          AND target_literal = ?5
                                        ORDER BY recorded_at DESC, id ASC
                                        LIMIT ?6";
-                        let mut stmt = self
-                            .conn
-                            .prepare_cached(if valid_only { sql_live } else { sql_all })?;
+                        let mut stmt = self.conn.prepare_cached(if valid_only {
+                            sql_live
+                        } else {
+                            sql_all
+                        })?;
                         let v: Vec<EdgeRowColumns> = stmt
                             .query_map(
                                 rusqlite::params![
@@ -3153,14 +3087,13 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             }
             Some(obj) => {
                 // ----- Triple lookup: (subject, predicate, object) -----
-                let (object_kind, object_entity_blob, object_literal) =
-                    edge_end_to_columns(obj)?;
+                let (object_kind, object_entity_blob, object_literal) = edge_end_to_columns(obj)?;
                 let cap = MAX_FIND_EDGES_RESULTS as i64;
 
                 match (&object_entity_blob, &object_literal) {
-            (Some(obj_blob), None) => {
-                // Entity-object: full index hit.
-                let sql_live = "SELECT id, subject_id,
+                    (Some(obj_blob), None) => {
+                        // Entity-object: full index hit.
+                        let sql_live = "SELECT id, subject_id,
                                        predicate_kind, predicate_label,
                                        object_kind, object_entity_id, object_literal,
                                        summary,
@@ -3178,7 +3111,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                   AND invalidated_at IS NULL
                                 ORDER BY recorded_at DESC, id ASC
                                 LIMIT ?7";
-                let sql_all = "SELECT id, subject_id,
+                        let sql_all = "SELECT id, subject_id,
                                       predicate_kind, predicate_label,
                                       object_kind, object_entity_id, object_literal,
                                       summary,
@@ -3195,29 +3128,31 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                  AND object_kind = ?5 AND object_entity_id = ?6
                                ORDER BY recorded_at DESC, id ASC
                                LIMIT ?7";
-                let mut stmt = self
-                    .conn
-                    .prepare_cached(if valid_only { sql_live } else { sql_all })?;
-                let v: Vec<EdgeRowColumns> = stmt
-                    .query_map(
-                        rusqlite::params![
-                            subject_blob,
-                            self.namespace,
-                            predicate_kind,
-                            predicate_label,
-                            object_kind,
-                            obj_blob,
-                            cap,
-                        ],
-                        row_to_edge_columns,
-                    )?
-                    .collect::<Result<Vec<_>, _>>()?;
-                v
-            }
-            (None, Some(lit_text)) => {
-                // Literal-object: index narrows on (subj, pred, 'literal', NULL);
-                // literal text equality is an in-row filter.
-                let sql_live = "SELECT id, subject_id,
+                        let mut stmt = self.conn.prepare_cached(if valid_only {
+                            sql_live
+                        } else {
+                            sql_all
+                        })?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![
+                                    subject_blob,
+                                    self.namespace,
+                                    predicate_kind,
+                                    predicate_label,
+                                    object_kind,
+                                    obj_blob,
+                                    cap,
+                                ],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    }
+                    (None, Some(lit_text)) => {
+                        // Literal-object: index narrows on (subj, pred, 'literal', NULL);
+                        // literal text equality is an in-row filter.
+                        let sql_live = "SELECT id, subject_id,
                                        predicate_kind, predicate_label,
                                        object_kind, object_entity_id, object_literal,
                                        summary,
@@ -3236,7 +3171,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                   AND invalidated_at IS NULL
                                 ORDER BY recorded_at DESC, id ASC
                                 LIMIT ?6";
-                let sql_all = "SELECT id, subject_id,
+                        let sql_all = "SELECT id, subject_id,
                                       predicate_kind, predicate_label,
                                       object_kind, object_entity_id, object_literal,
                                       summary,
@@ -3254,27 +3189,33 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                  AND object_literal = ?5
                                ORDER BY recorded_at DESC, id ASC
                                LIMIT ?6";
-                let mut stmt = self
-                    .conn
-                    .prepare_cached(if valid_only { sql_live } else { sql_all })?;
-                let v: Vec<EdgeRowColumns> = stmt
-                    .query_map(
-                        rusqlite::params![
-                            subject_blob,
-                            self.namespace,
-                            predicate_kind,
-                            predicate_label,
-                            lit_text,
-                            cap,
-                        ],
-                        row_to_edge_columns,
-                    )?
-                    .collect::<Result<Vec<_>, _>>()?;
-                v
-            }
-            // edge_end_to_columns produces exactly one of (Some, None) or
-            // (None, Some); this match arm is unreachable in practice.
-            _ => return Err(GraphError::Invariant("EdgeEnd encoded with neither entity nor literal")),
+                        let mut stmt = self.conn.prepare_cached(if valid_only {
+                            sql_live
+                        } else {
+                            sql_all
+                        })?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![
+                                    subject_blob,
+                                    self.namespace,
+                                    predicate_kind,
+                                    predicate_label,
+                                    lit_text,
+                                    cap,
+                                ],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    }
+                    // edge_end_to_columns produces exactly one of (Some, None) or
+                    // (None, Some); this match arm is unreachable in practice.
+                    _ => {
+                        return Err(GraphError::Invariant(
+                            "EdgeEnd encoded with neither entity nor literal",
+                        ))
+                    }
                 }
             }
         };
@@ -3282,7 +3223,10 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         cols.into_iter().map(decode_edge_row).collect()
     }
     fn edges_of(
-        &self, subject: Uuid, predicate: Option<&Predicate>, include_invalidated: bool,
+        &self,
+        subject: Uuid,
+        predicate: Option<&Predicate>,
+        include_invalidated: bool,
     ) -> Result<Vec<Edge>, GraphError> {
         // Four SQL shapes: predicate × include_invalidated. Each branch
         // builds its own prepared-cached statement and `collect`s into
@@ -3362,13 +3306,13 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 }
             }
         } else {
-        let subject_blob = subject.as_bytes().to_vec();
-        match predicate {
-            Some(p) => {
-                let (kind, label) = predicate_to_columns(p)?;
-                if include_invalidated {
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
+            let subject_blob = subject.as_bytes().to_vec();
+            match predicate {
+                Some(p) => {
+                    let (kind, label) = predicate_to_columns(p)?;
+                    if include_invalidated {
+                        let mut stmt = self.conn.prepare_cached(
+                            "SELECT id, subject_id,
                                 predicate_kind, predicate_label,
                                 object_kind, object_entity_id, object_literal,
                                 summary,
@@ -3383,17 +3327,17 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                          WHERE subject_id = ?1 AND namespace = ?2
                            AND predicate_kind = ?3 AND predicate_label = ?4
                          ORDER BY recorded_at DESC, id ASC",
-                    )?;
-                    let v: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![subject_blob, self.namespace, kind, label],
-                            row_to_edge_columns,
-                        )?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    v
-                } else {
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
+                        )?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![subject_blob, self.namespace, kind, label],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    } else {
+                        let mut stmt = self.conn.prepare_cached(
+                            "SELECT id, subject_id,
                                 predicate_kind, predicate_label,
                                 object_kind, object_entity_id, object_literal,
                                 summary,
@@ -3409,20 +3353,20 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                            AND predicate_kind = ?3 AND predicate_label = ?4
                            AND invalidated_at IS NULL
                          ORDER BY recorded_at DESC, id ASC",
-                    )?;
-                    let v: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![subject_blob, self.namespace, kind, label],
-                            row_to_edge_columns,
-                        )?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    v
+                        )?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![subject_blob, self.namespace, kind, label],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    }
                 }
-            }
-            None => {
-                if include_invalidated {
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
+                None => {
+                    if include_invalidated {
+                        let mut stmt = self.conn.prepare_cached(
+                            "SELECT id, subject_id,
                                 predicate_kind, predicate_label,
                                 object_kind, object_entity_id, object_literal,
                                 summary,
@@ -3436,17 +3380,17 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                          FROM graph_edges
                          WHERE subject_id = ?1 AND namespace = ?2
                          ORDER BY recorded_at DESC, id ASC",
-                    )?;
-                    let v: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![subject_blob, self.namespace],
-                            row_to_edge_columns,
-                        )?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    v
-                } else {
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
+                        )?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![subject_blob, self.namespace],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    } else {
+                        let mut stmt = self.conn.prepare_cached(
+                            "SELECT id, subject_id,
                                 predicate_kind, predicate_label,
                                 object_kind, object_entity_id, object_literal,
                                 summary,
@@ -3461,22 +3405,25 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                          WHERE subject_id = ?1 AND namespace = ?2
                            AND invalidated_at IS NULL
                          ORDER BY recorded_at DESC, id ASC",
-                    )?;
-                    let v: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![subject_blob, self.namespace],
-                            row_to_edge_columns,
-                        )?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    v
+                        )?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![subject_blob, self.namespace],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    }
                 }
             }
-        }
         };
         cols.into_iter().map(decode_edge_row).collect()
     }
     fn edges_into(
-        &self, object: Uuid, predicate: Option<&Predicate>, include_invalidated: bool,
+        &self,
+        object: Uuid,
+        predicate: Option<&Predicate>,
+        include_invalidated: bool,
     ) -> Result<Vec<Edge>, GraphError> {
         // Mirror of `edges_of` on the object side (ISS-189). Only
         // entity-object rows can match (`object_entity_id = ?1`), so
@@ -3553,13 +3500,13 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 }
             }
         } else {
-        let object_blob = object.as_bytes().to_vec();
-        match predicate {
-            Some(p) => {
-                let (kind, label) = predicate_to_columns(p)?;
-                if include_invalidated {
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
+            let object_blob = object.as_bytes().to_vec();
+            match predicate {
+                Some(p) => {
+                    let (kind, label) = predicate_to_columns(p)?;
+                    if include_invalidated {
+                        let mut stmt = self.conn.prepare_cached(
+                            "SELECT id, subject_id,
                                 predicate_kind, predicate_label,
                                 object_kind, object_entity_id, object_literal,
                                 summary,
@@ -3574,17 +3521,17 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                          WHERE object_entity_id = ?1 AND namespace = ?2
                            AND predicate_kind = ?3 AND predicate_label = ?4
                          ORDER BY recorded_at DESC, id ASC",
-                    )?;
-                    let v: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![object_blob, self.namespace, kind, label],
-                            row_to_edge_columns,
-                        )?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    v
-                } else {
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
+                        )?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![object_blob, self.namespace, kind, label],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    } else {
+                        let mut stmt = self.conn.prepare_cached(
+                            "SELECT id, subject_id,
                                 predicate_kind, predicate_label,
                                 object_kind, object_entity_id, object_literal,
                                 summary,
@@ -3600,20 +3547,20 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                            AND predicate_kind = ?3 AND predicate_label = ?4
                            AND invalidated_at IS NULL
                          ORDER BY recorded_at DESC, id ASC",
-                    )?;
-                    let v: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![object_blob, self.namespace, kind, label],
-                            row_to_edge_columns,
-                        )?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    v
+                        )?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![object_blob, self.namespace, kind, label],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    }
                 }
-            }
-            None => {
-                if include_invalidated {
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
+                None => {
+                    if include_invalidated {
+                        let mut stmt = self.conn.prepare_cached(
+                            "SELECT id, subject_id,
                                 predicate_kind, predicate_label,
                                 object_kind, object_entity_id, object_literal,
                                 summary,
@@ -3627,17 +3574,17 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                          FROM graph_edges
                          WHERE object_entity_id = ?1 AND namespace = ?2
                          ORDER BY recorded_at DESC, id ASC",
-                    )?;
-                    let v: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![object_blob, self.namespace],
-                            row_to_edge_columns,
-                        )?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    v
-                } else {
-                    let mut stmt = self.conn.prepare_cached(
-                        "SELECT id, subject_id,
+                        )?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![object_blob, self.namespace],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    } else {
+                        let mut stmt = self.conn.prepare_cached(
+                            "SELECT id, subject_id,
                                 predicate_kind, predicate_label,
                                 object_kind, object_entity_id, object_literal,
                                 summary,
@@ -3652,17 +3599,17 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                          WHERE object_entity_id = ?1 AND namespace = ?2
                            AND invalidated_at IS NULL
                          ORDER BY recorded_at DESC, id ASC",
-                    )?;
-                    let v: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![object_blob, self.namespace],
-                            row_to_edge_columns,
-                        )?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    v
+                        )?;
+                        let v: Vec<EdgeRowColumns> = stmt
+                            .query_map(
+                                rusqlite::params![object_blob, self.namespace],
+                                row_to_edge_columns,
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?;
+                        v
+                    }
                 }
             }
-        }
         };
         cols.into_iter().map(decode_edge_row).collect()
     }
@@ -3752,10 +3699,10 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 .collect::<Result<Vec<_>, _>>()?;
             v
         } else {
-        let subject_blob = subject.as_bytes().to_vec();
+            let subject_blob = subject.as_bytes().to_vec();
 
-        let mut stmt = self.conn.prepare_cached(
-            "WITH ranked AS (
+            let mut stmt = self.conn.prepare_cached(
+                "WITH ranked AS (
                 SELECT
                     id, subject_id,
                     predicate_kind, predicate_label,
@@ -3796,14 +3743,14 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             FROM ranked
             WHERE rn = 1
             ORDER BY recorded_at DESC, id ASC",
-        )?;
-        let v: Vec<EdgeRowColumns> = stmt
-            .query_map(
-                rusqlite::params![subject_blob, self.namespace, at_unix],
-                row_to_edge_columns,
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        v
+            )?;
+            let v: Vec<EdgeRowColumns> = stmt
+                .query_map(
+                    rusqlite::params![subject_blob, self.namespace, at_unix],
+                    row_to_edge_columns,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            v
         };
         cols.into_iter().map(decode_edge_row).collect()
     }
@@ -3918,8 +3865,16 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         // the object side. Unified uses source_id/target_id (TEXT); legacy
         // uses subject_id/object_entity_id (BLOB).
         let subj_col: &str = if unified { "source_id" } else { "subject_id" };
-        let obj_col: &str = if unified { "target_id" } else { "object_entity_id" };
-        let pred_col: &str = if unified { "predicate" } else { "predicate_label" };
+        let obj_col: &str = if unified {
+            "target_id"
+        } else {
+            "object_entity_id"
+        };
+        let pred_col: &str = if unified {
+            "predicate"
+        } else {
+            "predicate_label"
+        };
         // Per-node keyed param: TEXT uuid (unified) vs 16-byte BLOB (legacy).
         let node_param = |node: &Uuid| -> Box<dyn rusqlite::ToSql> {
             if unified {
@@ -3928,12 +3883,11 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                 Box::new(node.as_bytes().to_vec())
             }
         };
-        let row_mapper: fn(&rusqlite::Row<'_>) -> rusqlite::Result<EdgeRowColumns> =
-            if unified {
-                row_to_edge_columns_unified
-            } else {
-                row_to_edge_columns
-            };
+        let row_mapper: fn(&rusqlite::Row<'_>) -> rusqlite::Result<EdgeRowColumns> = if unified {
+            row_to_edge_columns_unified
+        } else {
+            row_to_edge_columns
+        };
 
         // 3. BFS state.
         //
@@ -3983,10 +3937,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                     let mut stmt = self.conn.prepare_cached(&sql)?;
                     let node_p = node_param(node);
                     let rows: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params![node_p, self.namespace],
-                            row_mapper,
-                        )?
+                        .query_map(rusqlite::params![node_p, self.namespace], row_mapper)?
                         .collect::<Result<Vec<_>, _>>()?;
                     rows
                 } else {
@@ -4026,10 +3977,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                     let param_refs: Vec<&dyn rusqlite::ToSql> =
                         params.iter().map(|b| b.as_ref()).collect();
                     let rows: Vec<EdgeRowColumns> = stmt
-                        .query_map(
-                            rusqlite::params_from_iter(param_refs),
-                            row_mapper,
-                        )?
+                        .query_map(rusqlite::params_from_iter(param_refs), row_mapper)?
                         .collect::<Result<Vec<_>, _>>()?;
                     rows
                 };
@@ -4094,16 +4042,17 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
 
                 let must_scan_incoming = allowed_canonical.is_empty() || !walk_incoming.is_empty();
                 if must_scan_incoming && output.len() < max_results {
-                    let incoming: Vec<EdgeRowColumns> = if walk_incoming.is_empty() && allowed_canonical.is_empty() {
-                        // No filter → scan all live canonical incoming edges.
-                        // Unified: `object_kind='entity'` ⇒ `target_id IS NOT NULL`.
-                        let obj_kind_scope = if unified {
-                            "AND target_id IS NOT NULL"
-                        } else {
-                            "AND object_kind = 'entity'"
-                        };
-                        let sql = format!(
-                            "SELECT {edge_cols}
+                    let incoming: Vec<EdgeRowColumns> =
+                        if walk_incoming.is_empty() && allowed_canonical.is_empty() {
+                            // No filter → scan all live canonical incoming edges.
+                            // Unified: `object_kind='entity'` ⇒ `target_id IS NOT NULL`.
+                            let obj_kind_scope = if unified {
+                                "AND target_id IS NOT NULL"
+                            } else {
+                                "AND object_kind = 'entity'"
+                            };
+                            let sql = format!(
+                                "SELECT {edge_cols}
                              FROM {edge_table}
                              WHERE {obj_col} = ?1 AND namespace = ?2
                                {kind_scope}
@@ -4111,46 +4060,43 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                AND invalidated_at IS NULL
                                AND predicate_kind = 'canonical'
                              ORDER BY activation DESC, recorded_at DESC, id ASC"
-                        );
-                        let mut stmt = self.conn.prepare_cached(&sql)?;
-                        let node_p = node_param(node);
-                        let rows: Vec<EdgeRowColumns> = stmt
-                            .query_map(
-                                rusqlite::params![node_p, self.namespace],
-                                row_mapper,
-                            )?
-                            .collect::<Result<Vec<_>, _>>()?;
-                        rows
-                    } else if walk_incoming.is_empty() {
-                        // Filter present but no symmetric/inverse → no incoming.
-                        Vec::new()
-                    } else {
-                        // Build label list for symmetric + inverse(directed).
-                        let mut labels: Vec<String> = Vec::new();
-                        for c in &walk_incoming {
-                            match directionality(c) {
-                                Directionality::Symmetric => {
-                                    let pred = Predicate::Canonical(c.clone());
-                                    let (_k, l) = predicate_to_columns(&pred)?;
-                                    labels.push(l);
-                                }
-                                Directionality::Directed { inverse: Some(inv) } => {
-                                    let pred = Predicate::Canonical(inv);
-                                    let (_k, l) = predicate_to_columns(&pred)?;
-                                    labels.push(l);
-                                }
-                                Directionality::Directed { inverse: None } => {}
-                            }
-                        }
-                        if labels.is_empty() {
+                            );
+                            let mut stmt = self.conn.prepare_cached(&sql)?;
+                            let node_p = node_param(node);
+                            let rows: Vec<EdgeRowColumns> = stmt
+                                .query_map(rusqlite::params![node_p, self.namespace], row_mapper)?
+                                .collect::<Result<Vec<_>, _>>()?;
+                            rows
+                        } else if walk_incoming.is_empty() {
+                            // Filter present but no symmetric/inverse → no incoming.
                             Vec::new()
                         } else {
-                            let placeholders = std::iter::repeat("?")
-                                .take(labels.len())
-                                .collect::<Vec<_>>()
-                                .join(",");
-                            let sql = format!(
-                                "SELECT {edge_cols}
+                            // Build label list for symmetric + inverse(directed).
+                            let mut labels: Vec<String> = Vec::new();
+                            for c in &walk_incoming {
+                                match directionality(c) {
+                                    Directionality::Symmetric => {
+                                        let pred = Predicate::Canonical(c.clone());
+                                        let (_k, l) = predicate_to_columns(&pred)?;
+                                        labels.push(l);
+                                    }
+                                    Directionality::Directed { inverse: Some(inv) } => {
+                                        let pred = Predicate::Canonical(inv);
+                                        let (_k, l) = predicate_to_columns(&pred)?;
+                                        labels.push(l);
+                                    }
+                                    Directionality::Directed { inverse: None } => {}
+                                }
+                            }
+                            if labels.is_empty() {
+                                Vec::new()
+                            } else {
+                                let placeholders = std::iter::repeat("?")
+                                    .take(labels.len())
+                                    .collect::<Vec<_>>()
+                                    .join(",");
+                                let sql = format!(
+                                    "SELECT {edge_cols}
                                  FROM {edge_table}
                                  WHERE {obj_col} = ?1 AND namespace = ?2
                                    {kind_scope}
@@ -4159,31 +4105,28 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
                                    AND predicate_kind = 'canonical'
                                    AND {pred_col} IN ({placeholders})
                                  ORDER BY activation DESC, recorded_at DESC, id ASC",
-                                obj_kind_scope = if unified {
-                                    "AND target_id IS NOT NULL"
-                                } else {
-                                    "AND object_kind = 'entity'"
+                                    obj_kind_scope = if unified {
+                                        "AND target_id IS NOT NULL"
+                                    } else {
+                                        "AND object_kind = 'entity'"
+                                    }
+                                );
+                                let mut stmt = self.conn.prepare(&sql)?;
+                                let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                                    Vec::with_capacity(2 + labels.len());
+                                params.push(node_param(node));
+                                params.push(Box::new(self.namespace.clone()));
+                                for l in &labels {
+                                    params.push(Box::new(l.clone()));
                                 }
-                            );
-                            let mut stmt = self.conn.prepare(&sql)?;
-                            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
-                                Vec::with_capacity(2 + labels.len());
-                            params.push(node_param(node));
-                            params.push(Box::new(self.namespace.clone()));
-                            for l in &labels {
-                                params.push(Box::new(l.clone()));
+                                let param_refs: Vec<&dyn rusqlite::ToSql> =
+                                    params.iter().map(|b| b.as_ref()).collect();
+                                let rows: Vec<EdgeRowColumns> = stmt
+                                    .query_map(rusqlite::params_from_iter(param_refs), row_mapper)?
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                rows
                             }
-                            let param_refs: Vec<&dyn rusqlite::ToSql> =
-                                params.iter().map(|b| b.as_ref()).collect();
-                            let rows: Vec<EdgeRowColumns> = stmt
-                                .query_map(
-                                    rusqlite::params_from_iter(param_refs),
-                                    row_mapper,
-                                )?
-                                .collect::<Result<Vec<_>, _>>()?;
-                            rows
-                        }
-                    };
+                        };
 
                     for cols in incoming {
                         if output.len() >= max_results {
@@ -4250,9 +4193,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
         rows.into_iter()
             .map(|b| {
                 Uuid::from_slice(&b).map_err(|_| {
-                    GraphError::Invariant(
-                        "entities_in_episode: entity_id blob is not a valid UUID",
-                    )
+                    GraphError::Invariant("entities_in_episode: entity_id blob is not a valid UUID")
                 })
             })
             .collect()
@@ -4275,8 +4216,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(|b| {
-                Uuid::from_slice(&b)
-                    .map_err(|_| GraphError::Invariant("edge id blob length != 16"))
+                Uuid::from_slice(&b).map_err(|_| GraphError::Invariant("edge id blob length != 16"))
             })
             .collect()
     }
@@ -4325,16 +4265,17 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             }
             if let Some(blob) = ep_blob {
                 let ep = Uuid::from_slice(&blob).map_err(|_| {
-                    GraphError::Invariant(
-                        "mentions_of_entity: episode_id blob is not a valid UUID",
-                    )
+                    GraphError::Invariant("mentions_of_entity: episode_id blob is not a valid UUID")
                 })?;
                 if seen_ep.insert(ep) {
                     episode_ids.push(ep);
                 }
             }
         }
-        Ok(EntityMentions { episode_ids, memory_ids })
+        Ok(EntityMentions {
+            episode_ids,
+            memory_ids,
+        })
     }
     fn entities_linked_to_memory(&self, memory_id: &str) -> Result<Vec<Uuid>, GraphError> {
         // Namespace-scoped: rows from sibling namespaces never leak. Order:
@@ -4345,13 +4286,10 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
              ORDER BY recorded_at ASC, entity_id ASC",
         )?;
         let rows = stmt
-            .query_map(
-                rusqlite::params![memory_id, self.namespace],
-                |row| {
-                    let blob: Vec<u8> = row.get(0)?;
-                    Ok(blob)
-                },
-            )?
+            .query_map(rusqlite::params![memory_id, self.namespace], |row| {
+                let blob: Vec<u8> = row.get(0)?;
+                Ok(blob)
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(|blob| {
@@ -4499,9 +4437,7 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             .into_iter()
             .map(|s| {
                 Uuid::parse_str(&s).map_err(|_| {
-                    GraphError::Invariant(
-                        "contributing_entities entry is not a valid UUID",
-                    )
+                    GraphError::Invariant("contributing_entities entry is not a valid UUID")
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -4509,17 +4445,19 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             Some(s) => Some(serde_json::from_str(&s)?),
             None => None,
         };
-        let synthesis_run_id = match run_blob {
-            None => None,
-            Some(b) => Some(Uuid::from_slice(&b).map_err(|_| {
-                GraphError::Invariant("synthesis_run_id blob is not a valid UUID")
-            })?),
-        };
+        let synthesis_run_id =
+            match run_blob {
+                None => None,
+                Some(b) => Some(Uuid::from_slice(&b).map_err(|_| {
+                    GraphError::Invariant("synthesis_run_id blob is not a valid UUID")
+                })?),
+            };
         let superseded_by = match superseded_by_blob {
             None => None,
-            Some(b) => Some(Uuid::from_slice(&b).map_err(|_| {
-                GraphError::Invariant("superseded_by blob is not a valid UUID")
-            })?),
+            Some(b) => Some(
+                Uuid::from_slice(&b)
+                    .map_err(|_| GraphError::Invariant("superseded_by blob is not a valid UUID"))?,
+            ),
         };
         Ok(Some(KnowledgeTopic {
             topic_id,
@@ -4536,7 +4474,12 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             namespace,
         }))
     }
-    fn list_topics(&self, namespace: &str, include_superseded: bool, limit: usize) -> Result<Vec<KnowledgeTopic>, GraphError> {
+    fn list_topics(
+        &self,
+        namespace: &str,
+        include_superseded: bool,
+        limit: usize,
+    ) -> Result<Vec<KnowledgeTopic>, GraphError> {
         // Caller-supplied namespace overrides the store's default. This is
         // intentional: `list_topics` is a cross-cutting query (knowledge
         // synthesis tooling) that may want to walk all namespaces a user
@@ -4703,31 +4646,38 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
              LIMIT 1",
         )?;
         let row = stmt
-            .query_row(
-                rusqlite::params![memory_id, self.namespace],
-                |row| {
-                    let run_id_blob: Vec<u8> = row.get(0)?;
-                    let kind_str: String = row.get(1)?;
-                    let status_str: String = row.get(2)?;
-                    let started_at: f64 = row.get(3)?;
-                    let finished_at: Option<f64> = row.get(4)?;
-                    let memory_id_opt: Option<String> = row.get(5)?;
-                    let episode_id_blob: Option<Vec<u8>> = row.get(6)?;
-                    let error_detail: Option<String> = row.get(7)?;
-                    Ok((
-                        run_id_blob,
-                        kind_str,
-                        status_str,
-                        started_at,
-                        finished_at,
-                        memory_id_opt,
-                        episode_id_blob,
-                        error_detail,
-                    ))
-                },
-            )
+            .query_row(rusqlite::params![memory_id, self.namespace], |row| {
+                let run_id_blob: Vec<u8> = row.get(0)?;
+                let kind_str: String = row.get(1)?;
+                let status_str: String = row.get(2)?;
+                let started_at: f64 = row.get(3)?;
+                let finished_at: Option<f64> = row.get(4)?;
+                let memory_id_opt: Option<String> = row.get(5)?;
+                let episode_id_blob: Option<Vec<u8>> = row.get(6)?;
+                let error_detail: Option<String> = row.get(7)?;
+                Ok((
+                    run_id_blob,
+                    kind_str,
+                    status_str,
+                    started_at,
+                    finished_at,
+                    memory_id_opt,
+                    episode_id_blob,
+                    error_detail,
+                ))
+            })
             .optional()?;
-        let Some((run_id_blob, kind_str, status_str, started_at, finished_at, memory_id_opt, episode_id_blob, error_detail)) = row else {
+        let Some((
+            run_id_blob,
+            kind_str,
+            status_str,
+            started_at,
+            finished_at,
+            memory_id_opt,
+            episode_id_blob,
+            error_detail,
+        )) = row
+        else {
             return Ok(None);
         };
         // Decode all SQLite-side encodings to canonical Rust types. Each
@@ -4761,7 +4711,10 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             error_detail,
         }))
     }
-    fn list_proposed_predicates(&self, min_usage: u64) -> Result<Vec<ProposedPredicateStats>, GraphError> {
+    fn list_proposed_predicates(
+        &self,
+        min_usage: u64,
+    ) -> Result<Vec<ProposedPredicateStats>, GraphError> {
         // GOAL-1.10: surface drift candidates only — canonical predicates
         // are operator-curated and not "proposed". Filter both by `kind`
         // and `min_usage`. SQLite stores `usage_count` as INTEGER (i64);
@@ -4842,8 +4795,6 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
-
-
 }
 
 impl<'a> GraphWrite for SqliteGraphStore<'a> {
@@ -4864,8 +4815,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
             .somatic_fingerprint
             .as_ref()
             .map(|fp| fp.to_le_bytes().to_vec());
-        let merged_into_blob: Option<Vec<u8>> =
-            e.merged_into.map(|u| u.as_bytes().to_vec());
+        let merged_into_blob: Option<Vec<u8>> = e.merged_into.map(|u| u.as_bytes().to_vec());
         // ISS-033: validate + encode embedding before INSERT. Dim mismatch is
         // a hard error; see `entity_embedding_to_blob` for the contract.
         let embedding_blob: Option<Vec<u8>> =
@@ -4948,9 +4898,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         ] {
             if !v.is_finite() || !(0.0..=1.0).contains(&v) {
                 let _ = name; // name kept for future log-on-failure hook
-                return Err(GraphError::Invariant(
-                    "cognitive scalar out of [0.0, 1.0]",
-                ));
+                return Err(GraphError::Invariant("cognitive scalar out of [0.0, 1.0]"));
             }
         }
         let agent_affect_json = match agent_affect {
@@ -4982,11 +4930,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         Ok(())
     }
 
-    fn touch_entity_last_seen(
-        &mut self,
-        id: Uuid,
-        ts: DateTime<Utc>,
-    ) -> Result<(), GraphError> {
+    fn touch_entity_last_seen(&mut self, id: Uuid, ts: DateTime<Utc>) -> Result<(), GraphError> {
         // Monotonic last_seen: never roll backwards. The CHECK
         // (first_seen <= last_seen) at the schema layer would also reject
         // a write that violates the row invariant, but we want a clear
@@ -4997,11 +4941,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
              SET last_seen = MAX(last_seen, ?1),
                  updated_at = ?1
              WHERE id = ?2 AND namespace = ?3",
-            rusqlite::params![
-                new_ts,
-                id.as_bytes().to_vec(),
-                self.namespace,
-            ],
+            rusqlite::params![new_ts, id.as_bytes().to_vec(), self.namespace,],
         )?;
         if rows == 0 {
             return Err(GraphError::EntityNotFound(id));
@@ -5021,8 +4961,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         // identical regardless of code path. `None` clears the column,
         // which is a legitimate path used by v03-migration cross-dim
         // rewrites — not an operational anti-pattern.
-        let blob: Option<Vec<u8>> =
-            entity_embedding_to_blob(embedding, self.embedding_dim)?;
+        let blob: Option<Vec<u8>> = entity_embedding_to_blob(embedding, self.embedding_dim)?;
         let now = dt_to_unix(Utc::now());
 
         let rows = self.conn.execute(
@@ -5030,12 +4969,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
              SET embedding = ?1,
                  updated_at = ?2
              WHERE id = ?3 AND namespace = ?4",
-            rusqlite::params![
-                blob,
-                now,
-                id.as_bytes().to_vec(),
-                self.namespace,
-            ],
+            rusqlite::params![blob, now, id.as_bytes().to_vec(), self.namespace,],
         )?;
         if rows == 0 {
             return Err(GraphError::EntityNotFound(id));
@@ -5075,8 +5009,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         let norm = normalize_alias(normalized);
         let now = dt_to_unix(Utc::now());
         let canonical_blob = canonical_id.as_bytes().to_vec();
-        let source_blob: Option<Vec<u8>> =
-            source_episode.map(|u| u.as_bytes().to_vec());
+        let source_blob: Option<Vec<u8>> = source_episode.map(|u| u.as_bytes().to_vec());
 
         // ON CONFLICT: the row already exists for this (namespace,
         // normalized, canonical_id) triple. Refresh `alias` (raw form may
@@ -5288,8 +5221,10 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                 break;
             }
 
-            let prior_edges: Vec<Edge> =
-                cols.into_iter().map(decode_edge_row).collect::<Result<Vec<_>, _>>()?;
+            let prior_edges: Vec<Edge> = cols
+                .into_iter()
+                .map(decode_edge_row)
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Re-mint each prior with loser → winner remapping.
             let tx = self.conn.transaction()?;
@@ -5331,8 +5266,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                 successor.validate()?;
 
                 // INSERT successor.
-                let (predicate_kind, predicate_label) =
-                    predicate_to_columns(&successor.predicate)?;
+                let (predicate_kind, predicate_label) = predicate_to_columns(&successor.predicate)?;
                 let (object_kind, object_entity_blob, object_literal) =
                     edge_end_to_columns(&successor.object)?;
                 let resolution_text = resolution_method_to_text(&successor.resolution_method)?;
@@ -5424,8 +5358,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         edge.validate()?;
 
         let (predicate_kind, predicate_label) = predicate_to_columns(&edge.predicate)?;
-        let (object_kind, object_entity_blob, object_literal) =
-            edge_end_to_columns(&edge.object)?;
+        let (object_kind, object_entity_blob, object_literal) = edge_end_to_columns(&edge.object)?;
         let resolution_text = resolution_method_to_text(&edge.resolution_method)?;
         let agent_affect_json = match &edge.agent_affect {
             Some(v) => Some(serde_json::to_string(v)?),
@@ -5542,10 +5475,9 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
              WHERE id = ?1 AND namespace = ?2",
         )?;
         let row: Option<(Option<f64>, Option<Vec<u8>>)> = stmt
-            .query_row(
-                rusqlite::params![prior_blob, self.namespace],
-                |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)),
-            )
+            .query_row(rusqlite::params![prior_blob, self.namespace], |r| {
+                Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+            })
             .optional()?;
 
         let (existing_at, existing_by) = match row {
@@ -5572,7 +5504,9 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
             .conn
             .prepare_cached("SELECT 1 FROM graph_edges WHERE id = ?1 AND namespace = ?2")?;
         let succ_exists: Option<i64> = stmt_succ
-            .query_row(rusqlite::params![succ_blob, self.namespace], |r| r.get::<_, i64>(0))
+            .query_row(rusqlite::params![succ_blob, self.namespace], |r| {
+                r.get::<_, i64>(0)
+            })
             .optional()?;
         if succ_exists.is_none() {
             return Err(GraphError::EdgeNotFound(successor_id));
@@ -5820,9 +5754,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                     if existing != ns {
                         // tx is dropped → automatic rollback. We surface a
                         // structured invariant for the caller.
-                        return Err(GraphError::Invariant(
-                            "cross-namespace memory↔entity link",
-                        ));
+                        return Err(GraphError::Invariant("cross-namespace memory↔entity link"));
                     }
                 }
             }
@@ -5871,8 +5803,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         // change in dim policy propagates to both writers without per-call
         // duplication.
         t.validate_embedding_dim(self.embedding_dim)?;
-        let embedding_blob =
-            entity_embedding_to_blob(t.embedding.as_deref(), self.embedding_dim)?;
+        let embedding_blob = entity_embedding_to_blob(t.embedding.as_deref(), self.embedding_dim)?;
 
         // Vec<String>/Vec<Uuid> persist as JSON TEXT (column default '[]').
         // Serializing here keeps the SQL statement uniform; the schema stores
@@ -5964,7 +5895,12 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         Ok(())
     }
 
-    fn supersede_topic(&mut self, old: Uuid, successor: Uuid, at: DateTime<Utc>) -> Result<(), GraphError> {
+    fn supersede_topic(
+        &mut self,
+        old: Uuid,
+        successor: Uuid,
+        at: DateTime<Utc>,
+    ) -> Result<(), GraphError> {
         // §4.1 GUARD-3: supersede is monotonic, never erase. Mirror
         // `KnowledgeTopic::supersede` semantics — error if the row is already
         // superseded by a *different* successor; idempotent if same successor.
@@ -5978,14 +5914,21 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                 "SELECT superseded_by, superseded_at FROM knowledge_topics
                  WHERE topic_id = ?1 AND namespace = ?2",
                 rusqlite::params![old.as_bytes().to_vec(), self.namespace],
-                |row| Ok((row.get::<_, Option<Vec<u8>>>(0)?, row.get::<_, Option<f64>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<Vec<u8>>>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                    ))
+                },
             )
             .optional()?;
         let Some((cur_by, _cur_at)) = existing else {
             // §4.1: caller must verify the topic exists. Surface a stable
             // invariant so the resolution driver can decide whether to log
             // a "stale supersede target" trace and continue, or escalate.
-            return Err(GraphError::Invariant("supersede_topic: old topic not found"));
+            return Err(GraphError::Invariant(
+                "supersede_topic: old topic not found",
+            ));
         };
         if let Some(blob) = cur_by {
             let existing_succ = Uuid::from_slice(&blob).map_err(|_| {
@@ -6032,7 +5975,11 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
     }
 
     // -------------------------------------------- Pipeline runs (Phase 2)
-    fn begin_pipeline_run(&mut self, kind: PipelineKind, input_summary: Json) -> Result<Uuid, GraphError> {
+    fn begin_pipeline_run(
+        &mut self,
+        kind: PipelineKind,
+        input_summary: Json,
+    ) -> Result<Uuid, GraphError> {
         self.begin_pipeline_run_inner(kind, None, None, input_summary)
     }
     fn begin_pipeline_run_for_memory(
@@ -6053,7 +6000,11 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         self.begin_pipeline_run_inner(kind, Some(memory_id), Some(episode_id), input_summary)
     }
     fn finish_pipeline_run(
-        &mut self, run_id: Uuid, status: RunStatus, output_summary: Option<Json>, error_detail: Option<&str>,
+        &mut self,
+        run_id: Uuid,
+        status: RunStatus,
+        output_summary: Option<Json>,
+        error_detail: Option<&str>,
     ) -> Result<(), GraphError> {
         // §4.2 audit: terminal statuses only (Succeeded | Failed | Cancelled).
         // Reject `Running` — it would silently re-enter the unfinished state
@@ -6108,9 +6059,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                     run_id, written_ns, self.namespace,
                 );
             }
-            return Err(GraphError::Invariant(
-                "finish_pipeline_run: run not found",
-            ));
+            return Err(GraphError::Invariant("finish_pipeline_run: run not found"));
         };
         if cur_status != "running" {
             return Err(GraphError::Invariant(
@@ -6172,7 +6121,12 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
     }
 
     // -------------------------------------------- Predicates (Phase 2)
-    fn record_predicate_use(&mut self, p: &Predicate, raw: &str, at: DateTime<Utc>) -> Result<(), GraphError> {
+    fn record_predicate_use(
+        &mut self,
+        p: &Predicate,
+        raw: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), GraphError> {
         // Single-call variant per design §4.2 — for tests / callers that
         // bypass `apply_graph_delta`. Production hot path uses the in-tx
         // batched counter (`predicate_use_buffer`).
@@ -6225,7 +6179,11 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         )?;
         Ok(())
     }
-    fn mark_failure_resolved(&mut self, failure_id: Uuid, at: DateTime<Utc>) -> Result<(), GraphError> {
+    fn mark_failure_resolved(
+        &mut self,
+        failure_id: Uuid,
+        at: DateTime<Utc>,
+    ) -> Result<(), GraphError> {
         // GOAL-1.12: failures are append-only; `resolved_at` is the only
         // mutable field, and it is monotone — once set, never cleared.
         // Refuse to over-write a non-NULL `resolved_at` to make the
@@ -6285,10 +6243,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
     }
 
     // ----------------------------------------- Atomic apply (Phase 4)
-    fn apply_graph_delta(
-        &mut self,
-        delta: &GraphDelta,
-    ) -> Result<ApplyReport, GraphError> {
+    fn apply_graph_delta(&mut self, delta: &GraphDelta) -> Result<ApplyReport, GraphError> {
         // Design §5bis: atomic, idempotent persistence of a `GraphDelta`.
         // Single SQLite transaction wraps:
         //   (1) idempotence short-circuit  — graph_applied_deltas PK match
@@ -6450,8 +6405,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                 }
                 buf
             });
-            let merged_into_blob: Option<Vec<u8>> =
-                e.merged_into.map(|u| u.as_bytes().to_vec());
+            let merged_into_blob: Option<Vec<u8>> = e.merged_into.map(|u| u.as_bytes().to_vec());
             tx.execute(
                 "INSERT INTO graph_entities (
                     id, canonical_name, kind, summary, attributes,
@@ -6544,8 +6498,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         for alias in &delta.aliases {
             let norm = normalize_alias(&alias.normalized);
             let canonical_blob = alias.canonical_id.as_bytes().to_vec();
-            let source_blob: Option<Vec<u8>> =
-                alias.source_episode.map(|u| u.as_bytes().to_vec());
+            let source_blob: Option<Vec<u8>> = alias.source_episode.map(|u| u.as_bytes().to_vec());
             tx.execute(
                 "INSERT INTO graph_entity_aliases (
                     normalized, canonical_id, alias,
@@ -6753,10 +6706,7 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
         // edges contributed (kind=canonical, label) entries; we INSERT-or-
         // increment so a never-before-seen canonical predicate is registered
         // on first use.
-        let buffered_preds: Vec<(String, u64)> = self
-            .predicate_use_buffer
-            .drain()
-            .collect();
+        let buffered_preds: Vec<(String, u64)> = self.predicate_use_buffer.drain().collect();
         for (label, n) in buffered_preds {
             tx.execute(
                 "INSERT INTO graph_predicates (
@@ -6820,7 +6770,12 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
                 .query_row(
                     "SELECT entity_ids, edge_ids FROM memories WHERE id = ?1",
                     rusqlite::params![memory_id_str],
-                    |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                        ))
+                    },
                 )
                 .optional()
             {
@@ -6889,7 +6844,6 @@ impl<'a> GraphWrite for SqliteGraphStore<'a> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6907,8 +6861,14 @@ mod tests {
 
     #[test]
     fn proposed_predicate_stats_eq() {
-        let a = ProposedPredicateStats { label: "x".into(), usage_count: 3 };
-        let b = ProposedPredicateStats { label: "x".into(), usage_count: 3 };
+        let a = ProposedPredicateStats {
+            label: "x".into(),
+            usage_count: 3,
+        };
+        let b = ProposedPredicateStats {
+            label: "x".into(),
+            usage_count: 3,
+        };
         assert_eq!(a, b);
     }
 
@@ -6936,16 +6896,13 @@ mod tests {
     fn fresh_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory");
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL);")
+            .unwrap();
         // ISS-199: the graph tables' `memory_id` FK now targets `nodes(id)`,
         // so the unit-test harness must provide a real `nodes` table for the
         // FK to resolve at write time. Re-use the production DDL (idempotent)
         // rather than a hand-rolled minimal copy that could drift.
-        crate::storage::Storage::migrate_unified_nodes(&conn)
-            .expect("init nodes table");
+        crate::storage::Storage::migrate_unified_nodes(&conn).expect("init nodes table");
         init_graph_tables(&conn).expect("init graph tables");
         conn
     }
@@ -6975,8 +6932,8 @@ mod tests {
             "somatic_fingerprint"
         );
         assert_eq!(got.embedding, want.embedding, "embedding"); // ISS-033
-        // Timestamps round-trip through f64 so equality is approximate at the
-        // nanosecond level; assert sub-millisecond agreement.
+                                                                // Timestamps round-trip through f64 so equality is approximate at the
+                                                                // nanosecond level; assert sub-millisecond agreement.
         let dt_close = |a: chrono::DateTime<chrono::Utc>, b: chrono::DateTime<chrono::Utc>| {
             (a.timestamp_nanos_opt().unwrap() - b.timestamp_nanos_opt().unwrap()).abs() < 1_000_000
         };
@@ -7054,7 +7011,10 @@ mod tests {
         }
         {
             let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
-            assert!(store_b.get_entity(id).unwrap().is_none(), "hidden from ns_b");
+            assert!(
+                store_b.get_entity(id).unwrap().is_none(),
+                "hidden from ns_b"
+            );
         }
     }
 
@@ -7249,7 +7209,10 @@ mod tests {
             )
             .unwrap();
         let exists: bool = stmt.exists([]).unwrap();
-        assert!(exists, "ISS-033: idx_graph_entities_embed_scan must be present");
+        assert!(
+            exists,
+            "ISS-033: idx_graph_entities_embed_scan must be present"
+        );
     }
 
     #[test]
@@ -7306,18 +7269,12 @@ mod tests {
         assert_eq!(people[1].id, alice.id);
 
         // Limit honored.
-        let limited = store
-            .list_entities_by_kind(&EntityKind::Person, 1)
-            .unwrap();
+        let limited = store.list_entities_by_kind(&EntityKind::Person, 1).unwrap();
         assert_eq!(limited.len(), 1);
         assert_eq!(limited[0].id, bob.id);
 
         // Custom `Other` kind round-trips through serde tag exactly.
-        let robot = Entity::new_random_id(
-            "R2".into(),
-            EntityKind::other("robot"),
-            t0,
-        );
+        let robot = Entity::new_random_id("R2".into(), EntityKind::other("robot"), t0);
         store.insert_entity(&robot).unwrap();
         let robots = store
             .list_entities_by_kind(&EntityKind::other("robot"), 10)
@@ -7398,7 +7355,10 @@ mod tests {
                 )?;
                 Err(GraphError::Invariant("simulated failure"))
             });
-            assert!(matches!(err, Err(GraphError::Invariant("simulated failure"))));
+            assert!(matches!(
+                err,
+                Err(GraphError::Invariant("simulated failure"))
+            ));
             assert!(
                 store.get_entity(bad_id).unwrap().is_none(),
                 "rollback must drop the doomed insert"
@@ -7411,9 +7371,7 @@ mod tests {
         let t = Utc::now();
         let secs = dt_to_unix(t);
         let back = unix_to_dt(secs).unwrap();
-        let drift = (t.timestamp_nanos_opt().unwrap()
-            - back.timestamp_nanos_opt().unwrap())
-        .abs();
+        let drift = (t.timestamp_nanos_opt().unwrap() - back.timestamp_nanos_opt().unwrap()).abs();
         assert!(drift < 1_000_000, "subsecond drift > 1ms: {drift}ns");
     }
 
@@ -7447,7 +7405,10 @@ mod tests {
         assert_eq!(got.supersedes, want.supersedes, "supersedes");
         assert_eq!(got.episode_id, want.episode_id, "episode_id");
         assert_eq!(got.memory_id, want.memory_id, "memory_id");
-        assert_eq!(got.resolution_method, want.resolution_method, "resolution_method");
+        assert_eq!(
+            got.resolution_method, want.resolution_method,
+            "resolution_method"
+        );
         assert_eq!(got.activation, want.activation, "activation");
         assert_eq!(got.confidence, want.confidence, "confidence");
         assert_eq!(got.agent_affect, want.agent_affect, "agent_affect");
@@ -7456,15 +7417,20 @@ mod tests {
             (a.timestamp_nanos_opt().unwrap() - b.timestamp_nanos_opt().unwrap()).abs() < 1_000_000
         };
         let opt_dt_close = |a: Option<chrono::DateTime<chrono::Utc>>,
-                            b: Option<chrono::DateTime<chrono::Utc>>| match (a, b) {
-            (None, None) => true,
-            (Some(x), Some(y)) => dt_close(x, y),
-            _ => false,
+                            b: Option<chrono::DateTime<chrono::Utc>>| {
+            match (a, b) {
+                (None, None) => true,
+                (Some(x), Some(y)) => dt_close(x, y),
+                _ => false,
+            }
         };
         assert!(opt_dt_close(got.valid_from, want.valid_from), "valid_from");
         assert!(opt_dt_close(got.valid_to, want.valid_to), "valid_to");
         assert!(dt_close(got.recorded_at, want.recorded_at), "recorded_at");
-        assert!(opt_dt_close(got.invalidated_at, want.invalidated_at), "invalidated_at");
+        assert!(
+            opt_dt_close(got.invalidated_at, want.invalidated_at),
+            "invalidated_at"
+        );
         assert!(dt_close(got.created_at, want.created_at), "created_at");
     }
 
@@ -7592,7 +7558,10 @@ mod tests {
             eid
         };
         let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
-        assert!(store_b.get_edge(edge_id).unwrap().is_none(), "hidden from ns_b");
+        assert!(
+            store_b.get_edge(edge_id).unwrap().is_none(),
+            "hidden from ns_b"
+        );
     }
 
     #[test]
@@ -7744,8 +7713,12 @@ mod tests {
         let now = Utc::now();
         let subj = insert_subject_entity(&mut store, "Alice");
 
-        let lit_a = EdgeEnd::Literal { value: serde_json::json!(42) };
-        let lit_b = EdgeEnd::Literal { value: serde_json::json!("hello") };
+        let lit_a = EdgeEnd::Literal {
+            value: serde_json::json!(42),
+        };
+        let lit_b = EdgeEnd::Literal {
+            value: serde_json::json!("hello"),
+        };
 
         let e_a = Edge::new(
             subj,
@@ -7832,7 +7805,14 @@ mod tests {
         let dummy_blob = Uuid::new_v4().as_bytes().to_vec();
         let plan: Vec<String> = stmt
             .query_map(
-                rusqlite::params![dummy_blob, "default", "canonical", "WorksAt", "entity", dummy_blob],
+                rusqlite::params![
+                    dummy_blob,
+                    "default",
+                    "canonical",
+                    "WorksAt",
+                    "entity",
+                    dummy_blob
+                ],
                 |r| r.get::<_, String>(3),
             )
             .unwrap()
@@ -7918,7 +7898,9 @@ mod tests {
         let all = store.find_edges(alice, &pred, None, false).unwrap();
         assert_eq!(all.len(), 2);
         // Sanity: the invalidated edge is in the result set.
-        assert!(all.iter().any(|e| e.id == e1_id && e.object == EdgeEnd::Entity { id: acme }));
+        assert!(all
+            .iter()
+            .any(|e| e.id == e1_id && e.object == EdgeEnd::Entity { id: acme }));
     }
 
     #[test]
@@ -7998,13 +7980,22 @@ mod tests {
         store.insert_edge(&successor).unwrap();
 
         let close_at = now + chrono::Duration::seconds(2);
-        store.invalidate_edge(prior.id, successor.id, close_at).unwrap();
+        store
+            .invalidate_edge(prior.id, successor.id, close_at)
+            .unwrap();
 
         let reloaded = store.get_edge(prior.id).unwrap().unwrap();
         assert!(reloaded.invalidated_at.is_some(), "invalidated_at set");
-        assert_eq!(reloaded.invalidated_by, Some(successor.id), "invalidated_by set");
+        assert_eq!(
+            reloaded.invalidated_by,
+            Some(successor.id),
+            "invalidated_by set"
+        );
         let succ_reloaded = store.get_edge(successor.id).unwrap().unwrap();
-        assert!(succ_reloaded.invalidated_at.is_none(), "successor unchanged");
+        assert!(
+            succ_reloaded.invalidated_at.is_none(),
+            "successor unchanged"
+        );
     }
 
     #[test]
@@ -8021,9 +8012,15 @@ mod tests {
         store.insert_edge(&successor).unwrap();
 
         let close_at = now + chrono::Duration::seconds(2);
-        store.invalidate_edge(prior.id, successor.id, close_at).unwrap();
         store
-            .invalidate_edge(prior.id, successor.id, close_at + chrono::Duration::seconds(5))
+            .invalidate_edge(prior.id, successor.id, close_at)
+            .unwrap();
+        store
+            .invalidate_edge(
+                prior.id,
+                successor.id,
+                close_at + chrono::Duration::seconds(5),
+            )
             .expect("idempotent retry must be Ok");
 
         let reloaded = store.get_edge(prior.id).unwrap().unwrap();
@@ -8133,7 +8130,9 @@ mod tests {
         let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
         let pred = Predicate::Canonical(CanonicalPredicate::WorksAt);
         let object = EdgeEnd::Entity { id: obj_a };
-        let found = store_b.find_edges(subj_a, &pred, Some(&object), true).unwrap();
+        let found = store_b
+            .find_edges(subj_a, &pred, Some(&object), true)
+            .unwrap();
         assert!(found.is_empty(), "ns_b cannot see edge {} in ns_a", edge_a);
     }
 
@@ -8457,7 +8456,10 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
         let now = Utc::now();
         let e = insert_test_entity(
-            &mut store, "X", EntityKind::Concept, now,
+            &mut store,
+            "X",
+            EntityKind::Concept,
+            now,
             Some(vec![0.1, 0.2, 0.3, 0.4]),
         );
 
@@ -8537,11 +8539,17 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
         let now = Utc::now();
         let _e1 = insert_test_entity(
-            &mut store, "A", EntityKind::Concept, now,
+            &mut store,
+            "A",
+            EntityKind::Concept,
+            now,
             Some(vec![1.0, 0.0, 0.0]),
         );
         let _e2 = insert_test_entity(
-            &mut store, "B", EntityKind::Concept, now,
+            &mut store,
+            "B",
+            EntityKind::Concept,
+            now,
             Some(vec![0.0, 1.0, 0.0]),
         );
         // No aliases anywhere; pure embedding cohort.
@@ -8561,7 +8569,10 @@ mod tests {
             .collect();
         let s_a = scores.iter().find(|(n, _)| n == "A").unwrap().1;
         let s_b = scores.iter().find(|(n, _)| n == "B").unwrap().1;
-        assert!((s_a - 1.0).abs() < 1e-6, "cosine of (1,0,0) with itself = 1");
+        assert!(
+            (s_a - 1.0).abs() < 1e-6,
+            "cosine of (1,0,0) with itself = 1"
+        );
         assert!(s_b.abs() < 1e-6, "cosine of orthogonal = 0");
     }
 
@@ -8571,7 +8582,10 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
         let now = Utc::now();
         let e = insert_test_entity(
-            &mut store, "Mel", EntityKind::Person, now,
+            &mut store,
+            "Mel",
+            EntityKind::Person,
+            now,
             Some(vec![1.0, 0.0, 0.0]),
         );
         store.upsert_alias("mel", "Mel", e.id, None).unwrap();
@@ -8596,7 +8610,10 @@ mod tests {
                 .with_embedding_dim(3);
             let now = Utc::now();
             insert_test_entity(
-                &mut store, "Alpha", EntityKind::Concept, now,
+                &mut store,
+                "Alpha",
+                EntityKind::Concept,
+                now,
                 Some(vec![1.0, 0.0, 0.0]),
             );
         }
@@ -8623,11 +8640,17 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
         let now = Utc::now();
         let _person = insert_test_entity(
-            &mut store, "Mel", EntityKind::Person, now,
+            &mut store,
+            "Mel",
+            EntityKind::Person,
+            now,
             Some(vec![1.0, 0.0, 0.0]),
         );
         let _concept = insert_test_entity(
-            &mut store, "Mel", EntityKind::Concept, now,
+            &mut store,
+            "Mel",
+            EntityKind::Concept,
+            now,
             Some(vec![1.0, 0.0, 0.0]),
         );
 
@@ -8656,12 +8679,13 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
         let now = Utc::now();
         let _has = insert_test_entity(
-            &mut store, "WithEmb", EntityKind::Concept, now,
+            &mut store,
+            "WithEmb",
+            EntityKind::Concept,
+            now,
             Some(vec![1.0, 0.0, 0.0]),
         );
-        let _none = insert_test_entity(
-            &mut store, "NoEmb", EntityKind::Concept, now, None,
-        );
+        let _none = insert_test_entity(&mut store, "NoEmb", EntityKind::Concept, now, None);
 
         let q = make_query("noalias", Some(vec![1.0, 0.0, 0.0]), 10, now);
         let got = store.search_candidates(&q).unwrap();
@@ -8714,7 +8738,10 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
         let now = Utc::now();
         insert_test_entity(
-            &mut store, "E", EntityKind::Concept, now,
+            &mut store,
+            "E",
+            EntityKind::Concept,
+            now,
             Some(vec![1.0, 0.0, 0.0]),
         );
         let q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 0, now);
@@ -8733,15 +8760,24 @@ mod tests {
         let very_old = now - chrono::Duration::seconds(10_000);
 
         let e_recent = insert_test_entity(
-            &mut store, "Recent", EntityKind::Concept, recent,
+            &mut store,
+            "Recent",
+            EntityKind::Concept,
+            recent,
             Some(vec![1.0, 0.0, 0.0]),
         );
         let e_old = insert_test_entity(
-            &mut store, "Old", EntityKind::Concept, old,
+            &mut store,
+            "Old",
+            EntityKind::Concept,
+            old,
             Some(vec![1.0, 0.0, 0.0]),
         );
         let e_outside = insert_test_entity(
-            &mut store, "Outside", EntityKind::Concept, very_old,
+            &mut store,
+            "Outside",
+            EntityKind::Concept,
+            very_old,
             Some(vec![1.0, 0.0, 0.0]),
         );
 
@@ -8759,7 +8795,11 @@ mod tests {
 
         assert!((recent_score - 1.0).abs() < 1e-3, "recent ≈ 1.0");
         // age=100, window=1000 → 1 - 0.1 = 0.9
-        assert!((old_score - 0.9).abs() < 1e-2, "old ≈ 0.9, got {}", old_score);
+        assert!(
+            (old_score - 0.9).abs() < 1e-2,
+            "old ≈ 0.9, got {}",
+            old_score
+        );
         assert_eq!(outside_score, 0.0, "outside window clamps to 0");
     }
 
@@ -8772,11 +8812,17 @@ mod tests {
         let oldest = now - chrono::Duration::seconds(100);
 
         let e_recent = insert_test_entity(
-            &mut store, "Recent", EntityKind::Concept, recent,
+            &mut store,
+            "Recent",
+            EntityKind::Concept,
+            recent,
             Some(vec![1.0, 0.0, 0.0]),
         );
         let e_old = insert_test_entity(
-            &mut store, "Old", EntityKind::Concept, oldest,
+            &mut store,
+            "Old",
+            EntityKind::Concept,
+            oldest,
             Some(vec![1.0, 0.0, 0.0]),
         );
         let q = make_query("x", Some(vec![1.0, 0.0, 0.0]), 10, now);
@@ -8812,7 +8858,10 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
         let now = Utc::now();
         let e = insert_test_entity(
-            &mut store, "Mel", EntityKind::Person, now,
+            &mut store,
+            "Mel",
+            EntityKind::Person,
+            now,
             Some(vec![0.0, 1.0, 0.0]),
         );
         store.upsert_alias("mel", "Mel", e.id, None).unwrap();
@@ -8867,7 +8916,10 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
         let now = Utc::now();
         insert_test_entity(
-            &mut store, "E", EntityKind::Concept, now,
+            &mut store,
+            "E",
+            EntityKind::Concept,
+            now,
             Some(vec![1.0, 0.0, 0.0]),
         );
         let q = make_query("x", Some(vec![0.0, 0.0, 0.0]), 10, now);
@@ -8912,8 +8964,7 @@ mod tests {
     }
 
     fn ts(secs: f64) -> DateTime<Utc> {
-        chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
-            .expect("valid timestamp")
+        chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0).expect("valid timestamp")
     }
 
     #[test]
@@ -8963,7 +9014,7 @@ mod tests {
                 "mem-1",
                 &[
                     (a.id, 0.4, Some("first".into())),
-                    (a.id, 0.9, None),                  // null does NOT erase span
+                    (a.id, 0.9, None),                 // null does NOT erase span
                     (a.id, 0.6, Some("third".into())), // latest non-NULL wins
                 ],
                 ts(1000.0),
@@ -8999,18 +9050,10 @@ mod tests {
         let a = insert_test_entity(&mut store, "A", EntityKind::Person, now, None);
 
         store
-            .link_memory_to_entities(
-                "mem-1",
-                &[(a.id, 0.5, Some("initial".into()))],
-                ts(1000.0),
-            )
+            .link_memory_to_entities("mem-1", &[(a.id, 0.5, Some("initial".into()))], ts(1000.0))
             .unwrap();
         store
-            .link_memory_to_entities(
-                "mem-1",
-                &[(a.id, 0.3, None)],
-                ts(2000.0),
-            )
+            .link_memory_to_entities("mem-1", &[(a.id, 0.3, None)], ts(2000.0))
             .unwrap();
 
         let (conf, span, rec_at): (f64, Option<String>, f64) = store
@@ -9061,7 +9104,10 @@ mod tests {
             .unwrap();
         assert!((conf - 0.95).abs() < 1e-9, "max(0.4, 0.95) = 0.95");
         assert_eq!(span.as_deref(), Some("better"), "non-NULL replaces NULL");
-        assert!((rec_at - 1000.0).abs() < 1e-9, "recorded_at never regresses");
+        assert!(
+            (rec_at - 1000.0).abs() < 1e-9,
+            "recorded_at never regresses"
+        );
     }
 
     #[test]
@@ -9117,10 +9163,8 @@ mod tests {
         insert_stub_memory(&conn, "mem-1");
         let now = Utc::now();
         let a_id = {
-            let mut store_a =
-                SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
-            let a =
-                insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
+            let mut store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let a = insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
             store_a
                 .link_memory_to_entities("mem-1", &[(a.id, 0.5, None)], ts(1.0))
                 .unwrap();
@@ -9129,7 +9173,10 @@ mod tests {
 
         let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
         assert!(
-            store_b.entities_linked_to_memory("mem-1").unwrap().is_empty(),
+            store_b
+                .entities_linked_to_memory("mem-1")
+                .unwrap()
+                .is_empty(),
             "ns_b must not see ns_a's link"
         );
         // Confirm ns_a still sees it (sanity).
@@ -9148,10 +9195,8 @@ mod tests {
         insert_stub_memory(&conn, "mem-1");
         let now = Utc::now();
         let a_id = {
-            let mut store_a =
-                SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
-            let a =
-                insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
+            let mut store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let a = insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
             store_a
                 .link_memory_to_entities(
                     "mem-1",
@@ -9162,8 +9207,7 @@ mod tests {
             a.id
         };
 
-        let mut store_b =
-            SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+        let mut store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
         let err = store_b.link_memory_to_entities(
             "mem-1",
             &[(a_id, 0.99, Some("ns_b span".into()))],
@@ -9206,17 +9250,17 @@ mod tests {
             .link_memory_to_entities("mem-1", &[(c.id, 0.5, None)], ts(1.0))
             .unwrap();
         store
-            .link_memory_to_entities(
-                "mem-1",
-                &[(a.id, 0.5, None), (b.id, 0.5, None)],
-                ts(2.0),
-            )
+            .link_memory_to_entities("mem-1", &[(a.id, 0.5, None), (b.id, 0.5, None)], ts(2.0))
             .unwrap();
 
         let got = store.entities_linked_to_memory("mem-1").unwrap();
         assert_eq!(got.len(), 3);
         assert_eq!(got[0], c.id, "earliest recorded_at first");
-        let (lo, hi) = if a.id < b.id { (a.id, b.id) } else { (b.id, a.id) };
+        let (lo, hi) = if a.id < b.id {
+            (a.id, b.id)
+        } else {
+            (b.id, a.id)
+        };
         assert_eq!(got[1], lo);
         assert_eq!(got[2], hi);
     }
@@ -9262,10 +9306,8 @@ mod tests {
         let now = Utc::now();
         let entity_id = {
             // Insert the entity once in ns_a; link mem-a in ns_a.
-            let mut store_a =
-                SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
-            let a =
-                insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
+            let mut store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
+            let a = insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
             store_a
                 .link_memory_to_entities("mem-a", &[(a.id, 0.5, None)], ts(1.0))
                 .unwrap();
@@ -9278,10 +9320,8 @@ mod tests {
             // into ns_b would actually conflict — instead, use a fresh entity
             // for ns_b. The important thing for *this* test is that the
             // mention from ns_a does not surface when reading from ns_b.
-            let mut store_b =
-                SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
-            let b =
-                insert_test_entity(&mut store_b, "B", EntityKind::Person, now, None);
+            let mut store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b");
+            let b = insert_test_entity(&mut store_b, "B", EntityKind::Person, now, None);
             store_b
                 .link_memory_to_entities("mem-b", &[(b.id, 0.5, None)], ts(2.0))
                 .unwrap();
@@ -9339,11 +9379,7 @@ mod tests {
 
         // a + b mentioned in mem-1 (in-episode)
         store
-            .link_memory_to_entities(
-                "mem-1",
-                &[(a.id, 1.0, None), (b.id, 1.0, None)],
-                ts(1.0),
-            )
+            .link_memory_to_entities("mem-1", &[(a.id, 1.0, None), (b.id, 1.0, None)], ts(1.0))
             .unwrap();
         // b again in mem-2 (in-episode) — distinct rollup must dedup
         store
@@ -9371,8 +9407,7 @@ mod tests {
         let a_id;
         {
             let mut store_a = SqliteGraphStore::new(&mut conn).with_namespace("ns_a");
-            let a =
-                insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
+            let a = insert_test_entity(&mut store_a, "A", EntityKind::Person, now, None);
             a_id = a.id;
             store_a
                 .link_memory_to_entities("mem-shared", &[(a.id, 1.0, None)], ts(1.0))
@@ -9625,7 +9660,9 @@ mod tests {
             store.upsert_topic(t).unwrap();
         }
         // Supersede t2 → t3.
-        store.supersede_topic(t2.topic_id, t3.topic_id, ts(400.0)).unwrap();
+        store
+            .supersede_topic(t2.topic_id, t3.topic_id, ts(400.0))
+            .unwrap();
 
         // include_superseded=false: only t1, t3 (t2 filtered out).
         let live = store.list_topics("default", false, 10).unwrap();
@@ -9688,9 +9725,13 @@ mod tests {
         insert_mirror_entity(&mut store, t2.topic_id);
         store.upsert_topic(&t1).unwrap();
         store.upsert_topic(&t2).unwrap();
-        store.supersede_topic(t1.topic_id, t2.topic_id, ts(10.0)).unwrap();
+        store
+            .supersede_topic(t1.topic_id, t2.topic_id, ts(10.0))
+            .unwrap();
         // Second call w/ same successor: no-op, no error.
-        store.supersede_topic(t1.topic_id, t2.topic_id, ts(20.0)).unwrap();
+        store
+            .supersede_topic(t1.topic_id, t2.topic_id, ts(20.0))
+            .unwrap();
         let got = store.get_topic(t1.topic_id).unwrap().unwrap();
         assert_eq!(got.superseded_by, Some(t2.topic_id));
     }
@@ -9706,7 +9747,9 @@ mod tests {
             insert_mirror_entity(&mut store, t.topic_id);
             store.upsert_topic(t).unwrap();
         }
-        store.supersede_topic(t1.topic_id, t2.topic_id, ts(10.0)).unwrap();
+        store
+            .supersede_topic(t1.topic_id, t2.topic_id, ts(10.0))
+            .unwrap();
         match store.supersede_topic(t1.topic_id, t3.topic_id, ts(20.0)) {
             Err(GraphError::Invariant(msg)) => {
                 assert_eq!(msg, "topic already superseded");
@@ -9752,10 +9795,7 @@ mod tests {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn);
         let id = store
-            .begin_pipeline_run(
-                PipelineKind::Resolution,
-                json!({"episodes": 1}),
-            )
+            .begin_pipeline_run(PipelineKind::Resolution, json!({"episodes": 1}))
             .unwrap();
         let (kind, status, finished, ns): (String, String, Option<f64>, String) = store
             .conn()
@@ -9810,12 +9850,7 @@ mod tests {
     fn finish_pipeline_run_unknown_run_errors() {
         let mut conn = fresh_conn();
         let mut store = SqliteGraphStore::new(&mut conn);
-        match store.finish_pipeline_run(
-            Uuid::new_v4(),
-            RunStatus::Succeeded,
-            None,
-            None,
-        ) {
+        match store.finish_pipeline_run(Uuid::new_v4(), RunStatus::Succeeded, None, None) {
             Err(GraphError::Invariant(msg)) => {
                 assert!(msg.contains("not found"));
             }
@@ -9913,10 +9948,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(memory_id.as_deref(), Some("mem-1"));
-        assert_eq!(
-            episode_blob.unwrap(),
-            episode_id.as_bytes().to_vec(),
-        );
+        assert_eq!(episode_blob.unwrap(), episode_id.as_bytes().to_vec(),);
     }
 
     #[test]
@@ -10186,15 +10218,21 @@ mod tests {
         // canonical (must NOT show up regardless of usage)
         let canon = Predicate::Canonical(CanonicalPredicate::DependsOn);
         for _ in 0..10 {
-            store.record_predicate_use(&canon, "depends_on", ts(1.0)).unwrap();
+            store
+                .record_predicate_use(&canon, "depends_on", ts(1.0))
+                .unwrap();
         }
         // proposed: "advises" ×3, "knows" ×1
         let advises = Predicate::proposed("advises");
         let knows = Predicate::proposed("knows");
         for _ in 0..3 {
-            store.record_predicate_use(&advises, "advises", ts(2.0)).unwrap();
+            store
+                .record_predicate_use(&advises, "advises", ts(2.0))
+                .unwrap();
         }
-        store.record_predicate_use(&knows, "knows", ts(3.0)).unwrap();
+        store
+            .record_predicate_use(&knows, "knows", ts(3.0))
+            .unwrap();
 
         let got = store.list_proposed_predicates(2).unwrap();
         // Only "advises" passes min_usage=2; canonical never appears.
@@ -10385,7 +10423,9 @@ mod tests {
         succ.supersedes = Some(prior.id);
 
         let invalidate_at = t0 + chrono::Duration::seconds(20);
-        store.supersede_edge(prior.id, &succ, invalidate_at).unwrap();
+        store
+            .supersede_edge(prior.id, &succ, invalidate_at)
+            .unwrap();
 
         // Successor row exists.
         let got_succ = store.get_edge(succ.id).unwrap().expect("successor present");
@@ -10414,7 +10454,9 @@ mod tests {
         // "other successor" first so the FK passes.
         let other_succ = make_edge(subj, obj, t0 + chrono::Duration::seconds(5));
         store.insert_edge(&other_succ).unwrap();
-        store.invalidate_edge(prior.id, other_succ.id, t0 + chrono::Duration::seconds(6)).unwrap();
+        store
+            .invalidate_edge(prior.id, other_succ.id, t0 + chrono::Duration::seconds(6))
+            .unwrap();
         let _ = other_succ_id; // unused; keep helper for symmetry
 
         // Now try to supersede prior again with a NEW successor — must error,
@@ -10426,8 +10468,10 @@ mod tests {
         assert!(matches!(r, Err(GraphError::Invariant(_))), "got {:?}", r);
 
         // Rollback: new_succ row must not exist.
-        assert!(store.get_edge(new_succ_id).unwrap().is_none(),
-            "successor must not be persisted on rollback");
+        assert!(
+            store.get_edge(new_succ_id).unwrap().is_none(),
+            "successor must not be persisted on rollback"
+        );
     }
 
     #[test]
@@ -10471,17 +10515,23 @@ mod tests {
         store.insert_edge(&e3).unwrap();
 
         // Querying as-of t0+15 → e2 is the freshest with recorded_at <= 15.
-        let got = store.edges_as_of(subj, t0 + chrono::Duration::seconds(15)).unwrap();
+        let got = store
+            .edges_as_of(subj, t0 + chrono::Duration::seconds(15))
+            .unwrap();
         assert_eq!(got.len(), 1, "exactly one row per window");
         assert_eq!(got[0].id, e2.id, "freshest before t=15");
 
         // As-of t0+25 → e3 (the latest) is freshest.
-        let got = store.edges_as_of(subj, t0 + chrono::Duration::seconds(25)).unwrap();
+        let got = store
+            .edges_as_of(subj, t0 + chrono::Duration::seconds(25))
+            .unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].id, e3.id);
 
         // As-of t0-1 → nothing recorded yet.
-        let got = store.edges_as_of(subj, t0 - chrono::Duration::seconds(1)).unwrap();
+        let got = store
+            .edges_as_of(subj, t0 - chrono::Duration::seconds(1))
+            .unwrap();
         assert!(got.is_empty(), "no rows before any recorded_at");
     }
 
@@ -10500,15 +10550,21 @@ mod tests {
         let mut succ = make_edge(subj, obj, t0 + chrono::Duration::seconds(4));
         succ.supersedes = Some(e1.id);
         store.insert_edge(&succ).unwrap();
-        store.invalidate_edge(e1.id, succ.id, t0 + chrono::Duration::seconds(5)).unwrap();
+        store
+            .invalidate_edge(e1.id, succ.id, t0 + chrono::Duration::seconds(5))
+            .unwrap();
 
         // As-of t0+3 → e1 is still believed (invalidation hasn't happened yet
         // from `at`'s perspective).
-        let got = store.edges_as_of(subj, t0 + chrono::Duration::seconds(3)).unwrap();
+        let got = store
+            .edges_as_of(subj, t0 + chrono::Duration::seconds(3))
+            .unwrap();
         assert!(got.iter().any(|e| e.id == e1.id), "e1 still live as-of t=3");
 
         // As-of t0+10 → e1 is invalidated and successor is now the freshest.
-        let got = store.edges_as_of(subj, t0 + chrono::Duration::seconds(10)).unwrap();
+        let got = store
+            .edges_as_of(subj, t0 + chrono::Duration::seconds(10))
+            .unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].id, succ.id);
     }
@@ -10634,7 +10690,10 @@ mod tests {
         assert!(report.edges_superseded >= 2, "both edges re-minted");
 
         // Loser is redirected via the typed `merged_into` field.
-        let got_loser = store.get_entity(loser).unwrap().expect("loser still exists");
+        let got_loser = store
+            .get_entity(loser)
+            .unwrap()
+            .expect("loser still exists");
         assert_eq!(got_loser.merged_into, Some(winner));
 
         // Originals are invalidated (preserved per GUARD-3).
@@ -10835,7 +10894,9 @@ mod tests {
         let now = Utc::now();
         let mem_id = Uuid::new_v4();
         let mut delta = GraphDelta::new(mem_id);
-        delta.entities.push(Entity::new_random_id("X".into(), EntityKind::Concept, now));
+        delta
+            .entities
+            .push(Entity::new_random_id("X".into(), EntityKind::Concept, now));
 
         let r1 = store.apply_graph_delta(&delta).unwrap();
         assert!(!r1.already_applied);
@@ -10850,7 +10911,9 @@ mod tests {
         // Sanity: only ONE row in graph_applied_deltas (no duplicate).
         let n: i64 = store
             .conn()
-            .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 1, "exactly one idempotence row after replay");
     }
@@ -10884,11 +10947,15 @@ mod tests {
         assert!(result.is_err(), "must reject dangling reference");
 
         // No rows persisted: rollback is whole-delta atomic.
-        assert!(store.get_entity(real.id).unwrap().is_none(),
-            "no entity persisted on rollback");
+        assert!(
+            store.get_entity(real.id).unwrap().is_none(),
+            "no entity persisted on rollback"
+        );
         let n: i64 = store
             .conn()
-            .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 0, "no idempotence row on failure");
     }
@@ -10909,11 +10976,13 @@ mod tests {
         let mut succ = make_edge(subj, obj, now + chrono::Duration::seconds(10));
         succ.supersedes = Some(prior.id);
         delta.edges.push(succ.clone());
-        delta.edges_to_invalidate.push(crate::graph::delta::EdgeInvalidation {
-            edge_id: prior.id,
-            invalidated_at: dt_to_unix(now + chrono::Duration::seconds(10)),
-            superseded_by: Some(succ.id),
-        });
+        delta
+            .edges_to_invalidate
+            .push(crate::graph::delta::EdgeInvalidation {
+                edge_id: prior.id,
+                invalidated_at: dt_to_unix(now + chrono::Duration::seconds(10)),
+                superseded_by: Some(succ.id),
+            });
 
         let report = store.apply_graph_delta(&delta).unwrap();
         assert_eq!(report.edges_inserted, 1);
@@ -11092,14 +11161,26 @@ mod tests {
         // Unified read.
         let unified = {
             let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
-            store.get_entity(eid).expect("unified get").expect("present")
+            store
+                .get_entity(eid)
+                .expect("unified get")
+                .expect("present")
         };
 
         assert_eq!(legacy.id, unified.id, "id");
-        assert_eq!(legacy.canonical_name, unified.canonical_name, "canonical_name");
-        assert_eq!(legacy.kind, unified.kind, "kind reconstructed from _legacy_kind");
+        assert_eq!(
+            legacy.canonical_name, unified.canonical_name,
+            "canonical_name"
+        );
+        assert_eq!(
+            legacy.kind, unified.kind,
+            "kind reconstructed from _legacy_kind"
+        );
         assert_eq!(legacy.summary, unified.summary, "summary");
-        assert_eq!(legacy.attributes, unified.attributes, "attributes (_legacy_kind stripped)");
+        assert_eq!(
+            legacy.attributes, unified.attributes,
+            "attributes (_legacy_kind stripped)"
+        );
         assert_eq!(legacy.importance, unified.importance, "importance");
         assert_eq!(
             legacy.identity_confidence, unified.identity_confidence,
@@ -11120,10 +11201,7 @@ mod tests {
         let mut conn = fresh_conn();
         let now = Utc::now();
 
-        let survivor = insert_subject_entity(
-            &mut SqliteGraphStore::new(&mut conn),
-            "Robert",
-        );
+        let survivor = insert_subject_entity(&mut SqliteGraphStore::new(&mut conn), "Robert");
 
         let mut topic = Entity::new_random_id("Travel".into(), EntityKind::Topic, now);
         topic.merged_into = Some(survivor);
@@ -11135,9 +11213,16 @@ mod tests {
 
         let unified = {
             let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
-            store.get_entity(tid).expect("unified get").expect("present")
+            store
+                .get_entity(tid)
+                .expect("unified get")
+                .expect("present")
         };
-        assert_eq!(unified.kind, EntityKind::Topic, "node_kind='topic' → EntityKind::Topic");
+        assert_eq!(
+            unified.kind,
+            EntityKind::Topic,
+            "node_kind='topic' → EntityKind::Topic"
+        );
         assert_eq!(
             unified.merged_into,
             Some(survivor),
@@ -11206,7 +11291,10 @@ mod tests {
         assert_edge_core_eq(&unified, &legacy);
         assert_edge_core_eq(&unified, &e);
         // episode_id is dropped on the unified path (R3) — explicit.
-        assert_eq!(unified.episode_id, None, "episode_id has no unified home (R3)");
+        assert_eq!(
+            unified.episode_id, None,
+            "episode_id has no unified home (R3)"
+        );
         // confidence_source re-defaults on read (DevNote #5).
         assert_eq!(unified.confidence_source, ConfidenceSource::Recovered);
     }
@@ -11626,7 +11714,9 @@ mod tests {
         };
         let unified = {
             let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
-            store.edges_as_of(alice, as_of).expect("unified edges_as_of")
+            store
+                .edges_as_of(alice, as_of)
+                .expect("unified edges_as_of")
         };
 
         // Expect 2 windows survive: (WorksAt,Acme)=e_new and
@@ -11636,7 +11726,11 @@ mod tests {
         let mut unified_sorted = unified.clone();
         legacy_sorted.sort_by_key(|e| e.id);
         unified_sorted.sort_by_key(|e| e.id);
-        assert_eq!(legacy_sorted.len(), unified_sorted.len(), "as_of count parity");
+        assert_eq!(
+            legacy_sorted.len(),
+            unified_sorted.len(),
+            "as_of count parity"
+        );
         for (l, u) in legacy_sorted.iter().zip(unified_sorted.iter()) {
             assert_edge_core_eq(u, l);
         }
@@ -11646,7 +11740,9 @@ mod tests {
             "fresher version should survive rn=1"
         );
         assert!(
-            !unified.iter().any(|e| e.summary == "old" || e.summary == "future"),
+            !unified
+                .iter()
+                .any(|e| e.summary == "old" || e.summary == "future"),
             "stale + future-recorded rows excluded"
         );
     }
@@ -11787,11 +11883,15 @@ mod tests {
 
         let legacy_people = {
             let store = SqliteGraphStore::new(&mut conn);
-            store.list_entities_by_kind(&EntityKind::Person, 10).unwrap()
+            store
+                .list_entities_by_kind(&EntityKind::Person, 10)
+                .unwrap()
         };
         let unified_people = {
             let store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
-            store.list_entities_by_kind(&EntityKind::Person, 10).unwrap()
+            store
+                .list_entities_by_kind(&EntityKind::Person, 10)
+                .unwrap()
         };
         let legacy_ids: Vec<Uuid> = legacy_people.iter().map(|e| e.id).collect();
         let unified_ids: Vec<Uuid> = unified_people.iter().map(|e| e.id).collect();
@@ -11799,7 +11899,11 @@ mod tests {
             unified_ids, legacy_ids,
             "unified Person list (filter + last_seen DESC order) == legacy"
         );
-        assert_eq!(unified_ids, vec![bob.id, alice.id], "concept filtered, bob first");
+        assert_eq!(
+            unified_ids,
+            vec![bob.id, alice.id],
+            "concept filtered, bob first"
+        );
 
         // Limit honored on the unified path.
         let limited = {
@@ -11848,7 +11952,10 @@ mod tests {
             store.list_namespaces().unwrap()
         };
         assert_eq!(legacy, vec!["alpha".to_string(), "zeta".to_string()]);
-        assert_eq!(unified, legacy, "unified namespaces (incl topic kind) == legacy");
+        assert_eq!(
+            unified, legacy,
+            "unified namespaces (incl topic kind) == legacy"
+        );
     }
 
     #[test]
@@ -11867,16 +11974,28 @@ mod tests {
         {
             let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(4);
             mel = insert_test_entity(
-                &mut store, "Mel", EntityKind::Person, now, Some(emb_mel.clone()),
+                &mut store,
+                "Mel",
+                EntityKind::Person,
+                now,
+                Some(emb_mel.clone()),
             );
             store.upsert_alias("mel", "Mel", mel.id, None).unwrap();
             bob = insert_test_entity(
-                &mut store, "Bob", EntityKind::Person, now, Some(emb_bob.clone()),
+                &mut store,
+                "Bob",
+                EntityKind::Person,
+                now,
+                Some(emb_bob.clone()),
             );
             // An Other-kind entity with an embedding — must be filtered out
             // by a Person kind_filter on both paths.
             robot = insert_test_entity(
-                &mut store, "R2", EntityKind::other("robot"), now, Some(emb_bob.clone()),
+                &mut store,
+                "R2",
+                EntityKind::other("robot"),
+                now,
+                Some(emb_bob.clone()),
             );
         }
         let _ = robot;
@@ -11902,7 +12021,10 @@ mod tests {
             for (x, y) in a.iter().zip(b.iter()) {
                 assert_eq!(x.entity_id, y.entity_id, "{ctx}: entity_id order");
                 assert_eq!(x.alias_match, y.alias_match, "{ctx}: alias_match");
-                assert_eq!(x.embedding_score, y.embedding_score, "{ctx}: embedding_score");
+                assert_eq!(
+                    x.embedding_score, y.embedding_score,
+                    "{ctx}: embedding_score"
+                );
                 assert_eq!(x.recency_score, y.recency_score, "{ctx}: recency_score");
             }
         };
@@ -11922,7 +12044,11 @@ mod tests {
         // 3) Embedding cohort + Person filter (robot excluded on both paths).
         let unified_filtered = run(true, Some(EntityKind::Person), Some(emb_mel.clone()));
         let legacy_filtered = run(false, Some(EntityKind::Person), Some(emb_mel.clone()));
-        cmp(&unified_filtered, &legacy_filtered, "embedding-person-filter");
+        cmp(
+            &unified_filtered,
+            &legacy_filtered,
+            "embedding-person-filter",
+        );
         assert!(
             unified_filtered.iter().all(|c| c.entity_id != robot.id),
             "Other-kind robot filtered out under Person filter"

@@ -191,7 +191,11 @@ pub fn ground_fact(fact: &mut ExtractedFact, reference: DateTime<Utc>) -> Ground
     let modified = core_changed || temporal_changed || context_changed;
     GroundingResult {
         modified,
-        original_core_fact: if core_changed { Some(original_core) } else { None },
+        original_core_fact: if core_changed {
+            Some(original_core)
+        } else {
+            None
+        },
     }
 }
 
@@ -210,7 +214,10 @@ mod tests {
         // cannot resolve these, so matching them only produced silent skips.
         // Multi-month/year derivation now happens in the extractor LLM.
         let re = phrase_regex();
-        assert!(!re.is_match("owned for 3 years ago"), "years-ago must not match");
+        assert!(
+            !re.is_match("owned for 3 years ago"),
+            "years-ago must not match"
+        );
         assert!(!re.is_match("2 months ago"), "months-ago must not match");
         // The short-range deixis two_timer CAN handle is still matched.
         assert!(re.is_match("3 days ago"), "days-ago must still match");
@@ -225,7 +232,10 @@ mod tests {
         // half-processed. ground_field returns false (no rewrite).
         let mut field = String::from("owned for 3 years");
         let changed = ground_field(&mut field, ts(2023, 3, 27));
-        assert!(!changed, "year-scale duration must not be touched by grounding");
+        assert!(
+            !changed,
+            "year-scale duration must not be touched by grounding"
+        );
         assert_eq!(field, "owned for 3 years", "field must be unchanged");
     }
 
@@ -263,7 +273,8 @@ mod tests {
         // start date varies with locale, so we assert structure rather
         // than exact date for the second annotation.
         assert!(
-            fact.core_fact.starts_with("saw doctor yesterday (2024-03-14) and gym last week ("),
+            fact.core_fact
+                .starts_with("saw doctor yesterday (2024-03-14) and gym last week ("),
             "got: {}",
             fact.core_fact
         );
@@ -311,10 +322,7 @@ mod tests {
         assert!(r.modified);
         assert_eq!(fact.temporal.as_deref(), Some("yesterday (2024-03-14)"));
         assert!(
-            fact.context
-                .as_deref()
-                .unwrap()
-                .starts_with("last week ("),
+            fact.context.as_deref().unwrap().starts_with("last week ("),
             "got: {:?}",
             fact.context
         );

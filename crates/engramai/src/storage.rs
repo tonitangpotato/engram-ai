@@ -5,8 +5,11 @@ use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use std::path::Path;
 
 use crate::synthesis::types::{GateScores, ProvenanceRecord};
-use crate::triple::{Triple, Predicate, TripleSource};
-use crate::types::{AclEntry, CrossLink, HebbianLink, MemoryLayer, MergeOutcome, MemoryRecord, MemoryType, Permission};
+use crate::triple::{Predicate, Triple, TripleSource};
+use crate::types::{
+    AclEntry, CrossLink, HebbianLink, MemoryLayer, MemoryRecord, MemoryType, MergeOutcome,
+    Permission,
+};
 
 use std::sync::OnceLock;
 
@@ -24,13 +27,13 @@ fn tokenize_cjk_boundaries(text: &str) -> String {
     if !text.chars().any(is_cjk_char) {
         return text.to_string(); // Fast path: no CJK, skip jieba
     }
-    
+
     // Use jieba to segment Chinese text
     let words = jieba().cut(text, true); // true = HMM mode for better accuracy
-    
+
     // Join with spaces, then ensure CJK/ASCII boundaries have spaces
     let joined = words.join(" ");
-    
+
     // Clean up: remove duplicate spaces
     let mut result = String::with_capacity(joined.len());
     let mut prev_space = false;
@@ -140,9 +143,10 @@ fn decode_entity_type_and_metadata(
         serde_json::Value::String(s) => Some(s),
         // Object form: {"other":"<s>"}. We only care about the
         // canonical-vs-other discriminator, so inspect the JSON form.
-        serde_json::Value::Object(ref obj) => {
-            obj.get("other").and_then(|x| x.as_str()).map(|s| s.to_string())
-        }
+        serde_json::Value::Object(ref obj) => obj
+            .get("other")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string()),
         _ => None,
     });
 
@@ -203,10 +207,9 @@ pub(crate) fn merge_json_objects_existing_wins(existing: &str, new_keys: &str) -
     serde_json::to_string(&existing_val).unwrap_or_else(|_| existing.to_string())
 }
 
-
 /// that carry legacy-column data that has no dedicated column in
 /// the unified schema. See ISS-119 / ISS-120.
-pub(crate) const LEGACY_CONTRADICTS_KEY:     &str = "_legacy_contradicts";
+pub(crate) const LEGACY_CONTRADICTS_KEY: &str = "_legacy_contradicts";
 pub(crate) const LEGACY_CONTRADICTED_BY_KEY: &str = "_legacy_contradicted_by";
 
 /// Merge legacy memory columns (`contradicts`, `contradicted_by`)
@@ -306,7 +309,12 @@ pub struct EntityRecord {
 /// Deterministic: same inputs always produce the same ID.
 /// The UNIQUE index on `(name, entity_type, namespace)` is the real safety net.
 fn generate_entity_id(name: &str, entity_type: &str, namespace: &str) -> String {
-    let input = format!("{}|{}|{}", name.to_lowercase(), entity_type.to_lowercase(), namespace);
+    let input = format!(
+        "{}|{}|{}",
+        name.to_lowercase(),
+        entity_type.to_lowercase(),
+        namespace
+    );
     // FNV-1a 64-bit (stable, no external crate needed)
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in input.as_bytes() {
@@ -347,9 +355,7 @@ pub struct Storage {
 /// Read `(merge_history, merge_count)` from a stored metadata blob,
 /// checking the v2 namespaced location (`engram.*`) first and falling
 /// back to the v1 flat layout (top-level keys).
-fn read_merge_tracking(
-    metadata: &serde_json::Value,
-) -> (Vec<serde_json::Value>, i64) {
+fn read_merge_tracking(metadata: &serde_json::Value) -> (Vec<serde_json::Value>, i64) {
     if let Some(engram) = metadata.get("engram") {
         let history = engram
             .get("merge_history")
@@ -390,10 +396,7 @@ fn write_merge_tracking(
             .entry("engram".to_string())
             .or_insert_with(|| serde_json::json!({"version": 2}));
         if let Some(e_obj) = engram.as_object_mut() {
-            e_obj.insert(
-                "merge_history".into(),
-                serde_json::Value::Array(history),
-            );
+            e_obj.insert("merge_history".into(), serde_json::Value::Array(history));
             e_obj.insert("merge_count".into(), serde_json::json!(count));
         }
     }
@@ -442,25 +445,27 @@ impl Storage {
         unified_substrate: bool,
     ) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
-        
+
         // Enable WAL mode for better concurrency + busy timeout for multi-process access
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
-        
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        )?;
+
         // Create schema
         Self::create_schema(&conn)?;
-        
+
         // Run migrations for v2 features (namespace, ACL)
         Self::migrate_v2(&conn)?;
-        
+
         // Run migrations for embeddings
         Self::migrate_embeddings(&conn)?;
-        
+
         // Run migrations for entity table constraints
         Self::migrate_entities(&conn)?;
-        
+
         // Rebuild FTS with CJK tokenization if needed
         Self::rebuild_fts_if_needed(&conn)?;
-        
+
         // Run migrations for multi-signal Hebbian columns
         Self::migrate_hebbian_signals(&conn)?;
 
@@ -470,10 +475,10 @@ impl Storage {
 
         // Run migrations for triple extraction
         Self::migrate_triples(&conn)?;
-        
+
         // Run migrations for promotion candidates
         Self::migrate_promotions(&conn)?;
-        
+
         // Run migrations for cluster state persistence
         Self::migrate_cluster_state(&conn)?;
 
@@ -482,29 +487,29 @@ impl Storage {
 
         // ISS-019 Step 7b: backfill_queue table (v1 → v2 dimensional recovery).
         Self::migrate_backfill_queue(&conn)?;
-        
+
         // Add deleted_at column for soft-delete
         match conn.execute(
             "ALTER TABLE memories ADD COLUMN deleted_at TEXT DEFAULT NULL",
             [],
         ) {
-            Ok(_) => {},
-            Err(e) if e.to_string().contains("duplicate column name") => {},
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
             Err(e) => return Err(e),
         }
 
         // Index for soft-delete filter performance
         conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_memories_deleted_at ON memories(deleted_at);"
+            "CREATE INDEX IF NOT EXISTS idx_memories_deleted_at ON memories(deleted_at);",
         )?;
-        
+
         // Add superseded_by column for memory supersession (GUARD-ss.3: idempotent migration)
         match conn.execute(
             "ALTER TABLE memories ADD COLUMN superseded_by TEXT DEFAULT ''",
             [],
         ) {
-            Ok(_) => {},
-            Err(e) if e.to_string().contains("duplicate column name") => {},
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
             Err(e) => return Err(e),
         }
 
@@ -524,8 +529,8 @@ impl Storage {
             "ALTER TABLE memories ADD COLUMN occurred_at REAL DEFAULT NULL",
             [],
         ) {
-            Ok(_) => {},
-            Err(e) if e.to_string().contains("duplicate column name") => {},
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
             Err(e) => return Err(e),
         }
 
@@ -759,7 +764,8 @@ impl Storage {
     /// Schema version is **not** bumped here — T09 lands that after the full
     /// T05–T08 set is in place.
     fn migrate_unified_edges(conn: &Connection) -> SqlResult<()> {
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE IF NOT EXISTS edges (
                 -- identity
                 id                  TEXT PRIMARY KEY,
@@ -838,7 +844,8 @@ impl Storage {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_containment_unique
                 ON edges(source_id, target_id, edge_kind, predicate)
                 WHERE edge_kind = 'containment';
-        "#)?;
+        "#,
+        )?;
 
         // T14 migration: associative-edge unique index was originally
         // 4 columns (src, tgt, kind, predicate). Design §4.3 amendment
@@ -896,7 +903,8 @@ impl Storage {
     /// T05 (`migrate_unified_nodes`) must run first because of the FK.
     /// Call site in `Storage::open` enforces this.
     fn migrate_unified_node_embeddings(conn: &Connection) -> SqlResult<()> {
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE IF NOT EXISTS node_embeddings (
                 node_id     TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
                 model       TEXT NOT NULL,
@@ -907,7 +915,8 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS idx_node_embeddings_model
                 ON node_embeddings(model);
-        "#)?;
+        "#,
+        )?;
         Ok(())
     }
 
@@ -938,7 +947,8 @@ impl Storage {
     /// **Idempotent** (GUARD-ss.3): `CREATE TABLE IF NOT EXISTS` on every
     /// open. No data is mutated.
     fn migrate_backfill_runs(conn: &Connection) -> SqlResult<()> {
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE IF NOT EXISTS backfill_runs (
                 run_id                  TEXT PRIMARY KEY,
                 legacy_table            TEXT NOT NULL,
@@ -952,7 +962,8 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS idx_backfill_runs_table_time
                 ON backfill_runs(legacy_table, started_at);
-        "#)?;
+        "#,
+        )?;
         Ok(())
     }
 
@@ -978,7 +989,8 @@ impl Storage {
     /// Idempotent (GUARD-ss.3): re-opening a DB just runs `CREATE TABLE
     /// IF NOT EXISTS`.
     fn migrate_triple_backfill_checkpoint(conn: &Connection) -> SqlResult<()> {
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE IF NOT EXISTS triple_backfill_checkpoint (
                 run_id              TEXT PRIMARY KEY,
                 last_memory_id      TEXT,
@@ -993,7 +1005,8 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS idx_triple_ckpt_status
                 ON triple_backfill_checkpoint(status, started_at);
-        "#)?;
+        "#,
+        )?;
         Ok(())
     }
 
@@ -1059,7 +1072,8 @@ impl Storage {
     /// T05 (`migrate_unified_nodes`) must run first because the triggers
     /// reference `nodes`. Call site in `Storage::open` enforces this.
     fn migrate_unified_fts(conn: &Connection) -> SqlResult<()> {
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             -- Contentless FTS5: stores tokens only; canonical text is in
             -- nodes.content / nodes.summary. Keyed by nodes.fts_rowid.
             CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
@@ -1091,10 +1105,11 @@ impl Storage {
                 INSERT INTO nodes_fts(rowid, content, summary)
                 VALUES (new.fts_rowid, new.content, new.summary);
             END;
-        "#)?;
+        "#,
+        )?;
         Ok(())
     }
-    
+
     /// Get a reference to the underlying database connection.
     pub fn connection(&self) -> &Connection {
         &self.conn
@@ -1237,7 +1252,7 @@ impl Storage {
         )?;
         Ok(())
     }
-    
+
     /// Migrate existing databases to v2 schema (add namespace, ACL table).
     /// ISS-196: re-point `access_log.memory_id` FK from the (drop-bound)
     /// legacy `memories` table to the unified `nodes` table.
@@ -1369,7 +1384,11 @@ impl Storage {
                 &format!("CREATE TABLE {new_table}"),
                 1,
             )
-            .replacen(&format!("CREATE TABLE {table}"), &format!("CREATE TABLE {new_table}"), 1)
+            .replacen(
+                &format!("CREATE TABLE {table}"),
+                &format!("CREATE TABLE {new_table}"),
+                1,
+            )
             .replace("REFERENCES memories(", "REFERENCES nodes(")
             .replace("REFERENCES memories ", "REFERENCES nodes ");
 
@@ -1467,8 +1486,10 @@ impl Storage {
         // corrupt schema. Run before re-enabling so the check itself isn't
         // affected by enforcement state.
         let violations: i64 = if rebuilt.is_ok() {
-            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check()", [], |r| r.get(0))
-                .unwrap_or(0)
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check()", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0)
         } else {
             0
         };
@@ -1721,7 +1742,7 @@ impl Storage {
             [],
             |row| row.get(0),
         )?;
-        
+
         if !has_namespace {
             conn.execute(
                 "ALTER TABLE memories ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'",
@@ -1732,14 +1753,14 @@ impl Storage {
                 [],
             )?;
         }
-        
+
         // Check if namespace column exists in hebbian_links table
         let has_hebbian_namespace: bool = conn.query_row(
             "SELECT COUNT(*) > 0 FROM pragma_table_info('hebbian_links') WHERE name='namespace'",
             [],
             |row| row.get(0),
         )?;
-        
+
         if !has_hebbian_namespace {
             conn.execute(
                 "ALTER TABLE hebbian_links ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'",
@@ -1750,7 +1771,7 @@ impl Storage {
                 [],
             )?;
         }
-        
+
         // Create ACL table if not exists (idempotent)
         conn.execute_batch(
             r#"
@@ -1764,10 +1785,10 @@ impl Storage {
             );
             "#,
         )?;
-        
+
         Ok(())
     }
-    
+
     /// Migrate to embeddings table — supports v1 → v2 protocol migration.
     ///
     /// Protocol v2 changes:
@@ -1779,7 +1800,7 @@ impl Storage {
         let protocol_version = Self::get_meta(conn, "embedding_protocol_version")
             .unwrap_or(None)
             .unwrap_or_else(|| "0".to_string());
-        
+
         if protocol_version == "2" {
             // Already at v2, just ensure table exists
             conn.execute_batch(
@@ -1797,14 +1818,14 @@ impl Storage {
             )?;
             return Ok(());
         }
-        
+
         // Check if old table exists
         let table_exists: bool = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_embeddings'",
             [],
             |row| row.get::<_, i64>(0),
         ).map(|c| c > 0).unwrap_or(false);
-        
+
         if !table_exists {
             // Fresh install — create v2 schema directly
             conn.execute_batch(
@@ -1823,21 +1844,21 @@ impl Storage {
             Self::set_meta(conn, "embedding_protocol_version", "2")?;
             return Ok(());
         }
-        
+
         // Migrate from v1 → v2
         eprintln!("[engram] Migrating memory_embeddings to protocol v2 (multi-model support)...");
-        
+
         // Check what columns exist in old table
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(memory_embeddings)")?
             .query_map([], |row| row.get::<_, String>(1))?
             .filter_map(|r| r.ok())
             .collect();
-        
+
         let has_model = cols.contains(&"model".to_string());
         let has_dimensions = cols.contains(&"dimensions".to_string());
         let has_created_at = cols.contains(&"created_at".to_string());
-        
+
         // Step 1: Create v2 table
         conn.execute_batch(
             r#"
@@ -1851,11 +1872,11 @@ impl Storage {
             );
             "#,
         )?;
-        
+
         // Step 2: Migrate BLOB rows
         let mut migrated = 0;
         let mut skipped = 0;
-        
+
         {
             let select_sql = if has_model && has_dimensions && has_created_at {
                 "SELECT memory_id, embedding, model, dimensions, created_at FROM memory_embeddings"
@@ -1864,22 +1885,25 @@ impl Storage {
             } else {
                 "SELECT memory_id, embedding, 'unknown/legacy', 0, '' FROM memory_embeddings"
             };
-            
+
             let mut stmt = conn.prepare(select_sql)?;
-            let rows: Vec<(String, Vec<u8>, String, i64, String)> = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })?.filter_map(|r| r.ok()).collect();
-            
+            let rows: Vec<(String, Vec<u8>, String, i64, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+
             for (memory_id, blob_or_text, mut model, mut dims, created_at) in rows {
                 // Determine if this is BLOB or TEXT (JSON)
                 let final_blob: Vec<u8>;
-                
+
                 if blob_or_text.len() % 4 == 0 && !blob_or_text.is_empty() {
                     // Likely BLOB — check if it looks like valid f32 bytes
                     // A simple heuristic: valid f32 embeddings won't start with `[` (0x5B)
@@ -1888,10 +1912,15 @@ impl Storage {
                         match Self::json_text_to_blob(&blob_or_text) {
                             Some((blob, d)) => {
                                 final_blob = blob;
-                                if dims == 0 { dims = d as i64; }
+                                if dims == 0 {
+                                    dims = d as i64;
+                                }
                             }
                             None => {
-                                eprintln!("[engram] Skipping corrupt embedding for memory {}", memory_id);
+                                eprintln!(
+                                    "[engram] Skipping corrupt embedding for memory {}",
+                                    memory_id
+                                );
                                 skipped += 1;
                                 continue;
                             }
@@ -1899,17 +1928,24 @@ impl Storage {
                     } else {
                         // Assume valid BLOB
                         final_blob = blob_or_text;
-                        if dims == 0 { dims = final_blob.len() as i64 / 4; }
+                        if dims == 0 {
+                            dims = final_blob.len() as i64 / 4;
+                        }
                     }
                 } else if !blob_or_text.is_empty() {
                     // Not aligned to 4 bytes — must be TEXT/JSON
                     match Self::json_text_to_blob(&blob_or_text) {
                         Some((blob, d)) => {
                             final_blob = blob;
-                            if dims == 0 { dims = d as i64; }
+                            if dims == 0 {
+                                dims = d as i64;
+                            }
                         }
                         None => {
-                            eprintln!("[engram] Skipping corrupt embedding for memory {}", memory_id);
+                            eprintln!(
+                                "[engram] Skipping corrupt embedding for memory {}",
+                                memory_id
+                            );
                             skipped += 1;
                             continue;
                         }
@@ -1918,7 +1954,7 @@ impl Storage {
                     skipped += 1;
                     continue;
                 }
-                
+
                 // Fix model name: add provider prefix if missing
                 if !model.contains('/') {
                     if model == "unknown" || model.is_empty() {
@@ -1932,13 +1968,13 @@ impl Storage {
                         };
                     }
                 }
-                
+
                 let ts = if created_at.is_empty() {
                     chrono::Utc::now().to_rfc3339()
                 } else {
                     created_at
                 };
-                
+
                 conn.execute(
                     "INSERT OR REPLACE INTO memory_embeddings_v2 (memory_id, model, embedding, dimensions, created_at) VALUES (?, ?, ?, ?, ?)",
                     params![memory_id, model, final_blob, dims, ts],
@@ -1946,7 +1982,7 @@ impl Storage {
                 migrated += 1;
             }
         }
-        
+
         // Step 3: Replace old table
         conn.execute_batch(
             r#"
@@ -1955,42 +1991,47 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_embeddings_model ON memory_embeddings(model);
             "#,
         )?;
-        
+
         // Step 4: Set protocol version
         Self::set_meta(conn, "embedding_protocol_version", "2")?;
-        
-        eprintln!("[engram] Migration complete: {} migrated, {} skipped", migrated, skipped);
-        
+
+        eprintln!(
+            "[engram] Migration complete: {} migrated, {} skipped",
+            migrated, skipped
+        );
+
         Ok(())
     }
-    
+
     /// Helper: convert JSON text embedding to BLOB format.
     fn json_text_to_blob(data: &[u8]) -> Option<(Vec<u8>, usize)> {
         let text = std::str::from_utf8(data).ok()?;
         let values: Vec<f64> = serde_json::from_str(text).ok()?;
         let dims = values.len();
-        let blob: Vec<u8> = values.iter()
+        let blob: Vec<u8> = values
+            .iter()
             .flat_map(|v| (*v as f32).to_le_bytes())
             .collect();
         Some((blob, dims))
     }
-    
+
     /// Get a metadata value from engram_meta table.
     fn get_meta(conn: &Connection, key: &str) -> SqlResult<Option<String>> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS engram_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS engram_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )?;
         conn.query_row(
             "SELECT value FROM engram_meta WHERE key = ?",
             params![key],
             |row| row.get(0),
-        ).optional()
+        )
+        .optional()
     }
-    
+
     /// Set a metadata value in engram_meta table.
     fn set_meta(conn: &Connection, key: &str, value: &str) -> SqlResult<()> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS engram_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS engram_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )?;
         conn.execute(
             "INSERT OR REPLACE INTO engram_meta (key, value) VALUES (?, ?)",
@@ -2006,32 +2047,32 @@ impl Storage {
             "ALTER TABLE hebbian_links ADD COLUMN signal_source TEXT DEFAULT 'corecall'",
             [],
         ) {
-            Ok(_) => {},
-            Err(e) if e.to_string().contains("duplicate column name") => {},
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
             Err(e) => return Err(e),
         }
-        
+
         // Add signal_detail column
         match conn.execute(
             "ALTER TABLE hebbian_links ADD COLUMN signal_detail TEXT DEFAULT NULL",
             [],
         ) {
-            Ok(_) => {},
-            Err(e) if e.to_string().contains("duplicate column name") => {},
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
             Err(e) => return Err(e),
         }
-        
+
         // Backfill existing rows
         conn.execute(
             "UPDATE hebbian_links SET signal_source = 'corecall' WHERE signal_source IS NULL",
             [],
         )?;
-        
+
         // Add index for signal_source queries
         conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_hebbian_signal_source ON hebbian_links(signal_source);"
+            "CREATE INDEX IF NOT EXISTS idx_hebbian_signal_source ON hebbian_links(signal_source);",
         )?;
-        
+
         Ok(())
     }
 
@@ -2159,7 +2200,7 @@ impl Storage {
 
         Ok(())
     }
-    
+
     /// Migrate entity tables: add unique constraints needed for upsert operations.
     /// Migrate schema for triple extraction support.
     fn migrate_triples(conn: &Connection) -> SqlResult<()> {
@@ -2179,7 +2220,7 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_triples_memory ON triples(memory_id);
             CREATE INDEX IF NOT EXISTS idx_triples_subject ON triples(subject);
             CREATE INDEX IF NOT EXISTS idx_triples_object ON triples(object);
-            "#
+            "#,
         )?;
 
         // Add triple_extraction_attempts column to memories
@@ -2187,8 +2228,8 @@ impl Storage {
             "ALTER TABLE memories ADD COLUMN triple_extraction_attempts INTEGER NOT NULL DEFAULT 0",
             [],
         ) {
-            Ok(_) => {},
-            Err(e) if e.to_string().contains("duplicate column name") => {},
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column name") => {}
             Err(e) => return Err(e),
         }
 
@@ -2200,13 +2241,13 @@ impl Storage {
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_unique ON entities(name, entity_type, namespace);"
         )?;
-        
+
         // entity_relations needs a UNIQUE constraint on (source_id, target_id, relation)
         // for ON CONFLICT to work. We create a unique index.
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_relations_unique ON entity_relations(source_id, target_id, relation);"
         )?;
-        
+
         Ok(())
     }
 
@@ -2228,13 +2269,16 @@ impl Storage {
                 created_at TEXT NOT NULL,
                 resolved_at TEXT
             );
-            "#
+            "#,
         )?;
         Ok(())
     }
 
     /// Store a promotion candidate.
-    pub fn store_promotion_candidate(&self, candidate: &crate::promotion::PromotionCandidate) -> Result<(), rusqlite::Error> {
+    pub fn store_promotion_candidate(
+        &self,
+        candidate: &crate::promotion::PromotionCandidate,
+    ) -> Result<(), rusqlite::Error> {
         self.conn.execute(
             "INSERT OR REPLACE INTO promotion_candidates (id, member_ids, snippets, avg_core_strength, avg_importance, time_span_days, internal_link_count, suggested_target, summary, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
@@ -2255,7 +2299,9 @@ impl Storage {
     }
 
     /// Get all pending promotion candidates.
-    pub fn get_pending_promotions(&self) -> Result<Vec<crate::promotion::PromotionCandidate>, rusqlite::Error> {
+    pub fn get_pending_promotions(
+        &self,
+    ) -> Result<Vec<crate::promotion::PromotionCandidate>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT id, member_ids, snippets, avg_core_strength, avg_importance, time_span_days, internal_link_count, suggested_target, summary, status, created_at FROM promotion_candidates WHERE status = 'pending'"
         )?;
@@ -2292,22 +2338,27 @@ impl Storage {
     }
 
     /// Check if a cluster (by member IDs) has already been promoted (approved or pending).
-    pub fn is_cluster_already_promoted(&self, member_ids: &[String]) -> Result<bool, rusqlite::Error> {
+    pub fn is_cluster_already_promoted(
+        &self,
+        member_ids: &[String],
+    ) -> Result<bool, rusqlite::Error> {
         // Check if any existing non-dismissed candidate has significant overlap with these member_ids
-        let mut stmt = self.conn.prepare(
-            "SELECT member_ids FROM promotion_candidates WHERE status != 'dismissed'"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT member_ids FROM promotion_candidates WHERE status != 'dismissed'")?;
         let rows = stmt.query_map([], |row| {
             let json: String = row.get(0)?;
             Ok(json)
         })?;
 
-        let input_set: std::collections::HashSet<&str> = member_ids.iter().map(|s| s.as_str()).collect();
+        let input_set: std::collections::HashSet<&str> =
+            member_ids.iter().map(|s| s.as_str()).collect();
 
         for row in rows {
             let json = row?;
             if let Ok(existing_ids) = serde_json::from_str::<Vec<String>>(&json) {
-                let existing_set: std::collections::HashSet<&str> = existing_ids.iter().map(|s| s.as_str()).collect();
+                let existing_set: std::collections::HashSet<&str> =
+                    existing_ids.iter().map(|s| s.as_str()).collect();
                 let overlap = input_set.intersection(&existing_set).count();
                 // If >50% overlap, consider it already promoted
                 let min_size = input_set.len().min(existing_set.len());
@@ -2323,7 +2374,7 @@ impl Storage {
     /// Uses engram_meta 'fts_cjk_version' to track migration state.
     fn rebuild_fts_if_needed(conn: &Connection) -> SqlResult<()> {
         const FTS_CJK_VERSION: &str = "1";
-        
+
         let current: Option<String> = conn
             .query_row(
                 "SELECT value FROM engram_meta WHERE key = 'fts_cjk_version'",
@@ -2331,11 +2382,11 @@ impl Storage {
                 |row| row.get(0),
             )
             .ok();
-        
+
         if current.as_deref() == Some(FTS_CJK_VERSION) {
             return Ok(()); // Already up to date
         }
-        
+
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
         if count == 0 {
             conn.execute(
@@ -2344,18 +2395,18 @@ impl Storage {
             )?;
             return Ok(());
         }
-        
+
         // Rebuild: clear FTS and re-insert all with tokenization (in a transaction)
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        
+
         conn.execute("DELETE FROM memories_fts", [])?;
-        
+
         let mut stmt = conn.prepare("SELECT rowid, content FROM memories")?;
         let rows: Vec<(i64, String)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .filter_map(|r| r.ok())
             .collect();
-        
+
         for (rowid, content) in &rows {
             let tokenized = tokenize_cjk_boundaries(content);
             conn.execute(
@@ -2363,23 +2414,29 @@ impl Storage {
                 params![rowid, tokenized],
             )?;
         }
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO engram_meta VALUES ('fts_cjk_version', ?1)",
             params![FTS_CJK_VERSION],
         )?;
-        
+
         conn.execute_batch("COMMIT")?;
-        
-        eprintln!("[engram] Rebuilt FTS index with CJK tokenization for {} memories", rows.len());
+
+        eprintln!(
+            "[engram] Rebuilt FTS index with CJK tokenization for {} memories",
+            rows.len()
+        );
         Ok(())
     }
 
     /// Add a new memory to storage.
     pub fn add(&mut self, record: &MemoryRecord, namespace: &str) -> Result<(), rusqlite::Error> {
         let tx = self.conn.transaction()?;
-        
-        let metadata_json = record.metadata.as_ref().and_then(|m| serde_json::to_string(m).ok());
+
+        let metadata_json = record
+            .metadata
+            .as_ref()
+            .and_then(|m| serde_json::to_string(m).ok());
 
         // T12 — Phase B dual-write: every memory row also lands in
         // `nodes` as `node_kind='memory'`. Delegates to
@@ -2436,13 +2493,13 @@ impl Storage {
                 ],
             )?;
         }
-        
+
         // Record initial access
         tx.execute(
             "INSERT INTO access_log (memory_id, accessed_at) VALUES (?, ?)",
             params![record.id, datetime_to_f64(&record.created_at)],
         )?;
-        
+
         // Insert into FTS with CJK/ASCII boundary tokenization (legacy only).
         if !self.unified_substrate {
             let tokenized = tokenize_cjk_boundaries(&record.content);
@@ -2708,7 +2765,12 @@ impl Storage {
                     json_extract(attributes, '$._legacy_contradicted_by')
                  FROM nodes WHERE id = ?1 AND node_kind = 'memory'",
                 params![id],
-                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
             )
             .ok();
 
@@ -3197,7 +3259,7 @@ impl Storage {
             let access_times = self.get_access_times(&id).unwrap_or_default();
             self.row_to_record_node(row, access_times)
         })?;
-        
+
         rows.collect()
     }
 
@@ -3220,7 +3282,10 @@ impl Storage {
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt.query_map(params.as_slice(), |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
@@ -3237,27 +3302,36 @@ impl Storage {
     /// If already inside a transaction (e.g., called from undo_synthesis), skips
     /// creating a new transaction to avoid "cannot start a transaction within a transaction".
     pub fn update(&mut self, record: &MemoryRecord) -> Result<(), rusqlite::Error> {
-        let metadata_json = record.metadata.as_ref().and_then(|m| serde_json::to_string(m).ok());
+        let metadata_json = record
+            .metadata
+            .as_ref()
+            .and_then(|m| serde_json::to_string(m).ok());
         let needs_tx = self.conn.is_autocommit();
-        
+
         if needs_tx {
             self.conn.execute_batch("BEGIN IMMEDIATE")?;
         }
-        
+
         let result = self.update_inner(record, &metadata_json);
-        
+
         if needs_tx {
             match &result {
                 Ok(_) => self.conn.execute_batch("COMMIT")?,
-                Err(_) => { let _ = self.conn.execute_batch("ROLLBACK"); }
+                Err(_) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                }
             }
         }
-        
+
         result
     }
-    
+
     /// Inner update logic (always runs within a transaction context).
-    fn update_inner(&self, record: &MemoryRecord, metadata_json: &Option<String>) -> Result<(), rusqlite::Error> {
+    fn update_inner(
+        &self,
+        record: &MemoryRecord,
+        metadata_json: &Option<String>,
+    ) -> Result<(), rusqlite::Error> {
         // ISS-199 (Phase E read-cutover): under unified mode the legacy
         // `memories` row never exists (T34a removes the write), so the
         // `SELECT rowid FROM memories` below would `QueryReturnedNoRows`
@@ -3278,7 +3352,7 @@ impl Storage {
             params![record.id],
             |row| row.get(0),
         )?;
-        
+
         self.conn.execute(
             r#"
             UPDATE memories SET
@@ -3310,28 +3384,34 @@ impl Storage {
         // missing (pre-T26c backfill state). Trigger nodes_fts_au
         // refreshes nodes_fts on UPDATE OF content automatically.
         Self::update_memory_node_row(&self.conn, record, metadata_json.as_deref())?;
-        
+
         // Update FTS with CJK tokenization (with malformed recovery)
-        match self.conn.execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]) {
-            Ok(_) => {},
+        match self
+            .conn
+            .execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid])
+        {
+            Ok(_) => {}
             Err(e) if e.to_string().contains("malformed") => {
                 // FTS corrupted, rebuild the index
                 eprintln!("[engram] FTS corruption detected during update, rebuilding index...");
                 let _ = self.conn.execute(
-                    "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')", []
+                    "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')",
+                    [],
                 );
                 // Retry delete after rebuild
-                let _ = self.conn.execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]);
+                let _ = self
+                    .conn
+                    .execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]);
             }
             Err(_) => {} // Other errors are non-critical for FTS
         }
-        
+
         let tokenized = tokenize_cjk_boundaries(&record.content);
         let _ = self.conn.execute(
             "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
             params![rowid, tokenized],
         );
-        
+
         Ok(())
     }
 
@@ -3342,23 +3422,25 @@ impl Storage {
     /// If already inside a transaction, participates in the existing one.
     pub fn delete(&mut self, id: &str) -> Result<(), rusqlite::Error> {
         let needs_tx = self.conn.is_autocommit();
-        
+
         if needs_tx {
             self.conn.execute_batch("BEGIN IMMEDIATE")?;
         }
-        
+
         let result = self.delete_inner(id);
-        
+
         if needs_tx {
             match &result {
                 Ok(_) => self.conn.execute_batch("COMMIT")?,
-                Err(_) => { let _ = self.conn.execute_batch("ROLLBACK"); }
+                Err(_) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                }
             }
         }
-        
+
         result
     }
-    
+
     /// Inner delete logic (always runs within a transaction context).
     ///
     /// ISS-126: dual-DELETEs onto the unified substrate. Order
@@ -3375,12 +3457,12 @@ impl Storage {
             |row| row.get(0),
         );
         if let Ok(rowid) = rowid {
-            let _ = self.conn.execute(
-                "DELETE FROM memories_fts WHERE rowid = ?",
-                params![rowid],
-            );
+            let _ = self
+                .conn
+                .execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]);
         }
-        self.conn.execute("DELETE FROM memories WHERE id = ?", params![id])?;
+        self.conn
+            .execute("DELETE FROM memories WHERE id = ?", params![id])?;
 
         // ISS-126: dual-DELETE on the unified substrate.
         //
@@ -3401,8 +3483,10 @@ impl Storage {
         //    Phase B (handled by delete_all_embeddings / direct
         //    cleanup elsewhere — hard delete should clear those
         //    explicitly if any).
-        self.conn.execute("DELETE FROM node_embeddings WHERE node_id = ?", params![id])?;
-        self.conn.execute("DELETE FROM nodes WHERE id = ?", params![id])?;
+        self.conn
+            .execute("DELETE FROM node_embeddings WHERE node_id = ?", params![id])?;
+        self.conn
+            .execute("DELETE FROM nodes WHERE id = ?", params![id])?;
 
         Ok(())
     }
@@ -3420,25 +3504,32 @@ impl Storage {
     ) -> Result<(), rusqlite::Error> {
         let metadata_json = metadata.and_then(|m| serde_json::to_string(&m).ok());
         let needs_tx = self.conn.is_autocommit();
-        
+
         if needs_tx {
             self.conn.execute_batch("BEGIN IMMEDIATE")?;
         }
-        
+
         let result = self.update_content_inner(id, new_content, &metadata_json);
-        
+
         if needs_tx {
             match &result {
                 Ok(_) => self.conn.execute_batch("COMMIT")?,
-                Err(_) => { let _ = self.conn.execute_batch("ROLLBACK"); }
+                Err(_) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                }
             }
         }
-        
+
         result
     }
-    
+
     /// Inner update_content logic (always runs within a transaction context).
-    fn update_content_inner(&self, id: &str, new_content: &str, metadata_json: &Option<String>) -> Result<(), rusqlite::Error> {
+    fn update_content_inner(
+        &self,
+        id: &str,
+        new_content: &str,
+        metadata_json: &Option<String>,
+    ) -> Result<(), rusqlite::Error> {
         // ISS-199 (Phase E read-cutover): mirror `update_inner`. Under
         // unified mode the legacy `memories` row never exists (T34a
         // removes the write), so the `SELECT rowid FROM memories` below
@@ -3451,7 +3542,12 @@ impl Storage {
         // mode we update `nodes` only and skip the legacy
         // `memories` / `memories_fts` maintenance entirely.
         if self.unified_substrate {
-            Self::update_memory_node_content(&self.conn, id, new_content, metadata_json.as_deref())?;
+            Self::update_memory_node_content(
+                &self.conn,
+                id,
+                new_content,
+                metadata_json.as_deref(),
+            )?;
             return Ok(());
         }
 
@@ -3461,7 +3557,7 @@ impl Storage {
             params![id],
             |row| row.get(0),
         )?;
-        
+
         self.conn.execute(
             "UPDATE memories SET content = ?, metadata = ? WHERE id = ?",
             params![new_content, metadata_json, id],
@@ -3470,18 +3566,20 @@ impl Storage {
         // ISS-124: dual-write content + metadata to nodes (preserves
         // ISS-119 _legacy_* shim keys via update_memory_node_content).
         Self::update_memory_node_content(&self.conn, id, new_content, metadata_json.as_deref())?;
-        
+
         // Update FTS index manually (no triggers, need CJK tokenization)
-        let _ = self.conn.execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]);
+        let _ = self
+            .conn
+            .execute("DELETE FROM memories_fts WHERE rowid = ?", params![rowid]);
         let tokenized = tokenize_cjk_boundaries(new_content);
         let _ = self.conn.execute(
             "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
             params![rowid, tokenized],
         );
-        
+
         Ok(())
     }
-    
+
     /// Get all memories of a specific type, optionally filtered by namespace.
     pub fn search_by_type_ns(
         &self,
@@ -3490,32 +3588,33 @@ impl Storage {
         limit: usize,
     ) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         let ns = namespace.unwrap_or("default");
-        
+
         if ns == "*" {
             // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
                 "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
             )?;
-            
+
             let rows = stmt.query_map(params![memory_type.to_string(), limit as i64], |row| {
                 let id: String = row.get("id")?;
                 let access_times = self.get_access_times(&id).unwrap_or_default();
                 self.row_to_record_node(row, access_times)
             })?;
-            
+
             rows.collect()
         } else {
             // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
             let mut stmt = self.conn.prepare(
                 "SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND memory_type = ? AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '') ORDER BY importance DESC LIMIT ?"
             )?;
-            
-            let rows = stmt.query_map(params![memory_type.to_string(), ns, limit as i64], |row| {
-                let id: String = row.get("id")?;
-                let access_times = self.get_access_times(&id).unwrap_or_default();
-                self.row_to_record_node(row, access_times)
-            })?;
-            
+
+            let rows =
+                stmt.query_map(params![memory_type.to_string(), ns, limit as i64], |row| {
+                    let id: String = row.get("id")?;
+                    let access_times = self.get_access_times(&id).unwrap_or_default();
+                    self.row_to_record_node(row, access_times)
+                })?;
+
             rows.collect()
         }
     }
@@ -3531,15 +3630,15 @@ impl Storage {
 
     /// Get all access timestamps for a memory.
     pub fn get_access_times(&self, id: &str) -> Result<Vec<DateTime<Utc>>, rusqlite::Error> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT accessed_at FROM access_log WHERE memory_id = ? ORDER BY accessed_at")?;
-        
+        let mut stmt = self.conn.prepare(
+            "SELECT accessed_at FROM access_log WHERE memory_id = ? ORDER BY accessed_at",
+        )?;
+
         let rows = stmt.query_map(params![id], |row| {
             let ts: f64 = row.get(0)?;
             Ok(f64_to_datetime(ts))
         })?;
-        
+
         rows.collect()
     }
 
@@ -3558,7 +3657,11 @@ impl Storage {
     /// for memories that pre-date the dual-write deployment. The
     /// flag stays opt-in until backfill closes that gap (design
     /// §8.5).
-    pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
+    pub fn search_fts(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         // Tokenize CJK text first, then split like unicode61 for FTS alignment
         let tokenized = tokenize_cjk_boundaries(query);
         let words = tokenize_like_unicode61(&tokenized);
@@ -3567,7 +3670,11 @@ impl Storage {
         }
 
         // Build OR query — each token quoted to prevent FTS5 syntax injection
-        let fts_query = words.iter().map(|w| format!("\"{}\"", w)).collect::<Vec<_>>().join(" OR ");
+        let fts_query = words
+            .iter()
+            .map(|w| format!("\"{}\"", w))
+            .collect::<Vec<_>>()
+            .join(" OR ");
 
         let sql = if self.unified_substrate {
             // Phase E-0 (ISS-197) Bucket D: read purely from `nodes`
@@ -3716,18 +3823,21 @@ impl Storage {
         }
     }
 
-    pub fn search_by_type(&self, memory_type: MemoryType) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
+    pub fn search_by_type(
+        &self,
+        memory_type: MemoryType,
+    ) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         let mut stmt = self
             .conn
             .prepare("SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND memory_type = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
-        
+
         let rows = stmt.query_map(params![memory_type.to_string()], |row| {
             let id: String = row.get("id")?;
             let access_times = self.get_access_times(&id).unwrap_or_default();
             self.row_to_record_node(row, access_times)
         })?;
-        
+
         rows.collect()
     }
 
@@ -3766,7 +3876,7 @@ impl Storage {
                  FROM edges \
                  WHERE edge_kind = 'associative' \
                    AND (source_id = ?1 OR target_id = ?1) \
-                   AND weight > 0"
+                   AND weight > 0",
             )?;
             let rows = stmt.query_map(params![memory_id], |row| row.get(0))?;
             return rows.collect();
@@ -3775,7 +3885,7 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END \
              FROM hebbian_links \
-             WHERE (source_id = ?1 OR target_id = ?1) AND strength > 0"
+             WHERE (source_id = ?1 OR target_id = ?1) AND strength > 0",
         )?;
 
         let rows = stmt.query_map(params![memory_id], |row| row.get(0))?;
@@ -3800,14 +3910,17 @@ impl Storage {
     /// callers (e.g. `memory.rs` recall scoring spreading activation)
     /// must accept unified weight semantics. The neighbour **identity**
     /// matches once a link is formed; the **score** does not.
-    pub fn get_hebbian_links_weighted(&self, memory_id: &str) -> Result<Vec<(String, f64)>, rusqlite::Error> {
+    pub fn get_hebbian_links_weighted(
+        &self,
+        memory_id: &str,
+    ) -> Result<Vec<(String, f64)>, rusqlite::Error> {
         if self.unified_substrate {
             let mut stmt = self.conn.prepare(
                 "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END, weight \
                  FROM edges \
                  WHERE edge_kind = 'associative' \
                    AND (source_id = ?1 OR target_id = ?1) \
-                   AND weight > 0"
+                   AND weight > 0",
             )?;
             let rows = stmt.query_map(params![memory_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
@@ -3817,7 +3930,7 @@ impl Storage {
 
         let mut stmt = self.conn.prepare(
             "SELECT CASE WHEN source_id = ?1 THEN target_id ELSE source_id END, strength \
-             FROM hebbian_links WHERE (source_id = ?1 OR target_id = ?1) AND strength > 0"
+             FROM hebbian_links WHERE (source_id = ?1 OR target_id = ?1) AND strength > 0",
         )?;
         let rows = stmt.query_map(params![memory_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
@@ -3918,13 +4031,7 @@ impl Storage {
         // ISS-116: unified-edges dual-write. Matches record_coactivation_ns
         // policy — one unconditional UPSERT with delta_weight=0.1 per call.
         crate::graph::store::dual_write_hebbian_to_edges(
-            &tx,
-            id1,
-            id2,
-            "corecall",
-            "{}",
-            0.1,
-            "default",
+            &tx, id1, id2, "corecall", "{}", 0.1, "default",
         )
         .map_err(|e| match e {
             crate::graph::GraphError::Sqlite(s) => s,
@@ -4025,12 +4132,14 @@ impl Storage {
             if other_id == target_id {
                 continue;
             }
-            let existing_weight: Option<f64> = tx.query_row(
-                "SELECT strength FROM hebbian_links WHERE \
+            let existing_weight: Option<f64> = tx
+                .query_row(
+                    "SELECT strength FROM hebbian_links WHERE \
                  (source_id = ?1 AND target_id = ?2) OR (source_id = ?2 AND target_id = ?1)",
-                params![target_id, other_id],
-                |row| row.get(0),
-            ).optional()?;
+                    params![target_id, other_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
 
             match existing_weight {
                 Some(existing) => {
@@ -4072,12 +4181,14 @@ impl Storage {
             } else {
                 (other_id.as_str(), target_id)
             };
-            let existing_w: Option<f64> = tx.query_row(
-                "SELECT weight FROM edges WHERE edge_kind = 'associative' \
+            let existing_w: Option<f64> = tx
+                .query_row(
+                    "SELECT weight FROM edges WHERE edge_kind = 'associative' \
                  AND source_id = ?1 AND target_id = ?2",
-                params![lo, hi],
-                |row| row.get(0),
-            ).optional()?;
+                    params![lo, hi],
+                    |row| row.get(0),
+                )
+                .optional()?;
             match existing_w {
                 Some(existing) => {
                     let max_w = existing.max(*donor_weight);
@@ -4197,7 +4308,7 @@ impl Storage {
     ) -> SqlResult<MemoryRecord> {
         row_to_record_from_node_impl(row, access_times)
     }
-    
+
     /// Get the namespace of a memory by ID.
     pub fn get_namespace(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
         self.conn
@@ -4216,7 +4327,11 @@ impl Storage {
     ///
     /// Validates: old_id exists, new_id exists, old_id != new_id, same namespace.
     /// If old_id is already superseded, updates the link (last-write-wins).
-    pub fn supersede(&self, old_id: &str, new_id: &str) -> Result<(), crate::types::SupersessionError> {
+    pub fn supersede(
+        &self,
+        old_id: &str,
+        new_id: &str,
+    ) -> Result<(), crate::types::SupersessionError> {
         use crate::types::SupersessionError;
 
         if old_id == new_id {
@@ -4278,7 +4393,11 @@ impl Storage {
     ///
     /// If any old_id doesn't exist, rolls back and returns error with invalid IDs.
     /// Empty old_ids = no-op success (returns 0).
-    pub fn supersede_bulk(&self, old_ids: &[&str], new_id: &str) -> Result<usize, crate::types::SupersessionError> {
+    pub fn supersede_bulk(
+        &self,
+        old_ids: &[&str],
+        new_id: &str,
+    ) -> Result<usize, crate::types::SupersessionError> {
         use crate::types::SupersessionError;
 
         if old_ids.is_empty() {
@@ -4317,7 +4436,9 @@ impl Storage {
         }
 
         // All validated — execute in a savepoint
-        self.conn.execute("SAVEPOINT supersede_bulk", []).map_err(SupersessionError::Db)?;
+        self.conn
+            .execute("SAVEPOINT supersede_bulk", [])
+            .map_err(SupersessionError::Db)?;
         let result = (|| {
             // Phase B dual-write: every (old_id → new_id) pair updates
             // both `memories.superseded_by` and `nodes.superseded_by`
@@ -4325,22 +4446,28 @@ impl Storage {
             // both legacy and unified state atomically.
             let now = datetime_to_f64(&chrono::Utc::now());
             for &old_id in old_ids {
-                self.conn.execute(
-                    "UPDATE memories SET superseded_by = ? WHERE id = ?",
-                    params![new_id, old_id],
-                ).map_err(SupersessionError::Db)?;
-                self.conn.execute(
-                    "UPDATE nodes SET superseded_by = ?, updated_at = ? \
+                self.conn
+                    .execute(
+                        "UPDATE memories SET superseded_by = ? WHERE id = ?",
+                        params![new_id, old_id],
+                    )
+                    .map_err(SupersessionError::Db)?;
+                self.conn
+                    .execute(
+                        "UPDATE nodes SET superseded_by = ?, updated_at = ? \
                      WHERE id = ? AND node_kind = 'memory'",
-                    params![new_id, now, old_id],
-                ).map_err(SupersessionError::Db)?;
+                        params![new_id, now, old_id],
+                    )
+                    .map_err(SupersessionError::Db)?;
             }
             Ok::<usize, SupersessionError>(old_ids.len())
         })();
 
         match result {
             Ok(count) => {
-                self.conn.execute("RELEASE supersede_bulk", []).map_err(SupersessionError::Db)?;
+                self.conn
+                    .execute("RELEASE supersede_bulk", [])
+                    .map_err(SupersessionError::Db)?;
                 Ok(count)
             }
             Err(e) => {
@@ -4383,7 +4510,10 @@ impl Storage {
     }
 
     /// List all superseded memories, optionally filtered by namespace.
-    pub fn list_superseded(&self, namespace: Option<&str>) -> Result<Vec<(MemoryRecord, String)>, rusqlite::Error> {
+    pub fn list_superseded(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Vec<(MemoryRecord, String)>, rusqlite::Error> {
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         // Node-native predicate: `superseded_by IS NOT NULL` (legacy used
         // `!= ''`; nodes uses NULL for not-superseded, never '').
@@ -4436,7 +4566,7 @@ impl Storage {
             }
         }
     }
-    
+
     /// Full-text search using FTS5, filtered by namespace.
     ///
     /// If namespace is None, search in "default" namespace.
@@ -4462,7 +4592,11 @@ impl Storage {
         }
 
         // Build OR query — each token quoted to prevent FTS5 syntax injection
-        let fts_query = words.iter().map(|w| format!("\"{}\"", w)).collect::<Vec<_>>().join(" OR ");
+        let fts_query = words
+            .iter()
+            .map(|w| format!("\"{}\"", w))
+            .collect::<Vec<_>>()
+            .join(" OR ");
 
         let ns = namespace.unwrap_or("default");
 
@@ -4543,15 +4677,18 @@ impl Storage {
             rows.collect()
         }
     }
-    
+
     /// Get all memories in a specific namespace.
-    pub fn all_in_namespace(&self, namespace: Option<&str>) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
+    pub fn all_in_namespace(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         let ns = namespace.unwrap_or("default");
-        
+
         if ns == "*" {
             return self.all();
         }
-        
+
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         let mut stmt = self.conn.prepare("SELECT * FROM nodes WHERE node_kind IN ('memory', 'insight') AND namespace = ? AND deleted_at IS NULL AND (superseded_by IS NULL OR superseded_by = '')")?;
         let rows = stmt.query_map(params![ns], |row| {
@@ -4559,16 +4696,16 @@ impl Storage {
             let access_times = self.get_access_times(&id).unwrap_or_default();
             self.row_to_record_node(row, access_times)
         })?;
-        
+
         rows.collect()
     }
-    
+
     // === Embedding Methods (Protocol v2) ===
     //
     // See EMBEDDING_PROTOCOL.md for the full specification.
     // PK: (memory_id, model) — supports multiple embedding models per memory.
     // BLOB format: raw little-endian f32 array, no header.
-    
+
     /// Validate an embedding vector before storage.
     ///
     /// Returns Err if the embedding is empty or contains non-finite values.
@@ -4599,7 +4736,7 @@ impl Storage {
         }
         Ok(())
     }
-    
+
     /// Store embedding for a memory with a specific model.
     ///
     /// Protocol v2: PK is (memory_id, model), so the same memory can have
@@ -4614,25 +4751,26 @@ impl Storage {
         dimensions: usize,
     ) -> Result<(), rusqlite::Error> {
         Self::validate_embedding(embedding)?;
-        
+
         // Normalize model ID: must have provider prefix (e.g. "ollama/nomic-embed-text")
         let model = Self::normalize_model_id(model);
-        
+
         // Serialize Vec<f32> as raw bytes (4 bytes per f32, little-endian)
-        let bytes: Vec<u8> = embedding
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
-        
-        debug_assert_eq!(bytes.len(), dimensions * 4,
-            "Blob size mismatch: {} bytes for {} dimensions", bytes.len(), dimensions);
-        
+        let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+        debug_assert_eq!(
+            bytes.len(),
+            dimensions * 4,
+            "Blob size mismatch: {} bytes for {} dimensions",
+            bytes.len(),
+            dimensions
+        );
+
         let now_dt = chrono::Utc::now();
         let now = now_dt.to_rfc3339();
         // Same instant in epoch seconds (sub-second precision) for the
         // unified `node_embeddings` table, whose `created_at` is `REAL`.
-        let now_epoch = now_dt.timestamp() as f64
-            + (now_dt.timestamp_subsec_nanos() as f64) / 1e9;
+        let now_epoch = now_dt.timestamp() as f64 + (now_dt.timestamp_subsec_nanos() as f64) / 1e9;
 
         // Phase B (T20 follow-up) dual-write: every legacy
         // `memory_embeddings` insert also lands in the unified
@@ -4669,7 +4807,7 @@ impl Storage {
 
         Ok(())
     }
-    
+
     /// Get embedding for a memory using a specific model.
     ///
     /// Returns None if no embedding exists for this (memory_id, model) pair.
@@ -4679,7 +4817,11 @@ impl Storage {
     /// reads from legacy `memory_embeddings`. Both tables stay in
     /// lockstep through `store_embedding`'s dual-write
     /// (`memory_id == node_id` by T12 construction).
-    pub fn get_embedding(&self, memory_id: &str, model: &str) -> Result<Option<Vec<f32>>, rusqlite::Error> {
+    pub fn get_embedding(
+        &self,
+        memory_id: &str,
+        model: &str,
+    ) -> Result<Option<Vec<f32>>, rusqlite::Error> {
         let model = Self::normalize_model_id(model);
         let result: Option<Vec<u8>> = if self.unified_substrate {
             self.conn
@@ -4735,8 +4877,10 @@ impl Storage {
         let model = Self::normalize_model_id(model);
 
         // Build "?,?,?,..." placeholder list matching the input length.
-        let placeholders: String =
-            std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
+        let placeholders: String = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
 
         let sql = if self.unified_substrate {
             format!(
@@ -4792,7 +4936,10 @@ impl Storage {
     /// columns, so we route through the legacy table-of-record. This
     /// is intentional and bug-for-bug with the legacy reader: callers
     /// already pre-filter by namespace upstream when needed.
-    pub fn get_all_embeddings(&self, model: &str) -> Result<Vec<(String, Vec<f32>)>, rusqlite::Error> {
+    pub fn get_all_embeddings(
+        &self,
+        model: &str,
+    ) -> Result<Vec<(String, Vec<f32>)>, rusqlite::Error> {
         let model = Self::normalize_model_id(model);
         if self.unified_substrate {
             // ISS-199 (Phase E read-cutover): join `nodes`, not the
@@ -4802,7 +4949,7 @@ impl Storage {
                 r#"SELECT e.node_id, e.embedding FROM node_embeddings e
                 JOIN nodes m ON e.node_id = m.id
                 WHERE m.node_kind = 'memory' AND e.model = ? AND m.deleted_at IS NULL
-                AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
+                AND (m.superseded_by IS NULL OR m.superseded_by = '')"#,
             )?;
             let rows = stmt.query_map(params![model], |row| {
                 let memory_id: String = row.get(0)?;
@@ -4815,7 +4962,7 @@ impl Storage {
                 r#"SELECT e.memory_id, e.embedding FROM memory_embeddings e
                 JOIN memories m ON e.memory_id = m.id
                 WHERE e.model = ? AND m.deleted_at IS NULL
-                AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
+                AND (m.superseded_by IS NULL OR m.superseded_by = '')"#,
             )?;
             let rows = stmt.query_map(params![model], |row| {
                 let memory_id: String = row.get(0)?;
@@ -4825,7 +4972,7 @@ impl Storage {
             rows.collect()
         }
     }
-    
+
     /// Get embeddings for a specific namespace and model.
     ///
     /// Only returns embeddings from the specified model to ensure
@@ -4837,7 +4984,7 @@ impl Storage {
     ) -> Result<Vec<(String, Vec<f32>)>, rusqlite::Error> {
         let model = Self::normalize_model_id(model);
         let ns = namespace.unwrap_or("default");
-        
+
         if ns == "*" {
             return self.get_all_embeddings(&model);
         }
@@ -4858,7 +5005,7 @@ impl Storage {
                 WHERE m.node_kind = 'memory' AND m.namespace = ? AND e.model = ?
                 AND m.deleted_at IS NULL
                 AND (m.superseded_by IS NULL OR m.superseded_by = '')
-                "#
+                "#,
             )?;
             let rows = stmt.query_map(params![ns, model], |row| {
                 let memory_id: String = row.get(0)?;
@@ -4873,7 +5020,7 @@ impl Storage {
                 JOIN memories m ON e.memory_id = m.id
                 WHERE m.namespace = ? AND e.model = ? AND m.deleted_at IS NULL
                 AND (m.superseded_by IS NULL OR m.superseded_by = '')
-                "#
+                "#,
             )?;
             let rows = stmt.query_map(params![ns, model], |row| {
                 let memory_id: String = row.get(0)?;
@@ -4883,7 +5030,7 @@ impl Storage {
             rows.collect()
         }
     }
-    
+
     // === Soft-Delete / Lifecycle Methods ===
 
     /// Get a reference to the underlying connection (for tests).
@@ -4981,13 +5128,19 @@ impl Storage {
         let tx = self.conn.transaction()?;
 
         // --- Legacy side: clear dependents first ---
-        tx.execute("DELETE FROM memory_embeddings WHERE memory_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM memory_embeddings WHERE memory_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM access_log WHERE memory_id = ?1", params![id])?;
         tx.execute(
             "DELETE FROM hebbian_links WHERE source_id = ?1 OR target_id = ?1",
             params![id],
         )?;
-        tx.execute("DELETE FROM memory_entities WHERE memory_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM memory_entities WHERE memory_id = ?1",
+            params![id],
+        )?;
         tx.execute(
             "DELETE FROM synthesis_provenance WHERE source_id = ?1 OR insight_id = ?1",
             params![id],
@@ -5005,7 +5158,10 @@ impl Storage {
         tx.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
 
         // --- Unified side: same shape, same order (clears ISS-115) ---
-        tx.execute("DELETE FROM node_embeddings WHERE node_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM node_embeddings WHERE node_id = ?1",
+            params![id],
+        )?;
         tx.execute(
             "DELETE FROM edges WHERE edge_kind = 'associative' \
              AND (source_id = ?1 OR target_id = ?1)",
@@ -5033,7 +5189,10 @@ impl Storage {
     }
 
     /// List soft-deleted memories, optionally filtered by namespace.
-    pub fn list_deleted(&self, namespace: Option<&str>) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
+    pub fn list_deleted(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         let ns = namespace.unwrap_or("default");
         // Phase E-0 (ISS-197) Bucket A: read from unified `nodes`.
         // soft_delete dual-writes deleted_at to nodes (storage.rs:4369).
@@ -5086,14 +5245,12 @@ impl Storage {
         // (sub-second precision retained by `f64_to_datetime`).
         if self.unified_substrate {
             // Inner `Option<f64>`: NULL deleted_at (live row) → None.
-            let epoch: Option<f64> = self
-                .conn
-                .query_row(
-                    "SELECT deleted_at FROM nodes \
+            let epoch: Option<f64> = self.conn.query_row(
+                "SELECT deleted_at FROM nodes \
                      WHERE id = ?1 AND node_kind = 'memory'",
-                    params![id],
-                    |row| row.get(0),
-                )?;
+                params![id],
+                |row| row.get(0),
+            )?;
             return Ok(epoch.map(|ts| f64_to_datetime(ts).to_rfc3339()));
         }
 
@@ -5111,7 +5268,11 @@ impl Storage {
     /// Wraps both DELETEs in a transaction so the two substrates can't
     /// diverge on partial failure. No FK guard — DELETE on a missing row
     /// is a 0-rows no-op, which matches `delete_all_embeddings` semantics.
-    pub fn delete_embedding(&mut self, memory_id: &str, model: &str) -> Result<(), rusqlite::Error> {
+    pub fn delete_embedding(
+        &mut self,
+        memory_id: &str,
+        model: &str,
+    ) -> Result<(), rusqlite::Error> {
         let model = Self::normalize_model_id(model);
         let tx = self.conn.transaction()?;
         tx.execute(
@@ -5125,7 +5286,7 @@ impl Storage {
         tx.commit()?;
         Ok(())
     }
-    
+
     /// Delete all embeddings for a memory (all models).
     ///
     /// Mirrors `store_embedding`'s dual-write: every legacy
@@ -5146,12 +5307,15 @@ impl Storage {
         tx.commit()?;
         Ok(())
     }
-    
+
     /// Get memory IDs that don't have embeddings for a specific model.
     ///
     /// Used to find memories that need (re)embedding when switching models
     /// or during backfill operations.
-    pub fn get_memories_without_embeddings(&self, model: &str) -> Result<Vec<String>, rusqlite::Error> {
+    pub fn get_memories_without_embeddings(
+        &self,
+        model: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
         if self.unified_substrate {
             let mut stmt = self.conn.prepare(
                 // Phase E-0 (ISS-197) Bucket B: unified arm reads `nodes`
@@ -5161,7 +5325,7 @@ impl Storage {
                 LEFT JOIN node_embeddings e ON n.id = e.node_id AND e.model = ?
                 WHERE e.node_id IS NULL
                   AND n.node_kind IN ('memory', 'insight')
-                "#
+                "#,
             )?;
             let rows = stmt.query_map(params![model], |row| row.get(0))?;
             rows.collect()
@@ -5171,7 +5335,7 @@ impl Storage {
                 SELECT m.id FROM memories m
                 LEFT JOIN memory_embeddings e ON m.id = e.memory_id AND e.model = ?
                 WHERE e.memory_id IS NULL
-                "#
+                "#,
             )?;
             let rows = stmt.query_map(params![model], |row| row.get(0))?;
             rows.collect()
@@ -5198,11 +5362,14 @@ impl Storage {
                 [],
                 |row| row.get(0),
             ).optional()?;
-            let dimensions: Option<usize> = self.conn.query_row(
-                "SELECT dimensions FROM node_embeddings LIMIT 1",
-                [],
-                |row| row.get::<_, i64>(0).map(|d| d as usize),
-            ).optional()?;
+            let dimensions: Option<usize> = self
+                .conn
+                .query_row(
+                    "SELECT dimensions FROM node_embeddings LIMIT 1",
+                    [],
+                    |row| row.get::<_, i64>(0).map(|d| d as usize),
+                )
+                .optional()?;
             (embedded_count, model, dimensions)
         } else {
             let embedded_count: usize = self.conn.query_row(
@@ -5215,11 +5382,14 @@ impl Storage {
                 [],
                 |row| row.get(0),
             ).optional()?;
-            let dimensions: Option<usize> = self.conn.query_row(
-                "SELECT dimensions FROM memory_embeddings LIMIT 1",
-                [],
-                |row| row.get::<_, i64>(0).map(|d| d as usize),
-            ).optional()?;
+            let dimensions: Option<usize> = self
+                .conn
+                .query_row(
+                    "SELECT dimensions FROM memory_embeddings LIMIT 1",
+                    [],
+                    |row| row.get::<_, i64>(0).map(|d| d as usize),
+                )
+                .optional()?;
             (embedded_count, model, dimensions)
         };
 
@@ -5230,9 +5400,9 @@ impl Storage {
             dimensions,
         })
     }
-    
+
     // === ACL Methods ===
-    
+
     /// Grant a permission to an agent for a namespace.
     pub fn grant_permission(
         &mut self,
@@ -5256,18 +5426,22 @@ impl Storage {
         )?;
         Ok(())
     }
-    
+
     /// Revoke a permission from an agent for a namespace.
-    pub fn revoke_permission(&mut self, agent_id: &str, namespace: &str) -> Result<(), rusqlite::Error> {
+    pub fn revoke_permission(
+        &mut self,
+        agent_id: &str,
+        namespace: &str,
+    ) -> Result<(), rusqlite::Error> {
         self.conn.execute(
             "DELETE FROM engram_acl WHERE agent_id = ? AND namespace = ?",
             params![agent_id, namespace],
         )?;
         Ok(())
     }
-    
+
     /// Check if an agent has a specific permission for a namespace.
-    /// 
+    ///
     /// Permission hierarchy: admin > write > read
     /// Wildcard namespace ("*") grants access to all namespaces.
     pub fn check_permission(
@@ -5277,49 +5451,51 @@ impl Storage {
         required: Permission,
     ) -> Result<bool, rusqlite::Error> {
         // Check for direct namespace permission
-        let direct: Option<String> = self.conn
+        let direct: Option<String> = self
+            .conn
             .query_row(
                 "SELECT permission FROM engram_acl WHERE agent_id = ? AND namespace = ?",
                 params![agent_id, namespace],
                 |row| row.get(0),
             )
             .optional()?;
-        
+
         if let Some(perm_str) = direct {
             if let Ok(perm) = perm_str.parse::<Permission>() {
                 return Ok(Self::permission_allows(perm, required));
             }
         }
-        
+
         // Check for wildcard namespace permission
-        let wildcard: Option<String> = self.conn
+        let wildcard: Option<String> = self
+            .conn
             .query_row(
                 "SELECT permission FROM engram_acl WHERE agent_id = ? AND namespace = '*'",
                 params![agent_id],
                 |row| row.get(0),
             )
             .optional()?;
-        
+
         if let Some(perm_str) = wildcard {
             if let Ok(perm) = perm_str.parse::<Permission>() {
                 return Ok(Self::permission_allows(perm, required));
             }
         }
-        
+
         // Default: check if this is the agent's own namespace or global namespace
         // Global namespace ("global") is readable by everyone
         if namespace == "global" && matches!(required, Permission::Read) {
             return Ok(true);
         }
-        
+
         // Default write to own namespace
         if namespace == agent_id && matches!(required, Permission::Write | Permission::Read) {
             return Ok(true);
         }
-        
+
         Ok(false)
     }
-    
+
     /// Check if granted permission allows required permission.
     fn permission_allows(granted: Permission, required: Permission) -> bool {
         match required {
@@ -5328,17 +5504,17 @@ impl Storage {
             Permission::Admin => granted.is_admin(),
         }
     }
-    
+
     /// List all permissions for an agent.
     pub fn list_permissions(&self, agent_id: &str) -> Result<Vec<AclEntry>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT agent_id, namespace, permission, granted_by, created_at FROM engram_acl WHERE agent_id = ?"
         )?;
-        
+
         let rows = stmt.query_map(params![agent_id], |row| {
             let perm_str: String = row.get(2)?;
             let created_at_f64: f64 = row.get(4)?;
-            
+
             Ok(AclEntry {
                 agent_id: row.get(0)?,
                 namespace: row.get(1)?,
@@ -5347,10 +5523,10 @@ impl Storage {
                 created_at: f64_to_datetime(created_at_f64),
             })
         })?;
-        
+
         rows.collect()
     }
-    
+
     /// Get Hebbian neighbors for a memory, optionally filtered by namespace.
     pub fn get_hebbian_neighbors_ns(
         &self,
@@ -5374,7 +5550,7 @@ impl Storage {
                          WHERE edge_kind = 'associative' \
                            AND (source_id = ?1 OR target_id = ?1) \
                            AND weight > 0 \
-                           AND namespace = ?2"
+                           AND namespace = ?2",
                     )?;
                     let rows = stmt.query_map(params![memory_id, ns], |row| row.get(0))?;
                     return rows.collect();
@@ -5392,7 +5568,7 @@ impl Storage {
                      FROM hebbian_links \
                      WHERE (source_id = ?1 OR target_id = ?1) \
                        AND strength > 0 \
-                       AND namespace = ?2"
+                       AND namespace = ?2",
                 )?;
 
                 let rows = stmt.query_map(params![memory_id, ns], |row| row.get(0))?;
@@ -5400,7 +5576,7 @@ impl Storage {
             }
         }
     }
-    
+
     /// Record co-activation with namespace tracking.
     ///
     /// Legacy semantics: threshold-gated Hebbian link formation. The first
@@ -5483,13 +5659,7 @@ impl Storage {
             // legacy's per-recall increment so sum-accumulating weight on
             // edges tracks Hebbian frequency exactly.
             crate::graph::store::dual_write_hebbian_to_edges(
-                &tx,
-                id1,
-                id2,
-                "corecall",
-                "{}",
-                0.1,
-                namespace,
+                &tx, id1, id2, "corecall", "{}", 0.1, namespace,
             )
             .map_err(|e| match e {
                 crate::graph::GraphError::Sqlite(s) => s,
@@ -5502,9 +5672,9 @@ impl Storage {
         tx.commit()?;
         Ok(result)
     }
-    
+
     // === Cross-Namespace Hebbian Methods (Phase 3) ===
-    
+
     /// Record cross-namespace co-activation.
     ///
     /// When memories from different namespaces are recalled together,
@@ -5594,13 +5764,7 @@ impl Storage {
             // namespace column so cross-NS associative facts stay
             // distinguishable from same-NS ones.
             crate::graph::store::dual_write_hebbian_to_edges(
-                &tx,
-                id1,
-                id2,
-                "corecall",
-                "{}",
-                0.1,
-                &cross_ns,
+                &tx, id1, id2, "corecall", "{}", 0.1, &cross_ns,
             )
             .map_err(|e| match e {
                 crate::graph::GraphError::Sqlite(s) => s,
@@ -5613,7 +5777,7 @@ impl Storage {
         tx.commit()?;
         Ok(result)
     }
-    
+
     /// Discover cross-namespace Hebbian links between two namespaces.
     ///
     /// Returns all Hebbian links where source is in namespace_a and target
@@ -5693,12 +5857,12 @@ impl Storage {
             ORDER BY h.strength DESC
             "#,
         )?;
-        
+
         let rows = stmt.query_map(params![cross_ns_1, cross_ns_2], |row| {
             let created_at_f64: f64 = row.get(5)?;
             let source_ns: Option<String> = row.get(7)?;
             let target_ns: Option<String> = row.get(8)?;
-            
+
             Ok(HebbianLink {
                 source_id: row.get(0)?,
                 target_id: row.get(1)?,
@@ -5710,10 +5874,10 @@ impl Storage {
                 target_ns,
             })
         })?;
-        
+
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
-    
+
     /// Get all cross-namespace links for a memory.
     ///
     /// **ISS-117 OR-match retrofit**: legacy path now uses
@@ -5736,9 +5900,7 @@ impl Storage {
     ) -> Result<Vec<CrossLink>, rusqlite::Error> {
         // Get source memory's namespace
         let source_ns = self.get_namespace(memory_id)?;
-        let source_ns_str = source_ns
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
+        let source_ns_str = source_ns.clone().unwrap_or_else(|| "default".to_string());
 
         if self.unified_substrate {
             let mut stmt = self.conn.prepare(
@@ -5761,11 +5923,7 @@ impl Storage {
                 let content: String = row.get(4)?;
                 let s: String = row.get(0)?;
                 let t: String = row.get(1)?;
-                let (other_id, _self_id) = if s == memory_id {
-                    (t, s)
-                } else {
-                    (s, t)
-                };
+                let (other_id, _self_id) = if s == memory_id { (t, s) } else { (s, t) };
                 Ok(CrossLink {
                     source_id: memory_id.to_string(),
                     source_ns: source_ns_str.clone(),
@@ -5800,11 +5958,7 @@ impl Storage {
             let strength: f64 = row.get(2)?;
             let target_ns: String = row.get(3)?;
             let content: String = row.get(4)?;
-            let (other_id, _self_id) = if s == memory_id {
-                (t, s)
-            } else {
-                (s, t)
-            };
+            let (other_id, _self_id) = if s == memory_id { (t, s) } else { (s, t) };
 
             Ok(CrossLink {
                 source_id: memory_id.to_string(),
@@ -5823,7 +5977,7 @@ impl Storage {
             .filter(|link| link.target_ns != source_ns_val)
             .collect())
     }
-    
+
     /// Get all cross-namespace links in the database.
     /// Get every cross-namespace hebbian link in the database.
     ///
@@ -5882,7 +6036,7 @@ impl Storage {
             ORDER BY h.strength DESC
             "#,
         )?;
-        
+
         let rows = stmt.query_map([], |row| {
             Ok(CrossLink {
                 source_id: row.get(0)?,
@@ -5893,12 +6047,12 @@ impl Storage {
                 description: row.get(5)?,
             })
         })?;
-        
+
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
-    
+
     // Transaction support for bulk operations (ISS-001 fix)
-    
+
     /// Begin an IMMEDIATE transaction.
     ///
     /// IMMEDIATE locks the DB immediately to prevent write conflicts.
@@ -5907,39 +6061,42 @@ impl Storage {
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
         Ok(())
     }
-    
+
     /// Commit the current transaction.
     pub fn commit_transaction(&mut self) -> Result<(), rusqlite::Error> {
         self.conn.execute_batch("COMMIT")?;
         Ok(())
     }
-    
+
     /// Rollback the current transaction.
     pub fn rollback_transaction(&mut self) -> Result<(), rusqlite::Error> {
         self.conn.execute_batch("ROLLBACK")?;
         Ok(())
     }
-    
+
     /// Rebuild the FTS5 index from scratch.
     ///
     /// Use this to recover from FTS corruption. This will re-index all memories.
     pub fn rebuild_fts(&mut self) -> Result<(), rusqlite::Error> {
-        self.conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')", [])?;
+        self.conn.execute(
+            "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')",
+            [],
+        )?;
         Ok(())
     }
-    
+
     /// Check database integrity.
     ///
     /// Returns true if integrity check passes, false otherwise.
     pub fn integrity_check(&self) -> Result<bool, rusqlite::Error> {
-        let result: String = self.conn.query_row(
-            "PRAGMA integrity_check", [], |row| row.get(0)
-        )?;
+        let result: String = self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         Ok(result == "ok")
     }
-    
+
     // ── Entity CRUD ──────────────────────────────────────────────────────
-    
+
     /// Upsert an entity. Returns the deterministic entity ID.
     ///
     /// If the entity already exists (by name+type+namespace), updates
@@ -5988,9 +6145,8 @@ impl Storage {
             // matches T21 backfill behaviour (rows_malformed_metadata
             // counter).
         }
-        let projected_attrs_json =
-            serde_json::to_string(&serde_json::Value::Object(projected))
-                .expect("serializing a serde_json::Map cannot fail");
+        let projected_attrs_json = serde_json::to_string(&serde_json::Value::Object(projected))
+            .expect("serializing a serde_json::Map cannot fail");
 
         // `unchecked_transaction` keeps the API on `&self` (the rest
         // of the entity codepaths and Memory wrapper hold `&Storage`,
@@ -6038,10 +6194,7 @@ impl Storage {
                 )
                 .optional()?
                 .unwrap_or_else(|| "{}".to_string());
-            let merged = merge_json_objects_existing_wins(
-                &existing_attrs,
-                &projected_attrs_json,
-            );
+            let merged = merge_json_objects_existing_wins(&existing_attrs, &projected_attrs_json);
             tx.execute(
                 "UPDATE nodes SET attributes = ?1, updated_at = ?2 \
                  WHERE id = ?3 AND node_kind = 'entity'",
@@ -6052,7 +6205,7 @@ impl Storage {
         tx.commit()?;
         Ok(entity_id)
     }
-    
+
     /// Link a memory to an entity with a given role (e.g. "mention", "subject").
     ///
     /// Ignores duplicates (memory_id, entity_id is the PK).
@@ -6121,7 +6274,10 @@ impl Storage {
             // attributes JSON: record the raw role iff normalized,
             // matching T23's round-trip contract.
             let attributes_json = if normalized {
-                format!(r#"{{"role":{}}}"#, serde_json::Value::String(role.to_string()))
+                format!(
+                    r#"{{"role":{}}}"#,
+                    serde_json::Value::String(role.to_string())
+                )
             } else {
                 "{}".to_string()
             };
@@ -6154,16 +6310,14 @@ impl Storage {
                         created_at,
                     )?;
                 }
-                _ => unreachable!(
-                    "role_to_kind_predicate only emits 'structural' or 'provenance'"
-                ),
+                _ => unreachable!("role_to_kind_predicate only emits 'structural' or 'provenance'"),
             }
         }
 
         tx.commit()?;
         Ok(())
     }
-    
+
     /// Upsert an entity relation. Confidence starts at 0.1 and increments
     /// by 0.1 on each repeated observation, capped at 1.0.
     pub fn upsert_entity_relation(
@@ -6187,7 +6341,7 @@ impl Storage {
         )?;
         Ok(())
     }
-    
+
     /// Find entities by exact name match, optionally filtered by namespace.
     ///
     /// **T29.5 part-2 (Phase D read-switch)**: when `unified_substrate`
@@ -6304,23 +6458,26 @@ impl Storage {
     }
 
     /// Get entity IDs associated with a memory.
-    pub fn get_entity_ids_for_memory(&self, memory_id: &str) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT entity_id FROM memory_entities WHERE memory_id = ?1"
-        )?;
+    pub fn get_entity_ids_for_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT entity_id FROM memory_entities WHERE memory_id = ?1")?;
         let rows = stmt.query_map(params![memory_id], |row| row.get(0))?;
         rows.collect()
     }
 
     /// Get all memory IDs linked to a given entity.
     pub fn get_entity_memories(&self, entity_id: &str) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT memory_id FROM memory_entities WHERE entity_id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT memory_id FROM memory_entities WHERE entity_id = ?1")?;
         let rows = stmt.query_map(params![entity_id], |row| row.get(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
-    
+
     /// Get entities related to a given entity (both directions).
     ///
     /// Returns `(entity_id, relation_type)` pairs.
@@ -6342,7 +6499,7 @@ impl Storage {
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
-    
+
     /// Get a single entity by ID.
     ///
     /// **T29.5 (Phase D read-switch)**: when `unified_substrate` is on,
@@ -6386,10 +6543,7 @@ impl Storage {
     /// `nodes WHERE id=? AND node_kind IN ('entity','topic')` and
     /// reconstructs `EntityRecord` via the ISS-120 / T21 field-mapping
     /// shims. See `get_entity` doc for the projection contract.
-    fn get_entity_unified(
-        &self,
-        id: &str,
-    ) -> Result<Option<EntityRecord>, rusqlite::Error> {
+    fn get_entity_unified(&self, id: &str) -> Result<Option<EntityRecord>, rusqlite::Error> {
         self.conn
             .query_row(
                 "SELECT id, content, namespace, attributes, node_kind, created_at, updated_at \
@@ -6419,7 +6573,7 @@ impl Storage {
             )
             .optional()
     }
-    
+
     /// Count entities, optionally filtered by namespace.
     ///
     /// **T29.5 part-2 (Phase D read-switch)**: when `unified_substrate`
@@ -6452,16 +6606,14 @@ impl Storage {
                 Ok(count as usize)
             }
             None => {
-                let count: i64 = self.conn.query_row(
-                    "SELECT COUNT(*) FROM entities",
-                    [],
-                    |row| row.get(0),
-                )?;
+                let count: i64 =
+                    self.conn
+                        .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))?;
                 Ok(count as usize)
             }
         }
     }
-    
+
     /// List entities, optionally filtered by type and namespace.
     /// Ordered by updated_at descending (most recently touched first).
     ///
@@ -6581,8 +6733,7 @@ impl Storage {
         namespace: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(EntityRecord, usize)>, rusqlite::Error> {
-        const MENTION_COUNT_SUBQUERY: &str =
-            "(SELECT COUNT(*) FROM edges \
+        const MENTION_COUNT_SUBQUERY: &str = "(SELECT COUNT(*) FROM edges \
               WHERE target_id = n.id \
                 AND ((edge_kind = 'provenance'  AND predicate = 'mentions') OR \
                      (edge_kind = 'structural' AND predicate IN ('subject_of', 'object_of'))) \
@@ -6651,7 +6802,10 @@ impl Storage {
         };
 
         let filtered: Vec<(EntityRecord, usize)> = match entity_type {
-            Some(et) => rows.into_iter().filter(|(r, _)| r.entity_type == et).collect(),
+            Some(et) => rows
+                .into_iter()
+                .filter(|(r, _)| r.entity_type == et)
+                .collect(),
             None => rows,
         };
 
@@ -6660,30 +6814,29 @@ impl Storage {
 
     /// Get entity statistics: (entity_count, relation_count, link_count).
     pub fn entity_stats(&self) -> Result<(usize, usize, usize), rusqlite::Error> {
-        let entity_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM entities",
-            [],
-            |row| row.get(0),
-        )?;
-        let relation_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM entity_relations",
-            [],
-            |row| row.get(0),
-        )?;
-        let link_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM memory_entities",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok((entity_count as usize, relation_count as usize, link_count as usize))
+        let entity_count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))?;
+        let relation_count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM entity_relations", [], |row| {
+                    row.get(0)
+                })?;
+        let link_count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM memory_entities", [], |row| row.get(0))?;
+        Ok((
+            entity_count as usize,
+            relation_count as usize,
+            link_count as usize,
+        ))
     }
 
     /// Delete an entity and all its relations/links (CASCADE handles it).
     pub fn delete_entity(&self, entity_id: &str) -> Result<bool, rusqlite::Error> {
-        let affected = self.conn.execute(
-            "DELETE FROM entities WHERE id = ?1",
-            [entity_id],
-        )?;
+        let affected = self
+            .conn
+            .execute("DELETE FROM entities WHERE id = ?1", [entity_id])?;
         Ok(affected > 0)
     }
 
@@ -6695,14 +6848,16 @@ impl Storage {
         name_pattern: &str,
     ) -> Result<usize, rusqlite::Error> {
         // First find matching entity IDs
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM entities WHERE entity_type = ?1 AND name GLOB ?2"
-        )?;
-        let ids: Vec<String> = stmt.query_map(
-            rusqlite::params![entity_type, name_pattern],
-            |row| row.get(0),
-        )?.filter_map(|r| r.ok()).collect();
-        
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM entities WHERE entity_type = ?1 AND name GLOB ?2")?;
+        let ids: Vec<String> = stmt
+            .query_map(rusqlite::params![entity_type, name_pattern], |row| {
+                row.get(0)
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
         let mut count = 0;
         for id in &ids {
             if self.delete_entity(id)? {
@@ -6713,13 +6868,15 @@ impl Storage {
     }
 
     /// Clear all memory_entities links for a batch of memories (for re-extraction).
-    pub fn clear_memory_entity_links(&self, memory_ids: &[String]) -> Result<usize, rusqlite::Error> {
+    pub fn clear_memory_entity_links(
+        &self,
+        memory_ids: &[String],
+    ) -> Result<usize, rusqlite::Error> {
         let mut count = 0;
         for mid in memory_ids {
-            count += self.conn.execute(
-                "DELETE FROM memory_entities WHERE memory_id = ?1",
-                [mid],
-            )?;
+            count += self
+                .conn
+                .execute("DELETE FROM memory_entities WHERE memory_id = ?1", [mid])?;
         }
         Ok(count)
     }
@@ -6735,10 +6892,10 @@ impl Storage {
         threshold: f64,
     ) -> Result<Option<(String, f32)>, rusqlite::Error> {
         use crate::embeddings::EmbeddingProvider;
-        
+
         let start = std::time::Instant::now();
         let stored = self.get_embeddings_in_namespace(namespace, model)?;
-        
+
         let mut best: Option<(String, f32)> = None;
         for (mid, stored_emb) in &stored {
             let sim = EmbeddingProvider::cosine_similarity(embedding, stored_emb);
@@ -6754,7 +6911,7 @@ impl Storage {
                 }
             }
         }
-        
+
         let elapsed = start.elapsed();
         if elapsed.as_millis() > 100 {
             log::warn!(
@@ -6763,10 +6920,10 @@ impl Storage {
                 stored.len()
             );
         }
-        
+
         Ok(best)
     }
-    
+
     /// Find ALL memories with embedding similarity above threshold in namespace.
     /// Unlike find_nearest_embedding which returns top-1, this returns all matches.
     pub fn find_all_above_threshold(
@@ -6789,7 +6946,11 @@ impl Storage {
     }
 
     /// Get first N chars of a memory's content.
-    pub fn get_memory_content_preview(&self, id: &str, max_chars: usize) -> Result<String, rusqlite::Error> {
+    pub fn get_memory_content_preview(
+        &self,
+        id: &str,
+        max_chars: usize,
+    ) -> Result<String, rusqlite::Error> {
         let content: String = self.conn.query_row(
             // Phase E-0 (ISS-197) Bucket B: id-keyed point read → nodes.
             "SELECT content FROM nodes WHERE id = ?1",
@@ -6821,46 +6982,47 @@ impl Storage {
             "INSERT INTO access_log (memory_id, accessed_at) VALUES (?, ?)",
             params![existing_id, now_f64()],
         )?;
-        
+
         // Update importance = MAX(existing, new)
         self.conn.execute(
             "UPDATE memories SET importance = MAX(importance, ?) WHERE id = ?",
             params![new_importance, existing_id],
         )?;
-        
+
         // Step 2: Content evolution — fetch existing content and metadata
-        let (existing_content, existing_metadata_str): (String, Option<String>) = self.conn.query_row(
-            "SELECT content, metadata FROM memories WHERE id = ?",
-            params![existing_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        
+        let (existing_content, existing_metadata_str): (String, Option<String>) =
+            self.conn.query_row(
+                "SELECT content, metadata FROM memories WHERE id = ?",
+                params![existing_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
         let content_updated = new_content.len() > (existing_content.len() as f64 * 1.3) as usize;
-        
+
         if content_updated {
             self.conn.execute(
                 "UPDATE memories SET content = ? WHERE id = ?",
                 params![new_content, existing_id],
             )?;
         }
-        
+
         // Step 3: Merge history in metadata
         let mut metadata: serde_json::Value = existing_metadata_str
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_else(|| serde_json::json!({}));
-        
+
         // Ensure metadata is an object
         if !metadata.is_object() {
             metadata = serde_json::json!({});
         }
-        
+
         // Build merge history entry
         let epoch_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         let history_entry = serde_json::json!({
             "ts": epoch_secs,
             "sim": similarity,
@@ -6868,7 +7030,7 @@ impl Storage {
             "prev_content_len": existing_content.len(),
             "new_content_len": new_content.len(),
         });
-        
+
         // Append to merge_history array (FIFO, capped at 10)
         let (merge_history, merge_count_prev) = read_merge_tracking(&metadata);
         let mut new_history = merge_history;
@@ -6879,14 +7041,14 @@ impl Storage {
         }
         let merge_count = merge_count_prev + 1;
         write_merge_tracking(&mut metadata, new_history, merge_count);
-        
+
         // Write updated metadata back to DB
         let metadata_str = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
         self.conn.execute(
             "UPDATE memories SET metadata = ? WHERE id = ?",
             params![metadata_str, existing_id],
         )?;
-        
+
         log::info!(
             "Merged duplicate into memory {}: boosted access + importance(max {}), content_updated={}, merge_count={}",
             existing_id,
@@ -6894,7 +7056,7 @@ impl Storage {
             content_updated,
             merge_count,
         );
-        
+
         Ok(MergeOutcome {
             memory_id: existing_id.to_string(),
             content_updated,
@@ -6939,9 +7101,9 @@ impl Storage {
         use crate::merge_types::MergeWeights;
 
         // Step 1: fetch the existing row and decode it into EnrichedMemory.
-        let existing_record = self.get(existing_id)?.ok_or_else(|| {
-            rusqlite::Error::QueryReturnedNoRows
-        })?;
+        let existing_record = self
+            .get(existing_id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
         let existing_em = EnrichedMemory::from_memory_record(&existing_record).map_err(|e| {
             // Only way this fails is empty content on a persisted row,
             // which would be a data-integrity bug, not a normal runtime
@@ -6949,16 +7111,16 @@ impl Storage {
             // closest rusqlite::Error kind for "row is corrupt".
             rusqlite::Error::InvalidColumnType(
                 0,
-                format!("EnrichedMemory::from_memory_record failed for id={}: {}", existing_id, e),
+                format!(
+                    "EnrichedMemory::from_memory_record failed for id={}: {}",
+                    existing_id, e
+                ),
                 rusqlite::types::Type::Text,
             )
         })?;
 
         // Step 2: dimensional union with importance-weighted scalars.
-        let weights = MergeWeights::new(
-            existing_em.importance.get(),
-            incoming.importance.get(),
-        );
+        let weights = MergeWeights::new(existing_em.importance.get(), incoming.importance.get());
         let merged_dims: Dimensions = existing_em
             .dimensions
             .clone()
@@ -6977,10 +7139,7 @@ impl Storage {
         };
 
         // Step 4: importance = max.
-        let merged_importance = existing_em
-            .importance
-            .get()
-            .max(incoming.importance.get());
+        let merged_importance = existing_em.importance.get().max(incoming.importance.get());
 
         // Step 5: build merged EnrichedMemory for metadata serialization.
         // Keep existing's user_metadata — merge path does not adopt
@@ -7041,8 +7200,7 @@ impl Storage {
         });
 
         let existing_meta_value = serde_json::Value::Object(existing_meta_obj);
-        let (existing_history, existing_count) =
-            read_merge_tracking(&existing_meta_value);
+        let (existing_history, existing_count) = read_merge_tracking(&existing_meta_value);
         let mut new_history = existing_history;
         new_history.push(history_entry);
         if new_history.len() > 10 {
@@ -7060,8 +7218,7 @@ impl Storage {
             params![existing_id, now_f64()],
         )?;
 
-        let metadata_str = serde_json::to_string(&metadata)
-            .unwrap_or_else(|_| "{}".to_string());
+        let metadata_str = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
         self.conn.execute(
             "UPDATE memories SET content = ?, importance = ?, metadata = ? WHERE id = ?",
             params![merged_content, merged_importance, metadata_str, existing_id],
@@ -7082,7 +7239,12 @@ impl Storage {
                     json_extract(attributes, '$._legacy_contradicted_by')
                  FROM nodes WHERE id = ?1 AND node_kind IN ('memory', 'insight')",
                 params![existing_id],
-                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
             )
             .optional()?;
         let (carry_c, carry_cb) = existing_legacy.unwrap_or((None, None));
@@ -7152,7 +7314,10 @@ impl Storage {
     // -----------------------------------------------------------------------
 
     /// Record provenance for a single source memory contributing to an insight.
-    pub fn record_provenance(&self, record: &ProvenanceRecord) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn record_provenance(
+        &self,
+        record: &ProvenanceRecord,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.conn.execute(
             "INSERT INTO synthesis_provenance (id, insight_id, source_id, cluster_id, synthesis_timestamp, gate_decision, gate_scores, confidence, source_original_importance) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
@@ -7259,26 +7424,29 @@ impl Storage {
     /// (unified) based on `self.unified_substrate`. Both paths return
     /// bit-identical `ProvenanceRecord`s under T16+T25 dual-write/backfill
     /// invariants.
-    pub fn get_insight_sources(&self, insight_id: &str) -> Result<Vec<ProvenanceRecord>, Box<dyn std::error::Error>> {
+    pub fn get_insight_sources(
+        &self,
+        insight_id: &str,
+    ) -> Result<Vec<ProvenanceRecord>, Box<dyn std::error::Error>> {
         if self.unified_substrate {
             let mut stmt = self.conn.prepare(
                 "SELECT id, source_id, target_id, confidence, attributes \
                  FROM edges \
                  WHERE edge_kind = 'provenance' \
                    AND predicate = 'derived_from' \
-                   AND source_id = ?1"
+                   AND source_id = ?1",
             )?;
-            let records = stmt.query_map([insight_id], |row| {
-                Self::row_to_provenance_from_edge(row)
-            })?.collect::<Result<Vec<_>, _>>()?;
+            let records = stmt
+                .query_map([insight_id], |row| Self::row_to_provenance_from_edge(row))?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(records)
         } else {
             let mut stmt = self.conn.prepare(
                 "SELECT id, insight_id, source_id, cluster_id, synthesis_timestamp, gate_decision, gate_scores, confidence, source_original_importance FROM synthesis_provenance WHERE insight_id = ?1"
             )?;
-            let records = stmt.query_map([insight_id], |row| {
-                Self::row_to_provenance(row)
-            })?.collect::<Result<Vec<_>, _>>()?;
+            let records = stmt
+                .query_map([insight_id], |row| Self::row_to_provenance(row))?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(records)
         }
     }
@@ -7290,26 +7458,29 @@ impl Storage {
     /// (unified) based on `self.unified_substrate`. T25 maps edge
     /// direction insight → source, so the source memory is keyed by
     /// `target_id` on the unified path (vs `source_id` in legacy).
-    pub fn get_memory_insights(&self, source_id: &str) -> Result<Vec<ProvenanceRecord>, Box<dyn std::error::Error>> {
+    pub fn get_memory_insights(
+        &self,
+        source_id: &str,
+    ) -> Result<Vec<ProvenanceRecord>, Box<dyn std::error::Error>> {
         if self.unified_substrate {
             let mut stmt = self.conn.prepare(
                 "SELECT id, source_id, target_id, confidence, attributes \
                  FROM edges \
                  WHERE edge_kind = 'provenance' \
                    AND predicate = 'derived_from' \
-                   AND target_id = ?1"
+                   AND target_id = ?1",
             )?;
-            let records = stmt.query_map([source_id], |row| {
-                Self::row_to_provenance_from_edge(row)
-            })?.collect::<Result<Vec<_>, _>>()?;
+            let records = stmt
+                .query_map([source_id], |row| Self::row_to_provenance_from_edge(row))?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(records)
         } else {
             let mut stmt = self.conn.prepare(
                 "SELECT id, insight_id, source_id, cluster_id, synthesis_timestamp, gate_decision, gate_scores, confidence, source_original_importance FROM synthesis_provenance WHERE source_id = ?1"
             )?;
-            let records = stmt.query_map([source_id], |row| {
-                Self::row_to_provenance(row)
-            })?.collect::<Result<Vec<_>, _>>()?;
+            let records = stmt
+                .query_map([source_id], |row| Self::row_to_provenance(row))?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(records)
         }
     }
@@ -7353,7 +7524,11 @@ impl Storage {
     }
 
     /// Update the importance of a memory.
-    pub fn update_importance(&self, memory_id: &str, importance: f64) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn update_importance(
+        &self,
+        memory_id: &str,
+        importance: f64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // ISS-124: dual-write to nodes. Wrap both UPDATEs in a
         // transaction so the two substrates can't diverge on partial
         // failure. update_importance is called from the synthesis
@@ -7376,7 +7551,9 @@ impl Storage {
         if needs_tx {
             match &result {
                 Ok(_) => self.conn.execute_batch("COMMIT")?,
-                Err(_) => { let _ = self.conn.execute_batch("ROLLBACK"); }
+                Err(_) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                }
             }
         }
 
@@ -7453,7 +7630,15 @@ impl Storage {
                 ?7
             )
             "#,
-            params![id, memory_type, content, metadata, now, importance, next_fts_rowid],
+            params![
+                id,
+                memory_type,
+                content,
+                metadata,
+                now,
+                importance,
+                next_fts_rowid
+            ],
         )?;
 
         self.conn.execute(
@@ -7487,7 +7672,8 @@ impl Storage {
     /// Convert a database row into a ProvenanceRecord.
     fn row_to_provenance(row: &rusqlite::Row) -> Result<ProvenanceRecord, rusqlite::Error> {
         let gate_scores_str: Option<String> = row.get(6)?;
-        let gate_scores: Option<GateScores> = gate_scores_str.and_then(|s| serde_json::from_str(&s).ok());
+        let gate_scores: Option<GateScores> =
+            gate_scores_str.and_then(|s| serde_json::from_str(&s).ok());
 
         let ts_str: String = row.get(4)?;
         let synthesis_timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
@@ -7633,7 +7819,7 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT e.name FROM entities e \
              INNER JOIN memory_entities me ON e.id = me.entity_id \
-             WHERE me.memory_id = ?1"
+             WHERE me.memory_id = ?1",
         )?;
         let rows = stmt.query_map(params![memory_id], |row| row.get(0))?;
         rows.collect()
@@ -7643,7 +7829,10 @@ impl Storage {
     ///
     /// Used by association discovery when the caller doesn't know
     /// which model was used for a specific memory.
-    pub fn get_embedding_for_memory(&self, memory_id: &str) -> Result<Option<Vec<f32>>, rusqlite::Error> {
+    pub fn get_embedding_for_memory(
+        &self,
+        memory_id: &str,
+    ) -> Result<Option<Vec<f32>>, rusqlite::Error> {
         let result: Option<Vec<u8>> = if self.unified_substrate {
             self.conn
                 .query_row(
@@ -7689,13 +7878,15 @@ impl Storage {
         if entity_names.is_empty() {
             return Ok(None);
         }
-        
+
         // Build IN clause placeholders
-        let placeholders: Vec<String> = entity_names.iter().enumerate()
+        let placeholders: Vec<String> = entity_names
+            .iter()
+            .enumerate()
             .map(|(i, _)| format!("?{}", i + 1))
             .collect();
         let in_clause = placeholders.join(", ");
-        
+
         // Query: find memory_ids that share entities, grouped with overlap count.
         // Filter by namespace + soft-delete via a JOIN.
         //
@@ -7734,49 +7925,52 @@ impl Storage {
             LIMIT 10
             "#
         );
-        
+
         let mut stmt = self.conn.prepare(&sql)?;
-        
+
         // Build params: entity names + namespace
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         for name in entity_names {
             params_vec.push(Box::new(name.clone()));
         }
         params_vec.push(Box::new(namespace.to_string()));
-        
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter()
-            .map(|p| p.as_ref())
-            .collect();
-        
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
         let mut best: Option<(String, f64)> = None;
-        
+
         let mut rows = stmt.query(param_refs.as_slice())?;
         let input_count = entity_names.len();
-        
+
         while let Some(row) = rows.next()? {
             let memory_id: String = row.get(0)?;
             let overlap_count: usize = row.get::<_, i64>(1)? as usize;
-            
+
             // Get total entity count for this memory to compute Jaccard
             let target_count: usize = self.conn.query_row(
                 "SELECT COUNT(*) FROM memory_entities WHERE memory_id = ?",
                 params![memory_id],
                 |r| r.get::<_, i64>(0),
             )? as usize;
-            
+
             // Jaccard = intersection / union
             let union_count = input_count + target_count - overlap_count;
-            if union_count == 0 { continue; }
+            if union_count == 0 {
+                continue;
+            }
             let jaccard = overlap_count as f64 / union_count as f64;
-            
+
             if jaccard >= threshold {
                 match &best {
-                    Some((_, best_score)) if jaccard <= *best_score => {},
-                    _ => { best = Some((memory_id, jaccard)); }
+                    Some((_, best_score)) if jaccard <= *best_score => {}
+                    _ => {
+                        best = Some((memory_id, jaccard));
+                    }
                 }
             }
         }
-        
+
         Ok(best)
     }
 
@@ -7811,51 +8005,47 @@ impl Storage {
             )
         };
 
-        let metadata_str: Option<String> = self.conn.query_row(
-            read_sql,
-            params![target_id],
-            |row| row.get(0),
-        )?;
-        
+        let metadata_str: Option<String> =
+            self.conn
+                .query_row(read_sql, params![target_id], |row| row.get(0))?;
+
         let mut metadata: serde_json::Value = metadata_str
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_else(|| serde_json::json!({}));
-        
+
         if !metadata.is_object() {
             metadata = serde_json::json!({});
         }
-        
+
         let epoch_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         let entry = serde_json::json!({
             "source_id": source_id,
             "ts": epoch_secs,
             "sim": similarity,
             "content_updated": content_updated,
         });
-        
+
         let (mut history, merge_count_prev) = read_merge_tracking(&metadata);
         history.push(entry);
-        while history.len() > 10 { history.remove(0); }
+        while history.len() > 10 {
+            history.remove(0);
+        }
         write_merge_tracking(&mut metadata, history, merge_count_prev);
-        
+
         let metadata_str = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
         if self.unified_substrate {
-            self.conn.execute(
-                write_sql,
-                params![metadata_str, now_f64(), target_id],
-            )?;
+            self.conn
+                .execute(write_sql, params![metadata_str, now_f64(), target_id])?;
         } else {
-            self.conn.execute(
-                write_sql,
-                params![metadata_str, target_id],
-            )?;
+            self.conn
+                .execute(write_sql, params![metadata_str, target_id])?;
         }
-        
+
         Ok(())
     }
 
@@ -7966,7 +8156,7 @@ impl Storage {
         tx.commit()?;
         Ok(is_new)
     }
-    
+
     /// Get memory IDs created since a given timestamp.
     ///
     /// Used by candidate selection for temporal window filtering.
@@ -7982,11 +8172,9 @@ impl Storage {
             // that lived in `memories`).
             "SELECT id FROM nodes WHERE created_at >= ?1 AND namespace = ?2 \
                AND node_kind IN ('memory', 'insight') \
-             ORDER BY created_at DESC LIMIT 100"
+             ORDER BY created_at DESC LIMIT 100",
         )?;
-        let rows = stmt.query_map(params![since_timestamp, namespace], |row| {
-            row.get(0)
-        })?;
+        let rows = stmt.query_map(params![since_timestamp, namespace], |row| row.get(0))?;
         rows.collect()
     }
 
@@ -7996,10 +8184,14 @@ impl Storage {
     /// Also inserts triple subjects/objects as entities into memory_entities
     /// with source='triple' for transparent Hebbian integration.
     /// Returns the number of triples actually inserted.
-    pub fn store_triples(&self, memory_id: &str, triples: &[Triple]) -> Result<usize, rusqlite::Error> {
+    pub fn store_triples(
+        &self,
+        memory_id: &str,
+        triples: &[Triple],
+    ) -> Result<usize, rusqlite::Error> {
         let now = chrono::Utc::now().to_rfc3339();
         let mut inserted = 0;
-        
+
         for triple in triples {
             let rows = self.conn.execute(
                 "INSERT OR IGNORE INTO triples (memory_id, subject, predicate, object, confidence, source, created_at) \
@@ -8025,10 +8217,10 @@ impl Storage {
                 self.insert_triple_entity(memory_id, &triple.object)?;
             }
         }
-        
+
         Ok(inserted)
     }
-    
+
     /// Insert a triple-derived entity into entities + memory_entities tables.
     /// Uses deterministic ID from entity name hash.
     /// Insert (or upsert) a triple-derived entity row and link it to
@@ -8057,9 +8249,13 @@ impl Storage {
     /// the entity id (deterministic from `name_lower` hash) or the
     /// edge deterministic id, so repeated `store_triples` calls are
     /// safe.
-    fn insert_triple_entity(&self, memory_id: &str, entity_name: &str) -> Result<(), rusqlite::Error> {
-        use std::hash::{Hash, Hasher};
+    fn insert_triple_entity(
+        &self,
+        memory_id: &str,
+        entity_name: &str,
+    ) -> Result<(), rusqlite::Error> {
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
         let name_lower = entity_name.to_lowercase();
         let mut hasher = DefaultHasher::new();
@@ -8194,7 +8390,7 @@ impl Storage {
 
         Ok(())
     }
-    
+
     /// Get triples for a memory.
     pub fn get_triples(&self, memory_id: &str) -> Result<Vec<Triple>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
@@ -8206,14 +8402,14 @@ impl Storage {
             let object: String = row.get(2)?;
             let confidence: f64 = row.get(3)?;
             let source_str: String = row.get(4)?;
-            
+
             let predicate = Predicate::from_str_lossy(&predicate_str);
             let source = match source_str.as_str() {
                 "rule" => TripleSource::Rule,
                 "manual" => TripleSource::Manual,
                 _ => TripleSource::Llm,
             };
-            
+
             Ok(Triple {
                 subject,
                 predicate,
@@ -8226,7 +8422,7 @@ impl Storage {
         })?;
         rows.collect()
     }
-    
+
     /// Check if a memory has triples already extracted.
     pub fn has_triples(&self, memory_id: &str) -> Result<bool, rusqlite::Error> {
         let count: i64 = self.conn.query_row(
@@ -8236,7 +8432,7 @@ impl Storage {
         )?;
         Ok(count > 0)
     }
-    
+
     /// Get memory IDs that need triple extraction (no triples, retry_count < max).
     ///
     /// **ISS-199 (Phase E read-cutover)**: under unified mode the legacy
@@ -8246,7 +8442,11 @@ impl Storage {
     /// under the reserved key `$._triple_extraction_attempts`. The
     /// `COALESCE(..., 0)` mirrors the column's `DEFAULT 0` so rows that
     /// have never been attempted are still eligible.
-    pub fn get_unenriched_memory_ids(&self, limit: usize, max_retries: u32) -> Result<Vec<String>, rusqlite::Error> {
+    pub fn get_unenriched_memory_ids(
+        &self,
+        limit: usize,
+        max_retries: u32,
+    ) -> Result<Vec<String>, rusqlite::Error> {
         let sql = if self.unified_substrate {
             "SELECT id FROM nodes \
              WHERE node_kind IN ('memory', 'insight') \
@@ -8267,7 +8467,7 @@ impl Storage {
         let rows = stmt.query_map(params![max_retries, limit], |row| row.get(0))?;
         rows.collect()
     }
-    
+
     /// Increment the extraction attempt counter for a memory.
     ///
     /// **ISS-199 (Phase E read-cutover)**: under unified mode the counter
@@ -8351,9 +8551,9 @@ impl Storage {
 
     /// Get all cluster centroids as (cluster_id, centroid_vec).
     pub fn get_cluster_centroids(&self) -> Result<Vec<(String, Vec<f32>)>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT cluster_id, centroid FROM cluster_centroids"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT cluster_id, centroid FROM cluster_centroids")?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let bytes: Vec<u8> = row.get(1)?;
@@ -8364,7 +8564,11 @@ impl Storage {
 
     /// Assign a memory to a cluster.
     pub fn assign_to_cluster(
-        &self, memory_id: &str, cluster_id: &str, method: &str, confidence: f64,
+        &self,
+        memory_id: &str,
+        cluster_id: &str,
+        method: &str,
+        confidence: f64,
     ) -> Result<(), rusqlite::Error> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -8377,14 +8581,19 @@ impl Storage {
 
     /// Incrementally update a centroid: new = (old * n + new_vec) / (n + 1)
     pub fn update_centroid_incremental(
-        &self, cluster_id: &str, new_embedding: &[f32],
+        &self,
+        cluster_id: &str,
+        new_embedding: &[f32],
     ) -> Result<(), rusqlite::Error> {
         // Read current centroid + count
-        let result: Option<(Vec<u8>, i64)> = self.conn.query_row(
-            "SELECT centroid, member_count FROM cluster_centroids WHERE cluster_id = ?",
-            params![cluster_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?;
+        let result: Option<(Vec<u8>, i64)> = self
+            .conn
+            .query_row(
+                "SELECT centroid, member_count FROM cluster_centroids WHERE cluster_id = ?",
+                params![cluster_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
 
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -8392,12 +8601,13 @@ impl Storage {
             Some((old_bytes, count)) => {
                 let old = bytes_to_f32_vec(&old_bytes);
                 let n = count as f32;
-                let new_centroid: Vec<f32> = old.iter().zip(new_embedding.iter())
+                let new_centroid: Vec<f32> = old
+                    .iter()
+                    .zip(new_embedding.iter())
                     .map(|(o, e)| (o * n + e) / (n + 1.0))
                     .collect();
-                let new_bytes: Vec<u8> = new_centroid.iter()
-                    .flat_map(|f| f.to_le_bytes())
-                    .collect();
+                let new_bytes: Vec<u8> =
+                    new_centroid.iter().flat_map(|f| f.to_le_bytes()).collect();
                 self.conn.execute(
                     "UPDATE cluster_centroids SET centroid = ?1, member_count = member_count + 1, updated_at = ?2 WHERE cluster_id = ?3",
                     params![new_bytes, now, cluster_id],
@@ -8405,9 +8615,7 @@ impl Storage {
             }
             None => {
                 // First member — centroid IS the embedding
-                let bytes: Vec<u8> = new_embedding.iter()
-                    .flat_map(|f| f.to_le_bytes())
-                    .collect();
+                let bytes: Vec<u8> = new_embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
                 self.conn.execute(
                     "INSERT INTO cluster_centroids (cluster_id, centroid, member_count, dirty, updated_at)
                      VALUES (?1, ?2, 1, 0, ?3)",
@@ -8429,9 +8637,9 @@ impl Storage {
 
     /// Get IDs of all dirty clusters.
     pub fn get_dirty_cluster_ids(&self) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT cluster_id FROM cluster_centroids WHERE dirty = 1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT cluster_id FROM cluster_centroids WHERE dirty = 1")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         rows.collect()
     }
@@ -8455,9 +8663,9 @@ impl Storage {
 
     /// Get all memory IDs assigned to a specific cluster.
     pub fn get_cluster_members(&self, cluster_id: &str) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT memory_id FROM cluster_assignments WHERE cluster_id = ?"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT memory_id FROM cluster_assignments WHERE cluster_id = ?")?;
         let rows = stmt.query_map(params![cluster_id], |row| row.get(0))?;
         rows.collect()
     }
@@ -8465,15 +8673,23 @@ impl Storage {
     /// Replace old clusters with new ones after warm/cold recluster.
     /// Deletes assignments for old_cluster_ids, inserts new assignments from new_clusters.
     pub fn replace_clusters(
-        &self, old_cluster_ids: &[String], new_clusters: &[(String, Vec<String>, Vec<f32>)],
+        &self,
+        old_cluster_ids: &[String],
+        new_clusters: &[(String, Vec<String>, Vec<f32>)],
         // each tuple: (cluster_id, member_ids, centroid_vec)
     ) -> Result<(), rusqlite::Error> {
         let tx = self.conn.unchecked_transaction()?;
 
         // Delete old cluster assignments + centroids
         for cid in old_cluster_ids {
-            tx.execute("DELETE FROM cluster_assignments WHERE cluster_id = ?", params![cid])?;
-            tx.execute("DELETE FROM cluster_centroids WHERE cluster_id = ?", params![cid])?;
+            tx.execute(
+                "DELETE FROM cluster_assignments WHERE cluster_id = ?",
+                params![cid],
+            )?;
+            tx.execute(
+                "DELETE FROM cluster_centroids WHERE cluster_id = ?",
+                params![cid],
+            )?;
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -8503,7 +8719,10 @@ impl Storage {
     }
 
     /// Get memories by a set of IDs.
-    pub fn get_memories_by_ids(&self, ids: &[String]) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
+    pub fn get_memories_by_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<MemoryRecord>, rusqlite::Error> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -8520,14 +8739,16 @@ impl Storage {
     /// Clear all pending memories and dirty flags.
     pub fn clear_pending_and_dirty(&self) -> Result<(), rusqlite::Error> {
         self.conn.execute("DELETE FROM cluster_pending", [])?;
-        self.conn.execute("UPDATE cluster_centroids SET dirty = 0", [])?;
+        self.conn
+            .execute("UPDATE cluster_centroids SET dirty = 0", [])?;
         Ok(())
     }
 
     /// Save full cluster state after a cold recluster.
     /// Replaces ALL cluster data with the provided clusters.
     pub fn save_full_cluster_state(
-        &self, clusters: &[(String, Vec<String>, Vec<f32>)],
+        &self,
+        clusters: &[(String, Vec<String>, Vec<f32>)],
     ) -> Result<(), rusqlite::Error> {
         let tx = self.conn.unchecked_transaction()?;
 
@@ -8568,16 +8789,23 @@ impl Storage {
 
     /// Get the count of pending memories.
     pub fn get_pending_count(&self) -> Result<usize, rusqlite::Error> {
-        self.conn.query_row(
-            "SELECT COUNT(*) FROM cluster_pending", [], |row| row.get::<_, i64>(0)
-        ).map(|c| c as usize)
+        self.conn
+            .query_row("SELECT COUNT(*) FROM cluster_pending", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|c| c as usize)
     }
 
     /// Count total memories in storage.
     pub fn count_memories(&self) -> Result<usize, rusqlite::Error> {
         // Phase E-0 (ISS-197) Bucket B: cut to nodes; kind filter so the count
         // matches the legacy memories total (excludes entity/other kinds).
-        self.conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_kind IN ('memory', 'insight')", [], |row| row.get::<_, i64>(0))
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE node_kind IN ('memory', 'insight')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
             .map(|c| c as usize)
     }
 
@@ -8588,25 +8816,33 @@ impl Storage {
     /// data is not recomputed — this is intentional for the warm/cached path
     /// where we skip expensive Infomap recomputation.
     /// Get the incremental synthesis state for a cluster.
-    pub fn get_incremental_state(&self, cluster_id: &str) -> Result<Option<crate::synthesis::types::IncrementalState>, rusqlite::Error> {
-        let result: Option<String> = self.conn.query_row(
-            "SELECT state_json FROM cluster_incremental_state WHERE cluster_id = ?",
-            params![cluster_id],
-            |row| row.get(0),
-        ).optional()?;
+    pub fn get_incremental_state(
+        &self,
+        cluster_id: &str,
+    ) -> Result<Option<crate::synthesis::types::IncrementalState>, rusqlite::Error> {
+        let result: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT state_json FROM cluster_incremental_state WHERE cluster_id = ?",
+                params![cluster_id],
+                |row| row.get(0),
+            )
+            .optional()?;
         match result {
-            Some(json) => {
-                match serde_json::from_str(&json) {
-                    Ok(state) => Ok(Some(state)),
-                    Err(_) => Ok(None),
-                }
-            }
+            Some(json) => match serde_json::from_str(&json) {
+                Ok(state) => Ok(Some(state)),
+                Err(_) => Ok(None),
+            },
             None => Ok(None),
         }
     }
 
     /// Save the incremental synthesis state for a cluster.
-    pub fn set_incremental_state(&self, cluster_id: &str, state: &crate::synthesis::types::IncrementalState) -> Result<(), rusqlite::Error> {
+    pub fn set_incremental_state(
+        &self,
+        cluster_id: &str,
+        state: &crate::synthesis::types::IncrementalState,
+    ) -> Result<(), rusqlite::Error> {
         let json = serde_json::to_string(state).unwrap_or_default();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -8616,10 +8852,14 @@ impl Storage {
         Ok(())
     }
 
-    pub fn get_all_cluster_data(&self) -> Result<Vec<crate::synthesis::types::MemoryCluster>, rusqlite::Error> {
+    pub fn get_all_cluster_data(
+        &self,
+    ) -> Result<Vec<crate::synthesis::types::MemoryCluster>, rusqlite::Error> {
         use std::collections::HashMap;
         let mut clusters: HashMap<String, Vec<String>> = HashMap::new();
-        let mut stmt = self.conn.prepare("SELECT memory_id, cluster_id FROM cluster_assignments")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT memory_id, cluster_id FROM cluster_assignments")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -8628,23 +8868,26 @@ impl Storage {
             clusters.entry(cluster_id).or_default().push(memory_id);
         }
 
-        let result = clusters.into_iter().map(|(cluster_id, mut members)| {
-            members.sort();
-            let centroid_id = members.first().cloned().unwrap_or_default();
-            crate::synthesis::types::MemoryCluster {
-                id: cluster_id,
-                members,
-                quality_score: 0.5, // default for cached clusters
-                centroid_id,
-                signals_summary: crate::synthesis::types::SignalsSummary {
-                    dominant_signal: crate::synthesis::types::ClusterSignal::Hebbian,
-                    hebbian_contribution: 0.4,
-                    entity_contribution: 0.3,
-                    embedding_contribution: 0.2,
-                    temporal_contribution: 0.1,
-                },
-            }
-        }).collect();
+        let result = clusters
+            .into_iter()
+            .map(|(cluster_id, mut members)| {
+                members.sort();
+                let centroid_id = members.first().cloned().unwrap_or_default();
+                crate::synthesis::types::MemoryCluster {
+                    id: cluster_id,
+                    members,
+                    quality_score: 0.5, // default for cached clusters
+                    centroid_id,
+                    signals_summary: crate::synthesis::types::SignalsSummary {
+                        dominant_signal: crate::synthesis::types::ClusterSignal::Hebbian,
+                        hebbian_contribution: 0.4,
+                        entity_contribution: 0.3,
+                        embedding_contribution: 0.2,
+                        temporal_contribution: 0.1,
+                    },
+                }
+            })
+            .collect();
 
         Ok(result)
     }
@@ -8743,7 +8986,10 @@ impl Storage {
     }
 
     /// Count memories in a specific namespace (or all if None).
-    pub fn count_memories_in_namespace(&self, namespace: Option<&str>) -> Result<usize, rusqlite::Error> {
+    pub fn count_memories_in_namespace(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<usize, rusqlite::Error> {
         match namespace {
             Some(ns) => self.conn.query_row(
                 // Phase E-0 (ISS-197) Bucket B: cut to nodes + kind filter.
@@ -8795,7 +9041,8 @@ impl Storage {
     /// and is NOT indexed by FTS/vector — quarantine rows are not
     /// recall-visible. See design §4.
     fn migrate_quarantine(conn: &Connection) -> SqlResult<()> {
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE IF NOT EXISTS quarantine (
                 id                    TEXT PRIMARY KEY,
                 content               TEXT NOT NULL,
@@ -8816,7 +9063,8 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_quarantine_hash      ON quarantine(content_hash);
             CREATE INDEX IF NOT EXISTS idx_quarantine_received  ON quarantine(received_at);
             CREATE INDEX IF NOT EXISTS idx_quarantine_rejected  ON quarantine(permanently_rejected);
-        "#)?;
+        "#,
+        )?;
         Ok(())
     }
 
@@ -8846,13 +9094,17 @@ impl Storage {
         user_metadata: Option<&str>,
     ) -> SqlResult<String> {
         // Dedup: look for a live row with this content_hash.
-        if let Some(existing_id) = self.conn.query_row(
-            "SELECT id FROM quarantine
+        if let Some(existing_id) = self
+            .conn
+            .query_row(
+                "SELECT id FROM quarantine
                WHERE content_hash = ?1 AND permanently_rejected = 0
                ORDER BY received_at DESC LIMIT 1",
-            params![content_hash],
-            |row| row.get::<_, String>(0),
-        ).optional()? {
+                params![content_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
             return Ok(existing_id);
         }
 
@@ -8884,7 +9136,7 @@ impl Storage {
     ///
     /// Public so the retry caller (Memory::retry_quarantined) can
     /// reconstruct StorageMeta from the preserved hints.
-    #[allow(dead_code)]  // tests don't touch every field
+    #[allow(dead_code)] // tests don't touch every field
     pub fn list_quarantine_for_retry_batch(
         &self,
         max_items: usize,
@@ -8901,20 +9153,20 @@ impl Storage {
         )?;
         let rows = stmt.query_map(params![max_items as i64], |row| {
             Ok(QuarantineRow {
-                id:                row.get(0)?,
-                content:           row.get(1)?,
-                content_hash:      row.get(2)?,
-                reason_kind:       row.get(3)?,
-                reason_detail:     row.get(4)?,
-                received_at:       row.get(5)?,
-                attempts:          row.get::<_, i64>(6)? as u32,
-                last_attempt_at:   row.get(7)?,
-                last_error:        row.get(8)?,
-                source:            row.get(9)?,
-                namespace:         row.get(10)?,
-                importance_hint:   row.get(11)?,
-                memory_type_hint:  row.get(12)?,
-                user_metadata:     row.get(13)?,
+                id: row.get(0)?,
+                content: row.get(1)?,
+                content_hash: row.get(2)?,
+                reason_kind: row.get(3)?,
+                reason_detail: row.get(4)?,
+                received_at: row.get(5)?,
+                attempts: row.get::<_, i64>(6)? as u32,
+                last_attempt_at: row.get(7)?,
+                last_error: row.get(8)?,
+                source: row.get(9)?,
+                namespace: row.get(10)?,
+                importance_hint: row.get(11)?,
+                memory_type_hint: row.get(12)?,
+                user_metadata: row.get(13)?,
             })
         })?;
         rows.collect()
@@ -8922,11 +9174,7 @@ impl Storage {
 
     /// Bump attempts counter + record last attempt time and error
     /// (if any). Does NOT delete the row.
-    pub fn record_quarantine_attempt(
-        &self,
-        id: &str,
-        last_error: Option<&str>,
-    ) -> SqlResult<()> {
+    pub fn record_quarantine_attempt(&self, id: &str, last_error: Option<&str>) -> SqlResult<()> {
         let now = chrono::Utc::now().timestamp() as f64;
         self.conn.execute(
             "UPDATE quarantine
@@ -8943,10 +9191,7 @@ impl Storage {
     /// exhausted). Row is kept for forensic review; never deleted
     /// automatically. Returns true if a row was flipped, false if
     /// unchanged or missing.
-    pub fn mark_quarantine_permanently_rejected(
-        &self,
-        id: &str,
-    ) -> SqlResult<bool> {
+    pub fn mark_quarantine_permanently_rejected(&self, id: &str) -> SqlResult<bool> {
         let affected = self.conn.execute(
             "UPDATE quarantine SET permanently_rejected = 1 WHERE id = ?1",
             params![id],
@@ -8958,10 +9203,9 @@ impl Storage {
     /// retry promotes the content into `memories`). Returns true on
     /// delete, false if the row didn't exist.
     pub fn delete_quarantine_row(&self, id: &str) -> SqlResult<bool> {
-        let affected = self.conn.execute(
-            "DELETE FROM quarantine WHERE id = ?1",
-            params![id],
-        )?;
+        let affected = self
+            .conn
+            .execute("DELETE FROM quarantine WHERE id = ?1", params![id])?;
         Ok(affected > 0)
     }
 
@@ -9074,13 +9318,13 @@ impl Storage {
         )?;
         let rows = stmt.query_map(params![max_items as i64], |row| {
             Ok(BackfillRow {
-                memory_id:       row.get(0)?,
-                enqueued_at:     row.get(1)?,
-                reason_kind:     row.get(2)?,
-                reason_detail:   row.get(3)?,
-                attempts:        row.get::<_, i64>(4)? as u32,
+                memory_id: row.get(0)?,
+                enqueued_at: row.get(1)?,
+                reason_kind: row.get(2)?,
+                reason_detail: row.get(3)?,
+                attempts: row.get::<_, i64>(4)? as u32,
                 last_attempt_at: row.get(5)?,
-                last_error:      row.get(6)?,
+                last_error: row.get(6)?,
             })
         })?;
         rows.collect()
@@ -9194,33 +9438,33 @@ impl Storage {
 /// `Storage::list_quarantine_for_retry_batch`.
 #[derive(Debug, Clone)]
 pub struct QuarantineRow {
-    pub id:               String,
-    pub content:          String,
-    pub content_hash:     String,
-    pub reason_kind:      String,
-    pub reason_detail:    Option<String>,
-    pub received_at:      f64,
-    pub attempts:         u32,
-    pub last_attempt_at:  Option<f64>,
-    pub last_error:       Option<String>,
-    pub source:           Option<String>,
-    pub namespace:        Option<String>,
-    pub importance_hint:  Option<f64>,
+    pub id: String,
+    pub content: String,
+    pub content_hash: String,
+    pub reason_kind: String,
+    pub reason_detail: Option<String>,
+    pub received_at: f64,
+    pub attempts: u32,
+    pub last_attempt_at: Option<f64>,
+    pub last_error: Option<String>,
+    pub source: Option<String>,
+    pub namespace: Option<String>,
+    pub importance_hint: Option<f64>,
     pub memory_type_hint: Option<String>,
-    pub user_metadata:    Option<String>,
+    pub user_metadata: Option<String>,
 }
 
 /// A single row read from the backfill_queue table. See
 /// `Storage::list_backfill_batch`.
 #[derive(Debug, Clone)]
 pub struct BackfillRow {
-    pub memory_id:       String,
-    pub enqueued_at:     f64,
-    pub reason_kind:     String,
-    pub reason_detail:   Option<String>,
-    pub attempts:        u32,
+    pub memory_id: String,
+    pub enqueued_at: f64,
+    pub reason_kind: String,
+    pub reason_detail: Option<String>,
+    pub attempts: u32,
     pub last_attempt_at: Option<f64>,
-    pub last_error:      Option<String>,
+    pub last_error: Option<String>,
 }
 
 // =============================================================================
@@ -9279,13 +9523,9 @@ pub fn fetch_memory_record_with_namespace(
 }
 
 /// Fetch all access timestamps for a memory using a borrowed connection.
-fn fetch_access_times(
-    conn: &Connection,
-    id: &str,
-) -> Result<Vec<DateTime<Utc>>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT accessed_at FROM access_log WHERE memory_id = ? ORDER BY accessed_at",
-    )?;
+fn fetch_access_times(conn: &Connection, id: &str) -> Result<Vec<DateTime<Utc>>, rusqlite::Error> {
+    let mut stmt = conn
+        .prepare("SELECT accessed_at FROM access_log WHERE memory_id = ? ORDER BY accessed_at")?;
     let rows = stmt.query_map(params![id], |row| {
         let ts: f64 = row.get(0)?;
         Ok(f64_to_datetime(ts))
@@ -9545,7 +9785,14 @@ mod tests {
         storage_mut.add(&m2, "default").unwrap();
 
         let created = storage_mut
-            .record_association("mem_a", "mem_b", 0.5, "entity", r#"{"entity_overlap":0.4}"#, "default")
+            .record_association(
+                "mem_a",
+                "mem_b",
+                0.5,
+                "entity",
+                r#"{"entity_overlap":0.4}"#,
+                "default",
+            )
             .unwrap();
         assert!(created, "should create new link");
 
@@ -9582,13 +9829,16 @@ mod tests {
         assert!(!created2, "should not create duplicate");
 
         // Verify only one row exists
-        let count: i64 = storage.connection().query_row(
-            "SELECT COUNT(*) FROM hebbian_links WHERE \
+        let count: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM hebbian_links WHERE \
              (source_id = 'mem_a' AND target_id = 'mem_b') OR \
              (source_id = 'mem_b' AND target_id = 'mem_a')",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -9614,13 +9864,16 @@ mod tests {
         assert!(!created2, "B→A should not create duplicate when A→B exists");
 
         // Verify only one row total
-        let count: i64 = storage.connection().query_row(
-            "SELECT COUNT(*) FROM hebbian_links WHERE \
+        let count: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM hebbian_links WHERE \
              (source_id = 'mem_a' AND target_id = 'mem_b') OR \
              (source_id = 'mem_b' AND target_id = 'mem_a')",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
 
         // Strength should be updated to max(0.5, 0.6) = 0.6
@@ -9662,24 +9915,39 @@ mod tests {
         ).unwrap();
 
         // Apply differential decay
-        storage.decay_hebbian_links_differential(0.95, 0.90, 0.85).unwrap();
+        storage
+            .decay_hebbian_links_differential(0.95, 0.90, 0.85)
+            .unwrap();
 
         // Check strengths
-        let get_strength = |src: &str, tgt: &str| -> f64 {
-            storage.connection().query_row(
+        let get_strength =
+            |src: &str, tgt: &str| -> f64 {
+                storage.connection().query_row(
                 "SELECT strength FROM hebbian_links WHERE source_id = ?1 AND target_id = ?2",
                 params![src, tgt],
                 |row| row.get(0),
             ).unwrap()
-        };
+            };
 
         let corecall_str = get_strength("m1", "m2");
         let multi_str = get_strength("m3", "m4");
         let entity_str = get_strength("m5", "m6");
 
-        assert!((corecall_str - 0.95).abs() < 1e-9, "corecall should be 0.95, got {}", corecall_str);
-        assert!((multi_str - 0.90).abs() < 1e-9, "multi should be 0.90, got {}", multi_str);
-        assert!((entity_str - 0.85).abs() < 1e-9, "entity should be 0.85, got {}", entity_str);
+        assert!(
+            (corecall_str - 0.95).abs() < 1e-9,
+            "corecall should be 0.95, got {}",
+            corecall_str
+        );
+        assert!(
+            (multi_str - 0.90).abs() < 1e-9,
+            "multi should be 0.90, got {}",
+            multi_str
+        );
+        assert!(
+            (entity_str - 0.85).abs() < 1e-9,
+            "entity should be 0.85, got {}",
+            entity_str
+        );
 
         // Verify ordering: corecall > multi > entity (differential rates)
         assert!(corecall_str > multi_str);
@@ -9713,23 +9981,31 @@ mod tests {
 
         // Decay: entity link → 0.11 * 0.85 = 0.0935 < 0.1 → should be deleted
         // corecall link → 0.5 * 0.95 = 0.475 → should survive
-        let deleted = storage.decay_hebbian_links_differential(0.95, 0.90, 0.85).unwrap();
+        let deleted = storage
+            .decay_hebbian_links_differential(0.95, 0.90, 0.85)
+            .unwrap();
         assert_eq!(deleted, 1, "should delete 1 weak link");
 
         // Verify entity link is gone
-        let count: i64 = storage.connection().query_row(
-            "SELECT COUNT(*) FROM hebbian_links WHERE source_id = 'm1' AND target_id = 'm2'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM hebbian_links WHERE source_id = 'm1' AND target_id = 'm2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "weak entity link should be deleted");
 
         // Verify corecall link survives
-        let count: i64 = storage.connection().query_row(
-            "SELECT COUNT(*) FROM hebbian_links WHERE source_id = 'm3' AND target_id = 'm4'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = storage
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM hebbian_links WHERE source_id = 'm3' AND target_id = 'm4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "strong corecall link should survive");
     }
 
@@ -9742,14 +10018,20 @@ mod tests {
             [],
             |row| row.get(0),
         ).unwrap();
-        assert!(has_signal_source, "signal_source column should exist on fresh DB");
+        assert!(
+            has_signal_source,
+            "signal_source column should exist on fresh DB"
+        );
 
         let has_signal_detail: bool = storage.connection().query_row(
             "SELECT COUNT(*) > 0 FROM pragma_table_info('hebbian_links') WHERE name='signal_detail'",
             [],
             |row| row.get(0),
         ).unwrap();
-        assert!(has_signal_detail, "signal_detail column should exist on fresh DB");
+        assert!(
+            has_signal_detail,
+            "signal_detail column should exist on fresh DB"
+        );
 
         // Index should exist
         let has_index: bool = storage.connection().query_row(
@@ -9781,7 +10063,10 @@ mod tests {
     fn test_hebbian_signal_migration_backfills_existing_rows() {
         // Create a DB, insert a hebbian_link without signal_source, then migrate
         let conn = Connection::open(":memory:").unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;").unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        )
+        .unwrap();
         Storage::create_schema(&conn).unwrap();
         Storage::migrate_v2(&conn).unwrap();
 
@@ -9807,12 +10092,17 @@ mod tests {
 
         // After migration, the row should have signal_source = 'corecall' from backfill
         // (The ALTER TABLE DEFAULT fills NULL for existing rows, then UPDATE backfills)
-        let source_after: String = conn.query_row(
-            "SELECT signal_source FROM hebbian_links WHERE source_id = 'm1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
-        assert_eq!(source_after, "corecall", "signal_source should be backfilled to 'corecall'");
+        let source_after: String = conn
+            .query_row(
+                "SELECT signal_source FROM hebbian_links WHERE source_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            source_after, "corecall",
+            "signal_source should be backfilled to 'corecall'"
+        );
     }
 
     // ===========================================================================
@@ -9823,7 +10113,9 @@ mod tests {
     fn test_cluster_centroids_roundtrip() {
         let storage = test_storage();
         let centroid = vec![1.0f32, 2.0, 3.0];
-        storage.update_centroid_incremental("cluster_a", &centroid).unwrap();
+        storage
+            .update_centroid_incremental("cluster_a", &centroid)
+            .unwrap();
 
         let centroids = storage.get_cluster_centroids().unwrap();
         assert_eq!(centroids.len(), 1);
@@ -9834,7 +10126,9 @@ mod tests {
     #[test]
     fn test_assign_to_cluster() {
         let storage = test_storage();
-        storage.assign_to_cluster("mem_1", "cluster_a", "hot", 0.95).unwrap();
+        storage
+            .assign_to_cluster("mem_1", "cluster_a", "hot", 0.95)
+            .unwrap();
 
         let members = storage.get_cluster_members("cluster_a").unwrap();
         assert_eq!(members, vec!["mem_1".to_string()]);
@@ -9844,11 +10138,15 @@ mod tests {
     fn test_centroid_incremental_update() {
         let storage = test_storage();
         // Insert initial centroid [1, 0, 0]
-        storage.update_centroid_incremental("cluster_a", &[1.0, 0.0, 0.0]).unwrap();
+        storage
+            .update_centroid_incremental("cluster_a", &[1.0, 0.0, 0.0])
+            .unwrap();
 
         // Incrementally update with [0, 1, 0]
         // Expected: (old * 1 + new) / 2 = ([1,0,0] + [0,1,0]) / 2 = [0.5, 0.5, 0.0]
-        storage.update_centroid_incremental("cluster_a", &[0.0, 1.0, 0.0]).unwrap();
+        storage
+            .update_centroid_incremental("cluster_a", &[0.0, 1.0, 0.0])
+            .unwrap();
 
         let centroids = storage.get_cluster_centroids().unwrap();
         assert_eq!(centroids.len(), 1);
@@ -9863,8 +10161,12 @@ mod tests {
     fn test_dirty_cluster_tracking() {
         let storage = test_storage();
         // Create a centroid first
-        storage.update_centroid_incremental("cluster_a", &[1.0, 0.0]).unwrap();
-        storage.update_centroid_incremental("cluster_b", &[0.0, 1.0]).unwrap();
+        storage
+            .update_centroid_incremental("cluster_a", &[1.0, 0.0])
+            .unwrap();
+        storage
+            .update_centroid_incremental("cluster_b", &[0.0, 1.0])
+            .unwrap();
 
         // Mark one as dirty
         storage.mark_cluster_dirty("cluster_a").unwrap();
@@ -9905,21 +10207,32 @@ mod tests {
         let storage = test_storage();
 
         // Create initial clusters
-        storage.update_centroid_incremental("old_c1", &[1.0, 0.0]).unwrap();
-        storage.assign_to_cluster("mem_1", "old_c1", "full", 1.0).unwrap();
-        storage.assign_to_cluster("mem_2", "old_c1", "full", 1.0).unwrap();
+        storage
+            .update_centroid_incremental("old_c1", &[1.0, 0.0])
+            .unwrap();
+        storage
+            .assign_to_cluster("mem_1", "old_c1", "full", 1.0)
+            .unwrap();
+        storage
+            .assign_to_cluster("mem_2", "old_c1", "full", 1.0)
+            .unwrap();
 
-        storage.update_centroid_incremental("old_c2", &[0.0, 1.0]).unwrap();
-        storage.assign_to_cluster("mem_3", "old_c2", "full", 1.0).unwrap();
+        storage
+            .update_centroid_incremental("old_c2", &[0.0, 1.0])
+            .unwrap();
+        storage
+            .assign_to_cluster("mem_3", "old_c2", "full", 1.0)
+            .unwrap();
 
         // Replace old clusters with new ones
-        let new_clusters = vec![
-            ("new_c1".to_string(), vec!["mem_1".to_string(), "mem_3".to_string()], vec![0.5f32, 0.5]),
-        ];
-        storage.replace_clusters(
-            &["old_c1".to_string(), "old_c2".to_string()],
-            &new_clusters,
-        ).unwrap();
+        let new_clusters = vec![(
+            "new_c1".to_string(),
+            vec!["mem_1".to_string(), "mem_3".to_string()],
+            vec![0.5f32, 0.5],
+        )];
+        storage
+            .replace_clusters(&["old_c1".to_string(), "old_c2".to_string()], &new_clusters)
+            .unwrap();
 
         // Old clusters should be gone
         assert!(storage.get_cluster_members("old_c1").unwrap().is_empty());
@@ -9942,13 +10255,21 @@ mod tests {
         let storage = test_storage();
 
         // Add some pre-existing data
-        storage.update_centroid_incremental("old_c", &[1.0]).unwrap();
-        storage.assign_to_cluster("mem_x", "old_c", "hot", 0.5).unwrap();
+        storage
+            .update_centroid_incremental("old_c", &[1.0])
+            .unwrap();
+        storage
+            .assign_to_cluster("mem_x", "old_c", "hot", 0.5)
+            .unwrap();
         storage.add_pending_memory("mem_p").unwrap();
 
         // Save full cluster state (replaces everything)
         let clusters = vec![
-            ("c1".to_string(), vec!["m1".to_string(), "m2".to_string()], vec![1.0f32, 0.0]),
+            (
+                "c1".to_string(),
+                vec!["m1".to_string(), "m2".to_string()],
+                vec![1.0f32, 0.0],
+            ),
             ("c2".to_string(), vec!["m3".to_string()], vec![0.0f32, 1.0]),
         ];
         storage.save_full_cluster_state(&clusters).unwrap();
@@ -10051,8 +10372,7 @@ mod tests {
 
         // Re-fetch and verify dimensional union applied.
         let rec = storage.get(&id).unwrap().unwrap();
-        let em =
-            crate::enriched::EnrichedMemory::from_memory_record(&rec).unwrap();
+        let em = crate::enriched::EnrichedMemory::from_memory_record(&rec).unwrap();
         // participants: set-union of comma-separated
         let p = em.dimensions.participants.clone().unwrap();
         assert!(p.contains("alice"), "missing alice: {}", p);
@@ -10085,10 +10405,7 @@ mod tests {
         let rec = storage.get(&id).unwrap().unwrap();
         let meta = rec.metadata.unwrap();
         assert_eq!(meta["engram"]["merge_count"].as_i64(), Some(3));
-        assert_eq!(
-            meta["engram"]["merge_history"].as_array().unwrap().len(),
-            3
-        );
+        assert_eq!(meta["engram"]["merge_history"].as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -10124,8 +10441,7 @@ mod tests {
         storage.merge_enriched_into(&id, &b, 1.0).unwrap();
 
         let rec = storage.get(&id).unwrap().unwrap();
-        let em =
-            crate::enriched::EnrichedMemory::from_memory_record(&rec).unwrap();
+        let em = crate::enriched::EnrichedMemory::from_memory_record(&rec).unwrap();
 
         // Dimensional content survives unchanged (idempotence).
         assert_eq!(em.dimensions.participants, a.dimensions.participants);
@@ -10150,8 +10466,7 @@ mod tests {
 
         let rec = storage.get(&id).unwrap().unwrap();
         assert_eq!(rec.content, long);
-        let em =
-            crate::enriched::EnrichedMemory::from_memory_record(&rec).unwrap();
+        let em = crate::enriched::EnrichedMemory::from_memory_record(&rec).unwrap();
         assert!(em.invariants_hold(), "core_fact must track content");
     }
 
@@ -10176,10 +10491,15 @@ mod tests {
         let storage = test_storage();
         let returned_id = storage
             .insert_quarantine_row(
-                "q-1", "payload-1", "hash-1",
-                "extractor_error", Some("boom"),
-                Some("test"), Some("ns-a"),
-                Some(0.7), Some("factual"),
+                "q-1",
+                "payload-1",
+                "hash-1",
+                "extractor_error",
+                Some("boom"),
+                Some("test"),
+                Some("ns-a"),
+                Some(0.7),
+                Some("factual"),
                 Some(r#"{"k":"v"}"#),
             )
             .unwrap();
@@ -10206,37 +10526,85 @@ mod tests {
     #[test]
     fn test_quarantine_insert_dedups_on_live_hash() {
         let storage = test_storage();
-        let id1 = storage.insert_quarantine_row(
-            "q-1", "same", "h-dup", "extractor_error", None,
-            None, None, None, None, None,
-        ).unwrap();
+        let id1 = storage
+            .insert_quarantine_row(
+                "q-1",
+                "same",
+                "h-dup",
+                "extractor_error",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         // Same content_hash — second call should return the existing id,
         // not insert a duplicate.
-        let id2 = storage.insert_quarantine_row(
-            "q-2", "same", "h-dup", "extractor_error", None,
-            None, None, None, None, None,
-        ).unwrap();
+        let id2 = storage
+            .insert_quarantine_row(
+                "q-2",
+                "same",
+                "h-dup",
+                "extractor_error",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         assert_eq!(id1, id2);
         assert_eq!(id1, "q-1");
-        assert_eq!(storage.list_quarantine_for_retry_batch(10).unwrap().len(), 1);
+        assert_eq!(
+            storage.list_quarantine_for_retry_batch(10).unwrap().len(),
+            1
+        );
     }
 
     #[test]
     fn test_quarantine_insert_skips_dedup_for_rejected_rows() {
         let storage = test_storage();
-        storage.insert_quarantine_row(
-            "q-old", "x", "h-1", "extractor_error", None,
-            None, None, None, None, None,
-        ).unwrap();
+        storage
+            .insert_quarantine_row(
+                "q-old",
+                "x",
+                "h-1",
+                "extractor_error",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         // Flip the old row to permanently_rejected — dedup should
         // now treat it as absent and let a fresh insert through.
-        assert!(storage.mark_quarantine_permanently_rejected("q-old").unwrap());
+        assert!(storage
+            .mark_quarantine_permanently_rejected("q-old")
+            .unwrap());
 
-        let id_new = storage.insert_quarantine_row(
-            "q-new", "x", "h-1", "extractor_error", None,
-            None, None, None, None, None,
-        ).unwrap();
-        assert_eq!(id_new, "q-new", "rejected rows must not block fresh inserts");
+        let id_new = storage
+            .insert_quarantine_row(
+                "q-new",
+                "x",
+                "h-1",
+                "extractor_error",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            id_new, "q-new",
+            "rejected rows must not block fresh inserts"
+        );
         // Two rows now, but only one is live.
         assert_eq!(storage.count_quarantine_live().unwrap(), 1);
     }
@@ -10244,13 +10612,27 @@ mod tests {
     #[test]
     fn test_quarantine_record_attempt_and_mark_rejected() {
         let storage = test_storage();
-        storage.insert_quarantine_row(
-            "q-a", "hi", "h-a", "extractor_error", None,
-            None, None, None, None, None,
-        ).unwrap();
+        storage
+            .insert_quarantine_row(
+                "q-a",
+                "hi",
+                "h-a",
+                "extractor_error",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
 
-        storage.record_quarantine_attempt("q-a", Some("retry fail #1")).unwrap();
-        storage.record_quarantine_attempt("q-a", Some("retry fail #2")).unwrap();
+        storage
+            .record_quarantine_attempt("q-a", Some("retry fail #1"))
+            .unwrap();
+        storage
+            .record_quarantine_attempt("q-a", Some("retry fail #2"))
+            .unwrap();
 
         let rows = storage.list_quarantine_for_retry_batch(10).unwrap();
         let r = rows.iter().find(|r| r.id == "q-a").unwrap();
@@ -10268,15 +10650,27 @@ mod tests {
     #[test]
     fn test_quarantine_delete_row() {
         let storage = test_storage();
-        storage.insert_quarantine_row(
-            "q-d", "data", "h-d", "extractor_error", None,
-            None, None, None, None, None,
-        ).unwrap();
+        storage
+            .insert_quarantine_row(
+                "q-d",
+                "data",
+                "h-d",
+                "extractor_error",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         assert_eq!(storage.count_quarantine_live().unwrap(), 1);
 
         assert!(storage.delete_quarantine_row("q-d").unwrap());
-        assert!(!storage.delete_quarantine_row("q-d").unwrap(),
-            "second delete must return false");
+        assert!(
+            !storage.delete_quarantine_row("q-d").unwrap(),
+            "second delete must return false"
+        );
         assert_eq!(storage.count_quarantine_live().unwrap(), 0);
     }
 
@@ -10285,13 +10679,20 @@ mod tests {
         let storage = test_storage();
         // Insert three with distinct content_hash so none dedup.
         for i in 0..3 {
-            storage.insert_quarantine_row(
-                &format!("q-{}", i),
-                "content",
-                &format!("h-{}", i),
-                "extractor_error", None,
-                None, None, None, None, None,
-            ).unwrap();
+            storage
+                .insert_quarantine_row(
+                    &format!("q-{}", i),
+                    "content",
+                    &format!("h-{}", i),
+                    "extractor_error",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
             // Spread received_at slightly so ORDER BY received_at is deterministic.
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -10308,18 +10709,42 @@ mod tests {
         // Row 1: rejected, but we'll not change received_at — so it's
         // "just now", inside any reasonable TTL — must NOT be purged
         // with a large TTL.
-        storage.insert_quarantine_row(
-            "q-young", "young", "h-y", "extractor_error", None,
-            None, None, None, None, None,
-        ).unwrap();
-        storage.record_quarantine_attempt("q-young", Some("e")).unwrap();
-        storage.mark_quarantine_permanently_rejected("q-young").unwrap();
+        storage
+            .insert_quarantine_row(
+                "q-young",
+                "young",
+                "h-y",
+                "extractor_error",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        storage
+            .record_quarantine_attempt("q-young", Some("e"))
+            .unwrap();
+        storage
+            .mark_quarantine_permanently_rejected("q-young")
+            .unwrap();
 
         // Row 2: live (not rejected) — must NEVER be purged.
-        storage.insert_quarantine_row(
-            "q-live", "live", "h-l", "extractor_error", None,
-            None, None, None, None, None,
-        ).unwrap();
+        storage
+            .insert_quarantine_row(
+                "q-live",
+                "live",
+                "h-l",
+                "extractor_error",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
 
         // TTL=3600s: young row was attempted "now" (>= cutoff) — survives.
         let purged = storage.purge_rejected_quarantine(3600).unwrap();
@@ -10371,15 +10796,13 @@ mod tests {
             .enqueue_backfill("mem-1", "missing_core_dimensions", None)
             .unwrap();
         // Bump attempts so we can detect that re-enqueue preserves it.
-        storage.record_backfill_attempt("mem-1", Some("err")).unwrap();
+        storage
+            .record_backfill_attempt("mem-1", Some("err"))
+            .unwrap();
 
         // Re-enqueue with a refined reason.
         storage
-            .enqueue_backfill(
-                "mem-1",
-                "partial_dimensions_long_content",
-                Some("refined"),
-            )
+            .enqueue_backfill("mem-1", "partial_dimensions_long_content", Some("refined"))
             .unwrap();
 
         let rows = storage.list_backfill_batch(10).unwrap();
@@ -10466,11 +10889,7 @@ mod tests {
         let storage = test_storage();
         for i in 0..5 {
             storage
-                .enqueue_backfill(
-                    &format!("mem-{i}"),
-                    "missing_core_dimensions",
-                    None,
-                )
+                .enqueue_backfill(&format!("mem-{i}"), "missing_core_dimensions", None)
                 .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -10537,7 +10956,9 @@ mod tests {
         // And exactly one counter row, still at the initial value.
         let counter_rows: i64 = s2
             .conn
-            .query_row("SELECT COUNT(*) FROM fts_rowid_counter", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM fts_rowid_counter", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(counter_rows, 1);
     }
@@ -10587,7 +11008,8 @@ mod tests {
         let mut s = Storage::new(":memory:").unwrap();
         let now = Utc::now();
         let rec = make_record("iss196_m1", "hello world", now);
-        s.add(&rec, "default").expect("add must succeed under re-pointed FK");
+        s.add(&rec, "default")
+            .expect("add must succeed under re-pointed FK");
 
         let logged: i64 = s
             .conn
@@ -10769,24 +11191,22 @@ mod tests {
     /// Helper: insert a minimal node row directly via SQL, since the higher-
     /// level Node insert API doesn't exist yet (T10). Returns the assigned
     /// `fts_rowid`.
-    fn insert_minimal_node(
-        conn: &Connection,
-        id: &str,
-        content: &str,
-        summary: &str,
-    ) -> i64 {
+    fn insert_minimal_node(conn: &Connection, id: &str, content: &str, summary: &str) -> i64 {
         // Allocate fts_rowid from the singleton counter (mirrors what the
         // T10 writer will do — kept inline here so T07 tests don't depend
         // on a writer helper that doesn't exist yet).
         conn.execute(
             "UPDATE fts_rowid_counter SET next_value = next_value + 1 WHERE singleton = 0",
             [],
-        ).expect("bump counter");
-        let fts_rowid: i64 = conn.query_row(
-            "SELECT next_value - 1 FROM fts_rowid_counter WHERE singleton = 0",
-            [],
-            |row| row.get(0),
-        ).expect("read counter");
+        )
+        .expect("bump counter");
+        let fts_rowid: i64 = conn
+            .query_row(
+                "SELECT next_value - 1 FROM fts_rowid_counter WHERE singleton = 0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read counter");
 
         conn.execute(
             "INSERT INTO nodes (
@@ -10801,7 +11221,8 @@ mod tests {
                 0.0, 0.0, ?4
             )",
             params![id, content, summary, fts_rowid],
-        ).expect("insert node");
+        )
+        .expect("insert node");
 
         fts_rowid
     }
@@ -10831,7 +11252,11 @@ mod tests {
                     |row| row.get(0),
                 )
                 .ok();
-            assert_eq!(trig.as_deref(), Some(*expected), "trigger {expected} missing");
+            assert_eq!(
+                trig.as_deref(),
+                Some(*expected),
+                "trigger {expected} missing"
+            );
         }
     }
 
@@ -10846,19 +11271,25 @@ mod tests {
         );
 
         // MATCH against the body.
-        let found: i64 = storage.conn.query_row(
-            "SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH 'fox'",
-            [],
-            |row| row.get(0),
-        ).expect("fts query returns the inserted row");
+        let found: i64 = storage
+            .conn
+            .query_row(
+                "SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH 'fox'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("fts query returns the inserted row");
         assert_eq!(found, fts_rowid);
 
         // MATCH against the summary column too.
-        let count: i64 = storage.conn.query_row(
-            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'summary'",
-            [],
-            |row| row.get(0),
-        ).expect("count query");
+        let count: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'summary'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count query");
         assert_eq!(count, 1);
     }
 
@@ -10868,22 +11299,31 @@ mod tests {
         let _ = insert_minimal_node(&storage.conn, "n1", "hello world", "");
 
         // Before delete: FTS sees it.
-        let before: i64 = storage.conn.query_row(
-            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'hello'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let before: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'hello'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(before, 1);
 
-        storage.conn.execute("DELETE FROM nodes WHERE id = 'n1'", []).expect("delete");
+        storage
+            .conn
+            .execute("DELETE FROM nodes WHERE id = 'n1'", [])
+            .expect("delete");
 
         // After delete: FTS no longer sees it (contentless 'delete' command
         // form fired correctly).
-        let after: i64 = storage.conn.query_row(
-            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'hello'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let after: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'hello'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(after, 0);
     }
 
@@ -10894,23 +11334,32 @@ mod tests {
 
         // Update content: old tokens disappear, new tokens appear, fts_rowid
         // stays stable.
-        storage.conn.execute(
-            "UPDATE nodes SET content = 'bananas and grapes' WHERE id = 'n1'",
-            [],
-        ).expect("update content");
+        storage
+            .conn
+            .execute(
+                "UPDATE nodes SET content = 'bananas and grapes' WHERE id = 'n1'",
+                [],
+            )
+            .expect("update content");
 
-        let old_hits: i64 = storage.conn.query_row(
-            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'apples'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let old_hits: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'apples'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(old_hits, 0, "old content tokens must be purged");
 
-        let new_hits: i64 = storage.conn.query_row(
-            "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'bananas'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let new_hits: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'bananas'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(new_hits, 1, "new content tokens must be indexed");
     }
 
@@ -10950,15 +11399,21 @@ mod tests {
             .prepare("PRAGMA table_info(node_embeddings)")
             .unwrap()
             .query_map([], |row| {
-                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i32>(5)?))
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(5)?,
+                ))
             })
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
         // (name, type, pk-index) — PK is composite (node_id, model).
-        let by_name: std::collections::HashMap<_, _> =
-            cols.iter().map(|(n, t, pk)| (n.clone(), (t.clone(), *pk))).collect();
+        let by_name: std::collections::HashMap<_, _> = cols
+            .iter()
+            .map(|(n, t, pk)| (n.clone(), (t.clone(), *pk)))
+            .collect();
         for (col, expected_type) in &[
             ("node_id", "TEXT"),
             ("model", "TEXT"),
@@ -10966,12 +11421,24 @@ mod tests {
             ("dimensions", "INTEGER"),
             ("created_at", "REAL"),
         ] {
-            let (ty, _) = by_name.get(*col).unwrap_or_else(|| panic!("missing column {col}"));
-            assert_eq!(ty.to_uppercase(), expected_type.to_uppercase(), "column {col} type");
+            let (ty, _) = by_name
+                .get(*col)
+                .unwrap_or_else(|| panic!("missing column {col}"));
+            assert_eq!(
+                ty.to_uppercase(),
+                expected_type.to_uppercase(),
+                "column {col} type"
+            );
         }
         // Composite PK on (node_id, model): both have non-zero pk index.
-        assert!(by_name.get("node_id").unwrap().1 > 0, "node_id should be PK component");
-        assert!(by_name.get("model").unwrap().1 > 0, "model should be PK component");
+        assert!(
+            by_name.get("node_id").unwrap().1 > 0,
+            "node_id should be PK component"
+        );
+        assert!(
+            by_name.get("model").unwrap().1 > 0,
+            "model should be PK component"
+        );
 
         // Index on model column exists.
         let idx: Option<String> = storage
@@ -10990,7 +11457,10 @@ mod tests {
     fn test_t08_fk_cascade_delete_drops_embeddings() {
         let storage = test_storage();
         // Need foreign keys ON for the cascade test.
-        storage.conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+        storage
+            .conn
+            .execute("PRAGMA foreign_keys = ON", [])
+            .unwrap();
 
         let _ = insert_minimal_node(&storage.conn, "n1", "irrelevant", "");
 
@@ -11003,17 +11473,30 @@ mod tests {
             ).expect("insert embedding");
         }
 
-        let before: i64 = storage.conn.query_row(
-            "SELECT COUNT(*) FROM node_embeddings WHERE node_id='n1'",
-            [], |r| r.get(0)).unwrap();
+        let before: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM node_embeddings WHERE node_id='n1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(before, 2);
 
         // Delete the node → CASCADE removes both embeddings.
-        storage.conn.execute("DELETE FROM nodes WHERE id='n1'", []).unwrap();
+        storage
+            .conn
+            .execute("DELETE FROM nodes WHERE id='n1'", [])
+            .unwrap();
 
-        let after: i64 = storage.conn.query_row(
-            "SELECT COUNT(*) FROM node_embeddings WHERE node_id='n1'",
-            [], |r| r.get(0)).unwrap();
+        let after: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM node_embeddings WHERE node_id='n1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(after, 0, "ON DELETE CASCADE should drop embeddings");
     }
 
@@ -11022,25 +11505,34 @@ mod tests {
         let storage = test_storage();
         let _ = insert_minimal_node(&storage.conn, "n1", "x", "");
 
-        storage.conn.execute(
-            "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
+        storage
+            .conn
+            .execute(
+                "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
              VALUES ('n1', 'model-a', ?1, 4, 0.0)",
-            params![vec![0u8; 16]],
-        ).unwrap();
+                params![vec![0u8; 16]],
+            )
+            .unwrap();
 
         let dup = storage.conn.execute(
             "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
              VALUES ('n1', 'model-a', ?1, 4, 1.0)",
             params![vec![1u8; 16]],
         );
-        assert!(dup.is_err(), "duplicate (node_id, model) must be rejected by PK");
+        assert!(
+            dup.is_err(),
+            "duplicate (node_id, model) must be rejected by PK"
+        );
 
         // But a different model under the same node is fine.
-        storage.conn.execute(
-            "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
+        storage
+            .conn
+            .execute(
+                "INSERT INTO node_embeddings (node_id, model, embedding, dimensions, created_at)
              VALUES ('n1', 'model-b', ?1, 4, 2.0)",
-            params![vec![2u8; 16]],
-        ).expect("different model under same node should work");
+                params![vec![2u8; 16]],
+            )
+            .expect("different model under same node should work");
     }
 
     #[test]
@@ -11048,12 +11540,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("t08-idempotent.db");
 
-        { let _ = Storage::new(&path).expect("first open"); }
+        {
+            let _ = Storage::new(&path).expect("first open");
+        }
         let s2 = Storage::new(&path).expect("re-open is idempotent");
 
-        let tbl: Option<String> = s2.conn.query_row(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='node_embeddings'",
-            [], |r| r.get(0)).ok();
+        let tbl: Option<String> = s2
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='node_embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
         assert_eq!(tbl.as_deref(), Some("node_embeddings"));
     }
 
@@ -11064,9 +11563,14 @@ mod tests {
     #[test]
     fn test_t09_fresh_db_has_v04_additive_schema_version() {
         let storage = test_storage();
-        let v: String = storage.conn.query_row(
-            "SELECT value FROM engram_meta WHERE key = 'schema_version'",
-            [], |r| r.get(0)).unwrap();
+        let v: String = storage
+            .conn
+            .query_row(
+                "SELECT value FROM engram_meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(v, "0.4-additive");
     }
 
@@ -11082,21 +11586,33 @@ mod tests {
         // same row state that a true legacy DB would present.)
         {
             let s = Storage::new(&path).unwrap();
-            s.conn.execute(
-                "INSERT OR REPLACE INTO engram_meta VALUES ('schema_version', '1')",
-                [],
-            ).unwrap();
-            let v: String = s.conn.query_row(
-                "SELECT value FROM engram_meta WHERE key='schema_version'",
-                [], |r| r.get(0)).unwrap();
+            s.conn
+                .execute(
+                    "INSERT OR REPLACE INTO engram_meta VALUES ('schema_version', '1')",
+                    [],
+                )
+                .unwrap();
+            let v: String = s
+                .conn
+                .query_row(
+                    "SELECT value FROM engram_meta WHERE key='schema_version'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(v, "1", "setup: legacy version forced");
         }
 
         // Re-open: T09 should rewrite schema_version to 0.4-additive.
         let s2 = Storage::new(&path).unwrap();
-        let v: String = s2.conn.query_row(
-            "SELECT value FROM engram_meta WHERE key='schema_version'",
-            [], |r| r.get(0)).unwrap();
+        let v: String = s2
+            .conn
+            .query_row(
+                "SELECT value FROM engram_meta WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(v, "0.4-additive");
     }
 
@@ -11107,17 +11623,27 @@ mod tests {
 
         for _ in 0..3 {
             let s = Storage::new(&path).unwrap();
-            let v: String = s.conn.query_row(
-                "SELECT value FROM engram_meta WHERE key='schema_version'",
-                [], |r| r.get(0)).unwrap();
+            let v: String = s
+                .conn
+                .query_row(
+                    "SELECT value FROM engram_meta WHERE key='schema_version'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(v, "0.4-additive");
         }
 
         // Exactly one row for schema_version (no accumulation).
         let s = Storage::new(&path).unwrap();
-        let n: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM engram_meta WHERE key='schema_version'",
-            [], |r| r.get(0)).unwrap();
+        let n: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM engram_meta WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -11151,8 +11677,7 @@ mod tests {
         // idempotent — but doing it this way keeps the legacy default
         // visible in the helper signature.
         let legacy = Storage::new(&path).expect("legacy handle");
-        let unified = Storage::with_unified_substrate(&path, true)
-            .expect("unified handle");
+        let unified = Storage::with_unified_substrate(&path, true).expect("unified handle");
         (legacy, unified)
     }
 
@@ -11162,13 +11687,7 @@ mod tests {
         s.add(&mut rec, ns).expect("seed memory row");
     }
 
-    fn t29_3_seed_embedding(
-        s: &mut Storage,
-        memory_id: &str,
-        ns: &str,
-        model: &str,
-        emb: &[f32],
-    ) {
+    fn t29_3_seed_embedding(s: &mut Storage, memory_id: &str, ns: &str, model: &str, emb: &[f32]) {
         // Ensure parent memory row exists in BOTH legacy `memories`
         // and unified `nodes` (T12 dual-write covers nodes
         // unconditionally), satisfying `node_embeddings.node_id` FK.
@@ -11194,35 +11713,51 @@ mod tests {
         let emb = vec![0.1f32, 0.2, 0.3, 0.4];
         t29_3_seed_embedding(&mut legacy, "m1", "default", model, &emb);
 
-        let legacy_blob: Vec<u8> = legacy.conn.query_row(
-            "SELECT embedding FROM memory_embeddings WHERE memory_id='m1' AND model=?",
-            params![model],
-            |r| r.get(0),
-        ).unwrap();
-        let unified_blob: Vec<u8> = legacy.conn.query_row(
-            "SELECT embedding FROM node_embeddings WHERE node_id='m1' AND model=?",
-            params![model],
-            |r| r.get(0),
-        ).unwrap();
+        let legacy_blob: Vec<u8> = legacy
+            .conn
+            .query_row(
+                "SELECT embedding FROM memory_embeddings WHERE memory_id='m1' AND model=?",
+                params![model],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let unified_blob: Vec<u8> = legacy
+            .conn
+            .query_row(
+                "SELECT embedding FROM node_embeddings WHERE node_id='m1' AND model=?",
+                params![model],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(legacy_blob, unified_blob,
             "T29.3 dual-write: memory_embeddings and node_embeddings blobs must match byte-for-byte");
 
         // Re-store with a new vector — INSERT OR REPLACE semantics
         // must update BOTH sides, not leave a stale row behind on one.
         let emb2 = vec![0.9f32, 0.8, 0.7, 0.6];
-        legacy.store_embedding("m1", &emb2, model, emb2.len()).unwrap();
-        let legacy_blob2: Vec<u8> = legacy.conn.query_row(
-            "SELECT embedding FROM memory_embeddings WHERE memory_id='m1' AND model=?",
-            params![model],
-            |r| r.get(0),
-        ).unwrap();
-        let unified_blob2: Vec<u8> = legacy.conn.query_row(
-            "SELECT embedding FROM node_embeddings WHERE node_id='m1' AND model=?",
-            params![model],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(legacy_blob2, unified_blob2,
-            "T29.3 re-store: REPLACE must overwrite both sides");
+        legacy
+            .store_embedding("m1", &emb2, model, emb2.len())
+            .unwrap();
+        let legacy_blob2: Vec<u8> = legacy
+            .conn
+            .query_row(
+                "SELECT embedding FROM memory_embeddings WHERE memory_id='m1' AND model=?",
+                params![model],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let unified_blob2: Vec<u8> = legacy
+            .conn
+            .query_row(
+                "SELECT embedding FROM node_embeddings WHERE node_id='m1' AND model=?",
+                params![model],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_blob2, unified_blob2,
+            "T29.3 re-store: REPLACE must overwrite both sides"
+        );
         assert_ne!(legacy_blob, legacy_blob2, "sanity: blob actually changed");
     }
 
@@ -11240,8 +11775,14 @@ mod tests {
         assert_eq!(from_unified, Some(emb));
 
         // Wrong model returns None on both paths.
-        assert_eq!(legacy.get_embedding("m1", "openai/text-embed").unwrap(), None);
-        assert_eq!(unified.get_embedding("m1", "openai/text-embed").unwrap(), None);
+        assert_eq!(
+            legacy.get_embedding("m1", "openai/text-embed").unwrap(),
+            None
+        );
+        assert_eq!(
+            unified.get_embedding("m1", "openai/text-embed").unwrap(),
+            None
+        );
 
         // Unknown memory id returns None on both paths.
         assert_eq!(legacy.get_embedding("missing", model).unwrap(), None);
@@ -11299,20 +11840,40 @@ mod tests {
         t29_3_seed_embedding(&mut legacy, "m2", "alpha", model, &vec![0.3f32, 0.4]);
         t29_3_seed_embedding(&mut legacy, "m3", "beta", model, &vec![0.5f32, 0.6]);
 
-        let l_alpha = t29_3_sort_pairs(legacy.get_embeddings_in_namespace(Some("alpha"), model).unwrap());
-        let u_alpha = t29_3_sort_pairs(unified.get_embeddings_in_namespace(Some("alpha"), model).unwrap());
+        let l_alpha = t29_3_sort_pairs(
+            legacy
+                .get_embeddings_in_namespace(Some("alpha"), model)
+                .unwrap(),
+        );
+        let u_alpha = t29_3_sort_pairs(
+            unified
+                .get_embeddings_in_namespace(Some("alpha"), model)
+                .unwrap(),
+        );
         assert_eq!(l_alpha, u_alpha);
         assert_eq!(u_alpha.len(), 2);
 
         // Wildcard delegates to get_all_embeddings — also must match.
-        let l_star = t29_3_sort_pairs(legacy.get_embeddings_in_namespace(Some("*"), model).unwrap());
-        let u_star = t29_3_sort_pairs(unified.get_embeddings_in_namespace(Some("*"), model).unwrap());
+        let l_star = t29_3_sort_pairs(
+            legacy
+                .get_embeddings_in_namespace(Some("*"), model)
+                .unwrap(),
+        );
+        let u_star = t29_3_sort_pairs(
+            unified
+                .get_embeddings_in_namespace(Some("*"), model)
+                .unwrap(),
+        );
         assert_eq!(l_star, u_star);
         assert_eq!(u_star.len(), 3);
 
         // Unknown namespace → empty on both paths.
-        let l_none: Vec<_> = legacy.get_embeddings_in_namespace(Some("ghost"), model).unwrap();
-        let u_none: Vec<_> = unified.get_embeddings_in_namespace(Some("ghost"), model).unwrap();
+        let l_none: Vec<_> = legacy
+            .get_embeddings_in_namespace(Some("ghost"), model)
+            .unwrap();
+        let u_none: Vec<_> = unified
+            .get_embeddings_in_namespace(Some("ghost"), model)
+            .unwrap();
         assert_eq!(l_none, u_none);
         assert!(u_none.is_empty());
     }
@@ -11335,8 +11896,12 @@ mod tests {
 
         // Different model: both m1 AND m2 should appear (neither has
         // an embedding under the other model).
-        let mut l2 = legacy.get_memories_without_embeddings("openai/text-embed").unwrap();
-        let mut u2 = unified.get_memories_without_embeddings("openai/text-embed").unwrap();
+        let mut l2 = legacy
+            .get_memories_without_embeddings("openai/text-embed")
+            .unwrap();
+        let mut u2 = unified
+            .get_memories_without_embeddings("openai/text-embed")
+            .unwrap();
         l2.sort();
         u2.sort();
         assert_eq!(l2, u2);
@@ -11385,11 +11950,14 @@ mod tests {
         // (This mimics what T21 backfill writes for `entity` nodes;
         // we don't reuse the helper to keep this test independent of
         // backfill's evolving column set.)
-        legacy.conn.execute(
-            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+        legacy
+            .conn
+            .execute(
+                "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
              VALUES ('ent-1', 'entity', 'default', '', ?, ?)",
-            params![now_f64(), now_f64()],
-        ).unwrap();
+                params![now_f64(), now_f64()],
+            )
+            .unwrap();
 
         let unified_all = unified.get_all_embeddings(model).unwrap();
         assert_eq!(unified_all.len(), 1);
@@ -11415,7 +11983,9 @@ mod tests {
     fn iss139_get_embeddings_for_ids_empty_input_returns_empty_map() {
         // No SQL should be issued for an empty input — short-circuit.
         let s = test_storage();
-        let out = s.get_embeddings_for_ids(&[], "ollama/nomic-embed-text").unwrap();
+        let out = s
+            .get_embeddings_for_ids(&[], "ollama/nomic-embed-text")
+            .unwrap();
         assert!(out.is_empty());
     }
 
@@ -11448,12 +12018,16 @@ mod tests {
         t29_3_seed_embedding(&mut legacy, "m2", "default", "ollama/B", &[3.0, 4.0]);
 
         // Querying model A returns only m1, not m2.
-        let out_a = legacy.get_embeddings_for_ids(&["m1", "m2"], "ollama/A").unwrap();
+        let out_a = legacy
+            .get_embeddings_for_ids(&["m1", "m2"], "ollama/A")
+            .unwrap();
         assert_eq!(out_a.len(), 1);
         assert_eq!(out_a["m1"], vec![1.0f32, 2.0]);
 
         // Querying an unrelated model returns nothing.
-        let out_c = legacy.get_embeddings_for_ids(&["m1", "m2"], "ollama/C").unwrap();
+        let out_c = legacy
+            .get_embeddings_for_ids(&["m1", "m2"], "ollama/C")
+            .unwrap();
         assert!(out_c.is_empty());
     }
 
@@ -11468,7 +12042,10 @@ mod tests {
         // Soft-delete m1 by setting deleted_at directly.
         legacy
             .conn
-            .execute("UPDATE memories SET deleted_at=? WHERE id='m1'", params![now_f64()])
+            .execute(
+                "UPDATE memories SET deleted_at=? WHERE id='m1'",
+                params![now_f64()],
+            )
             .unwrap();
 
         let out = legacy.get_embeddings_for_ids(&["m1", "m2"], model).unwrap();
@@ -11508,7 +12085,9 @@ mod tests {
         t29_3_seed_embedding(&mut legacy, "m2", "default", model, &[0.4, 0.5, 0.6]);
 
         let l = legacy.get_embeddings_for_ids(&["m1", "m2"], model).unwrap();
-        let u = unified.get_embeddings_for_ids(&["m1", "m2"], model).unwrap();
+        let u = unified
+            .get_embeddings_for_ids(&["m1", "m2"], model)
+            .unwrap();
         assert_eq!(l, u);
     }
 
@@ -11540,19 +12119,23 @@ mod tests {
         ).unwrap();
 
         // Inject a second memory node so we have a valid edge target.
-        s.conn.execute(
-            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+        s.conn
+            .execute(
+                "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
              VALUES ('peer-1', 'memory', 'default', '', ?, ?) \
              ON CONFLICT(id) DO NOTHING",
-            params![t, t],
-        ).unwrap();
+                params![t, t],
+            )
+            .unwrap();
         // Entity node for memory_entities mirror.
-        s.conn.execute(
-            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+        s.conn
+            .execute(
+                "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
              VALUES ('ent-1', 'entity', 'default', '', ?, ?) \
              ON CONFLICT(id) DO NOTHING",
-            params![t, t],
-        ).unwrap();
+                params![t, t],
+            )
+            .unwrap();
 
         // edges, associative (T14/T24 mirror — hebbian).
         s.conn.execute(
@@ -11593,25 +12176,68 @@ mod tests {
     }
 
     fn iss115_count_unified_rows_for(s: &Storage, id: &str) -> (i64, i64) {
-        let nemb: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?",
-            params![id], |r| r.get(0),
-        ).unwrap();
-        let ne: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM edges WHERE source_id = ? OR target_id = ?",
-            params![id, id], |r| r.get(0),
-        ).unwrap();
+        let nemb: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ne: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE source_id = ? OR target_id = ?",
+                params![id, id],
+                |r| r.get(0),
+            )
+            .unwrap();
         (nemb, ne)
     }
 
     fn iss115_legacy_count_for(s: &Storage, id: &str) -> i64 {
         // Sum across all legacy tables that hard_delete_cascade clears.
         let mut n: i64 = 0;
-        n += s.conn.query_row("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", params![id], |r| r.get(0)).unwrap_or(0);
-        n += s.conn.query_row("SELECT COUNT(*) FROM hebbian_links WHERE source_id = ? OR target_id = ?", params![id, id], |r| r.get(0)).unwrap_or(0);
-        n += s.conn.query_row("SELECT COUNT(*) FROM memory_entities WHERE memory_id = ?", params![id], |r| r.get(0)).unwrap_or(0);
-        n += s.conn.query_row("SELECT COUNT(*) FROM synthesis_provenance WHERE source_id = ? OR insight_id = ?", params![id, id], |r| r.get(0)).unwrap_or(0);
-        n += s.conn.query_row("SELECT COUNT(*) FROM memories WHERE id = ?", params![id], |r| r.get(0)).unwrap_or(0);
+        n += s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        n += s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM hebbian_links WHERE source_id = ? OR target_id = ?",
+                params![id, id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        n += s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_entities WHERE memory_id = ?",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        n += s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM synthesis_provenance WHERE source_id = ? OR insight_id = ?",
+                params![id, id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        n += s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = ?",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
         n
     }
 
@@ -11624,7 +12250,13 @@ mod tests {
         let (mut s, unified) = t29_3_open_pair(dir.path());
         // Seed the memory via store_embedding (covers memories + nodes +
         // memory_embeddings + node_embeddings dual-write paths).
-        t29_3_seed_embedding(&mut s, "m1", "default", "ollama/nomic-embed-text", &vec![0.1f32, 0.2]);
+        t29_3_seed_embedding(
+            &mut s,
+            "m1",
+            "default",
+            "ollama/nomic-embed-text",
+            &vec![0.1f32, 0.2],
+        );
         // Inject hebbian/entity/provenance unified rows.
         iss115_seed_unified_rows_for_memory(&mut s, "m1");
         // Also seed legacy hebbian + memory_entities + synthesis_provenance.
@@ -11643,11 +12275,13 @@ mod tests {
              VALUES ('ent-1', 'thing', 'general', 'default', ?, ?)",
             params![t, t],
         ).unwrap();
-        s.conn.execute(
-            "INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, role) \
+        s.conn
+            .execute(
+                "INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, role) \
              VALUES ('m1', 'ent-1', 'mention')",
-            params![],
-        ).unwrap();
+                params![],
+            )
+            .unwrap();
         s.conn.execute(
             "INSERT INTO synthesis_provenance (id, source_id, insight_id, cluster_id, synthesis_timestamp, gate_decision, source_original_importance, confidence) \
              VALUES ('p1', 'm1', 'peer-1', 'c1', ?, 'kept', 0.5, 1.0)",
@@ -11663,22 +12297,42 @@ mod tests {
         s.hard_delete_cascade("m1").unwrap();
 
         // Legacy side fully cleared.
-        assert_eq!(iss115_legacy_count_for(&s, "m1"), 0,
-            "ISS-115: legacy tables must be empty after hard_delete_cascade");
+        assert_eq!(
+            iss115_legacy_count_for(&s, "m1"),
+            0,
+            "ISS-115: legacy tables must be empty after hard_delete_cascade"
+        );
         // Unified side fully cleared.
         let (nemb_after, ne_after) = iss115_count_unified_rows_for(&s, "m1");
-        assert_eq!(nemb_after, 0, "ISS-115: node_embeddings rows must be cleared");
-        assert_eq!(ne_after, 0, "ISS-115: edges rows touching deleted memory must be cleared");
+        assert_eq!(
+            nemb_after, 0,
+            "ISS-115: node_embeddings rows must be cleared"
+        );
+        assert_eq!(
+            ne_after, 0,
+            "ISS-115: edges rows touching deleted memory must be cleared"
+        );
         // And the parent nodes row itself.
-        let n_nodes: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM nodes WHERE id = 'm1'", [], |r| r.get(0),
-        ).unwrap();
+        let n_nodes: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM nodes WHERE id = 'm1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(n_nodes, 0, "ISS-115: parent nodes row must be deleted");
 
         // Phase D reader parity: both legacy and unified embeddings
         // readers must agree (empty) post-delete.
-        assert_eq!(unified.get_embedding("m1", "ollama/nomic-embed-text").unwrap(), None);
-        assert_eq!(s.get_embedding("m1", "ollama/nomic-embed-text").unwrap(), None);
+        assert_eq!(
+            unified
+                .get_embedding("m1", "ollama/nomic-embed-text")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            s.get_embedding("m1", "ollama/nomic-embed-text").unwrap(),
+            None
+        );
     }
 
     /// Hard-delete preserves edges that touch *other* memories.
@@ -11688,15 +12342,29 @@ mod tests {
     fn iss115_hard_delete_cascade_does_not_touch_unrelated_edges() {
         let dir = tempfile::tempdir().unwrap();
         let (mut s, _unified) = t29_3_open_pair(dir.path());
-        t29_3_seed_embedding(&mut s, "m1", "default", "ollama/nomic-embed-text", &vec![0.1f32, 0.2]);
-        t29_3_seed_embedding(&mut s, "m2", "default", "ollama/nomic-embed-text", &vec![0.3f32, 0.4]);
+        t29_3_seed_embedding(
+            &mut s,
+            "m1",
+            "default",
+            "ollama/nomic-embed-text",
+            &vec![0.1f32, 0.2],
+        );
+        t29_3_seed_embedding(
+            &mut s,
+            "m2",
+            "default",
+            "ollama/nomic-embed-text",
+            &vec![0.3f32, 0.4],
+        );
         let t = now_f64();
         // edge between m2 and a third party — must survive deletion of m1.
-        s.conn.execute(
-            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+        s.conn
+            .execute(
+                "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
              VALUES ('m3', 'memory', 'default', '', ?, ?) ON CONFLICT(id) DO NOTHING",
-            params![t, t],
-        ).unwrap();
+                params![t, t],
+            )
+            .unwrap();
         s.conn.execute(
             "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
              VALUES ('e-keep', 'm2', 'm3', 'associative', 'co_activated', ?, ?, ?)",
@@ -11705,14 +12373,20 @@ mod tests {
 
         s.hard_delete_cascade("m1").unwrap();
 
-        let keep_count: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM edges WHERE id = 'e-keep'", [], |r| r.get(0),
-        ).unwrap();
+        let keep_count: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE id = 'e-keep'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(keep_count, 1, "ISS-115: unrelated edges must survive");
         // m2 itself must survive.
-        let m2_count: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM nodes WHERE id = 'm2'", [], |r| r.get(0),
-        ).unwrap();
+        let m2_count: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM nodes WHERE id = 'm2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(m2_count, 1);
     }
 
@@ -11726,15 +12400,18 @@ mod tests {
         let model = "ollama/nomic-embed-text";
         t29_3_seed_embedding(&mut s, "m1", "default", model, &vec![0.1f32, 0.2]);
         // Second model — both rows must go.
-        s.store_embedding("m1", &[0.5f32, 0.6, 0.7], "openai/text-embed", 3).unwrap();
+        s.store_embedding("m1", &[0.5f32, 0.6, 0.7], "openai/text-embed", 3)
+            .unwrap();
         // Inject one edge that touches m1 — must survive (not an
         // embedding row).
         let t = now_f64();
-        s.conn.execute(
-            "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
+        s.conn
+            .execute(
+                "INSERT INTO nodes (id, node_kind, namespace, content, created_at, updated_at) \
              VALUES ('peer-1', 'memory', 'default', '', ?, ?) ON CONFLICT(id) DO NOTHING",
-            params![t, t],
-        ).unwrap();
+                params![t, t],
+            )
+            .unwrap();
         s.conn.execute(
             "INSERT INTO edges (id, source_id, target_id, edge_kind, predicate, recorded_at, created_at, updated_at) \
              VALUES ('e1', 'm1', 'peer-1', 'associative', 'co_activated', ?, ?, ?)",
@@ -11744,29 +12421,49 @@ mod tests {
         s.delete_all_embeddings("m1").unwrap();
 
         // Both embedding tables empty for m1.
-        let n_legacy: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = 'm1'",
-            [], |r| r.get(0),
-        ).unwrap();
-        let n_unified: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM node_embeddings WHERE node_id = 'm1'",
-            [], |r| r.get(0),
-        ).unwrap();
+        let n_legacy: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = 'm1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let n_unified: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM node_embeddings WHERE node_id = 'm1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n_legacy, 0);
         assert_eq!(n_unified, 0);
         // Parent rows untouched.
-        let n_memory: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM memories WHERE id = 'm1'", [], |r| r.get(0),
-        ).unwrap();
-        let n_node: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM nodes WHERE id = 'm1'", [], |r| r.get(0),
-        ).unwrap();
-        let n_edge: i64 = s.conn.query_row(
-            "SELECT COUNT(*) FROM edges WHERE id = 'e1'", [], |r| r.get(0),
-        ).unwrap();
+        let n_memory: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM memories WHERE id = 'm1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let n_node: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM nodes WHERE id = 'm1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let n_edge: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE id = 'e1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(n_memory, 1);
         assert_eq!(n_node, 1);
-        assert_eq!(n_edge, 1, "ISS-115: non-embedding edges must survive delete_all_embeddings");
+        assert_eq!(
+            n_edge, 1,
+            "ISS-115: non-embedding edges must survive delete_all_embeddings"
+        );
         // Phase D reader parity confirms.
         assert_eq!(s.get_embedding("m1", model).unwrap(), None);
         assert_eq!(unified.get_embedding("m1", model).unwrap(), None);
@@ -11779,12 +12476,20 @@ mod tests {
     fn iss115_hard_delete_cascade_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let (mut s, _unified) = t29_3_open_pair(dir.path());
-        t29_3_seed_embedding(&mut s, "m1", "default", "ollama/nomic-embed-text", &vec![0.1f32, 0.2]);
+        t29_3_seed_embedding(
+            &mut s,
+            "m1",
+            "default",
+            "ollama/nomic-embed-text",
+            &vec![0.1f32, 0.2],
+        );
         s.hard_delete_cascade("m1").unwrap();
         // Second call should not raise.
-        s.hard_delete_cascade("m1").expect("ISS-115: hard_delete_cascade must be idempotent");
+        s.hard_delete_cascade("m1")
+            .expect("ISS-115: hard_delete_cascade must be idempotent");
         // And on an id that never existed.
-        s.hard_delete_cascade("ghost").expect("ISS-115: deleting a never-seen id must not raise");
+        s.hard_delete_cascade("ghost")
+            .expect("ISS-115: deleting a never-seen id must not raise");
     }
 
     // ── ISS-198 (T34a-pre): write-active retained child-table FKs ────────
@@ -11816,12 +12521,18 @@ mod tests {
         iss198_seed_node(&s, "n_guard", 9001);
         let in_memories: i64 = s
             .connection()
-            .query_row("SELECT COUNT(*) FROM memories WHERE id = 'n_guard'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE id = 'n_guard'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(in_memories, 0, "seed must NOT create a memories row");
         let in_nodes: i64 = s
             .connection()
-            .query_row("SELECT COUNT(*) FROM nodes WHERE id = 'n_guard'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM nodes WHERE id = 'n_guard'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(in_nodes, 1);
     }
@@ -11847,7 +12558,10 @@ mod tests {
              VALUES ('n_a', 'ghost', 1.0, 1, 0.0)",
             [],
         );
-        assert!(err.is_err(), "ISS-198: dangling target_id must still trip the FK");
+        assert!(
+            err.is_err(),
+            "ISS-198: dangling target_id must still trip the FK"
+        );
     }
 
     #[test]
@@ -11875,7 +12589,10 @@ mod tests {
              VALUES ('n_m', 'ghost_entity', 'mention')",
             [],
         );
-        assert!(err.is_err(), "ISS-198: entity_id FK to entities must survive the rebuild");
+        assert!(
+            err.is_err(),
+            "ISS-198: entity_id FK to entities must survive the rebuild"
+        );
     }
 
     #[test]
@@ -11917,7 +12634,10 @@ mod tests {
              VALUES ('nope', 'nomic', X'00', 1, '2026-05-31')",
             [],
         );
-        assert!(dangling.is_err(), "ISS-198: dangling memory_id must violate FK");
+        assert!(
+            dangling.is_err(),
+            "ISS-198: dangling memory_id must violate FK"
+        );
     }
 
     /// Batch 2: `triples.memory_id` re-pointed `memories`→`nodes`. Written
@@ -11941,7 +12661,10 @@ mod tests {
              VALUES ('nope', 's', 'p', 'o', 1.0, 'llm', '2026-05-31')",
             [],
         );
-        assert!(dangling.is_err(), "ISS-198: dangling memory_id must violate FK");
+        assert!(
+            dangling.is_err(),
+            "ISS-198: dangling memory_id must violate FK"
+        );
     }
 
     /// Batch 2: re-running the `memory_embeddings` / `triples` migrations on an
@@ -11974,12 +12697,23 @@ mod tests {
 
         let emb_rows: i64 = s
             .connection()
-            .query_row("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = 'n_e'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = 'n_e'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(emb_rows, 1, "idempotent re-run must not lose memory_embeddings rows");
+        assert_eq!(
+            emb_rows, 1,
+            "idempotent re-run must not lose memory_embeddings rows"
+        );
         let trip_rows: i64 = s
             .connection()
-            .query_row("SELECT COUNT(*) FROM triples WHERE memory_id = 'n_e'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM triples WHERE memory_id = 'n_e'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(trip_rows, 1, "idempotent re-run must not lose triples rows");
 
@@ -11996,7 +12730,10 @@ mod tests {
                 !ddl.contains("REFERENCES memories"),
                 "ISS-198: {table} must reference nodes, not memories"
             );
-            assert!(ddl.contains("REFERENCES nodes"), "ISS-198: {table} must reference nodes");
+            assert!(
+                ddl.contains("REFERENCES nodes"),
+                "ISS-198: {table} must reference nodes"
+            );
         }
     }
 
@@ -12047,7 +12784,10 @@ mod tests {
                 !ddl.contains("REFERENCES memories"),
                 "ISS-198: {table} must reference nodes, not memories"
             );
-            assert!(ddl.contains("REFERENCES nodes"), "ISS-198: {table} must reference nodes");
+            assert!(
+                ddl.contains("REFERENCES nodes"),
+                "ISS-198: {table} must reference nodes"
+            );
         }
     }
 
@@ -12066,7 +12806,10 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(present, 1, "ISS-198: rebuilt hebbian_links must keep column `{col}`");
+            assert_eq!(
+                present, 1,
+                "ISS-198: rebuilt hebbian_links must keep column `{col}`"
+            );
         }
     }
 
@@ -12150,7 +12893,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(before, None, "fixture must start with source_memory_id NULL");
+        assert_eq!(
+            before, None,
+            "fixture must start with source_memory_id NULL"
+        );
 
         // Run the backfill.
         Storage::migrate_backfill_edge_source_memory_id(conn).expect("backfill migration");
@@ -12303,6 +13049,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(after.as_deref(), Some("mem-idem"), "ISS-202: backfill must be idempotent");
+        assert_eq!(
+            after.as_deref(),
+            Some("mem-idem"),
+            "ISS-202: backfill must be idempotent"
+        );
     }
 }

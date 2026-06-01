@@ -85,11 +85,13 @@ pub fn record_cross_namespace_coactivation(
             let m2 = &memories[j];
 
             let formed = storage.record_cross_namespace_coactivation(
-                &m1.id, &m1.namespace,
-                &m2.id, &m2.namespace,
+                &m1.id,
+                &m1.namespace,
+                &m2.id,
+                &m2.namespace,
                 threshold,
             )?;
-            
+
             if formed {
                 new_links.push((m1.id.clone(), m2.id.clone()));
             }

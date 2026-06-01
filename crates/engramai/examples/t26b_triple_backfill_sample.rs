@@ -44,9 +44,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use engramai::storage::Storage;
-use engramai::substrate::triple_backfill::{
-    backfill_triples_from_memories, TripleBackfillOpts,
-};
+use engramai::substrate::triple_backfill::{backfill_triples_from_memories, TripleBackfillOpts};
 use engramai::triple_extractor::AnthropicTripleExtractor;
 use rusqlite::Connection;
 
@@ -229,9 +227,13 @@ fn collect_stats(db_path: &Path, run_id: &str) -> Result<SampleStats, String> {
         stats.confidence_sum += conf;
         stats.confidence_n += 1;
         if stats.sample_triples.len() < 30 {
-            stats
-                .sample_triples
-                .push((mem_id.clone(), subj.clone(), pred.clone(), obj.clone(), conf));
+            stats.sample_triples.push((
+                mem_id.clone(),
+                subj.clone(),
+                pred.clone(),
+                obj.clone(),
+                conf,
+            ));
         }
         match &current_mem {
             Some(prev) if prev == &mem_id => current_count += 1,
@@ -266,10 +268,30 @@ fn render_report(
 
     push(&mut out, "# T26b — Triple Backfill Sample Report");
     push(&mut out, "");
-    push(&mut out, &format!("- **Source DB**: `{}`", args.source.display()));
-    push(&mut out, &format!("- **Target DB**: `{}` ({})", target_db.display(), if args.in_place { "in-place" } else { "temp clone" }));
+    push(
+        &mut out,
+        &format!("- **Source DB**: `{}`", args.source.display()),
+    );
+    push(
+        &mut out,
+        &format!(
+            "- **Target DB**: `{}` ({})",
+            target_db.display(),
+            if args.in_place {
+                "in-place"
+            } else {
+                "temp clone"
+            }
+        ),
+    );
     push(&mut out, &format!("- **Sample**: {} memories", args.sample));
-    push(&mut out, &format!("- **Namespace filter**: {}", args.namespace.as_deref().unwrap_or("(all)")));
+    push(
+        &mut out,
+        &format!(
+            "- **Namespace filter**: {}",
+            args.namespace.as_deref().unwrap_or("(all)")
+        ),
+    );
     push(&mut out, &format!("- **Model**: `{}`", args.model));
     push(&mut out, &format!("- **Rate limit**: {} req/sec", args.rps));
     push(&mut out, &format!("- **Run ID**: `{}`", run.run_id));
@@ -279,49 +301,123 @@ fn render_report(
     push(&mut out, "");
     push(&mut out, "**Note**: this driver deviates from the standard `BackfillRun` semantics — `rows_inserted` surfaces the **triple count** (for audit usefulness), not the memory count. The per-memory invariant `memories_read = memories_inserted + skipped + failed` is recorded in `notes.memories_inserted` and verified by the driver itself before this report renders.");
     push(&mut out, "");
-    push(&mut out, &format!("- Memories read:           **{}**", run.rows_read));
-    push(&mut out, &format!("- Triples inserted:        **{}**", run.rows_inserted));
-    push(&mut out, &format!("- Memories skipped (already had triples): {}", run.rows_skipped_existing));
-    push(&mut out, &format!("- Memories failed:         {}", run.rows_failed));
+    push(
+        &mut out,
+        &format!("- Memories read:           **{}**", run.rows_read),
+    );
+    push(
+        &mut out,
+        &format!("- Triples inserted:        **{}**", run.rows_inserted),
+    );
+    push(
+        &mut out,
+        &format!(
+            "- Memories skipped (already had triples): {}",
+            run.rows_skipped_existing
+        ),
+    );
+    push(
+        &mut out,
+        &format!("- Memories failed:         {}", run.rows_failed),
+    );
     let memories_inserted = run
         .rows_read
         .saturating_sub(run.rows_skipped_existing)
         .saturating_sub(run.rows_failed);
-    push(&mut out, &format!(
-        "- Memories inserted (derived): {} (= read {} − skipped {} − failed {})",
-        memories_inserted, run.rows_read, run.rows_skipped_existing, run.rows_failed
-    ));
+    push(
+        &mut out,
+        &format!(
+            "- Memories inserted (derived): {} (= read {} − skipped {} − failed {})",
+            memories_inserted, run.rows_read, run.rows_skipped_existing, run.rows_failed
+        ),
+    );
     push(&mut out, "");
 
     push(&mut out, "## Wall-clock & cost");
     push(&mut out, "");
-    push(&mut out, &format!("- Wall-clock:              **{:.1}s** ({:.2}s/memory avg)", elapsed_secs, elapsed_secs / (run.rows_read.max(1)) as f64));
+    push(
+        &mut out,
+        &format!(
+            "- Wall-clock:              **{:.1}s** ({:.2}s/memory avg)",
+            elapsed_secs,
+            elapsed_secs / (run.rows_read.max(1)) as f64
+        ),
+    );
     let sample_cost = (run.rows_read as f64) * HAIKU_COST_PER_CALL_USD;
-    push(&mut out, &format!("- Sample cost (est):       **${:.3}** at ${:.4}/call", sample_cost, HAIKU_COST_PER_CALL_USD));
+    push(
+        &mut out,
+        &format!(
+            "- Sample cost (est):       **${:.3}** at ${:.4}/call",
+            sample_cost, HAIKU_COST_PER_CALL_USD
+        ),
+    );
     push(&mut out, "");
 
     if total_memories_in_source > 0 && run.rows_read > 0 {
         let scale = total_memories_in_source as f64 / run.rows_read as f64;
         let full_cost = sample_cost * scale;
         let full_secs = elapsed_secs * scale;
-        push(&mut out, &format!(
-            "## Extrapolation to full run ({} memories in source)",
-            total_memories_in_source
-        ));
+        push(
+            &mut out,
+            &format!(
+                "## Extrapolation to full run ({} memories in source)",
+                total_memories_in_source
+            ),
+        );
         push(&mut out, "");
-        push(&mut out, &format!("- Estimated cost:          **${:.2}** (scale {:.1}x)", full_cost, scale));
-        push(&mut out, &format!("- Estimated wall-clock:    **{:.0}s** ({:.1} min)", full_secs, full_secs / 60.0));
-        push(&mut out, &format!("- Triples expected:        ~{}", (stats.triples_total as f64 * scale) as u64));
+        push(
+            &mut out,
+            &format!(
+                "- Estimated cost:          **${:.2}** (scale {:.1}x)",
+                full_cost, scale
+            ),
+        );
+        push(
+            &mut out,
+            &format!(
+                "- Estimated wall-clock:    **{:.0}s** ({:.1} min)",
+                full_secs,
+                full_secs / 60.0
+            ),
+        );
+        push(
+            &mut out,
+            &format!(
+                "- Triples expected:        ~{}",
+                (stats.triples_total as f64 * scale) as u64
+            ),
+        );
         push(&mut out, "");
     }
 
     push(&mut out, "## Triple statistics");
     push(&mut out, "");
-    push(&mut out, &format!("- Total triples written:   **{}**", stats.triples_total));
-    push(&mut out, &format!("- Triples per memory:      {:.2} avg", stats.triples_total as f64 / (run.rows_read.max(1)) as f64));
-    push(&mut out, &format!("- Memories with ≥1 triple: {}/{}", stats.memories_with_triples, run.rows_read));
+    push(
+        &mut out,
+        &format!("- Total triples written:   **{}**", stats.triples_total),
+    );
+    push(
+        &mut out,
+        &format!(
+            "- Triples per memory:      {:.2} avg",
+            stats.triples_total as f64 / (run.rows_read.max(1)) as f64
+        ),
+    );
+    push(
+        &mut out,
+        &format!(
+            "- Memories with ≥1 triple: {}/{}",
+            stats.memories_with_triples, run.rows_read
+        ),
+    );
     if stats.confidence_n > 0 {
-        push(&mut out, &format!("- Mean confidence:         {:.2}", stats.confidence_sum / stats.confidence_n as f64));
+        push(
+            &mut out,
+            &format!(
+                "- Mean confidence:         {:.2}",
+                stats.confidence_sum / stats.confidence_n as f64
+            ),
+        );
     }
     push(&mut out, "");
 
@@ -338,25 +434,52 @@ fn render_report(
 
     push(&mut out, "## Sample triples (first 30)");
     push(&mut out, "");
-    push(&mut out, "| memory_id (short) | subject | predicate | object | conf |");
-    push(&mut out, "|-------------------|---------|-----------|--------|------|");
+    push(
+        &mut out,
+        "| memory_id (short) | subject | predicate | object | conf |",
+    );
+    push(
+        &mut out,
+        "|-------------------|---------|-----------|--------|------|",
+    );
     for (mid, s, p, o, c) in &stats.sample_triples {
         let mid_short = mid.chars().take(8).collect::<String>();
         let s = truncate(s, 32);
         let o = truncate(o, 32);
-        push(&mut out, &format!("| `{mid_short}` | {s} | `{p}` | {o} | {c:.2} |"));
+        push(
+            &mut out,
+            &format!("| `{mid_short}` | {s} | `{p}` | {o} | {c:.2} |"),
+        );
     }
     push(&mut out, "");
 
     push(&mut out, "## Human judgement checklist");
     push(&mut out, "");
-    push(&mut out, "- [ ] Predicate vocabulary feels meaningful (no LLM gibberish)");
-    push(&mut out, "- [ ] Subject/object spans are concrete, not whole-sentence");
-    push(&mut out, "- [ ] Confidence distribution makes sense (most >0.7, some <0.5)");
-    push(&mut out, "- [ ] No PII or sensitive content surfaced in unexpected ways");
-    push(&mut out, "- [ ] Extrapolated cost & wall-clock acceptable for full run");
+    push(
+        &mut out,
+        "- [ ] Predicate vocabulary feels meaningful (no LLM gibberish)",
+    );
+    push(
+        &mut out,
+        "- [ ] Subject/object spans are concrete, not whole-sentence",
+    );
+    push(
+        &mut out,
+        "- [ ] Confidence distribution makes sense (most >0.7, some <0.5)",
+    );
+    push(
+        &mut out,
+        "- [ ] No PII or sensitive content surfaced in unexpected ways",
+    );
+    push(
+        &mut out,
+        "- [ ] Extrapolated cost & wall-clock acceptable for full run",
+    );
     push(&mut out, "");
-    push(&mut out, "**If all checks pass → proceed to T26c (full ~24k run on `--source` in-place).**");
+    push(
+        &mut out,
+        "**If all checks pass → proceed to T26c (full ~24k run on `--source` in-place).**",
+    );
     out
 }
 
@@ -376,7 +499,10 @@ fn count_memories_in_source(db: &Path, ns: Option<&str>) -> Result<u64, String> 
             "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL AND namespace = ?",
             true,
         ),
-        None => ("SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL", false),
+        None => (
+            "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL",
+            false,
+        ),
     };
     let count: u64 = if has_param {
         conn.query_row(sql, [ns.unwrap()], |row| row.get(0))
@@ -433,7 +559,10 @@ fn main() -> ExitCode {
     eprintln!(
         "source contains {} non-deleted memories{}",
         total_in_source,
-        args.namespace.as_deref().map(|n| format!(" in ns '{n}'")).unwrap_or_default()
+        args.namespace
+            .as_deref()
+            .map(|n| format!(" in ns '{n}'"))
+            .unwrap_or_default()
     );
 
     let storage = match Storage::new(&target_db) {

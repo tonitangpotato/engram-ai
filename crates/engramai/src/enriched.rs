@@ -279,8 +279,7 @@ impl EnrichedMemory {
             .clone()
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
-        let dimensions =
-            Dimensions::from_stored_metadata(&metadata_value, &record.content)?;
+        let dimensions = Dimensions::from_stored_metadata(&metadata_value, &record.content)?;
 
         // Carve out a `user_metadata` JSON from every top-level key
         // that isn't an engram-reserved name. Keeps caller-supplied
@@ -395,8 +394,7 @@ impl EnrichedMemory {
         let d = &self.dimensions;
 
         // Serialize Dimensions directly — includes nested type_weights.
-        let mut dims_val =
-            serde_json::to_value(d).unwrap_or_else(|_| serde_json::json!({}));
+        let mut dims_val = serde_json::to_value(d).unwrap_or_else(|_| serde_json::json!({}));
 
         if let Some(obj) = dims_val.as_object_mut() {
             // Normalize domain to the loose string representation.
@@ -735,7 +733,8 @@ mod tests {
     fn from_extracted_rejects_empty_core_fact() {
         let mut f = sample_fact("");
         f.core_fact = "".to_string();
-        let err = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap_err();
+        let err =
+            EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap_err();
         assert_eq!(err, ConstructionError::EmptyCoreFact);
     }
 
@@ -743,7 +742,8 @@ mod tests {
     fn from_extracted_rejects_whitespace_only_core_fact() {
         let mut f = sample_fact("  \n\t ");
         f.core_fact = "   \t\n".to_string();
-        let err = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap_err();
+        let err =
+            EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap_err();
         assert_eq!(err, ConstructionError::EmptyCoreFact);
     }
 
@@ -825,8 +825,7 @@ mod tests {
 
     #[test]
     fn with_embedding_attaches() {
-        let em =
-            EnrichedMemory::minimal("x", Importance::default(), None, None).unwrap();
+        let em = EnrichedMemory::minimal("x", Importance::default(), None, None).unwrap();
         let em = em.with_embedding(vec![0.1, 0.2, 0.3]);
         assert_eq!(em.embedding.as_deref(), Some(&[0.1, 0.2, 0.3][..]));
     }
@@ -1004,7 +1003,11 @@ mod tests {
             "first embedded date wins"
         );
         assert_eq!(first_embedded_day("no date here"), None);
-        assert_eq!(first_embedded_day("2023-13-40"), None, "invalid date rejected");
+        assert_eq!(
+            first_embedded_day("2023-13-40"),
+            None,
+            "invalid date rejected"
+        );
         assert_eq!(
             first_embedded_day("12023-05-07"),
             None,

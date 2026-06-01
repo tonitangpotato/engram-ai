@@ -89,11 +89,7 @@ impl<'a> HybridSeedRecaller<'a> {
 }
 
 impl<'a> SeedRecaller for HybridSeedRecaller<'a> {
-    fn recall(
-        &self,
-        query: &GraphQuery,
-        k_seed: usize,
-    ) -> (Vec<SeedHit>, SeedRecallStatus) {
+    fn recall(&self, query: &GraphQuery, k_seed: usize) -> (Vec<SeedHit>, SeedRecallStatus) {
         if k_seed == 0 || query.text.trim().is_empty() {
             return (Vec::new(), SeedRecallStatus::Ok);
         }

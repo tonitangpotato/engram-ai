@@ -123,14 +123,27 @@ fn iss127_store_triples_dual_writes_entity_and_link() {
     s.add(&rec("mem-1", "alpha and beta met yesterday"), "default")
         .expect("add memory");
 
-    let triple = Triple::new("Alpha".to_string(), Predicate::RelatedTo, "Beta".to_string(), 0.8);
+    let triple = Triple::new(
+        "Alpha".to_string(),
+        Predicate::RelatedTo,
+        "Beta".to_string(),
+        0.8,
+    );
     let inserted = s.store_triples("mem-1", &[triple]).expect("store triple");
     assert_eq!(inserted, 1, "triple inserted");
 
     // 1. Legacy substrate.
-    assert_eq!(legacy_entity_count(&s, "alpha"), 1, "entities row for alpha");
+    assert_eq!(
+        legacy_entity_count(&s, "alpha"),
+        1,
+        "entities row for alpha"
+    );
     assert_eq!(legacy_entity_count(&s, "beta"), 1, "entities row for beta");
-    assert_eq!(legacy_link_count(&s, "mem-1"), 2, "two memory_entities links");
+    assert_eq!(
+        legacy_link_count(&s, "mem-1"),
+        2,
+        "two memory_entities links"
+    );
 
     // 2. Unified substrate — this is the bug fix.
     assert_eq!(
@@ -224,7 +237,12 @@ fn iss127_idempotent_rerun_no_duplicate_rows() {
     let mut s = Storage::new(&path).unwrap();
     s.add(&rec("mem-1", "x"), "default").expect("add");
 
-    let triple = Triple::new("Cat".to_string(), Predicate::RelatedTo, "Dog".to_string(), 0.7);
+    let triple = Triple::new(
+        "Cat".to_string(),
+        Predicate::RelatedTo,
+        "Dog".to_string(),
+        0.7,
+    );
 
     s.store_triples("mem-1", &[triple.clone()]).expect("first");
     let second = s.store_triples("mem-1", &[triple]).expect("second");
@@ -262,9 +280,11 @@ fn iss127_legacy_and_nodes_counts_match() {
 
     let legacy_total: i64 = s
         .conn()
-        .query_row("SELECT COUNT(*) FROM entities WHERE namespace = 'triple'", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM entities WHERE namespace = 'triple'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     let nodes_total: i64 = s
         .conn()

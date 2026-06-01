@@ -951,7 +951,12 @@ impl MetricsRegistry {
         self.cost_cap_hit_total.inc(cap);
     }
 
-    pub fn record_classifier_llm_call(&self, prompt_tokens: u64, completion_tokens: u64, seconds: f64) {
+    pub fn record_classifier_llm_call(
+        &self,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        seconds: f64,
+    ) {
         self.classifier_llm_calls_total.inc();
         self.classifier_llm_tokens_total
             .add(TokenDirection::Prompt, prompt_tokens);
@@ -1208,7 +1213,9 @@ pub fn render_prometheus(reg: &MetricsRegistry) -> String {
     }
 
     // hybrid_truncation_total
-    out.push_str("# HELP retrieval_hybrid_truncation_total Strong signals dropped at Hybrid 2-plan cap.\n");
+    out.push_str(
+        "# HELP retrieval_hybrid_truncation_total Strong signals dropped at Hybrid 2-plan cap.\n",
+    );
     out.push_str("# TYPE retrieval_hybrid_truncation_total counter\n");
     for (k, v) in reg.hybrid_truncation_total.iter() {
         let _ = std::fmt::Write::write_fmt(
@@ -1325,15 +1332,35 @@ mod tests {
     #[test]
     fn label_vec3_triple() {
         let v: LabelVec3<Intent, Intent, DowngradeReason> = LabelVec3::new();
-        v.inc(Intent::Episodic, Intent::Factual, DowngradeReason::NoTimeExpression);
-        v.inc(Intent::Episodic, Intent::Factual, DowngradeReason::NoTimeExpression);
-        v.inc(Intent::Affective, Intent::Factual, DowngradeReason::NoCognitiveState);
+        v.inc(
+            Intent::Episodic,
+            Intent::Factual,
+            DowngradeReason::NoTimeExpression,
+        );
+        v.inc(
+            Intent::Episodic,
+            Intent::Factual,
+            DowngradeReason::NoTimeExpression,
+        );
+        v.inc(
+            Intent::Affective,
+            Intent::Factual,
+            DowngradeReason::NoCognitiveState,
+        );
         assert_eq!(
-            v.get(Intent::Episodic, Intent::Factual, DowngradeReason::NoTimeExpression),
+            v.get(
+                Intent::Episodic,
+                Intent::Factual,
+                DowngradeReason::NoTimeExpression
+            ),
             2
         );
         assert_eq!(
-            v.get(Intent::Affective, Intent::Factual, DowngradeReason::NoCognitiveState),
+            v.get(
+                Intent::Affective,
+                Intent::Factual,
+                DowngradeReason::NoCognitiveState
+            ),
             1
         );
         assert_eq!(
@@ -1370,28 +1397,20 @@ mod tests {
         assert_eq!(r.queries_total.get(Intent::Factual), 3);
         assert_eq!(r.queries_total.get(Intent::Episodic), 0);
         assert_eq!(
-            r.classifier_method_total
-                .get(ClassifierMethod::Heuristic),
+            r.classifier_method_total.get(ClassifierMethod::Heuristic),
             2
         );
         assert_eq!(
-            r.classifier_method_total
-                .get(ClassifierMethod::LlmFallback),
+            r.classifier_method_total.get(ClassifierMethod::LlmFallback),
             1
         );
-        assert_eq!(
-            r.outcomes_total.get(Intent::Factual, OutcomeLabel::Ok),
-            2
-        );
+        assert_eq!(r.outcomes_total.get(Intent::Factual, OutcomeLabel::Ok), 2);
         assert_eq!(
             r.outcomes_total
                 .get(Intent::Factual, OutcomeLabel::AmbiguousQuery),
             1
         );
-        assert_eq!(
-            r.bi_temporal_queries_total.get(BiTemporalMode::Current),
-            1
-        );
+        assert_eq!(r.bi_temporal_queries_total.get(BiTemporalMode::Current), 1);
     }
 
     #[test]

@@ -204,7 +204,10 @@ fn t27_namespace_filter_isolates_counts() {
         .iter()
         .find(|c| c.legacy_table == "memories")
         .unwrap();
-    assert_eq!(mem.legacy_rows, 2, "namespace filter should restrict legacy count");
+    assert_eq!(
+        mem.legacy_rows, 2,
+        "namespace filter should restrict legacy count"
+    );
     assert_eq!(mem.unified_rows, 2, "and the unified count too");
     assert!(mem.ok);
     assert!(report.ok);
@@ -222,13 +225,13 @@ fn t27_report_covers_all_seven_drivers() {
 
     let expected: &[(&str, &str, bool)] = &[
         // (legacy_table, unified_table, merge_semantics)
-        ("memories", "nodes", false),                // T19
+        ("memories", "nodes", false),                    // T19
         ("memory_embeddings", "node_embeddings", false), // T20
-        ("entities", "nodes", false),                // T21
-        ("entity_relations", "edges", true),         // T22
-        ("memory_entities", "edges", true),          // T23
-        ("hebbian_links", "edges", true),            // T24
-        ("synthesis_provenance", "edges", false),    // T25
+        ("entities", "nodes", false),                    // T21
+        ("entity_relations", "edges", true),             // T22
+        ("memory_entities", "edges", true),              // T23
+        ("hebbian_links", "edges", true),                // T24
+        ("synthesis_provenance", "edges", false),        // T25
     ];
 
     assert_eq!(
@@ -567,7 +570,11 @@ fn t27_i4_sampling_is_deterministic() {
     let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
     // 20 rows so sample_size=1 has a meaningful selection space.
     for i in 0..20 {
-        seed_legacy_only(&mut storage, &sample_record(&format!("mem-{i:02}")), "default");
+        seed_legacy_only(
+            &mut storage,
+            &sample_record(&format!("mem-{i:02}")),
+            "default",
+        );
     }
     backfill_memories_to_nodes(&mut storage, None).unwrap();
 
@@ -576,7 +583,10 @@ fn t27_i4_sampling_is_deterministic() {
     // same seed and assert the mismatch set is identical.
     storage
         .conn()
-        .execute("UPDATE nodes SET content = 'CORRUPTED' WHERE node_kind = 'memory'", [])
+        .execute(
+            "UPDATE nodes SET content = 'CORRUPTED' WHERE node_kind = 'memory'",
+            [],
+        )
         .unwrap();
 
     let opts = VerifyOpts {
@@ -709,7 +719,11 @@ fn t27_ns_filter_flag_set_when_legacy_lacks_namespace_column() {
     };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
 
-    for legacy_table in ["memory_embeddings", "memory_entities", "synthesis_provenance"] {
+    for legacy_table in [
+        "memory_embeddings",
+        "memory_entities",
+        "synthesis_provenance",
+    ] {
         let row = report
             .counts
             .iter()
@@ -781,7 +795,13 @@ fn seed_legacy_embedding(
             r#"INSERT OR REPLACE INTO memory_embeddings
                (memory_id, model, embedding, dimensions, created_at)
                VALUES (?, ?, ?, ?, ?)"#,
-            params![memory_id, model, blob, dimensions as i64, created_at_rfc3339],
+            params![
+                memory_id,
+                model,
+                blob,
+                dimensions as i64,
+                created_at_rfc3339
+            ],
         )
         .expect("seed legacy embedding");
     blob
@@ -797,7 +817,13 @@ fn t27_i4_node_embeddings_post_backfill_no_mismatches() {
     // Seed memory (T12 dual-writes node), then legacy embedding, then T20.
     let m = sample_record("mem-1");
     storage.add(&m, "default").unwrap();
-    seed_legacy_embedding(&storage, "mem-1", "all-MiniLM-L6-v2", 4, "2026-05-13T10:30:00Z");
+    seed_legacy_embedding(
+        &storage,
+        "mem-1",
+        "all-MiniLM-L6-v2",
+        4,
+        "2026-05-13T10:30:00Z",
+    );
     let run = backfill_embeddings_to_node_embeddings(&mut storage, None).unwrap();
     assert_eq!(run.rows_inserted, 1);
 
@@ -902,10 +928,7 @@ fn t27_i4_node_embeddings_missing_unified_row_flagged() {
 
     storage
         .conn()
-        .execute(
-            "DELETE FROM node_embeddings WHERE node_id = 'mem-1'",
-            [],
-        )
+        .execute("DELETE FROM node_embeddings WHERE node_id = 'mem-1'", [])
         .unwrap();
 
     let opts = VerifyOpts {
@@ -1046,7 +1069,10 @@ fn t27_i4_entities_finding1_column_wins_regression_guard() {
     let column_hits: Vec<_> = report
         .content_mismatches
         .iter()
-        .filter(|m| m.field.contains("FINDING-1") || m.field == "attributes.entity_type (FINDING-1 column-wins)")
+        .filter(|m| {
+            m.field.contains("FINDING-1")
+                || m.field == "attributes.entity_type (FINDING-1 column-wins)"
+        })
         .collect();
     assert!(
         !column_hits.is_empty(),
@@ -1110,8 +1136,15 @@ fn seed_legacy_provenance(
                 gate_decision, gate_scores, confidence, source_original_importance)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             params![
-                id, insight_id, source_id, cluster_id, synthesis_timestamp,
-                gate_decision, gate_scores, confidence, source_original_importance,
+                id,
+                insight_id,
+                source_id,
+                cluster_id,
+                synthesis_timestamp,
+                gate_decision,
+                gate_scores,
+                confidence,
+                source_original_importance,
             ],
         )
         .expect("seed synthesis_provenance row");
@@ -1199,15 +1232,16 @@ fn t27_i4_synthesis_provenance_gate_scores_nested_not_string() {
     // Confirm real driver output: gate_scores IS an object.
     let attrs_text: String = storage
         .conn()
-        .query_row(
-            "SELECT attributes FROM edges WHERE id = 'sp-1'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT attributes FROM edges WHERE id = 'sp-1'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let attrs: serde_json::Value = serde_json::from_str(&attrs_text).unwrap();
     assert!(
-        attrs.get("gate_scores").and_then(|v| v.as_object()).is_some(),
+        attrs
+            .get("gate_scores")
+            .and_then(|v| v.as_object())
+            .is_some(),
         "gate_scores must be a parsed nested object, got: {attrs}"
     );
 
@@ -1253,17 +1287,22 @@ fn t27_i4_synthesis_provenance_confidence_drift_flagged() {
     storage.add(&src, "default").unwrap();
     backfill_memories_to_nodes(&mut storage, None).unwrap();
     seed_legacy_provenance(
-        &storage, "sp-1", "mem-insight", "mem-src", "c", "2026-05-13T10:00:00Z",
-        "promote", None, 0.93, None,
+        &storage,
+        "sp-1",
+        "mem-insight",
+        "mem-src",
+        "c",
+        "2026-05-13T10:00:00Z",
+        "promote",
+        None,
+        0.93,
+        None,
     );
     backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
 
     storage
         .conn()
-        .execute(
-            "UPDATE edges SET confidence = 0.10 WHERE id = 'sp-1'",
-            [],
-        )
+        .execute("UPDATE edges SET confidence = 0.10 WHERE id = 'sp-1'", [])
         .unwrap();
 
     let opts = VerifyOpts {
@@ -1304,12 +1343,7 @@ fn seed_legacy_relation(
         .expect("seed entity_relation");
 }
 
-fn seed_legacy_memory_entity(
-    storage: &Storage,
-    memory_id: &str,
-    entity_id: &str,
-    role: &str,
-) {
+fn seed_legacy_memory_entity(storage: &Storage, memory_id: &str, entity_id: &str, role: &str) {
     storage
         .conn()
         .execute(
@@ -1336,7 +1370,14 @@ fn seed_legacy_hebbian(
                 temporal_forward, temporal_backward, direction,
                 created_at, namespace, signal_source, signal_detail)
                VALUES (?, ?, ?, ?, 0, 0, 'forward', 1700000000.0, ?, ?, NULL)"#,
-            params![source_id, target_id, strength, coact, namespace, signal_source],
+            params![
+                source_id,
+                target_id,
+                strength,
+                coact,
+                namespace,
+                signal_source
+            ],
         )
         .expect("seed hebbian_links row");
 }
@@ -1395,11 +1436,19 @@ fn t27_i4_entity_relations_missing_unified_row_flagged() {
     backfill_entities_to_nodes(&mut storage, None).unwrap();
     seed_legacy_relation(&storage, "rel-1", "e1", "e2", "knows", "default");
     backfill_entity_relations_to_edges(&mut storage, None).unwrap();
-    storage.conn().execute("DELETE FROM edges WHERE id = 'rel-1'", []).unwrap();
+    storage
+        .conn()
+        .execute("DELETE FROM edges WHERE id = 'rel-1'", [])
+        .unwrap();
 
-    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hit = report.content_mismatches.iter()
+    let hit = report
+        .content_mismatches
+        .iter()
         .find(|m| m.legacy_table == "entity_relations" && m.field == "existence")
         .expect("missing unified row must be flagged");
     assert_eq!(hit.unified, "missing");
@@ -1423,13 +1472,22 @@ fn t27_i4_entity_relations_predicate_drift_flagged() {
     backfill_entities_to_nodes(&mut storage, None).unwrap();
     seed_legacy_relation(&storage, "rel-1", "e1", "e2", "knows", "default");
     backfill_entity_relations_to_edges(&mut storage, None).unwrap();
-    storage.conn().execute(
-        "UPDATE edges SET predicate = 'CORRUPTED' WHERE id = 'rel-1'", []
-    ).unwrap();
+    storage
+        .conn()
+        .execute(
+            "UPDATE edges SET predicate = 'CORRUPTED' WHERE id = 'rel-1'",
+            [],
+        )
+        .unwrap();
 
-    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hit = report.content_mismatches.iter()
+    let hit = report
+        .content_mismatches
+        .iter()
         .find(|m| m.legacy_table == "entity_relations" && m.field == "predicate")
         .expect("predicate drift must be flagged");
     assert_eq!(hit.legacy, "knows");
@@ -1459,15 +1517,23 @@ fn t27_i4_entity_relations_t23_predicate_collision_flagged() {
     seed_legacy_relation(&storage, "rel-1", "e1", "e2", "has_subject", "default");
     backfill_entity_relations_to_edges(&mut storage, None).unwrap();
     // Simulate the regression — driver produced 'subject_of' instead of 'has_subject'.
-    storage.conn().execute(
-        "UPDATE edges SET predicate = 'subject_of' WHERE id = 'rel-1'", []
-    ).unwrap();
+    storage
+        .conn()
+        .execute(
+            "UPDATE edges SET predicate = 'subject_of' WHERE id = 'rel-1'",
+            [],
+        )
+        .unwrap();
 
-    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hit = report.content_mismatches.iter()
-        .find(|m| m.legacy_table == "entity_relations"
-              && m.field.contains("T22 must NOT use T23"))
+    let hit = report
+        .content_mismatches
+        .iter()
+        .find(|m| m.legacy_table == "entity_relations" && m.field.contains("T22 must NOT use T23"))
         .expect("T22-using-T23-predicate must be flagged");
     assert_eq!(hit.unified, "subject_of");
 }
@@ -1477,8 +1543,7 @@ fn t27_i4_entity_relations_t23_predicate_collision_flagged() {
 #[test]
 fn t27_i4_memory_entities_post_backfill_no_mismatches() {
     use engramai::substrate::backfill::{
-        backfill_entities_to_nodes, backfill_memories_to_nodes,
-        backfill_memory_entities_to_edges,
+        backfill_entities_to_nodes, backfill_memories_to_nodes, backfill_memory_entities_to_edges,
     };
     let tmp = tempdir().unwrap();
     let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
@@ -1501,9 +1566,14 @@ fn t27_i4_memory_entities_post_backfill_no_mismatches() {
     seed_legacy_memory_entity(&storage, "mem-1", "e2", "subject");
     backfill_memory_entities_to_edges(&mut storage, None).unwrap();
 
-    let opts = VerifyOpts { spot_check_sample_size: 10, ..VerifyOpts::default() };
+    let opts = VerifyOpts {
+        spot_check_sample_size: 10,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hits: Vec<_> = report.content_mismatches.iter()
+    let hits: Vec<_> = report
+        .content_mismatches
+        .iter()
         .filter(|m| m.legacy_table == "memory_entities")
         .collect();
     assert!(hits.is_empty(), "clean T23: {hits:#?}");
@@ -1517,8 +1587,7 @@ fn t27_i4_memory_entities_role_split_subject_endpoints() {
     // If the driver regresses to "always memory→entity" for subject_of,
     // the source_id/target_id check fires.
     use engramai::substrate::backfill::{
-        backfill_entities_to_nodes, backfill_memories_to_nodes,
-        backfill_memory_entities_to_edges,
+        backfill_entities_to_nodes, backfill_memories_to_nodes, backfill_memory_entities_to_edges,
     };
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
@@ -1546,29 +1615,41 @@ fn t27_i4_memory_entities_role_split_subject_endpoints() {
     backfill_memory_entities_to_edges(&mut storage, None).unwrap();
 
     // For role='subject': (edge_kind, predicate) = ('structural', 'subject_of').
-    let id = local_uuid_from_hash(
-        "memory_entities|mem-1|e1|subject|structural|subject_of"
-    );
+    let id = local_uuid_from_hash("memory_entities|mem-1|e1|subject|structural|subject_of");
     // Confirm real driver produces source=mem-1, target=e1
     // (as-built behavior — see verifier comment about §3.3 spec
     // drift on the endpoint direction).
-    let (src, tgt): (String, String) = storage.conn().query_row(
-        "SELECT source_id, target_id FROM edges WHERE id = ?",
-        params![id], |r| Ok((r.get(0)?, r.get(1)?))
-    ).unwrap();
+    let (src, tgt): (String, String) = storage
+        .conn()
+        .query_row(
+            "SELECT source_id, target_id FROM edges WHERE id = ?",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(src, "mem-1");
     assert_eq!(tgt, "e1");
 
     // Now SIMULATE the regression: swap endpoints to (e1, mem-1).
-    storage.conn().execute(
-        "UPDATE edges SET source_id='e1', target_id='mem-1' WHERE id = ?",
-        params![id]
-    ).unwrap();
-    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    storage
+        .conn()
+        .execute(
+            "UPDATE edges SET source_id='e1', target_id='mem-1' WHERE id = ?",
+            params![id],
+        )
+        .unwrap();
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hits: Vec<_> = report.content_mismatches.iter()
-        .filter(|m| m.legacy_table == "memory_entities"
-              && (m.field == "source_id" || m.field == "target_id"))
+    let hits: Vec<_> = report
+        .content_mismatches
+        .iter()
+        .filter(|m| {
+            m.legacy_table == "memory_entities"
+                && (m.field == "source_id" || m.field == "target_id")
+        })
         .collect();
     assert!(!hits.is_empty(), "endpoint swap must be caught: {hits:#?}");
 }
@@ -1576,8 +1657,7 @@ fn t27_i4_memory_entities_role_split_subject_endpoints() {
 #[test]
 fn t27_i4_memory_entities_missing_unified_row_flagged() {
     use engramai::substrate::backfill::{
-        backfill_entities_to_nodes, backfill_memories_to_nodes,
-        backfill_memory_entities_to_edges,
+        backfill_entities_to_nodes, backfill_memories_to_nodes, backfill_memory_entities_to_edges,
     };
     let tmp = tempdir().unwrap();
     let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
@@ -1591,13 +1671,22 @@ fn t27_i4_memory_entities_missing_unified_row_flagged() {
     backfill_entities_to_nodes(&mut storage, None).unwrap();
     seed_legacy_memory_entity(&storage, "mem-1", "e1", "mention");
     backfill_memory_entities_to_edges(&mut storage, None).unwrap();
-    storage.conn().execute(
-        "DELETE FROM edges WHERE edge_kind='provenance' AND predicate='mentions'", []
-    ).unwrap();
+    storage
+        .conn()
+        .execute(
+            "DELETE FROM edges WHERE edge_kind='provenance' AND predicate='mentions'",
+            [],
+        )
+        .unwrap();
 
-    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hit = report.content_mismatches.iter()
+    let hit = report
+        .content_mismatches
+        .iter()
         .find(|m| m.legacy_table == "memory_entities" && m.field == "existence")
         .expect("missing unified row must be flagged");
     assert_eq!(hit.unified, "missing");
@@ -1620,9 +1709,14 @@ fn t27_i4_hebbian_links_post_backfill_no_mismatches() {
     seed_legacy_hebbian(&storage, "mem-a", "mem-b", 0.5, 3, "default", "corecall");
     backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
 
-    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hits: Vec<_> = report.content_mismatches.iter()
+    let hits: Vec<_> = report
+        .content_mismatches
+        .iter()
         .filter(|m| m.legacy_table == "hebbian_links")
         .collect();
     assert!(hits.is_empty(), "clean T24: {hits:#?}");
@@ -1648,13 +1742,22 @@ fn t27_i4_hebbian_links_sum_lower_bound_violation_flagged() {
     backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
 
     // Tank the weight below the legacy strength.
-    storage.conn().execute(
-        "UPDATE edges SET weight = 0.1 WHERE edge_kind='associative'", []
-    ).unwrap();
+    storage
+        .conn()
+        .execute(
+            "UPDATE edges SET weight = 0.1 WHERE edge_kind='associative'",
+            [],
+        )
+        .unwrap();
 
-    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hit = report.content_mismatches.iter()
+    let hit = report
+        .content_mismatches
+        .iter()
         .find(|m| m.legacy_table == "hebbian_links" && m.field.starts_with("weight"))
         .expect("weight regression below SUM lower bound must be flagged");
     assert!(hit.legacy.contains("0.7"));
@@ -1677,14 +1780,23 @@ fn t27_i4_hebbian_links_canonical_pair_direction_independent() {
     storage.add(&b, "default").unwrap();
     backfill_memories_to_nodes(&mut storage, None).unwrap();
     // Insert with target<source by passing "mem-zzzz" as source.
-    seed_legacy_hebbian(&storage, "mem-zzzz", "mem-aaaa", 0.5, 2, "default", "corecall");
+    seed_legacy_hebbian(
+        &storage, "mem-zzzz", "mem-aaaa", 0.5, 2, "default", "corecall",
+    );
     backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
 
-    let opts = VerifyOpts { spot_check_sample_size: 5, ..VerifyOpts::default() };
+    let opts = VerifyOpts {
+        spot_check_sample_size: 5,
+        ..VerifyOpts::default()
+    };
     let report = verify_phase_c_parity(&storage, &opts).unwrap();
-    let hits: Vec<_> = report.content_mismatches.iter()
+    let hits: Vec<_> = report
+        .content_mismatches
+        .iter()
         .filter(|m| m.legacy_table == "hebbian_links")
         .collect();
-    assert!(hits.is_empty(),
-        "canonicalization should produce same id regardless of input order: {hits:#?}");
+    assert!(
+        hits.is_empty(),
+        "canonicalization should produce same id regardless of input order: {hits:#?}"
+    );
 }

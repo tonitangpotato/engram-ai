@@ -379,9 +379,7 @@ impl BudgetController {
     /// End the current stage and return its elapsed [`Duration`]. Returns
     /// `None` if no stage was active.
     pub fn end_stage(&mut self) -> Option<(Stage, Duration)> {
-        self.current_stage
-            .take()
-            .map(|(s, t)| (s, t.elapsed()))
+        self.current_stage.take().map(|(s, t)| (s, t.elapsed()))
     }
 
     /// Currently active stage (if any) and its elapsed time so far.
@@ -423,8 +421,7 @@ impl BudgetController {
     /// Time remaining until the outer cap, if one is set. Returns `None` for
     /// uncapped controllers and `Some(Duration::ZERO)` once the cap is hit.
     pub fn outer_remaining(&self) -> Option<Duration> {
-        self.outer_cap
-            .map(|cap| cap.saturating_sub(self.elapsed()))
+        self.outer_cap.map(|cap| cap.saturating_sub(self.elapsed()))
     }
 
     // -- cost-cap accounting ------------------------------------------------
@@ -439,18 +436,14 @@ impl BudgetController {
     pub fn record_cost(&mut self, cap: CostCap, value: usize) -> bool {
         let (current, limit): (&mut usize, usize) = match cap {
             CostCap::MaxAnchors => (&mut self.counters.anchors, self.cost_caps.max_anchors),
-            CostCap::MaxHops => (
-                &mut self.counters.max_hop_reached,
-                self.cost_caps.max_hops,
-            ),
+            CostCap::MaxHops => (&mut self.counters.max_hop_reached, self.cost_caps.max_hops),
             CostCap::MaxEdgesVisited => (
                 &mut self.counters.edges_visited,
                 self.cost_caps.max_edges_visited,
             ),
-            CostCap::MaxCandidates => (
-                &mut self.counters.candidates,
-                self.cost_caps.max_candidates,
-            ),
+            CostCap::MaxCandidates => {
+                (&mut self.counters.candidates, self.cost_caps.max_candidates)
+            }
             CostCap::KSeed => (&mut self.counters.seed_recall_size, self.cost_caps.k_seed),
             CostCap::KPool => (&mut self.counters.pool_size, self.cost_caps.k_pool),
             CostCap::KSeedAffective => (

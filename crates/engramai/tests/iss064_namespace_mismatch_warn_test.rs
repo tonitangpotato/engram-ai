@@ -206,9 +206,9 @@ fn iss064_query_nonexistent_namespace_returns_empty_and_warns() {
         records
     );
 
-    let any_match = warns.iter().any(|r| {
-        r.message.contains(bogus_ns) && r.message.contains("namespace")
-    });
+    let any_match = warns
+        .iter()
+        .any(|r| r.message.contains(bogus_ns) && r.message.contains("namespace"));
     assert!(
         any_match,
         "expected a warn mentioning the bogus namespace `{}` and the word \

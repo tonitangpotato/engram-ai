@@ -33,7 +33,16 @@ fn read_nodes_row(s: &Storage, id: &str) -> Option<(String, String, String, Stri
             "SELECT node_kind, content, namespace, attributes, created_at, updated_at \
              FROM nodes WHERE id = ?1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .optional()
         .expect("query")
@@ -53,7 +62,9 @@ fn read_legacy_row(s: &Storage, id: &str) -> Option<(String, String, String, Opt
 #[test]
 fn iss122_fresh_upsert_writes_both_substrates() {
     let (_d, s) = fresh();
-    let eid = s.upsert_entity("Alice", "person", "default", None).expect("upsert");
+    let eid = s
+        .upsert_entity("Alice", "person", "default", None)
+        .expect("upsert");
 
     // Legacy
     let legacy = read_legacy_row(&s, &eid).expect("legacy row");
@@ -63,8 +74,7 @@ fn iss122_fresh_upsert_writes_both_substrates() {
     assert_eq!(legacy.3, None);
 
     // Unified
-    let (kind, content, ns, attrs, _ct, _ut) =
-        read_nodes_row(&s, &eid).expect("nodes row");
+    let (kind, content, ns, attrs, _ct, _ut) = read_nodes_row(&s, &eid).expect("nodes row");
     assert_eq!(kind, "entity");
     assert_eq!(content, "Alice");
     assert_eq!(ns, "default");
@@ -79,11 +89,19 @@ fn iss122_idempotent_re_upsert_no_duplicate_rows() {
     let id2 = s.upsert_entity("Bob", "person", "default", None).unwrap();
     assert_eq!(id1, id2, "deterministic id");
 
-    let cnt_legacy: i64 = s.conn()
-        .query_row("SELECT COUNT(*) FROM entities WHERE id=?", params![id1], |r| r.get(0))
+    let cnt_legacy: i64 = s
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM entities WHERE id=?",
+            params![id1],
+            |r| r.get(0),
+        )
         .unwrap();
-    let cnt_node: i64 = s.conn()
-        .query_row("SELECT COUNT(*) FROM nodes WHERE id=?", params![id1], |r| r.get(0))
+    let cnt_node: i64 = s
+        .conn()
+        .query_row("SELECT COUNT(*) FROM nodes WHERE id=?", params![id1], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(cnt_legacy, 1, "no legacy duplicate");
     assert_eq!(cnt_node, 1, "no nodes duplicate");
@@ -99,7 +117,9 @@ fn iss122_metadata_merge_existing_wins_on_unified() {
     // The column value MUST win on the unified side (existing-wins
     // matches T21 contract).
     let md = r#"{"entity_type":"NOT_PERSON","extra":"x"}"#;
-    let _ = s.upsert_entity("Carol", "person", "default", Some(md)).unwrap();
+    let _ = s
+        .upsert_entity("Carol", "person", "default", Some(md))
+        .unwrap();
 
     let (_, _, _, attrs, _, _) = read_nodes_row(&s, &id).expect("nodes row");
     let v: serde_json::Value = serde_json::from_str(&attrs).unwrap();
@@ -134,7 +154,9 @@ fn iss122_malformed_metadata_dropped_from_unified_kept_on_legacy() {
     // column keeps the literal string (backward compat); unified
     // projection just omits the bad keys (T21 parity).
     let (_d, s) = fresh();
-    let id = s.upsert_entity("Eve", "person", "default", Some("not json")).unwrap();
+    let id = s
+        .upsert_entity("Eve", "person", "default", Some("not json"))
+        .unwrap();
 
     let legacy = read_legacy_row(&s, &id).expect("legacy");
     assert_eq!(legacy.3, Some("not json".to_string()));

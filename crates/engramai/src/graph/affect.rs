@@ -157,9 +157,8 @@ mod tests {
 
     #[test]
     fn roundtrip_le_bytes() {
-        let fp = SomaticFingerprint::from_array([
-            -0.75, 0.125, 0.5, 0.875, 0.25, -0.5, 0.0625, 0.9375,
-        ]);
+        let fp =
+            SomaticFingerprint::from_array([-0.75, 0.125, 0.5, 0.875, 0.25, -0.5, 0.0625, 0.9375]);
         let bytes = fp.to_le_bytes();
         assert_eq!(bytes.len(), 32);
         let decoded = SomaticFingerprint::from_le_bytes(&bytes).unwrap();
@@ -187,9 +186,7 @@ mod tests {
 
     #[test]
     fn cosine_self_is_one() {
-        let fp = SomaticFingerprint::from_array([
-            -0.4, 0.7, 0.2, 0.9, 0.3, -0.6, 0.1, 0.8,
-        ]);
+        let fp = SomaticFingerprint::from_array([-0.4, 0.7, 0.2, 0.9, 0.3, -0.6, 0.1, 0.8]);
         let sim = fp.cosine_similarity(&fp);
         assert!((sim - 1.0).abs() < 1e-6, "expected ≈1.0, got {sim}");
     }

@@ -206,8 +206,7 @@ mod tests {
             skipped_idempotent: vec![Uuid::new_v4()],
         };
         let json = serde_json::to_string(&original).expect("serialize");
-        let decoded: ReextractReport =
-            serde_json::from_str(&json).expect("deserialize");
+        let decoded: ReextractReport = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, decoded);
     }
 
@@ -220,8 +219,7 @@ mod tests {
         assert!(json.contains("\"succeeded\":[]"));
         assert!(json.contains("\"still_failed\":[]"));
         assert!(json.contains("\"skipped_idempotent\":[]"));
-        let decoded: ReextractReport =
-            serde_json::from_str(&json).expect("deserialize");
+        let decoded: ReextractReport = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, decoded);
     }
 }

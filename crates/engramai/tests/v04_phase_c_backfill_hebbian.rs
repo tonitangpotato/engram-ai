@@ -40,9 +40,7 @@
 
 use chrono::{TimeZone, Utc};
 use engramai::storage::Storage;
-use engramai::substrate::backfill::{
-    backfill_hebbian_links_to_edges, backfill_memories_to_nodes,
-};
+use engramai::substrate::backfill::{backfill_hebbian_links_to_edges, backfill_memories_to_nodes};
 use engramai::types::{MemoryLayer, MemoryRecord, MemoryType};
 use rusqlite::params;
 use serde_json::Value;
@@ -184,8 +182,17 @@ fn t24_single_row_writes_canonicalized_edge_with_all_fields() {
     // canonicalization. The edge should still have source=mem-A,
     // target=mem-B because lexically mem-A < mem-B.
     seed_link(
-        &storage, "mem-B", "mem-A", 0.5, 3, 1, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-B",
+        "mem-A",
+        0.5,
+        3,
+        1,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 
@@ -233,13 +240,31 @@ fn t24_collision_pair_merges_with_sum_semantics() {
     seed_legacy_memory(&mut storage, "mem-B", "default");
     // Earlier observation, weaker strength
     seed_link(
-        &storage, "mem-A", "mem-B", 0.3, 2, 1, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.3,
+        2,
+        1,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     // Later observation, stronger strength
     seed_link(
-        &storage, "mem-B", "mem-A", 0.7, 5, 0, 3, "bidirectional",
-        1_700_000_500.0, "default", "corecall",
+        &storage,
+        "mem-B",
+        "mem-A",
+        0.7,
+        5,
+        0,
+        3,
+        "bidirectional",
+        1_700_000_500.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 
@@ -260,7 +285,10 @@ fn t24_collision_pair_merges_with_sum_semantics() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(edge_count, 1, "two legacy rows merged into one unified edge");
+    assert_eq!(
+        edge_count, 1,
+        "two legacy rows merged into one unified edge"
+    );
 
     let id: String = storage
         .conn()
@@ -305,12 +333,30 @@ fn t24_different_signal_source_produces_separate_edges() {
     seed_legacy_memory(&mut storage, "mem-A", "default");
     seed_legacy_memory(&mut storage, "mem-B", "default");
     seed_link(
-        &storage, "mem-A", "mem-B", 0.4, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.4,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     seed_link(
-        &storage, "mem-B", "mem-A", 0.6, 2, 0, 0, "bidirectional",
-        1_700_000_100.0, "default", "multi",
+        &storage,
+        "mem-B",
+        "mem-A",
+        0.6,
+        2,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_100.0,
+        "default",
+        "multi",
     );
     run_node_prereqs(&mut storage);
 
@@ -352,8 +398,17 @@ fn t24_dangling_endpoint_skipped_and_recovers_after_t19() {
     seed_legacy_memory(&mut storage, "mem-A", "default");
     seed_legacy_memory(&mut storage, "mem-B", "default");
     seed_link(
-        &storage, "mem-A", "mem-B", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
 
     // ISS-199: `hebbian_links.{source,target}` now FK→`nodes(id)`, so a
@@ -396,8 +451,17 @@ fn t24_idempotent_rerun_inserts_zero() {
     seed_legacy_memory(&mut storage, "mem-A", "default");
     seed_legacy_memory(&mut storage, "mem-B", "default");
     seed_link(
-        &storage, "mem-A", "mem-B", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 
@@ -425,12 +489,30 @@ fn t24_namespace_filter_restricts_to_matching_legacy_rows() {
     seed_legacy_memory(&mut storage, "mem-C", "ns-b");
     seed_legacy_memory(&mut storage, "mem-D", "ns-b");
     seed_link(
-        &storage, "mem-A", "mem-B", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "ns-a", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "ns-a",
+        "corecall",
     );
     seed_link(
-        &storage, "mem-C", "mem-D", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "ns-b", "corecall",
+        &storage,
+        "mem-C",
+        "mem-D",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "ns-b",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 
@@ -457,15 +539,28 @@ fn t24_deterministic_id_byte_identical_across_runs() {
     seed_legacy_memory(&mut storage, "mem-A", "default");
     seed_legacy_memory(&mut storage, "mem-B", "default");
     seed_link(
-        &storage, "mem-A", "mem-B", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 
     backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
     let id1: String = storage
         .conn()
-        .query_row("SELECT id FROM edges WHERE edge_kind='associative'", [], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM edges WHERE edge_kind='associative'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
 
     // Wipe edges and re-run; id should match.
@@ -473,7 +568,11 @@ fn t24_deterministic_id_byte_identical_across_runs() {
     backfill_hebbian_links_to_edges(&mut storage, None).unwrap();
     let id2: String = storage
         .conn()
-        .query_row("SELECT id FROM edges WHERE edge_kind='associative'", [], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM edges WHERE edge_kind='associative'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(id1, id2, "edges.id is deterministic across runs");
 }
@@ -489,12 +588,30 @@ fn t24_direction_array_for_heterogeneous_merge() {
     seed_legacy_memory(&mut storage, "mem-A", "default");
     seed_legacy_memory(&mut storage, "mem-B", "default");
     seed_link(
-        &storage, "mem-A", "mem-B", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     seed_link(
-        &storage, "mem-B", "mem-A", 0.5, 1, 0, 0, "directed",
-        1_700_000_100.0, "default", "corecall",
+        &storage,
+        "mem-B",
+        "mem-A",
+        0.5,
+        1,
+        0,
+        0,
+        "directed",
+        1_700_000_100.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 
@@ -542,17 +659,44 @@ fn t24_audit_notes_capture_merged_collision_pairs() {
     seed_legacy_memory(&mut storage, "mem-D", "default");
     // Pair (A,B) has both directions — a collision.
     seed_link(
-        &storage, "mem-A", "mem-B", 0.3, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.3,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     seed_link(
-        &storage, "mem-B", "mem-A", 0.3, 1, 0, 0, "bidirectional",
-        1_700_000_100.0, "default", "corecall",
+        &storage,
+        "mem-B",
+        "mem-A",
+        0.3,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_100.0,
+        "default",
+        "corecall",
     );
     // Pair (C,D) is one-directional only.
     seed_link(
-        &storage, "mem-C", "mem-D", 0.3, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-C",
+        "mem-D",
+        0.3,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 
@@ -584,8 +728,17 @@ fn t24_canonicalization_collapses_direction_to_same_id() {
     seed_legacy_memory(&mut s1, "mem-A", "default");
     seed_legacy_memory(&mut s1, "mem-B", "default");
     seed_link(
-        &s1, "mem-B", "mem-A", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &s1,
+        "mem-B",
+        "mem-A",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut s1);
     backfill_hebbian_links_to_edges(&mut s1, None).unwrap();
@@ -599,8 +752,17 @@ fn t24_canonicalization_collapses_direction_to_same_id() {
     seed_legacy_memory(&mut s2, "mem-A", "default");
     seed_legacy_memory(&mut s2, "mem-B", "default");
     seed_link(
-        &s2, "mem-A", "mem-B", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &s2,
+        "mem-A",
+        "mem-B",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut s2);
     backfill_hebbian_links_to_edges(&mut s2, None).unwrap();
@@ -622,8 +784,17 @@ fn t24_temporal_counters_summed_and_preserved() {
     seed_legacy_memory(&mut storage, "mem-A", "default");
     seed_legacy_memory(&mut storage, "mem-B", "default");
     seed_link(
-        &storage, "mem-A", "mem-B", 0.5, 1, 2, 1, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.5,
+        1,
+        2,
+        1,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 
@@ -648,16 +819,43 @@ fn t24_partial_unique_index_satisfied_post_merge() {
     seed_legacy_memory(&mut storage, "mem-B", "default");
     seed_legacy_memory(&mut storage, "mem-C", "default");
     seed_link(
-        &storage, "mem-A", "mem-B", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-B",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     seed_link(
-        &storage, "mem-A", "mem-C", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-A",
+        "mem-C",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     seed_link(
-        &storage, "mem-B", "mem-C", 0.5, 1, 0, 0, "bidirectional",
-        1_700_000_000.0, "default", "corecall",
+        &storage,
+        "mem-B",
+        "mem-C",
+        0.5,
+        1,
+        0,
+        0,
+        "bidirectional",
+        1_700_000_000.0,
+        "default",
+        "corecall",
     );
     run_node_prereqs(&mut storage);
 

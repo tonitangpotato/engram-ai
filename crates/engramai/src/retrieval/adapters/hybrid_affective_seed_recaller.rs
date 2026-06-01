@@ -172,8 +172,7 @@ mod tests {
     #[test]
     fn empty_query_returns_empty_ok() {
         let storage = fresh_storage();
-        let recaller =
-            HybridAffectiveSeedRecaller::new(&storage, None, "default", "test-model");
+        let recaller = HybridAffectiveSeedRecaller::new(&storage, None, "default", "test-model");
         let q = GraphQuery::new("");
         let (hits, status) = recaller.recall(&q, 10);
         assert!(hits.is_empty());
@@ -183,8 +182,7 @@ mod tests {
     #[test]
     fn whitespace_query_returns_empty_ok() {
         let storage = fresh_storage();
-        let recaller =
-            HybridAffectiveSeedRecaller::new(&storage, None, "default", "test-model");
+        let recaller = HybridAffectiveSeedRecaller::new(&storage, None, "default", "test-model");
         let q = GraphQuery::new("\t  \n");
         let (hits, _) = recaller.recall(&q, 10);
         assert!(hits.is_empty());
@@ -193,8 +191,7 @@ mod tests {
     #[test]
     fn k_zero_returns_empty_ok() {
         let storage = fresh_storage();
-        let recaller =
-            HybridAffectiveSeedRecaller::new(&storage, None, "default", "test-model");
+        let recaller = HybridAffectiveSeedRecaller::new(&storage, None, "default", "test-model");
         let q = GraphQuery::new("anything");
         let (hits, status) = recaller.recall(&q, 0);
         assert!(hits.is_empty());
@@ -204,8 +201,7 @@ mod tests {
     #[test]
     fn empty_storage_returns_empty_ok_not_error() {
         let storage = fresh_storage();
-        let recaller =
-            HybridAffectiveSeedRecaller::new(&storage, None, "default", "test-model");
+        let recaller = HybridAffectiveSeedRecaller::new(&storage, None, "default", "test-model");
         let q = GraphQuery::new("hello world");
         let (hits, status) = recaller.recall(&q, 10);
         assert!(hits.is_empty());

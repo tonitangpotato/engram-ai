@@ -4,9 +4,9 @@
 //! entity overlap, embedding similarity, and temporal proximity.
 
 pub mod candidate;
-pub mod signals;
 pub mod former;
+pub mod signals;
 
 pub use candidate::CandidateSelector;
-pub use signals::{SignalComputer, SignalScores};
 pub use former::LinkFormer;
+pub use signals::{SignalComputer, SignalScores};

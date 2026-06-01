@@ -1,4 +1,9 @@
-#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+#![allow(
+    deprecated,
+    clippy::field_reassign_with_default,
+    clippy::useless_vec,
+    clippy::redundant_closure
+)]
 
 //! Integration tests for the knowledge synthesis pipeline.
 //!
@@ -27,7 +32,8 @@ fn setup() -> (Memory, tempfile::TempDir) {
 
 /// Helper: add a memory and return its ID.
 fn add_memory(mem: &mut Memory, content: &str, importance: f64) -> String {
-    mem.add(content, MemoryType::Factual, Some(importance), None, None).unwrap()
+    mem.add(content, MemoryType::Factual, Some(importance), None, None)
+        .unwrap()
 }
 
 /// Helper: create Hebbian links between memories via direct SQL.
@@ -59,9 +65,21 @@ fn test_synthesize_dry_run() {
     let (mut mem, _dir) = setup();
 
     // Add related memories with Hebbian links
-    let id1 = add_memory(&mut mem, "Rust borrow checker prevents data races at compile time", 0.7);
-    let id2 = add_memory(&mut mem, "Rust ownership model eliminates use-after-free bugs", 0.7);
-    let id3 = add_memory(&mut mem, "Rust lifetimes ensure references are always valid", 0.6);
+    let id1 = add_memory(
+        &mut mem,
+        "Rust borrow checker prevents data races at compile time",
+        0.7,
+    );
+    let id2 = add_memory(
+        &mut mem,
+        "Rust ownership model eliminates use-after-free bugs",
+        0.7,
+    );
+    let id3 = add_memory(
+        &mut mem,
+        "Rust lifetimes ensure references are always valid",
+        0.6,
+    );
 
     coactivate(&mut mem, &id1, &id2);
     coactivate(&mut mem, &id2, &id3);
@@ -70,10 +88,22 @@ fn test_synthesize_dry_run() {
     let report = mem.synthesize_dry_run().unwrap();
 
     // Should find at least one cluster but create no insights (dry run)
-    assert!(report.clusters_found > 0, "Expected clusters from Hebbian links");
-    assert_eq!(report.clusters_synthesized, 0, "Dry run should not synthesize");
-    assert!(report.insights_created.is_empty(), "Dry run should not create insights");
-    assert!(report.sources_demoted.is_empty(), "Dry run should not demote sources");
+    assert!(
+        report.clusters_found > 0,
+        "Expected clusters from Hebbian links"
+    );
+    assert_eq!(
+        report.clusters_synthesized, 0,
+        "Dry run should not synthesize"
+    );
+    assert!(
+        report.insights_created.is_empty(),
+        "Dry run should not create insights"
+    );
+    assert!(
+        report.sources_demoted.is_empty(),
+        "Dry run should not demote sources"
+    );
     assert!(!report.gate_results.is_empty(), "Should have gate results");
 }
 
@@ -82,9 +112,21 @@ fn test_synthesize_no_llm_graceful_degradation() {
     let (mut mem, _dir) = setup();
 
     // Add cluster of related memories
-    let id1 = add_memory(&mut mem, "Financial independence requires multiple income streams", 0.8);
-    let id2 = add_memory(&mut mem, "SaaS products provide recurring revenue for financial freedom", 0.8);
-    let id3 = add_memory(&mut mem, "Building tools that others pay for is a path to financial independence", 0.7);
+    let id1 = add_memory(
+        &mut mem,
+        "Financial independence requires multiple income streams",
+        0.8,
+    );
+    let id2 = add_memory(
+        &mut mem,
+        "SaaS products provide recurring revenue for financial freedom",
+        0.8,
+    );
+    let id3 = add_memory(
+        &mut mem,
+        "Building tools that others pay for is a path to financial independence",
+        0.7,
+    );
 
     coactivate(&mut mem, &id1, &id2);
     coactivate(&mut mem, &id2, &id3);
@@ -96,7 +138,10 @@ fn test_synthesize_no_llm_graceful_degradation() {
     assert!(report.clusters_found > 0, "Should discover clusters");
     // Without LLM, insights can't be generated
     assert_eq!(report.insights_created.len(), 0, "No LLM → no insights");
-    assert!(report.sources_demoted.is_empty(), "No insights → no demotions");
+    assert!(
+        report.sources_demoted.is_empty(),
+        "No insights → no demotions"
+    );
 }
 
 #[test]
@@ -111,8 +156,16 @@ fn test_sleep_cycle() {
     let (mut mem, _dir) = setup();
 
     // Add some memories
-    add_memory(&mut mem, "Sleep consolidates short-term memories into long-term storage", 0.6);
-    add_memory(&mut mem, "The hippocampus replays experiences during slow-wave sleep", 0.6);
+    add_memory(
+        &mut mem,
+        "Sleep consolidates short-term memories into long-term storage",
+        0.6,
+    );
+    add_memory(
+        &mut mem,
+        "The hippocampus replays experiences during slow-wave sleep",
+        0.6,
+    );
 
     let report = mem.sleep_cycle(1.0, None).unwrap();
     assert!(report.consolidation_ok);
@@ -127,11 +180,18 @@ fn test_sleep_cycle_synthesis_disabled() {
     let mut mem = Memory::new(db_path.to_str().unwrap(), Some(config)).unwrap();
     // Don't enable synthesis settings
 
-    add_memory(&mut mem, "This memory should only consolidate, not synthesize", 0.5);
+    add_memory(
+        &mut mem,
+        "This memory should only consolidate, not synthesize",
+        0.5,
+    );
 
     let report = mem.sleep_cycle(1.0, None).unwrap();
     assert!(report.consolidation_ok);
-    assert!(report.synthesis.is_none(), "Synthesis should be None when not enabled");
+    assert!(
+        report.synthesis.is_none(),
+        "Synthesis should be None when not enabled"
+    );
 }
 
 #[test]
@@ -158,10 +218,10 @@ fn test_get_provenance_nonexistent() {
 
 #[test]
 fn test_is_insight_helper() {
-    use engramai::is_insight;
-    use engramai::MemoryRecord;
-    use engramai::MemoryLayer;
     use chrono::Utc;
+    use engramai::is_insight;
+    use engramai::MemoryLayer;
+    use engramai::MemoryRecord;
 
     // Regular memory — not an insight
     let regular = MemoryRecord {
@@ -217,9 +277,21 @@ fn test_sleep_cycle_with_linked_memories() {
     let (mut mem, _dir) = setup();
 
     // Add related memories with Hebbian links
-    let id1 = add_memory(&mut mem, "ACT-R activation model calculates memory retrieval probability", 0.7);
-    let id2 = add_memory(&mut mem, "Base-level activation depends on frequency and recency of access", 0.7);
-    let id3 = add_memory(&mut mem, "Spreading activation follows Hebbian link strengths", 0.6);
+    let id1 = add_memory(
+        &mut mem,
+        "ACT-R activation model calculates memory retrieval probability",
+        0.7,
+    );
+    let id2 = add_memory(
+        &mut mem,
+        "Base-level activation depends on frequency and recency of access",
+        0.7,
+    );
+    let id3 = add_memory(
+        &mut mem,
+        "Spreading activation follows Hebbian link strengths",
+        0.6,
+    );
 
     coactivate(&mut mem, &id1, &id2);
     coactivate(&mut mem, &id2, &id3);
@@ -230,7 +302,10 @@ fn test_sleep_cycle_with_linked_memories() {
 
     // Synthesis should have been attempted
     let synth = report.synthesis.expect("Synthesis should have run");
-    assert!(synth.clusters_found > 0, "Should find clusters from Hebbian links");
+    assert!(
+        synth.clusters_found > 0,
+        "Should find clusters from Hebbian links"
+    );
     // No LLM → no insights, but gate results should exist
     assert!(!synth.gate_results.is_empty());
 }

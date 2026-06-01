@@ -90,8 +90,8 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 use engramai_migrate::{
-    backup_path_for, migrate, MigrateOptions, MigrationPhase, BACKUP_SUFFIX,
-    BEHAVIORAL_CONTRACT, V02_FROZEN_METHODS,
+    backup_path_for, migrate, MigrateOptions, MigrationPhase, BACKUP_SUFFIX, BEHAVIORAL_CONTRACT,
+    V02_FROZEN_METHODS,
 };
 
 // ---------------------------------------------------------------------------
@@ -213,11 +213,9 @@ struct Snapshot {
 /// stamp (or panic if the table is absent).
 fn read_schema_version(path: &Path) -> i64 {
     let conn = Connection::open(path).unwrap();
-    conn.query_row(
-        "SELECT MAX(version) FROM schema_version",
-        [],
-        |row| row.get::<_, i64>(0),
-    )
+    conn.query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+        row.get::<_, i64>(0)
+    })
     .unwrap()
 }
 
@@ -296,7 +294,10 @@ fn test_rollback_from_backup_mechanical() {
     }
     let pristine = snapshot_user_state(&db);
     let pristine_version = read_schema_version(&db);
-    assert_eq!(pristine_version, 2, "fixture must start at schema_version=2");
+    assert_eq!(
+        pristine_version, 2,
+        "fixture must start at schema_version=2"
+    );
 
     // Step 2: gated migrate to Phase 2. Backup is written in Phase 1.
     let mut opts = options_for(&db);
@@ -474,8 +475,7 @@ fn test_rollback_runbook_is_present_and_complete() {
         runbook.display()
     );
 
-    let body = std::fs::read_to_string(&runbook)
-        .expect("runbook must be readable");
+    let body = std::fs::read_to_string(&runbook).expect("runbook must be readable");
 
     // Each of these substrings is a §8.6-mandated checklist anchor.
     // We don't pin exact wording — the runbook is human-edited and
@@ -510,8 +510,7 @@ fn test_rollback_script_is_present_and_documented() {
         script.display()
     );
 
-    let body = std::fs::read_to_string(&script)
-        .expect("rollback script must be readable");
+    let body = std::fs::read_to_string(&script).expect("rollback script must be readable");
 
     // Must be a bash script (#!/usr/bin/env bash) — the documented
     // invariant in the header.
@@ -574,7 +573,12 @@ fn test_v02_frozen_methods_match_design_seven_one() {
     // Design §7.1 freezes EXACTLY these four methods — no more, no less.
     assert_eq!(
         V02_FROZEN_METHODS,
-        &["store", "recall", "recall_recent", "recall_with_associations"],
+        &[
+            "store",
+            "recall",
+            "recall_recent",
+            "recall_with_associations"
+        ],
         "V02_FROZEN_METHODS must match design §7.1 verbatim — \
          adding/removing a method here is a breaking change to GOAL-4.9"
     );
@@ -602,8 +606,8 @@ fn test_behavioral_contract_complete_at_library_boundary() {
             "BEHAVIORAL_CONTRACT order must match V02_FROZEN_METHODS"
         );
 
-        let lookup = contract_for(method)
-            .unwrap_or_else(|| panic!("contract_for({method}) must resolve"));
+        let lookup =
+            contract_for(method).unwrap_or_else(|| panic!("contract_for({method}) must resolve"));
 
         // Every documented column must be non-empty — empty strings
         // mean an editor stubbed the field and forgot to fill it in.
@@ -755,11 +759,10 @@ fn test_concurrent_reads_post_migration_smoke() {
                         }
                         _ => {
                             // Associations-shape: count hebbian rows.
-                            let _: i64 = conn.query_row(
-                                "SELECT COUNT(*) FROM hebbian_links",
-                                [],
-                                |r| r.get(0),
-                            )?;
+                            let _: i64 =
+                                conn.query_row("SELECT COUNT(*) FROM hebbian_links", [], |r| {
+                                    r.get(0)
+                                })?;
                         }
                     }
                     Ok(())

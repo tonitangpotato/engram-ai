@@ -63,8 +63,12 @@ fn t29_4_neighbors_ns_filters_by_namespace_on_both_substrates() {
         seed_memory_in_ns(&mut storage, "b2", "tenant2");
 
         for _ in 0..3 {
-            storage.record_coactivation_ns("a", "b", 3, "tenant1").unwrap();
-            storage.record_coactivation_ns("a2", "b2", 3, "tenant2").unwrap();
+            storage
+                .record_coactivation_ns("a", "b", 3, "tenant1")
+                .unwrap();
+            storage
+                .record_coactivation_ns("a2", "b2", 3, "tenant2")
+                .unwrap();
         }
     }
 
@@ -132,8 +136,14 @@ fn t29_4_neighbors_ns_wildcard_delegates_to_unfiltered_reader() {
             .into_iter()
             .collect();
 
-        assert_eq!(with_star, direct, "* must match direct (unified={unified_flag})");
-        assert_eq!(with_none, direct, "None must match direct (unified={unified_flag})");
+        assert_eq!(
+            with_star, direct,
+            "* must match direct (unified={unified_flag})"
+        );
+        assert_eq!(
+            with_none, direct,
+            "None must match direct (unified={unified_flag})"
+        );
     }
 }
 

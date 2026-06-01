@@ -387,10 +387,7 @@ mod tests {
 
     #[test]
     fn recency_score_at_two_half_lives_returns_quarter() {
-        let s = recency_score(
-            RECENCY_DEFAULT_HALF_LIFE * 2,
-            RECENCY_DEFAULT_HALF_LIFE,
-        );
+        let s = recency_score(RECENCY_DEFAULT_HALF_LIFE * 2, RECENCY_DEFAULT_HALF_LIFE);
         assert!((s - 0.25).abs() < 1e-10, "got {s}");
     }
 

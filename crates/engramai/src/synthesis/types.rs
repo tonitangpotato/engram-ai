@@ -632,15 +632,10 @@ impl std::fmt::Display for SynthesisError {
             } => {
                 write!(f, "Storage error for cluster {}: {}", cluster_id, message)
             }
-            Self::EmbeddingError {
-                memory_id,
-                message,
-            } => {
+            Self::EmbeddingError { memory_id, message } => {
                 write!(f, "Embedding error for memory {}: {}", memory_id, message)
             }
-            Self::BudgetExhausted {
-                remaining_clusters,
-            } => {
+            Self::BudgetExhausted { remaining_clusters } => {
                 write!(
                     f,
                     "LLM budget exhausted with {} clusters remaining",

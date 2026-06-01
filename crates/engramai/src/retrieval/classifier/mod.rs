@@ -284,10 +284,7 @@ pub fn route_stage1(scores: &SignalScores, thresholds: &SignalThresholds) -> Sta
                 let best = strong
                     .iter()
                     .copied()
-                    .max_by(|a, b| {
-                        a.1.partial_cmp(&b.1)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .expect("strong is non-empty");
                 Stage1Outcome::NeedsLlmFallback {
                     heuristic_best_guess: intent_for(best.0),

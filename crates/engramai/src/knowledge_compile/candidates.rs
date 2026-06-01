@@ -162,8 +162,15 @@ mod tests {
     }
 
     fn add(m: &mut Memory, content: &str, importance: f64, ns: Option<&str>) -> String {
-        m.add_to_namespace(content, MemoryType::Factual, Some(importance), None, None, ns)
-            .expect("add_to_namespace")
+        m.add_to_namespace(
+            content,
+            MemoryType::Factual,
+            Some(importance),
+            None,
+            None,
+            ns,
+        )
+        .expect("add_to_namespace")
     }
 
     #[test]

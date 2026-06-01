@@ -379,11 +379,7 @@ pub struct Downgrade {
 }
 
 impl Downgrade {
-    pub fn new(
-        from: impl Into<String>,
-        to: impl Into<String>,
-        reason: impl Into<String>,
-    ) -> Self {
+    pub fn new(from: impl Into<String>, to: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             from: from.into(),
             to: to.into(),
@@ -811,7 +807,11 @@ mod tests {
                 .with_cost_cap_hit("max_anchors")
                 .with_note("3 anchors resolved"),
         )
-        .record_downgrade(Downgrade::new("episodic", "associative", "no_time_expression"))
+        .record_downgrade(Downgrade::new(
+            "episodic",
+            "associative",
+            "no_time_expression",
+        ))
         .set_fusion(FusionTrace {
             plan: "factual".into(),
             weights: vec![("graph".into(), 0.6), ("vector".into(), 0.4)],

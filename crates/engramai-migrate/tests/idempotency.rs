@@ -42,9 +42,7 @@ use std::path::Path;
 use rusqlite::Connection;
 use tempfile::tempdir;
 
-use engramai_migrate::{
-    apply_additive_columns, migrate, MigrateOptions, MigrationPhase,
-};
+use engramai_migrate::{apply_additive_columns, migrate, MigrateOptions, MigrationPhase};
 
 // ---------------------------------------------------------------------------
 // Test helpers

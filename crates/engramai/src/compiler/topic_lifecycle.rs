@@ -154,9 +154,7 @@ impl TopicLifecycle {
             ));
         }
         if source_memories.is_empty() {
-            return Err(KcError::InvalidInput(
-                "No source memories to split".into(),
-            ));
+            return Err(KcError::InvalidInput("No source memories to split".into()));
         }
 
         let now = chrono::Utc::now();
@@ -276,7 +274,9 @@ mod tests {
         let b = make_topic(
             "b",
             "Topic B",
-            vec!["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m11", "m12", "m13"],
+            vec![
+                "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m11", "m12", "m13",
+            ],
         );
 
         let lifecycle = TopicLifecycle::new(LifecycleConfig::default());
@@ -314,11 +314,13 @@ mod tests {
     #[test]
     fn test_analyze_detects_split() {
         // Topic with 20 source memories (threshold 15) → splits list has 1 entry
-        let mems: Vec<&str> = (1..=20).map(|i| {
-            // Leak strings for test convenience
-            let s: &str = Box::leak(format!("m{i}").into_boxed_str());
-            s
-        }).collect();
+        let mems: Vec<&str> = (1..=20)
+            .map(|i| {
+                // Leak strings for test convenience
+                let s: &str = Box::leak(format!("m{i}").into_boxed_str());
+                s
+            })
+            .collect();
         let a = make_topic("a", "Big Topic", mems);
 
         let lifecycle = TopicLifecycle::new(LifecycleConfig::default());

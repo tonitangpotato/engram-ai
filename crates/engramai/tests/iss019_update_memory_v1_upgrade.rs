@@ -121,8 +121,12 @@ fn update_upgrades_v1_row_to_v2_layout() {
         .expect("insert v1 record");
 
     // Call update_memory — this should rewrite to v2.
-    mem.update_memory("mem-v1-001", "alice meets bob on 2026-04-23 (rescheduled)", "date corrected")
-        .expect("update_memory succeeds on v1 row");
+    mem.update_memory(
+        "mem-v1-001",
+        "alice meets bob on 2026-04-23 (rescheduled)",
+        "date corrected",
+    )
+    .expect("update_memory succeeds on v1 row");
 
     // Read back and assert v2 shape.
     let after = mem
@@ -214,7 +218,12 @@ fn update_upgrades_v1_row_to_v2_layout() {
         .get("update_audit")
         .and_then(|a| a.as_array())
         .expect("user.update_audit array present");
-    assert_eq!(audit.len(), 1, "expected one audit entry, got {}", audit.len());
+    assert_eq!(
+        audit.len(),
+        1,
+        "expected one audit entry, got {}",
+        audit.len()
+    );
     let entry = audit[0].as_object().expect("audit entry is object");
     assert_eq!(
         entry.get("previous_content").and_then(|v| v.as_str()),
@@ -255,15 +264,15 @@ fn update_preserves_v2_layout_without_pollution() {
     mem.update_memory("mem-v2-001", "alice called bob twice", "clarification")
         .expect("update_memory ok on v2 row");
 
-    let after = mem
-        .get("mem-v2-001")
-        .expect("get ok")
-        .expect("row exists");
+    let after = mem.get("mem-v2-001").expect("get ok").expect("row exists");
     let meta = after.metadata.expect("metadata present");
     let top = meta.as_object().expect("object");
 
     // engram namespace still pure — no audit keys leaked in.
-    let engram = top.get("engram").and_then(|v| v.as_object()).expect("engram ns");
+    let engram = top
+        .get("engram")
+        .and_then(|v| v.as_object())
+        .expect("engram ns");
     for polluting_key in &["previous_content", "update_reason", "updated_at", "reason"] {
         assert!(
             !engram.contains_key(*polluting_key),
@@ -278,7 +287,10 @@ fn update_preserves_v2_layout_without_pollution() {
     );
 
     // Audit landed under user.update_audit.
-    let user = top.get("user").and_then(|v| v.as_object()).expect("user ns");
+    let user = top
+        .get("user")
+        .and_then(|v| v.as_object())
+        .expect("user ns");
     let audit = user
         .get("update_audit")
         .and_then(|a| a.as_array())
@@ -308,9 +320,12 @@ fn repeated_updates_accumulate_audit_history() {
     let v2 = make_v2_record("mem-v2-002", "version 1 text");
     mem.storage_mut().add(&v2, "default").expect("insert");
 
-    mem.update_memory("mem-v2-002", "version 2 text", "first edit").unwrap();
-    mem.update_memory("mem-v2-002", "version 3 text", "second edit").unwrap();
-    mem.update_memory("mem-v2-002", "version 4 text", "third edit").unwrap();
+    mem.update_memory("mem-v2-002", "version 2 text", "first edit")
+        .unwrap();
+    mem.update_memory("mem-v2-002", "version 3 text", "second edit")
+        .unwrap();
+    mem.update_memory("mem-v2-002", "version 4 text", "third edit")
+        .unwrap();
 
     let after = mem.get("mem-v2-002").unwrap().unwrap();
     let meta = after.metadata.unwrap();
@@ -362,7 +377,8 @@ fn audit_history_capped_at_ten_entries() {
     for i in 1..=15 {
         let new_content = format!("rev {}", i);
         let reason = format!("edit {}", i);
-        mem.update_memory("mem-cap-001", &new_content, &reason).unwrap();
+        mem.update_memory("mem-cap-001", &new_content, &reason)
+            .unwrap();
     }
 
     let after = mem.get("mem-cap-001").unwrap().unwrap();
@@ -380,13 +396,21 @@ fn audit_history_capped_at_ten_entries() {
         Some("edit 15")
     );
     assert_eq!(
-        audit.last().unwrap().get("previous_content").and_then(|v| v.as_str()),
+        audit
+            .last()
+            .unwrap()
+            .get("previous_content")
+            .and_then(|v| v.as_str()),
         Some("rev 14")
     );
 
     // Oldest retained entry should be for "edit 6" (edits 1..=5 got evicted).
     assert_eq!(
-        audit.first().unwrap().get("reason").and_then(|v| v.as_str()),
+        audit
+            .first()
+            .unwrap()
+            .get("reason")
+            .and_then(|v| v.as_str()),
         Some("edit 6")
     );
 }

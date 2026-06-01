@@ -1,4 +1,9 @@
-#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+#![allow(
+    deprecated,
+    clippy::field_reassign_with_default,
+    clippy::useless_vec,
+    clippy::redundant_closure
+)]
 
 //! Integration test for multi-signal Hebbian association discovery.
 //!
@@ -9,8 +14,8 @@
 //! and temporal proximity are the dominant signals. Entity overlap is 0 for most
 //! natural language content that doesn't mention specific tech names.
 
-use engramai::{Memory, MemoryConfig, MemoryType};
 use engramai::config::AssociationConfig;
+use engramai::{Memory, MemoryConfig, MemoryType};
 
 fn config_with_association() -> MemoryConfig {
     let mut config = MemoryConfig::default();
@@ -87,8 +92,14 @@ fn test_assoc_disabled_no_links() {
     let config = config_disabled();
     let mut mem = new_memory(config);
 
-    mem.add("Rust programming language", MemoryType::Factual, Some(0.5), None, None)
-        .expect("store 1");
+    mem.add(
+        "Rust programming language",
+        MemoryType::Factual,
+        Some(0.5),
+        None,
+        None,
+    )
+    .expect("store 1");
     mem.add(
         "Rust is a systems programming language",
         MemoryType::Factual,
@@ -99,7 +110,10 @@ fn test_assoc_disabled_no_links() {
     .expect("store 2");
 
     let count = get_link_count(&mem);
-    assert_eq!(count, 0, "no links should form when association is disabled");
+    assert_eq!(
+        count, 0,
+        "no links should form when association is disabled"
+    );
 }
 
 /// Test 2: With association enabled, related memories form links via embedding + temporal.
@@ -119,7 +133,10 @@ fn test_assoc_creates_links_on_write() {
     .expect("store 1");
 
     let count_after_first = get_link_count(&mem);
-    assert_eq!(count_after_first, 0, "first memory has no candidates to link with");
+    assert_eq!(
+        count_after_first, 0,
+        "first memory has no candidates to link with"
+    );
 
     // Store second memory with semantic overlap
     mem.add(
@@ -145,7 +162,11 @@ fn test_assoc_creates_links_on_write() {
     for (src, tgt, strength, sig_source, sig_detail) in &links {
         println!(
             "  Link: {} → {} | strength={:.3} | source={} | detail={}",
-            &src[..8], &tgt[..8], strength, sig_source, sig_detail
+            &src[..8],
+            &tgt[..8],
+            strength,
+            sig_source,
+            sig_detail
         );
 
         assert!(
@@ -157,9 +178,18 @@ fn test_assoc_creates_links_on_write() {
         if !sig_detail.is_empty() {
             let detail: serde_json::Value =
                 serde_json::from_str(sig_detail).expect("signal_detail should be valid JSON");
-            assert!(detail["entity_overlap"].is_number(), "should have entity_overlap");
-            assert!(detail["embedding_cosine"].is_number(), "should have embedding_cosine");
-            assert!(detail["temporal_proximity"].is_number(), "should have temporal_proximity");
+            assert!(
+                detail["entity_overlap"].is_number(),
+                "should have entity_overlap"
+            );
+            assert!(
+                detail["embedding_cosine"].is_number(),
+                "should have embedding_cosine"
+            );
+            assert!(
+                detail["temporal_proximity"].is_number(),
+                "should have temporal_proximity"
+            );
         }
     }
 }
@@ -200,7 +230,13 @@ fn test_assoc_cluster_formation() {
     let links = get_signal_links(&mem);
     println!("Links in cluster:");
     for (src, tgt, strength, sig_source, _sig_detail) in &links {
-        println!("  {} → {} | strength={:.3} | source={}", &src[..8], &tgt[..8], strength, sig_source);
+        println!(
+            "  {} → {} | strength={:.3} | source={}",
+            &src[..8],
+            &tgt[..8],
+            strength,
+            sig_source
+        );
     }
 
     assert!(
@@ -239,7 +275,10 @@ fn test_assoc_entity_overlap_with_tech_names() {
     .expect("store 2");
 
     let links = get_signal_links(&mem);
-    assert!(!links.is_empty(), "should have links for Rust-related content");
+    assert!(
+        !links.is_empty(),
+        "should have links for Rust-related content"
+    );
 
     for (_src, _tgt, _str, _sig_src, sig_detail) in &links {
         let detail: serde_json::Value = serde_json::from_str(sig_detail).unwrap();
@@ -340,7 +379,12 @@ fn test_assoc_signal_metadata_quality() {
 
         println!(
             "Link {}→{}: entity={:.3}, embedding={:.3}, temporal={:.3}, source={}",
-            &src[..8], &tgt[..8], entity_overlap, embedding_cosine, temporal_prox, sig_source
+            &src[..8],
+            &tgt[..8],
+            entity_overlap,
+            embedding_cosine,
+            temporal_prox,
+            sig_source
         );
 
         // Both mention "Rust" → entity overlap should be > 0
@@ -371,8 +415,14 @@ fn test_assoc_write_time_links_have_metadata() {
     let config = config_with_association();
     let mut mem = new_memory(config);
 
-    mem.add("GID is a graph-indexed development tool", MemoryType::Factual, Some(0.7), None, None)
-        .expect("store 1");
+    mem.add(
+        "GID is a graph-indexed development tool",
+        MemoryType::Factual,
+        Some(0.7),
+        None,
+        None,
+    )
+    .expect("store 1");
     mem.add(
         "GID uses Infomap clustering for code graph analysis",
         MemoryType::Factual,
@@ -441,7 +491,10 @@ fn test_assoc_e2e_store_and_recall() {
     for (src, tgt, strength, sig_source, sig_detail) in &links {
         println!(
             "  {}→{} | str={:.3} | src={} | det={}",
-            &src[..8], &tgt[..8], strength, sig_source,
+            &src[..8],
+            &tgt[..8],
+            strength,
+            sig_source,
             &sig_detail[..sig_detail.len().min(80)]
         );
     }
@@ -494,15 +547,20 @@ fn test_assoc_embedding_dominant_signal() {
     .expect("store 2");
 
     let links = get_signal_links(&mem);
-    assert!(!links.is_empty(), "semantically similar content should form links");
+    assert!(
+        !links.is_empty(),
+        "semantically similar content should form links"
+    );
 
     for (_src, _tgt, _str, sig_source, sig_detail) in &links {
         let detail: serde_json::Value = serde_json::from_str(sig_detail).unwrap();
         let entity_overlap = detail["entity_overlap"].as_f64().unwrap();
         let embedding_cosine = detail["embedding_cosine"].as_f64().unwrap();
 
-        println!("Embedding-dominant link: entity={:.3}, cosine={:.3}, source={}", 
-            entity_overlap, embedding_cosine, sig_source);
+        println!(
+            "Embedding-dominant link: entity={:.3}, cosine={:.3}, source={}",
+            entity_overlap, embedding_cosine, sig_source
+        );
 
         // No tech entities → entity overlap should be 0
         assert!(

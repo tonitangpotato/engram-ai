@@ -81,12 +81,7 @@ impl MemoryExtractor for StubExtractor {
 // ---------------------------------------------------------------------
 
 /// Insert a v1-shape row into `memories` via raw SQL.
-fn insert_v1_row(
-    storage: &Storage,
-    id: &str,
-    content: &str,
-    metadata: serde_json::Value,
-) {
+fn insert_v1_row(storage: &Storage, id: &str, content: &str, metadata: serde_json::Value) {
     storage
         .conn()
         .execute(
@@ -193,21 +188,17 @@ fn scan_classifies_and_enqueues_only_lowdim_legacy_rows() {
             }),
         );
         // v1 short content with no dimensions — UnparseableLegacy (SKIP).
-        insert_v1_row(
-            &storage,
-            "mem-short",
-            "short",
-            json!({}),
-        );
+        insert_v1_row(&storage, "mem-short", "short", json!({}));
     }
 
     let mut mem = new_mem_at(&db);
-    let report = mem
-        .scan_and_enqueue_backfill(1000)
-        .expect("scan succeeds");
+    let report = mem.scan_and_enqueue_backfill(1000).expect("scan succeeds");
 
     assert_eq!(report.scanned, 5, "every seeded row was inspected");
-    assert_eq!(report.has_extractor_data, 1, "mem-has-data classified as HasExtractorData");
+    assert_eq!(
+        report.has_extractor_data, 1,
+        "mem-has-data classified as HasExtractorData"
+    );
     assert_eq!(report.enqueued, 3, "three LowDimLegacy rows enqueued");
     assert_eq!(report.unparseable, 1, "short row skipped as unparseable");
     assert_eq!(report.already_v2, 0);
@@ -249,12 +240,7 @@ fn backfill_dimensions_upgrades_v1_row_to_v2() {
     let content = "long enough content to enqueue and then be backfilled here";
     {
         let storage = Storage::new(db.to_str().unwrap()).unwrap();
-        insert_v1_row(
-            &storage,
-            "mem-1",
-            content,
-            json!({ "dimensions": {} }),
-        );
+        insert_v1_row(&storage, "mem-1", content, json!({ "dimensions": {} }));
     }
 
     let mut mem = new_mem_at(&db);
@@ -281,9 +267,7 @@ fn backfill_dimensions_upgrades_v1_row_to_v2() {
     assert_eq!(mem.count_backfill().unwrap(), 1);
 
     // Backfill.
-    let report = mem
-        .backfill_dimensions(10)
-        .expect("backfill succeeds");
+    let report = mem.backfill_dimensions(10).expect("backfill succeeds");
     assert_eq!(report.attempted, 1);
     assert_eq!(report.upgraded, 1);
     assert_eq!(report.failed, 0);
@@ -391,7 +375,10 @@ fn backfill_permanent_rejection_after_max_attempts() {
     // After the cap: no live rows, the row flipped to rejected.
     assert_eq!(mem.count_backfill().unwrap(), 0);
     let next = mem.backfill_dimensions(10).unwrap();
-    assert_eq!(next.attempted, 0, "rejected rows are invisible to list_backfill_batch");
+    assert_eq!(
+        next.attempted, 0,
+        "rejected rows are invisible to list_backfill_batch"
+    );
 }
 
 /// If a v1 row gets rewritten to v2 by some other path between scan

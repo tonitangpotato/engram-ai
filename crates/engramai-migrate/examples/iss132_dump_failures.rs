@@ -29,10 +29,7 @@ fn seed_v02(path: &Path) {
 
 fn main() {
     // Use /tmp directly instead of tempfile crate (it's dev-dep only).
-    let dir = std::path::PathBuf::from(format!(
-        "/tmp/iss132-diag-{}",
-        std::process::id()
-    ));
+    let dir = std::path::PathBuf::from(format!("/tmp/iss132-diag-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("populated.db");
@@ -129,8 +126,18 @@ fn main() {
                 .get::<_, Option<String>>(i)
                 .ok()
                 .flatten()
-                .or_else(|| row.get::<_, Option<i64>>(i).ok().flatten().map(|x| x.to_string()))
-                .or_else(|| row.get::<_, Option<f64>>(i).ok().flatten().map(|x| x.to_string()))
+                .or_else(|| {
+                    row.get::<_, Option<i64>>(i)
+                        .ok()
+                        .flatten()
+                        .map(|x| x.to_string())
+                })
+                .or_else(|| {
+                    row.get::<_, Option<f64>>(i)
+                        .ok()
+                        .flatten()
+                        .map(|x| x.to_string())
+                })
                 .unwrap_or_else(|| "<null>".into());
             let val = if val.len() > 200 {
                 format!("{}…(truncated)", &val[..200])

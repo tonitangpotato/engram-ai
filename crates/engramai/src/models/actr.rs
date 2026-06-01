@@ -48,7 +48,11 @@ pub fn base_level_activation(record: &MemoryRecord, now: DateTime<Utc>, decay: f
 /// and memory chunks. Here we use keyword overlap as a proxy.
 ///
 /// Σ(W_j · S_ji) ≈ weight × (overlap / total_keywords)
-pub fn spreading_activation(record: &MemoryRecord, context_keywords: &[String], weight: f64) -> f64 {
+pub fn spreading_activation(
+    record: &MemoryRecord,
+    context_keywords: &[String],
+    weight: f64,
+) -> f64 {
     if context_keywords.is_empty() {
         return 0.0;
     }
@@ -127,7 +131,7 @@ pub fn normalize_activation(activation: f64, center: f64, scale: f64) -> f64 {
 mod tests {
     use super::*;
     use chrono::Duration;
-    
+
     fn make_record(age_secs: i64) -> (MemoryRecord, DateTime<Utc>) {
         let now = Utc::now();
         let access_time = now - Duration::seconds(age_secs);
@@ -153,18 +157,21 @@ mod tests {
         };
         (record, now)
     }
-    
+
     #[test]
     fn test_normalize_neg_infinity() {
         assert_eq!(normalize_activation(f64::NEG_INFINITY, -5.5, 1.5), 0.0);
     }
-    
+
     #[test]
     fn test_normalize_center_gives_half() {
         let result = normalize_activation(-5.5, -5.5, 1.5);
-        assert!((result - 0.5).abs() < 0.001, "center should map to ~0.5, got {result}");
+        assert!(
+            (result - 0.5).abs() < 0.001,
+            "center should map to ~0.5, got {result}"
+        );
     }
-    
+
     #[test]
     fn test_normalize_monotonic() {
         // Higher activation → higher normalized score
@@ -174,7 +181,7 @@ mod tests {
         assert!(low < mid, "low {low} should be < mid {mid}");
         assert!(mid < high, "mid {mid} should be < high {high}");
     }
-    
+
     #[test]
     fn test_normalize_bounded() {
         // Output always in [0, 1]
@@ -183,41 +190,44 @@ mod tests {
             assert!(n >= 0.0 && n <= 1.0, "normalize({x}) = {n} out of [0,1]");
         }
     }
-    
+
     #[test]
     fn test_recency_discrimination_improved() {
         // The core fix: sigmoid gives 3x better discrimination than old linear
         let d = 0.5;
         let center = -5.5;
         let scale = 1.5;
-        
+
         // 1 hour old memory vs 7 day old memory (single access)
-        let b_1h = (3600.0_f64).powf(-d).ln();   // B_i for 1 hour
-        let b_7d = (604800.0_f64).powf(-d).ln();  // B_i for 7 days
-        
-        let old_delta = ((b_1h + 10.0) / 20.0).clamp(0.0, 1.0)
-            - ((b_7d + 10.0) / 20.0).clamp(0.0, 1.0);
-        let new_delta = normalize_activation(b_1h, center, scale)
-            - normalize_activation(b_7d, center, scale);
-        
+        let b_1h = (3600.0_f64).powf(-d).ln(); // B_i for 1 hour
+        let b_7d = (604800.0_f64).powf(-d).ln(); // B_i for 7 days
+
+        let old_delta =
+            ((b_1h + 10.0) / 20.0).clamp(0.0, 1.0) - ((b_7d + 10.0) / 20.0).clamp(0.0, 1.0);
+        let new_delta =
+            normalize_activation(b_1h, center, scale) - normalize_activation(b_7d, center, scale);
+
         // Sigmoid should give at least 2.5x better discrimination
         assert!(
             new_delta > old_delta * 2.5,
             "sigmoid delta ({new_delta:.4}) should be >2.5x old delta ({old_delta:.4})"
         );
     }
-    
+
     #[test]
     fn test_base_level_recency() {
         // More recent memory → higher base-level activation
-        let (recent, now) = make_record(60);     // 1 minute ago
-        let (old, _) = make_record(604800);       // 7 days ago
-        
+        let (recent, now) = make_record(60); // 1 minute ago
+        let (old, _) = make_record(604800); // 7 days ago
+
         let b_recent = base_level_activation(&recent, now, 0.5);
         let b_old = base_level_activation(&old, now, 0.5);
-        assert!(b_recent > b_old, "recent ({b_recent}) should have higher activation than old ({b_old})");
+        assert!(
+            b_recent > b_old,
+            "recent ({b_recent}) should have higher activation than old ({b_old})"
+        );
     }
-    
+
     #[test]
     fn test_base_level_frequency() {
         // More frequently accessed → higher base-level activation
@@ -225,31 +235,39 @@ mod tests {
         let mut frequent = make_record(3600).0;
         // Add 4 more accesses
         for i in 1..5 {
-            frequent.access_times.push(now - Duration::seconds(3600 * i));
+            frequent
+                .access_times
+                .push(now - Duration::seconds(3600 * i));
         }
         let (single, _) = make_record(3600);
-        
+
         let b_freq = base_level_activation(&frequent, now, 0.5);
         let b_single = base_level_activation(&single, now, 0.5);
-        assert!(b_freq > b_single, "frequent ({b_freq}) should have higher activation than single ({b_single})");
+        assert!(
+            b_freq > b_single,
+            "frequent ({b_freq}) should have higher activation than single ({b_single})"
+        );
     }
-    
+
     #[test]
     fn test_base_level_no_accesses() {
         let (mut record, now) = make_record(60);
         record.access_times.clear();
         assert_eq!(base_level_activation(&record, now, 0.5), f64::NEG_INFINITY);
     }
-    
+
     #[test]
     fn test_spreading_activation_matches() {
         let (record, _) = make_record(60);
         let context = vec!["test".to_string(), "content".to_string()];
         let spread = spreading_activation(&record, &context, 1.5);
         assert!(spread > 0.0, "should have positive spreading activation");
-        assert!((spread - 1.5).abs() < 0.01, "full match should give ~weight, got {spread}");
+        assert!(
+            (spread - 1.5).abs() < 0.01,
+            "full match should give ~weight, got {spread}"
+        );
     }
-    
+
     #[test]
     fn test_spreading_activation_no_match() {
         let (record, _) = make_record(60);
@@ -257,7 +275,7 @@ mod tests {
         let spread = spreading_activation(&record, &context, 1.5);
         assert_eq!(spread, 0.0);
     }
-    
+
     #[test]
     fn test_normalize_scale_effect() {
         // Smaller scale → steeper transition → bigger gap between close values
@@ -267,6 +285,9 @@ mod tests {
         assert!(steep > 0.0);
         assert!(gentle > 0.0);
         // With steep scale, the gap from -3 to -8 should be larger
-        assert!(steep > gentle, "steep ({steep}) should discriminate more than gentle ({gentle})");
+        assert!(
+            steep > gentle,
+            "steep ({steep}) should discriminate more than gentle ({gentle})"
+        );
     }
 }

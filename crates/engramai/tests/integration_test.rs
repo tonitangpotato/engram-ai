@@ -1,4 +1,9 @@
-#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+#![allow(
+    deprecated,
+    clippy::field_reassign_with_default,
+    clippy::useless_vec,
+    clippy::redundant_closure
+)]
 
 use engramai::{Memory, MemoryConfig, MemoryType, Permission};
 use tempfile::tempdir;
@@ -11,11 +16,23 @@ fn test_basic_workflow() {
 
     // Add memories
     let id1 = mem
-        .add("potato prefers action", MemoryType::Relational, Some(0.7), None, None)
+        .add(
+            "potato prefers action",
+            MemoryType::Relational,
+            Some(0.7),
+            None,
+            None,
+        )
         .unwrap();
-    
+
     let _id2 = mem
-        .add("Use moltbook.com for API", MemoryType::Procedural, Some(0.8), None, None)
+        .add(
+            "Use moltbook.com for API",
+            MemoryType::Procedural,
+            Some(0.8),
+            None,
+            None,
+        )
         .unwrap();
 
     // Recall
@@ -42,11 +59,23 @@ fn test_hebbian_links() {
     let mut mem = Memory::new(db_path.to_str().unwrap(), None).unwrap();
 
     let id1 = mem
-        .add("Python is a programming language", MemoryType::Factual, None, None, None)
+        .add(
+            "Python is a programming language",
+            MemoryType::Factual,
+            None,
+            None,
+            None,
+        )
         .unwrap();
-    
+
     let id2 = mem
-        .add("Python has dynamic typing", MemoryType::Factual, None, None, None)
+        .add(
+            "Python has dynamic typing",
+            MemoryType::Factual,
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
     // Recall them together multiple times to form Hebbian link
@@ -119,9 +148,9 @@ fn test_config_presets() {
 
         mem.add("Test", MemoryType::Factual, None, None, None)
             .unwrap();
-        
+
         mem.consolidate(1.0).unwrap();
-        
+
         let stats = mem.stats().unwrap();
         assert_eq!(stats.total_memories, 1);
     }
@@ -143,7 +172,8 @@ fn test_namespace_isolation() {
         None,
         None,
         Some("trading"),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Store in namespace B
     mem.add_to_namespace(
@@ -153,24 +183,33 @@ fn test_namespace_isolation() {
         None,
         None,
         Some("hackathon"),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Recall from namespace A should find trading memory
-    let results_a = mem.recall_from_namespace("strategy", 10, None, None, Some("trading")).unwrap();
+    let results_a = mem
+        .recall_from_namespace("strategy", 10, None, None, Some("trading"))
+        .unwrap();
     assert_eq!(results_a.len(), 1);
     assert!(results_a[0].record.content.contains("trading"));
 
     // Recall from namespace B should NOT find the trading namespace memory
-    // Note: With embedding-based search, there may be semantic matches to the 
+    // Note: With embedding-based search, there may be semantic matches to the
     // hackathon memory, but the trading memory should never appear here.
-    let results_b = mem.recall_from_namespace("strategy", 10, None, None, Some("hackathon")).unwrap();
-    
+    let results_b = mem
+        .recall_from_namespace("strategy", 10, None, None, Some("hackathon"))
+        .unwrap();
+
     // Verify namespace isolation: trading content must NOT leak into hackathon results
     for r in &results_b {
-        assert!(!r.record.content.contains("trading"), 
-            "Namespace leak: trading content appeared in hackathon namespace results");
-        assert!(!r.record.content.contains("oil"),
-            "Namespace leak: trading content appeared in hackathon namespace results");
+        assert!(
+            !r.record.content.contains("trading"),
+            "Namespace leak: trading content appeared in hackathon namespace results"
+        );
+        assert!(
+            !r.record.content.contains("oil"),
+            "Namespace leak: trading content appeared in hackathon namespace results"
+        );
     }
 }
 
@@ -188,7 +227,8 @@ fn test_namespace_wildcard() {
         None,
         None,
         Some("learning"),
-    ).unwrap();
+    )
+    .unwrap();
 
     mem.add_to_namespace(
         "Python data analysis project",
@@ -197,12 +237,15 @@ fn test_namespace_wildcard() {
         None,
         None,
         Some("work"),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Wildcard search should find both
-    let results = mem.recall_from_namespace("Python", 10, None, None, Some("*")).unwrap();
+    let results = mem
+        .recall_from_namespace("Python", 10, None, None, Some("*"))
+        .unwrap();
     assert_eq!(results.len(), 2);
-    
+
     // Verify both memories are present
     let contents: Vec<_> = results.iter().map(|r| r.record.content.as_str()).collect();
     assert!(contents.iter().any(|c| c.contains("tutorial")));
@@ -222,14 +265,17 @@ fn test_namespace_default() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Should be retrievable from default namespace
     let results = mem.recall("default namespace", 10, None, None).unwrap();
     assert_eq!(results.len(), 1);
 
     // Should also be retrievable with explicit default namespace
-    let results2 = mem.recall_from_namespace("default namespace", 10, None, None, Some("default")).unwrap();
+    let results2 = mem
+        .recall_from_namespace("default namespace", 10, None, None, Some("default"))
+        .unwrap();
     assert_eq!(results2.len(), 1);
 }
 
@@ -243,13 +289,18 @@ fn test_acl_basic() {
     mem.set_agent_id("ceo");
 
     // Grant read permission to trading agent
-    mem.grant("trading-agent", "trading", Permission::Read).unwrap();
+    mem.grant("trading-agent", "trading", Permission::Read)
+        .unwrap();
 
     // Check permission
-    assert!(mem.check_permission("trading-agent", "trading", Permission::Read).unwrap());
-    
+    assert!(mem
+        .check_permission("trading-agent", "trading", Permission::Read)
+        .unwrap());
+
     // Read permission should not grant write
-    assert!(!mem.check_permission("trading-agent", "trading", Permission::Write).unwrap());
+    assert!(!mem
+        .check_permission("trading-agent", "trading", Permission::Write)
+        .unwrap());
 }
 
 #[test]
@@ -259,8 +310,12 @@ fn test_acl_deny() {
     let mem = Memory::new(db_path.to_str().unwrap(), None).unwrap();
 
     // Without any grants, hackathon-agent should not have access to trading namespace
-    assert!(!mem.check_permission("hackathon-agent", "trading", Permission::Read).unwrap());
-    assert!(!mem.check_permission("hackathon-agent", "trading", Permission::Write).unwrap());
+    assert!(!mem
+        .check_permission("hackathon-agent", "trading", Permission::Read)
+        .unwrap());
+    assert!(!mem
+        .check_permission("hackathon-agent", "trading", Permission::Write)
+        .unwrap());
 }
 
 #[test]
@@ -271,20 +326,34 @@ fn test_acl_permission_hierarchy() {
     mem.set_agent_id("ceo");
 
     // Grant admin permission
-    mem.grant("super-agent", "shared", Permission::Admin).unwrap();
+    mem.grant("super-agent", "shared", Permission::Admin)
+        .unwrap();
 
     // Admin should have all permissions
-    assert!(mem.check_permission("super-agent", "shared", Permission::Read).unwrap());
-    assert!(mem.check_permission("super-agent", "shared", Permission::Write).unwrap());
-    assert!(mem.check_permission("super-agent", "shared", Permission::Admin).unwrap());
+    assert!(mem
+        .check_permission("super-agent", "shared", Permission::Read)
+        .unwrap());
+    assert!(mem
+        .check_permission("super-agent", "shared", Permission::Write)
+        .unwrap());
+    assert!(mem
+        .check_permission("super-agent", "shared", Permission::Admin)
+        .unwrap());
 
     // Grant write permission to another agent
-    mem.grant("write-agent", "shared", Permission::Write).unwrap();
+    mem.grant("write-agent", "shared", Permission::Write)
+        .unwrap();
 
     // Write should include read but not admin
-    assert!(mem.check_permission("write-agent", "shared", Permission::Read).unwrap());
-    assert!(mem.check_permission("write-agent", "shared", Permission::Write).unwrap());
-    assert!(!mem.check_permission("write-agent", "shared", Permission::Admin).unwrap());
+    assert!(mem
+        .check_permission("write-agent", "shared", Permission::Read)
+        .unwrap());
+    assert!(mem
+        .check_permission("write-agent", "shared", Permission::Write)
+        .unwrap());
+    assert!(!mem
+        .check_permission("write-agent", "shared", Permission::Admin)
+        .unwrap());
 }
 
 #[test]
@@ -298,12 +367,20 @@ fn test_acl_wildcard_namespace() {
     mem.grant("observer-agent", "*", Permission::Read).unwrap();
 
     // Should be able to read any namespace
-    assert!(mem.check_permission("observer-agent", "trading", Permission::Read).unwrap());
-    assert!(mem.check_permission("observer-agent", "hackathon", Permission::Read).unwrap());
-    assert!(mem.check_permission("observer-agent", "anything", Permission::Read).unwrap());
-    
+    assert!(mem
+        .check_permission("observer-agent", "trading", Permission::Read)
+        .unwrap());
+    assert!(mem
+        .check_permission("observer-agent", "hackathon", Permission::Read)
+        .unwrap());
+    assert!(mem
+        .check_permission("observer-agent", "anything", Permission::Read)
+        .unwrap());
+
     // But not write
-    assert!(!mem.check_permission("observer-agent", "trading", Permission::Write).unwrap());
+    assert!(!mem
+        .check_permission("observer-agent", "trading", Permission::Write)
+        .unwrap());
 }
 
 #[test]
@@ -315,10 +392,14 @@ fn test_acl_revoke() {
 
     // Grant and then revoke
     mem.grant("temp-agent", "data", Permission::Write).unwrap();
-    assert!(mem.check_permission("temp-agent", "data", Permission::Write).unwrap());
+    assert!(mem
+        .check_permission("temp-agent", "data", Permission::Write)
+        .unwrap());
 
     mem.revoke("temp-agent", "data").unwrap();
-    assert!(!mem.check_permission("temp-agent", "data", Permission::Write).unwrap());
+    assert!(!mem
+        .check_permission("temp-agent", "data", Permission::Write)
+        .unwrap());
 }
 
 #[test]
@@ -328,10 +409,14 @@ fn test_acl_global_namespace() {
     let mem = Memory::new(db_path.to_str().unwrap(), None).unwrap();
 
     // Global namespace should be readable by anyone (default behavior)
-    assert!(mem.check_permission("any-agent", "global", Permission::Read).unwrap());
-    
+    assert!(mem
+        .check_permission("any-agent", "global", Permission::Read)
+        .unwrap());
+
     // But not writable by default
-    assert!(!mem.check_permission("any-agent", "global", Permission::Write).unwrap());
+    assert!(!mem
+        .check_permission("any-agent", "global", Permission::Write)
+        .unwrap());
 }
 
 #[test]
@@ -348,7 +433,7 @@ fn test_acl_list_permissions() {
 
     let perms = mem.list_permissions("multi-agent").unwrap();
     assert_eq!(perms.len(), 3);
-    
+
     // Verify all permissions are present
     let namespaces: Vec<_> = perms.iter().map(|p| p.namespace.as_str()).collect();
     assert!(namespaces.contains(&"ns1"));
@@ -363,9 +448,33 @@ fn test_namespace_stats() {
     let mut mem = Memory::new(db_path.to_str().unwrap(), None).unwrap();
 
     // Add memories to different namespaces
-    mem.add_to_namespace("Memory 1", MemoryType::Factual, None, None, None, Some("ns1")).unwrap();
-    mem.add_to_namespace("Memory 2", MemoryType::Factual, None, None, None, Some("ns1")).unwrap();
-    mem.add_to_namespace("Memory 3", MemoryType::Factual, None, None, None, Some("ns2")).unwrap();
+    mem.add_to_namespace(
+        "Memory 1",
+        MemoryType::Factual,
+        None,
+        None,
+        None,
+        Some("ns1"),
+    )
+    .unwrap();
+    mem.add_to_namespace(
+        "Memory 2",
+        MemoryType::Factual,
+        None,
+        None,
+        None,
+        Some("ns1"),
+    )
+    .unwrap();
+    mem.add_to_namespace(
+        "Memory 3",
+        MemoryType::Factual,
+        None,
+        None,
+        None,
+        Some("ns2"),
+    )
+    .unwrap();
 
     // Stats for ns1 should show 2 memories
     let stats_ns1 = mem.stats_ns(Some("ns1")).unwrap();

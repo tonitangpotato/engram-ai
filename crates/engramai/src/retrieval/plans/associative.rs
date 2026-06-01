@@ -98,11 +98,7 @@ pub enum SeedRecallStatus {
 /// implementation wraps the engramai `hybrid_recall` path, but plans
 /// take the trait so unit tests can swap in deterministic stubs.
 pub trait SeedRecaller {
-    fn recall(
-        &self,
-        query: &GraphQuery,
-        k_seed: usize,
-    ) -> (Vec<SeedHit>, SeedRecallStatus);
+    fn recall(&self, query: &GraphQuery, k_seed: usize) -> (Vec<SeedHit>, SeedRecallStatus);
 }
 
 // Blanket impl: `&T: SeedRecaller` whenever `T: SeedRecaller`. Required by
@@ -113,11 +109,7 @@ impl<T> SeedRecaller for &T
 where
     T: SeedRecaller + ?Sized,
 {
-    fn recall(
-        &self,
-        query: &GraphQuery,
-        k_seed: usize,
-    ) -> (Vec<SeedHit>, SeedRecallStatus) {
+    fn recall(&self, query: &GraphQuery, k_seed: usize) -> (Vec<SeedHit>, SeedRecallStatus) {
         (**self).recall(query, k_seed)
     }
 }
@@ -129,11 +121,7 @@ where
 pub struct NullSeedRecaller;
 
 impl SeedRecaller for NullSeedRecaller {
-    fn recall(
-        &self,
-        _query: &GraphQuery,
-        _k_seed: usize,
-    ) -> (Vec<SeedHit>, SeedRecallStatus) {
+    fn recall(&self, _query: &GraphQuery, _k_seed: usize) -> (Vec<SeedHit>, SeedRecallStatus) {
         (Vec::new(), SeedRecallStatus::Ok)
     }
 }
@@ -338,8 +326,7 @@ where
         // Insertion order is preserved by HashMap iteration only
         // unintentionally; we re-sort on output, so it does not
         // matter.
-        let mut pool: HashMap<MemoryId, AssociativeCandidate> =
-            HashMap::with_capacity(self.k_pool);
+        let mut pool: HashMap<MemoryId, AssociativeCandidate> = HashMap::with_capacity(self.k_pool);
 
         // Seed rows enter at distance 0.
         for hit in &seeds {
@@ -363,9 +350,7 @@ where
             // `entities_linked_to_memory` is a cheap join lookup; on
             // error we skip the seed rather than failing the whole
             // plan (associative is best-effort by design — §4.3).
-            let Ok(entity_ids) =
-                graph.entities_linked_to_memory(&hit.memory_id)
-            else {
+            let Ok(entity_ids) = graph.entities_linked_to_memory(&hit.memory_id) else {
                 continue;
             };
             for ent in entity_ids {
@@ -470,8 +455,7 @@ where
         // `expanded_entities` collects the **objects** of 1-hop edges,
         // tagged with the best seed_score reaching them through the
         // bridge entity.
-        let mut expanded_entities: HashMap<EntityId, (f64, EntityId)> =
-            HashMap::new();
+        let mut expanded_entities: HashMap<EntityId, (f64, EntityId)> = HashMap::new();
         for (subj_entity, seed_score) in &seed_entities {
             if pool.len() >= self.k_pool {
                 break;
@@ -516,20 +500,11 @@ where
             if pool.len() >= self.k_pool {
                 break;
             }
-            let Ok(mems) =
-                graph.memories_mentioning_entity(*entity, PER_ENTITY_MEMORY_CAP)
-            else {
+            let Ok(mems) = graph.memories_mentioning_entity(*entity, PER_ENTITY_MEMORY_CAP) else {
                 continue;
             };
             for mid in mems {
-                upsert_candidate(
-                    &mut pool,
-                    mid,
-                    *seed_score,
-                    1,
-                    Some(*via),
-                    self.k_pool,
-                );
+                upsert_candidate(&mut pool, mid, *seed_score, 1, Some(*via), self.k_pool);
                 if pool.len() >= self.k_pool {
                     break;
                 }
@@ -560,20 +535,11 @@ where
             if pool.len() >= self.k_pool {
                 break;
             }
-            let Ok(mems) =
-                graph.memories_mentioning_entity(*entity, PER_ENTITY_MEMORY_CAP)
-            else {
+            let Ok(mems) = graph.memories_mentioning_entity(*entity, PER_ENTITY_MEMORY_CAP) else {
                 continue;
             };
             for mid in mems {
-                upsert_candidate(
-                    &mut pool,
-                    mid,
-                    *seed_score,
-                    1,
-                    Some(*entity),
-                    self.k_pool,
-                );
+                upsert_candidate(&mut pool, mid, *seed_score, 1, Some(*entity), self.k_pool);
                 if pool.len() >= self.k_pool {
                     break;
                 }
@@ -583,8 +549,7 @@ where
 
         // -------- Step 5 — finalize (sort, surface) --------------------
         inputs.budget.begin_stage(Stage::Scoring);
-        let mut candidates: Vec<AssociativeCandidate> =
-            pool.into_values().collect();
+        let mut candidates: Vec<AssociativeCandidate> = pool.into_values().collect();
         // Stable, deterministic ordering before fusion (fusion may
         // re-sort by combined score). Sort key:
         //   1. ascending edge_distance (closer = better default)
@@ -670,8 +635,7 @@ mod tests {
         edge::{ConfidenceSource, ResolutionMethod},
         schema::{CanonicalPredicate, Predicate},
         store::{
-            CandidateMatch, CandidateQuery, EntityMentions, PipelineRunRow,
-            ProposedPredicateStats,
+            CandidateMatch, CandidateQuery, EntityMentions, PipelineRunRow, ProposedPredicateStats,
         },
         Edge, EdgeEnd, Entity, EntityKind, GraphError, KnowledgeTopic,
     };
@@ -697,8 +661,7 @@ mod tests {
 
     impl FakeGraph {
         fn link_mem(&mut self, mem: &str, ents: &[Uuid]) {
-            self.mem_to_entities
-                .insert(mem.to_string(), ents.to_vec());
+            self.mem_to_entities.insert(mem.to_string(), ents.to_vec());
         }
         fn add_edge(&mut self, subj: Uuid, obj: Uuid, conf: f64) {
             self.edges.entry(subj).or_default().push((obj, conf));
@@ -734,10 +697,7 @@ mod tests {
     }
 
     impl GraphRead for FakeGraph {
-        fn entities_linked_to_memory(
-            &self,
-            memory_id: &str,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn entities_linked_to_memory(&self, memory_id: &str) -> Result<Vec<Uuid>, GraphError> {
             Ok(self
                 .mem_to_entities
                 .get(memory_id)
@@ -800,10 +760,7 @@ mod tests {
         ) -> Result<Vec<CandidateMatch>, GraphError> {
             unimplemented!()
         }
-        fn resolve_alias(
-            &self,
-            _n: &str,
-        ) -> Result<Option<Uuid>, GraphError> {
+        fn resolve_alias(&self, _n: &str) -> Result<Option<Uuid>, GraphError> {
             unimplemented!()
         }
         fn get_edge(&self, _id: Uuid) -> Result<Option<Edge>, GraphError> {
@@ -834,34 +791,19 @@ mod tests {
         ) -> Result<Vec<(Uuid, Edge)>, GraphError> {
             unimplemented!()
         }
-        fn entities_in_episode(
-            &self,
-            _e: Uuid,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn entities_in_episode(&self, _e: Uuid) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
-        fn edges_in_episode(
-            &self,
-            _e: Uuid,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn edges_in_episode(&self, _e: Uuid) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
-        fn mentions_of_entity(
-            &self,
-            _e: Uuid,
-        ) -> Result<EntityMentions, GraphError> {
+        fn mentions_of_entity(&self, _e: Uuid) -> Result<EntityMentions, GraphError> {
             unimplemented!()
         }
-        fn edges_sourced_from_memory(
-            &self,
-            _m: &str,
-        ) -> Result<Vec<Edge>, GraphError> {
+        fn edges_sourced_from_memory(&self, _m: &str) -> Result<Vec<Edge>, GraphError> {
             unimplemented!()
         }
-        fn get_topic(
-            &self,
-            _id: Uuid,
-        ) -> Result<Option<KnowledgeTopic>, GraphError> {
+        fn get_topic(&self, _id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError> {
             unimplemented!()
         }
         fn list_topics(
@@ -884,10 +826,7 @@ mod tests {
         ) -> Result<Vec<ProposedPredicateStats>, GraphError> {
             unimplemented!()
         }
-        fn list_failed_episodes(
-            &self,
-            _unresolved_only: bool,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn list_failed_episodes(&self, _unresolved_only: bool) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
         fn list_namespaces(&self) -> Result<Vec<String>, GraphError> {
@@ -903,11 +842,7 @@ mod tests {
         status: SeedRecallStatus,
     }
     impl SeedRecaller for StubSeeds {
-        fn recall(
-            &self,
-            _q: &GraphQuery,
-            _k: usize,
-        ) -> (Vec<SeedHit>, SeedRecallStatus) {
+        fn recall(&self, _q: &GraphQuery, _k: usize) -> (Vec<SeedHit>, SeedRecallStatus) {
             (self.hits.clone(), self.status.clone())
         }
     }
@@ -1020,8 +955,11 @@ mod tests {
         assert_eq!(res.outcome, AssociativeOutcome::Ok);
         // 1 seed + 2 expanded
         assert_eq!(res.candidates.len(), 3);
-        let by_id: Map<String, &AssociativeCandidate> =
-            res.candidates.iter().map(|c| (c.memory_id.clone(), c)).collect();
+        let by_id: Map<String, &AssociativeCandidate> = res
+            .candidates
+            .iter()
+            .map(|c| (c.memory_id.clone(), c))
+            .collect();
         assert_eq!(by_id["seed1"].edge_distance, 0);
         assert_eq!(by_id["expanded1"].edge_distance, 1);
         assert_eq!(by_id["expanded2"].edge_distance, 1);
@@ -1159,10 +1097,7 @@ mod tests {
     }
 
     impl crate::retrieval::plans::factual::EntityResolver for StubResolver {
-        fn resolve(
-            &self,
-            _query: &str,
-        ) -> Vec<crate::retrieval::plans::factual::ResolvedAnchor> {
+        fn resolve(&self, _query: &str) -> Vec<crate::retrieval::plans::factual::ResolvedAnchor> {
             self.anchors.clone()
         }
     }
@@ -1191,13 +1126,11 @@ mod tests {
             status: SeedRecallStatus::Ok,
         };
         let resolver = StubResolver {
-            anchors: vec![
-                crate::retrieval::plans::factual::ResolvedAnchor {
-                    entity_id: e_anchor,
-                    canonical_name: "Caroline".into(),
-                    match_strength: 1.0,
-                },
-            ],
+            anchors: vec![crate::retrieval::plans::factual::ResolvedAnchor {
+                entity_id: e_anchor,
+                canonical_name: "Caroline".into(),
+                match_strength: 1.0,
+            }],
         };
 
         let plan_off = AssociativePlan::new(seeds.clone());
@@ -1336,13 +1269,11 @@ mod tests {
             status: SeedRecallStatus::Ok,
         };
         let resolver = StubResolver {
-            anchors: vec![
-                crate::retrieval::plans::factual::ResolvedAnchor {
-                    entity_id: e_anchor,
-                    canonical_name: "Caroline".into(),
-                    match_strength: 1.0,
-                },
-            ],
+            anchors: vec![crate::retrieval::plans::factual::ResolvedAnchor {
+                entity_id: e_anchor,
+                canonical_name: "Caroline".into(),
+                match_strength: 1.0,
+            }],
         };
 
         // Baseline: channel off — the anchor's memories must NOT

@@ -131,7 +131,7 @@ pub struct PipelineRun {
     pub status: RunStatus,
     pub started_at: f64,
     pub finished_at: Option<f64>,
-    pub stats: serde_json::Value,         // free-form per-pipeline stats blob
+    pub stats: serde_json::Value, // free-form per-pipeline stats blob
     pub input_summary: serde_json::Value, // captured at begin
 }
 
@@ -235,7 +235,7 @@ pub struct ResolutionTrace {
     pub run_id: Uuid,
     pub edge_id: Option<Uuid>,
     pub entity_id: Option<Uuid>,
-    pub stage: String, // 'entity_extract' | 'edge_extract' | 'dedup' | 'persist'
+    pub stage: String,    // 'entity_extract' | 'edge_extract' | 'dedup' | 'persist'
     pub decision: String, // 'new' | 'matched_existing' | 'superseded' | 'merged' | 'rejected'
     pub reason: Option<String>,
     pub candidates: Option<serde_json::Value>,
@@ -265,8 +265,7 @@ mod tests {
 
     #[test]
     fn pipeline_run_finish_succeeded_transitions() {
-        let mut r =
-            PipelineRun::start(PipelineKind::Resolution, serde_json::Value::Null, 1.0);
+        let mut r = PipelineRun::start(PipelineKind::Resolution, serde_json::Value::Null, 1.0);
         r.finish_succeeded(serde_json::json!({"ok": true}), 2.0)
             .unwrap();
         assert_eq!(r.status, RunStatus::Succeeded);
@@ -276,8 +275,7 @@ mod tests {
 
     #[test]
     fn pipeline_run_finish_failed_transitions() {
-        let mut r =
-            PipelineRun::start(PipelineKind::Reextract, serde_json::Value::Null, 1.0);
+        let mut r = PipelineRun::start(PipelineKind::Reextract, serde_json::Value::Null, 1.0);
         r.finish_failed(serde_json::json!({"err": "timeout"}), 5.0)
             .unwrap();
         assert_eq!(r.status, RunStatus::Failed);
@@ -285,19 +283,15 @@ mod tests {
 
     #[test]
     fn pipeline_run_finish_cancelled_transitions() {
-        let mut r = PipelineRun::start(
-            PipelineKind::KnowledgeCompile,
-            serde_json::Value::Null,
-            1.0,
-        );
+        let mut r =
+            PipelineRun::start(PipelineKind::KnowledgeCompile, serde_json::Value::Null, 1.0);
         r.finish_cancelled(serde_json::Value::Null, 3.0).unwrap();
         assert_eq!(r.status, RunStatus::Cancelled);
     }
 
     #[test]
     fn pipeline_run_double_finish_rejected() {
-        let mut r =
-            PipelineRun::start(PipelineKind::Resolution, serde_json::Value::Null, 1.0);
+        let mut r = PipelineRun::start(PipelineKind::Resolution, serde_json::Value::Null, 1.0);
         r.finish_succeeded(serde_json::Value::Null, 2.0).unwrap();
         let err = r.finish_failed(serde_json::Value::Null, 3.0);
         assert!(err.is_err());
@@ -305,8 +299,7 @@ mod tests {
 
     #[test]
     fn pipeline_run_transition_from_failed_rejected() {
-        let mut r =
-            PipelineRun::start(PipelineKind::Resolution, serde_json::Value::Null, 1.0);
+        let mut r = PipelineRun::start(PipelineKind::Resolution, serde_json::Value::Null, 1.0);
         r.finish_failed(serde_json::Value::Null, 2.0).unwrap();
         assert!(r.finish_succeeded(serde_json::Value::Null, 3.0).is_err());
     }

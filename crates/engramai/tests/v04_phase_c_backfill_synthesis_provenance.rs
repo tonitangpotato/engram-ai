@@ -155,22 +155,45 @@ fn t25_single_row_writes_provenance_edge_with_legacy_id_passthrough() {
     assert_eq!(run.rows_skipped_existing, 0);
 
     // Critical: edge.id == legacy.id (pass-through).
-    let (eid, kind, pred, src, tgt, conf, ns): (String, String, String, String, String, f64, String) =
-        storage
-            .conn()
-            .query_row(
-                "SELECT id, edge_kind, predicate, source_id, target_id, confidence, namespace \
+    let (eid, kind, pred, src, tgt, conf, ns): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        f64,
+        String,
+    ) = storage
+        .conn()
+        .query_row(
+            "SELECT id, edge_kind, predicate, source_id, target_id, confidence, namespace \
                  FROM edges WHERE id = ?",
-                params!["prov-1"],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-            )
-            .expect("edge exists with legacy.id");
+            params!["prov-1"],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .expect("edge exists with legacy.id");
     assert_eq!(eid, "prov-1", "edge.id MUST equal legacy.id (no hash)");
     assert_eq!(kind, "provenance");
     assert_eq!(pred, "derived_from");
-    assert_eq!(src, "ins-1", "source_id = insight_id (insight derived from source)");
+    assert_eq!(
+        src, "ins-1",
+        "source_id = insight_id (insight derived from source)"
+    );
     assert_eq!(tgt, "src-1");
-    assert!((conf - 0.82).abs() < 1e-9, "FINDING-3: confidence passes through from legacy column, NOT hardcoded 1.0");
+    assert!(
+        (conf - 0.82).abs() < 1e-9,
+        "FINDING-3: confidence passes through from legacy column, NOT hardcoded 1.0"
+    );
     assert_eq!(ns, "default", "namespace inherited from insight memory");
 }
 
@@ -206,11 +229,17 @@ fn t25_attributes_contain_gate_decision_and_parsed_gate_scores() {
     let attrs: serde_json::Value = serde_json::from_str(&attrs_str).unwrap();
     assert_eq!(attrs["gate_decision"], "SYNTHESIZE");
     assert_eq!(attrs["cluster_id"], "cluster-B");
-    assert_eq!(attrs["synthesis_timestamp"], "2026-05-12T02:54:30.702859+00:00");
+    assert_eq!(
+        attrs["synthesis_timestamp"],
+        "2026-05-12T02:54:30.702859+00:00"
+    );
     assert_eq!(attrs["source_original_importance"], 0.6);
 
     // gate_scores MUST be a nested object, NOT a quoted JSON-encoded string.
-    assert!(attrs["gate_scores"].is_object(), "gate_scores parsed as nested JSON, not a string");
+    assert!(
+        attrs["gate_scores"].is_object(),
+        "gate_scores parsed as nested JSON, not a string"
+    );
     assert!((attrs["gate_scores"]["quality"].as_f64().unwrap() - 0.42).abs() < 1e-9);
     assert_eq!(attrs["gate_scores"]["type_diversity"], 3);
 }
@@ -221,8 +250,16 @@ fn t25_dangling_endpoint_skipped_and_recovers_after_t19() {
     seed_legacy_memory(&mut storage, "ins-3", "default");
     seed_legacy_memory(&mut storage, "src-3", "default");
     seed_legacy_provenance(
-        &storage, "prov-3", "ins-3", "src-3", "cluster-C",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.5, None,
+        &storage,
+        "prov-3",
+        "ins-3",
+        "src-3",
+        "cluster-C",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.5,
+        None,
     );
     // ISS-199: provenance endpoints now FK→`nodes(id)`. Simulate a legacy
     // row by dropping the nodes WITH FK enforcement OFF, leaving the
@@ -240,11 +277,18 @@ fn t25_dangling_endpoint_skipped_and_recovers_after_t19() {
     let run = backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
     assert_eq!(run.rows_read, 1);
     assert_eq!(run.rows_inserted, 0);
-    assert_eq!(run.rows_skipped_existing, 1, "dangling endpoint counts in skipped (via notes)");
+    assert_eq!(
+        run.rows_skipped_existing, 1,
+        "dangling endpoint counts in skipped (via notes)"
+    );
 
     let edge_count: i64 = storage
         .conn()
-        .query_row("SELECT COUNT(*) FROM edges WHERE id = ?", params!["prov-3"], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE id = ?",
+            params!["prov-3"],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(edge_count, 0, "no edge written when endpoints missing");
 
@@ -255,7 +299,11 @@ fn t25_dangling_endpoint_skipped_and_recovers_after_t19() {
 
     let edge_count2: i64 = storage
         .conn()
-        .query_row("SELECT COUNT(*) FROM edges WHERE id = ?", params!["prov-3"], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE id = ?",
+            params!["prov-3"],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(edge_count2, 1);
 }
@@ -266,8 +314,16 @@ fn t25_idempotent_rerun_inserts_zero() {
     seed_legacy_memory(&mut storage, "ins-4", "default");
     seed_legacy_memory(&mut storage, "src-4", "default");
     seed_legacy_provenance(
-        &storage, "prov-4", "ins-4", "src-4", "cluster-D",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.6, None,
+        &storage,
+        "prov-4",
+        "ins-4",
+        "src-4",
+        "cluster-D",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.6,
+        None,
     );
     run_node_prereq(&mut storage);
 
@@ -281,7 +337,11 @@ fn t25_idempotent_rerun_inserts_zero() {
 
     let edge_count: i64 = storage
         .conn()
-        .query_row("SELECT COUNT(*) FROM edges WHERE id = ?", params!["prov-4"], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE id = ?",
+            params!["prov-4"],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(edge_count, 1, "still exactly one edge");
 }
@@ -294,12 +354,28 @@ fn t25_namespace_filter_restricts_via_insight_memory_namespace() {
     seed_legacy_memory(&mut storage, "ins-B", "ns-b");
     seed_legacy_memory(&mut storage, "src-B", "ns-b");
     seed_legacy_provenance(
-        &storage, "prov-A", "ins-A", "src-A", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.8, None,
+        &storage,
+        "prov-A",
+        "ins-A",
+        "src-A",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.8,
+        None,
     );
     seed_legacy_provenance(
-        &storage, "prov-B", "ins-B", "src-B", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.8, None,
+        &storage,
+        "prov-B",
+        "ins-B",
+        "src-B",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.8,
+        None,
     );
     run_node_prereq(&mut storage);
 
@@ -309,13 +385,21 @@ fn t25_namespace_filter_restricts_via_insight_memory_namespace() {
 
     let prov_a_ns: String = storage
         .conn()
-        .query_row("SELECT namespace FROM edges WHERE id = ?", params!["prov-A"], |r| r.get(0))
+        .query_row(
+            "SELECT namespace FROM edges WHERE id = ?",
+            params!["prov-A"],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(prov_a_ns, "ns-a");
 
     let prov_b_exists: i64 = storage
         .conn()
-        .query_row("SELECT COUNT(*) FROM edges WHERE id = ?", params!["prov-B"], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE id = ?",
+            params!["prov-B"],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(prov_b_exists, 0, "ns-b not iterated; no edge");
 }
@@ -331,16 +415,40 @@ fn t25_confidence_passes_through_distinct_legacy_values() {
     seed_legacy_memory(&mut storage, "src-q", "default");
     seed_legacy_memory(&mut storage, "src-r", "default");
     seed_legacy_provenance(
-        &storage, "prov-p", "ins-x", "src-p", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.95, None,
+        &storage,
+        "prov-p",
+        "ins-x",
+        "src-p",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.95,
+        None,
     );
     seed_legacy_provenance(
-        &storage, "prov-q", "ins-x", "src-q", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.50, None,
+        &storage,
+        "prov-q",
+        "ins-x",
+        "src-q",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.50,
+        None,
     );
     seed_legacy_provenance(
-        &storage, "prov-r", "ins-x", "src-r", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.12, None,
+        &storage,
+        "prov-r",
+        "ins-x",
+        "src-r",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.12,
+        None,
     );
     run_node_prereq(&mut storage);
     backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
@@ -366,14 +474,24 @@ fn t25_malformed_gate_scores_preserved_as_string() {
     seed_legacy_memory(&mut storage, "ins-m", "default");
     seed_legacy_memory(&mut storage, "src-m", "default");
     seed_legacy_provenance(
-        &storage, "prov-m", "ins-m", "src-m", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE",
-        Some("{this is not json"), 0.8, None,
+        &storage,
+        "prov-m",
+        "ins-m",
+        "src-m",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        Some("{this is not json"),
+        0.8,
+        None,
     );
     run_node_prereq(&mut storage);
 
     let run = backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
-    assert_eq!(run.rows_inserted, 1, "malformed gate_scores must not crash the driver");
+    assert_eq!(
+        run.rows_inserted, 1,
+        "malformed gate_scores must not crash the driver"
+    );
 
     let attrs_str: String = storage
         .conn()
@@ -395,8 +513,16 @@ fn t25_null_source_original_importance_omitted_from_attributes() {
     seed_legacy_memory(&mut storage, "ins-n", "default");
     seed_legacy_memory(&mut storage, "src-n", "default");
     seed_legacy_provenance(
-        &storage, "prov-n", "ins-n", "src-n", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.5, None,
+        &storage,
+        "prov-n",
+        "ins-n",
+        "src-n",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.5,
+        None,
     );
     run_node_prereq(&mut storage);
     backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
@@ -410,8 +536,10 @@ fn t25_null_source_original_importance_omitted_from_attributes() {
         )
         .unwrap();
     let attrs: serde_json::Value = serde_json::from_str(&attrs_str).unwrap();
-    assert!(attrs.get("source_original_importance").is_none(),
-            "NULL legacy column → key absent, not stored as JSON null");
+    assert!(
+        attrs.get("source_original_importance").is_none(),
+        "NULL legacy column → key absent, not stored as JSON null"
+    );
 }
 
 #[test]
@@ -424,7 +552,11 @@ fn t25_empty_table_no_op() {
 
     let count: i64 = storage
         .conn()
-        .query_row("SELECT COUNT(*) FROM edges WHERE edge_kind = 'provenance'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE edge_kind = 'provenance'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(count, 0);
 }
@@ -440,12 +572,20 @@ fn t25_synthesis_timestamp_parsed_to_recorded_at_epoch() {
     let expected_epoch = chrono::DateTime::parse_from_rfc3339(ts)
         .unwrap()
         .with_timezone(&Utc);
-    let expected_f64 = expected_epoch.timestamp() as f64
-        + (expected_epoch.timestamp_subsec_nanos() as f64 / 1e9);
+    let expected_f64 =
+        expected_epoch.timestamp() as f64 + (expected_epoch.timestamp_subsec_nanos() as f64 / 1e9);
 
     seed_legacy_provenance(
-        &storage, "prov-t", "ins-t", "src-t", "cl",
-        ts, "SYNTHESIZE", None, 0.6, None,
+        &storage,
+        "prov-t",
+        "ins-t",
+        "src-t",
+        "cl",
+        ts,
+        "SYNTHESIZE",
+        None,
+        0.6,
+        None,
     );
     run_node_prereq(&mut storage);
     backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
@@ -458,8 +598,10 @@ fn t25_synthesis_timestamp_parsed_to_recorded_at_epoch() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert!((recorded - expected_f64).abs() < 1e-3,
-            "recorded_at = parsed synthesis_timestamp ({expected_f64} expected, got {recorded})");
+    assert!(
+        (recorded - expected_f64).abs() < 1e-3,
+        "recorded_at = parsed synthesis_timestamp ({expected_f64} expected, got {recorded})"
+    );
     assert!((created - expected_f64).abs() < 1e-3);
     assert!((updated - expected_f64).abs() < 1e-3);
 }
@@ -470,24 +612,40 @@ fn t25_audit_row_records_run_outcome() {
     seed_legacy_memory(&mut storage, "ins-a", "default");
     seed_legacy_memory(&mut storage, "src-a", "default");
     seed_legacy_provenance(
-        &storage, "prov-a", "ins-a", "src-a", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.7, None,
+        &storage,
+        "prov-a",
+        "ins-a",
+        "src-a",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.7,
+        None,
     );
     run_node_prereq(&mut storage);
     let run = backfill_synthesis_provenance_to_edges(&mut storage, None).unwrap();
 
-    let (table, read, inserted, skipped, failed, notes): (
-        String, i64, i64, i64, i64, String,
-    ) = storage
-        .conn()
-        .query_row(
-            "SELECT legacy_table, rows_read, rows_inserted, \
+    let (table, read, inserted, skipped, failed, notes): (String, i64, i64, i64, i64, String) =
+        storage
+            .conn()
+            .query_row(
+                "SELECT legacy_table, rows_read, rows_inserted, \
              rows_skipped_existing, rows_failed, notes \
              FROM backfill_runs WHERE run_id = ?",
-            params![run.run_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-        )
-        .unwrap();
+                params![run.run_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
     assert_eq!(table, "synthesis_provenance");
     assert_eq!(read, 1);
     assert_eq!(inserted, 1);
@@ -495,8 +653,14 @@ fn t25_audit_row_records_run_outcome() {
     assert_eq!(failed, 0);
 
     let notes_val: serde_json::Value = serde_json::from_str(&notes).unwrap();
-    assert_eq!(notes_val["driver"], "backfill_synthesis_provenance_to_edges");
-    assert_eq!(notes_val["confidence_policy"], "legacy.confidence pass-through (FINDING-3 reference impl)");
+    assert_eq!(
+        notes_val["driver"],
+        "backfill_synthesis_provenance_to_edges"
+    );
+    assert_eq!(
+        notes_val["confidence_policy"],
+        "legacy.confidence pass-through (FINDING-3 reference impl)"
+    );
 }
 
 #[test]
@@ -509,12 +673,28 @@ fn t25_counter_invariant_holds_with_mixed_outcomes() {
     seed_legacy_memory(&mut storage, "src-bad", "default");
 
     seed_legacy_provenance(
-        &storage, "prov-ok", "ins-ok", "src-ok", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.7, None,
+        &storage,
+        "prov-ok",
+        "ins-ok",
+        "src-ok",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.7,
+        None,
     );
     seed_legacy_provenance(
-        &storage, "prov-bad", "ins-bad", "src-bad", "cl",
-        "2026-05-12T00:00:00+00:00", "SYNTHESIZE", None, 0.7, None,
+        &storage,
+        "prov-bad",
+        "ins-bad",
+        "src-bad",
+        "cl",
+        "2026-05-12T00:00:00+00:00",
+        "SYNTHESIZE",
+        None,
+        0.7,
+        None,
     );
     // Project nodes only for the OK pair.
     run_node_prereq(&mut storage);
@@ -536,7 +716,13 @@ fn t25_counter_invariant_holds_with_mixed_outcomes() {
     // returned values explicitly.
     assert_eq!(run.rows_read, 2);
     assert_eq!(run.rows_inserted, 1);
-    assert_eq!(run.rows_skipped_existing, 1, "dangling row + zero pre-existing collapse into skipped bucket");
+    assert_eq!(
+        run.rows_skipped_existing, 1,
+        "dangling row + zero pre-existing collapse into skipped bucket"
+    );
     assert_eq!(run.rows_failed, 0);
-    assert_eq!(run.rows_inserted + run.rows_skipped_existing + run.rows_failed, run.rows_read);
+    assert_eq!(
+        run.rows_inserted + run.rows_skipped_existing + run.rows_failed,
+        run.rows_read
+    );
 }

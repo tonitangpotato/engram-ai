@@ -270,13 +270,18 @@ fn t22_pre_existing_structural_edge_pass2_merges() {
     );
 
     let run = backfill_entity_relations_to_edges(&mut storage, None).expect("backfill");
-    assert_eq!(run.rows_inserted, 0, "INSERT OR IGNORE no-op on existing id");
+    assert_eq!(
+        run.rows_inserted, 0,
+        "INSERT OR IGNORE no-op on existing id"
+    );
 
     let attrs: String = storage
         .conn()
-        .query_row("SELECT attributes FROM edges WHERE id='rel-collide'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT attributes FROM edges WHERE id='rel-collide'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
     // existing-wins: canonical source stays
@@ -289,9 +294,11 @@ fn t22_pre_existing_structural_edge_pass2_merges() {
     // attributes; canonical confidence stays at 0.95
     let conf: f64 = storage
         .conn()
-        .query_row("SELECT confidence FROM edges WHERE id='rel-collide'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT confidence FROM edges WHERE id='rel-collide'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert!((conf - 0.95).abs() < 1e-9);
 }
@@ -380,18 +387,22 @@ fn t22_idempotent_rerun_keeps_attributes_stable() {
     backfill_entity_relations_to_edges(&mut storage, None).expect("first");
     let attrs1: String = storage
         .conn()
-        .query_row("SELECT attributes FROM edges WHERE id='rel-idem'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT attributes FROM edges WHERE id='rel-idem'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
 
     let r2 = backfill_entity_relations_to_edges(&mut storage, None).expect("second");
     assert_eq!(r2.rows_inserted, 0);
     let attrs2: String = storage
         .conn()
-        .query_row("SELECT attributes FROM edges WHERE id='rel-idem'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT attributes FROM edges WHERE id='rel-idem'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let p1: serde_json::Value = serde_json::from_str(&attrs1).unwrap();
     let p2: serde_json::Value = serde_json::from_str(&attrs2).unwrap();
@@ -409,10 +420,26 @@ fn t22_namespace_filter() {
     run_t21(&mut storage);
 
     seed_legacy_relation(
-        &storage, "rel-a", "ent-a-ns-a", "ent-b-ns-a", "knows", 1.0, None, "ns-a", None,
+        &storage,
+        "rel-a",
+        "ent-a-ns-a",
+        "ent-b-ns-a",
+        "knows",
+        1.0,
+        None,
+        "ns-a",
+        None,
     );
     seed_legacy_relation(
-        &storage, "rel-b", "ent-a-ns-b", "ent-b-ns-b", "knows", 1.0, None, "ns-b", None,
+        &storage,
+        "rel-b",
+        "ent-a-ns-b",
+        "ent-b-ns-b",
+        "knows",
+        1.0,
+        None,
+        "ns-b",
+        None,
     );
 
     let run = backfill_entity_relations_to_edges(&mut storage, Some("ns-a")).unwrap();
@@ -503,9 +530,11 @@ fn t22_null_source_and_null_metadata_yield_empty_attributes() {
 
     let attrs: String = storage
         .conn()
-        .query_row("SELECT attributes FROM edges WHERE id='rel-null'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT attributes FROM edges WHERE id='rel-null'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
     let obj = parsed.as_object().unwrap();
@@ -554,7 +583,9 @@ fn iss112_b_t22_mutated_metadata_rerun_existing_wins() {
 
     let attrs1: String = storage
         .conn()
-        .query_row("SELECT attributes FROM edges WHERE id='rel-mut'", [], |r| r.get(0))
+        .query_row("SELECT attributes FROM edges WHERE id='rel-mut'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let parsed1: serde_json::Value = serde_json::from_str(&attrs1).unwrap();
     assert_eq!(parsed1["k1"], "v1");
@@ -562,7 +593,9 @@ fn iss112_b_t22_mutated_metadata_rerun_existing_wins() {
     // Snapshot updated_at after first run for §D idempotency-noise check.
     let updated_at_run1: f64 = storage
         .conn()
-        .query_row("SELECT updated_at FROM edges WHERE id='rel-mut'", [], |r| r.get(0))
+        .query_row("SELECT updated_at FROM edges WHERE id='rel-mut'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
 
     // MUTATE the legacy metadata in two ways:
@@ -585,7 +618,9 @@ fn iss112_b_t22_mutated_metadata_rerun_existing_wins() {
 
     let attrs2: String = storage
         .conn()
-        .query_row("SELECT attributes FROM edges WHERE id='rel-mut'", [], |r| r.get(0))
+        .query_row("SELECT attributes FROM edges WHERE id='rel-mut'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let parsed2: serde_json::Value = serde_json::from_str(&attrs2).unwrap();
 
@@ -604,7 +639,9 @@ fn iss112_b_t22_mutated_metadata_rerun_existing_wins() {
     // don't bump; mutated reruns that produce a real merge DO bump.
     let updated_at_run2: f64 = storage
         .conn()
-        .query_row("SELECT updated_at FROM edges WHERE id='rel-mut'", [], |r| r.get(0))
+        .query_row("SELECT updated_at FROM edges WHERE id='rel-mut'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert!(
         updated_at_run2 > updated_at_run1,

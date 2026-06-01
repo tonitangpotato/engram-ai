@@ -92,27 +92,22 @@ use crate::types::MemoryRecord;
 pub(crate) struct PlanCollaborators<'a> {
     /// Resolves a free-form query to candidate entity anchors for the
     /// Factual plan (and the Hybrid Factual sub-plan).
-    pub entity_resolver:
-        &'a dyn crate::retrieval::plans::factual::EntityResolver,
+    pub entity_resolver: &'a dyn crate::retrieval::plans::factual::EntityResolver,
 
     /// Time-window memory lookup for the Episodic plan (and the Hybrid
     /// Episodic sub-plan).
-    pub episodic_store:
-        &'a dyn crate::retrieval::plans::episodic::EpisodicMemoryStore,
+    pub episodic_store: &'a dyn crate::retrieval::plans::episodic::EpisodicMemoryStore,
 
     /// Hybrid-search seed lookup for the Associative plan.
-    pub seed_recaller:
-        &'a dyn crate::retrieval::plans::associative::SeedRecaller,
+    pub seed_recaller: &'a dyn crate::retrieval::plans::associative::SeedRecaller,
 
     /// L5 topic search for the Abstract plan (and the Hybrid Abstract
     /// sub-plan).
-    pub topic_searcher:
-        &'a dyn crate::retrieval::plans::abstract_l5::TopicSearcher,
+    pub topic_searcher: &'a dyn crate::retrieval::plans::abstract_l5::TopicSearcher,
 
     /// Affect-tagged seed recall for the Affective plan (and the
     /// Hybrid Affective sub-plan).
-    pub affective_recaller:
-        &'a dyn crate::retrieval::plans::affective::AffectiveSeedRecaller,
+    pub affective_recaller: &'a dyn crate::retrieval::plans::affective::AffectiveSeedRecaller,
 
     /// Optional embedder for query→memory cosine in plans that don't
     /// otherwise emit a `vector_score`. ISS-172: Factual plan
@@ -187,10 +182,7 @@ pub(crate) trait RecordLoader {
     /// per-`graph_query` and is captured at loader construction time
     /// (along with the `&Storage` lifetime). Keeping it off the method
     /// keeps test loaders' implementations a no-op.
-    fn load_embeddings(
-        &self,
-        _ids: &[&str],
-    ) -> std::collections::HashMap<String, Vec<f32>> {
+    fn load_embeddings(&self, _ids: &[&str]) -> std::collections::HashMap<String, Vec<f32>> {
         std::collections::HashMap::new()
     }
 
@@ -211,11 +203,7 @@ pub(crate) trait RecordLoader {
     /// model FTS get `Some(0.0)` for every candidate (BM25 channel
     /// becomes uniform zero and fusion behaves identically to the
     /// pre-ISS-147 embed-only path — tests stay deterministic).
-    fn fts_scores(
-        &self,
-        _query: &str,
-        _limit: usize,
-    ) -> std::collections::HashMap<String, f64> {
+    fn fts_scores(&self, _query: &str, _limit: usize) -> std::collections::HashMap<String, f64> {
         std::collections::HashMap::new()
     }
 }
@@ -273,10 +261,7 @@ impl RecordLoader for StorageLoader<'_> {
         ids.iter().map(|id| by_id.remove(id)).collect()
     }
 
-    fn load_embeddings(
-        &self,
-        ids: &[&str],
-    ) -> std::collections::HashMap<String, Vec<f32>> {
+    fn load_embeddings(&self, ids: &[&str]) -> std::collections::HashMap<String, Vec<f32>> {
         if ids.is_empty() || self.model.is_empty() {
             return std::collections::HashMap::new();
         }
@@ -290,11 +275,7 @@ impl RecordLoader for StorageLoader<'_> {
             .unwrap_or_default()
     }
 
-    fn fts_scores(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> std::collections::HashMap<String, f64> {
+    fn fts_scores(&self, query: &str, limit: usize) -> std::collections::HashMap<String, f64> {
         if query.trim().is_empty() || limit == 0 {
             return std::collections::HashMap::new();
         }
@@ -423,7 +404,11 @@ pub(crate) fn factual_to_scored(
         .unwrap_or(0.0)
         .clamp(0.0, 0.999);
 
-    let ids: Vec<MemoryId> = result.memories.iter().map(|m| m.memory_id.clone()).collect();
+    let ids: Vec<MemoryId> = result
+        .memories
+        .iter()
+        .map(|m| m.memory_id.clone())
+        .collect();
     let records = loader.load_many(&ids);
 
     // ISS-139 Strategy A: batch-fetch embeddings so the MMR Stage C.5
@@ -439,27 +424,27 @@ pub(crate) fn factual_to_scored(
         .zip(records.into_iter())
         .filter_map(|(row, rec)| {
             let record = rec?; // drop missing rows silently
-            // ISS-192 fix 3 — edge-seed privilege.
-            //
-            // Pure breadth (`seen_via.len() / total_anchors`) treats a
-            // candidate reached via a typed graph edge that *asserts* the
-            // queried relationship identically to one that merely
-            // co-mentions the anchor in N episodes. On dense corpora a
-            // coincidental high-co-mention memory outranks the asserting
-            // edge's source episode, which is exactly how conv-26-q0's
-            // dated gold episode (seen via one PartOf edge) lost to
-            // undated co-mentions. This is breadth-dilution (Defect B).
-            //
-            // The fix is ADDITIVE and removes no candidates (multi-hop
-            // bridges, which are co-mention based, keep their breadth
-            // score — they only lose the artificial advantage over an
-            // asserting edge). We split the [0,1] graph_score range into
-            // two bands: pure co-mentions map into `[0, 1-w]` and
-            // edge-seeded candidates into `[w, 1]`, so ANY edge-seeded
-            // hit outscores ANY pure co-mention. `w` (the bonus weight)
-            // is read from `ENGRAM_FACTUAL_EDGE_SEED_BONUS`, default 0.0
-            // → byte-identical to pre-fix behaviour (inert until the A/B
-            // sets it).
+                               // ISS-192 fix 3 — edge-seed privilege.
+                               //
+                               // Pure breadth (`seen_via.len() / total_anchors`) treats a
+                               // candidate reached via a typed graph edge that *asserts* the
+                               // queried relationship identically to one that merely
+                               // co-mentions the anchor in N episodes. On dense corpora a
+                               // coincidental high-co-mention memory outranks the asserting
+                               // edge's source episode, which is exactly how conv-26-q0's
+                               // dated gold episode (seen via one PartOf edge) lost to
+                               // undated co-mentions. This is breadth-dilution (Defect B).
+                               //
+                               // The fix is ADDITIVE and removes no candidates (multi-hop
+                               // bridges, which are co-mention based, keep their breadth
+                               // score — they only lose the artificial advantage over an
+                               // asserting edge). We split the [0,1] graph_score range into
+                               // two bands: pure co-mentions map into `[0, 1-w]` and
+                               // edge-seeded candidates into `[w, 1]`, so ANY edge-seeded
+                               // hit outscores ANY pure co-mention. `w` (the bonus weight)
+                               // is read from `ENGRAM_FACTUAL_EDGE_SEED_BONUS`, default 0.0
+                               // → byte-identical to pre-fix behaviour (inert until the A/B
+                               // sets it).
             let breadth = (row.seen_via.len() as f64) / total_anchors;
             let graph_score = edge_seeded_graph_score(breadth, row.edge_seeded, edge_seed_bonus);
             // ISS-147 AC-3: Some(0.0) for FTS misses (NOT None) —
@@ -479,9 +464,7 @@ pub(crate) fn factual_to_scored(
                 let cosine = embedding
                     .as_ref()
                     .map(|mv| {
-                        crate::embeddings::EmbeddingProvider::cosine_similarity(
-                            qv, mv,
-                        ) as f64
+                        crate::embeddings::EmbeddingProvider::cosine_similarity(qv, mv) as f64
                     })
                     .unwrap_or(0.0);
                 cosine.clamp(0.0, 1.0)
@@ -593,7 +576,11 @@ pub(crate) fn associative_to_scored(
         return Vec::new();
     }
 
-    let ids: Vec<MemoryId> = result.candidates.iter().map(|c| c.memory_id.clone()).collect();
+    let ids: Vec<MemoryId> = result
+        .candidates
+        .iter()
+        .map(|c| c.memory_id.clone())
+        .collect();
     let records = loader.load_many(&ids);
 
     // ISS-139 Strategy A: batch-fetch embeddings so MMR sees diversity
@@ -650,11 +637,7 @@ pub(crate) fn abstract_to_scored(
             topic: cand.topic.clone(),
             score: cand.topic_score,
             source_memories: cand.source_memories.clone(),
-            contributing_entities: cand
-                .contributing_entities
-                .iter()
-                .copied()
-                .collect(),
+            contributing_entities: cand.contributing_entities.iter().copied().collect(),
         })
         .collect()
 }
@@ -673,7 +656,11 @@ pub(crate) fn affective_to_scored(
         return Vec::new();
     }
 
-    let ids: Vec<MemoryId> = result.candidates.iter().map(|c| c.memory_id.clone()).collect();
+    let ids: Vec<MemoryId> = result
+        .candidates
+        .iter()
+        .map(|c| c.memory_id.clone())
+        .collect();
     let records = loader.load_many(&ids);
 
     // ISS-139 Strategy A: batch-fetch embeddings for MMR diversity on
@@ -878,8 +865,7 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                 let plan = crate::retrieval::plans::factual::FactualPlan::new();
                 let resolver = self.collaborators.entity_resolver;
                 let mut budget = crate::retrieval::budget::BudgetController::with_defaults();
-                let exec_result = plan
-                    .execute(&inputs, resolver, self.graph, &mut budget);
+                let exec_result = plan.execute(&inputs, resolver, self.graph, &mut budget);
                 // ISS-063 diagnostic: surface the plan-local outcome before
                 // it gets discarded by `SubPlanResult` (which only carries
                 // items, not outcome). Without this log a Factual sub-plan
@@ -940,11 +926,7 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                     // ISS-059: thread per-query namespace from `GraphQuery`
                     // so Hybrid's Abstract sub-plan reads the same namespace
                     // as the real adapters constructed in `Memory::graph_query`.
-                    namespace: self
-                        .query
-                        .namespace
-                        .as_deref()
-                        .unwrap_or("default"),
+                    namespace: self.query.namespace.as_deref().unwrap_or("default"),
                     budget: crate::retrieval::budget::BudgetController::with_defaults(),
                 };
                 let result = plan.execute(inputs, self.graph);
@@ -1131,10 +1113,7 @@ pub(crate) fn execute_plan(
             // Mutex poisoned — surface as Internal-shaped outcome by
             // returning an empty result set; the caller's `Err(...)`
             // wrapping is at the `Memory::graph_query` layer.
-            return (
-                Vec::new(),
-                crate::retrieval::api::RetrievalOutcome::Ok,
-            );
+            return (Vec::new(), crate::retrieval::api::RetrievalOutcome::Ok);
         }
     };
 
@@ -1162,15 +1141,9 @@ pub(crate) fn execute_plan(
                 Option<&'static str>,
             ) = match plan.execute(&inputs, resolver, graph, &mut budget) {
                 Ok(result) => {
-                    let scored = factual_to_scored(
-                        &result,
-                        loader,
-                        &bm25_by_id,
-                        query_embedding.as_deref(),
-                    );
-                    let outcome = result
-                        .outcome
-                        .to_retrieval_outcome(scored.is_empty());
+                    let scored =
+                        factual_to_scored(&result, loader, &bm25_by_id, query_embedding.as_deref());
+                    let outcome = result.outcome.to_retrieval_outcome(scored.is_empty());
                     // ISS-063: pick fallback trigger reason based on the
                     // typed outcome variant. Empty `scored` is necessary
                     // but not sufficient — `Cutoff` should not fall back
@@ -1180,9 +1153,9 @@ pub(crate) fn execute_plan(
                             crate::retrieval::api::RetrievalOutcome::NoEntityFound { .. } => {
                                 Some("no_entity_resolved")
                             }
-                            crate::retrieval::api::RetrievalOutcome::EntityFoundNoEdges { .. } => {
-                                Some("entity_found_no_edges")
-                            }
+                            crate::retrieval::api::RetrievalOutcome::EntityFoundNoEdges {
+                                ..
+                            } => Some("entity_found_no_edges"),
                             _ => None,
                         }
                     } else {
@@ -1226,9 +1199,7 @@ pub(crate) fn execute_plan(
             );
             let result = plan.execute(inputs, now);
             let scored = episodic_to_scored(&result, loader, &bm25_by_id);
-            let outcome = result
-                .outcome
-                .to_retrieval_outcome(scored.is_empty());
+            let outcome = result.outcome.to_retrieval_outcome(scored.is_empty());
             // ISS-063: trigger fallback when Episodic emits its
             // downgrade variant (`DowngradedFromEpisodic`) OR when
             // `NoMemoriesInWindow` produced 0 results. `Ok` with
@@ -1264,12 +1235,9 @@ pub(crate) fn execute_plan(
             // Per-query override wins, else fall back to
             // FusionConfig::locked().entity_channel_enabled (default
             // false → byte-identical to pre-ISS-164 §4.3 pipeline).
-            let entity_channel_enabled = query
-                .entity_channel_override
-                .unwrap_or_else(|| {
-                    crate::retrieval::fusion::FusionConfig::locked()
-                        .entity_channel_enabled
-                });
+            let entity_channel_enabled = query.entity_channel_override.unwrap_or_else(|| {
+                crate::retrieval::fusion::FusionConfig::locked().entity_channel_enabled
+            });
             let inputs = crate::retrieval::plans::associative::AssociativePlanInputs {
                 query: &query,
                 budget,
@@ -1329,19 +1297,15 @@ pub(crate) fn execute_plan(
                 crate::retrieval::api::RetrievalOutcome,
                 Option<&'static str>,
             ) = match result.outcome {
-                crate::retrieval::plans::abstract_l5::AbstractOutcome::Ok
-                    if !scored.is_empty() =>
-                {
+                crate::retrieval::plans::abstract_l5::AbstractOutcome::Ok if !scored.is_empty() => {
                     (crate::retrieval::api::RetrievalOutcome::Ok, None)
                 }
-                crate::retrieval::plans::abstract_l5::AbstractOutcome::DowngradedL5Unavailable => {
-                    (
-                        crate::retrieval::api::RetrievalOutcome::DowngradedFromAbstract {
-                            reason: "L5_unavailable".to_string(),
-                        },
-                        Some("l5_unavailable"),
-                    )
-                }
+                crate::retrieval::plans::abstract_l5::AbstractOutcome::DowngradedL5Unavailable => (
+                    crate::retrieval::api::RetrievalOutcome::DowngradedFromAbstract {
+                        reason: "L5_unavailable".to_string(),
+                    },
+                    Some("l5_unavailable"),
+                ),
                 _ => (
                     crate::retrieval::api::RetrievalOutcome::L5NotReady {
                         missing_topic_domains: vec![],
@@ -1377,17 +1341,13 @@ pub(crate) fn execute_plan(
                 crate::retrieval::api::RetrievalOutcome,
                 Option<&'static str>,
             ) = match result.outcome {
-                crate::retrieval::plans::affective::AffectiveOutcome::Ok
-                    if !scored.is_empty() =>
-                {
+                crate::retrieval::plans::affective::AffectiveOutcome::Ok if !scored.is_empty() => {
                     (crate::retrieval::api::RetrievalOutcome::Ok, None)
                 }
-                crate::retrieval::plans::affective::AffectiveOutcome::DowngradedNoSelfState => {
-                    (
-                        crate::retrieval::api::RetrievalOutcome::NoCognitiveState,
-                        Some("no_self_state"),
-                    )
-                }
+                crate::retrieval::plans::affective::AffectiveOutcome::DowngradedNoSelfState => (
+                    crate::retrieval::api::RetrievalOutcome::NoCognitiveState,
+                    Some("no_self_state"),
+                ),
                 _ => (
                     crate::retrieval::api::RetrievalOutcome::Ok,
                     Some("affective_empty"),
@@ -1417,8 +1377,7 @@ pub(crate) fn execute_plan(
                     0.0, 0.0, 0.0, 0.0,
                 )
             });
-            let mut topics_by_uuid: HashMap<Uuid, crate::graph::KnowledgeTopic> =
-                HashMap::new();
+            let mut topics_by_uuid: HashMap<Uuid, crate::graph::KnowledgeTopic> = HashMap::new();
             let mut executor = HybridDispatchExecutor {
                 graph,
                 query: &query,
@@ -1444,13 +1403,7 @@ pub(crate) fn execute_plan(
             // replaces the ISS-063 placeholder that always emitted
             // `hybrid_all_subplans_empty`.
             if scored.is_empty() {
-                run_factual_fallback_for_hybrid(
-                    &query,
-                    now,
-                    graph,
-                    loader,
-                    collaborators,
-                )
+                run_factual_fallback_for_hybrid(&query, now, graph, loader, collaborators)
             } else {
                 (scored, crate::retrieval::api::RetrievalOutcome::Ok)
             }
@@ -1551,12 +1504,7 @@ fn run_factual_fallback_for_hybrid(
         .embedding_provider
         .and_then(|p| p.embed(&query.text).ok());
     let scored = match plan.execute(&inputs, resolver, graph, &mut budget) {
-        Ok(result) => factual_to_scored(
-            &result,
-            loader,
-            &bm25_by_id,
-            query_embedding.as_deref(),
-        ),
+        Ok(result) => factual_to_scored(&result, loader, &bm25_by_id, query_embedding.as_deref()),
         Err(_) => Vec::new(),
     };
 
@@ -1638,10 +1586,7 @@ fn run_associative_fallback(
     // it.
     let entity_channel_enabled = query
         .entity_channel_override
-        .unwrap_or_else(|| {
-            crate::retrieval::fusion::FusionConfig::locked()
-                .entity_channel_enabled
-        });
+        .unwrap_or_else(|| crate::retrieval::fusion::FusionConfig::locked().entity_channel_enabled);
     let inputs = crate::retrieval::plans::associative::AssociativePlanInputs {
         query,
         budget,
@@ -1652,10 +1597,9 @@ fn run_associative_fallback(
     // PlanKind::Associative branch above: surface query.limit as
     // k_seed so the fused pool can actually saturate top-K.
     // ISS-152: same per-query override hook as the main path.
-    let plan = crate::retrieval::plans::associative::AssociativePlan::new(
-        collaborators.seed_recaller,
-    )
-    .with_k_seed(query.k_seed_override.unwrap_or(query.limit));
+    let plan =
+        crate::retrieval::plans::associative::AssociativePlan::new(collaborators.seed_recaller)
+            .with_k_seed(query.k_seed_override.unwrap_or(query.limit));
     let result = plan.execute(inputs, graph);
 
     // ISS-150: recompute BM25 here (analogous to
@@ -1966,7 +1910,10 @@ mod tests {
         // and any seeded with breadth>0 strictly wins.
         assert!(seeded_lo >= com_hi, "weakest seeded ≥ strongest co-mention");
         let seeded_any = edge_seeded_graph_score(0.01, true, bonus);
-        assert!(seeded_any > com_hi, "any positive-breadth seeded strictly wins");
+        assert!(
+            seeded_any > com_hi,
+            "any positive-breadth seeded strictly wins"
+        );
     }
 
     #[test]
@@ -2042,9 +1989,9 @@ mod tests {
         let by_id: HashMap<&str, f64> = scored
             .iter()
             .filter_map(|s| match s {
-                ScoredResult::Memory { record, sub_scores, .. } => {
-                    Some((record.id.as_str(), sub_scores.vector_score.unwrap()))
-                }
+                ScoredResult::Memory {
+                    record, sub_scores, ..
+                } => Some((record.id.as_str(), sub_scores.vector_score.unwrap())),
                 _ => None,
             })
             .collect();

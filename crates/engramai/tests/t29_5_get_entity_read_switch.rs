@@ -133,7 +133,10 @@ fn t29_5_get_entity_no_metadata_yields_none_on_both() {
     };
 
     assert_eq!(legacy.metadata, None, "legacy metadata = NULL");
-    assert_eq!(unified.metadata, None, "unified metadata = None (empty object)");
+    assert_eq!(
+        unified.metadata, None,
+        "unified metadata = None (empty object)"
+    );
     assert_eq!(legacy.entity_type, unified.entity_type, "entity_type");
     assert_eq!(legacy.name, unified.name, "name");
 }
@@ -182,6 +185,12 @@ fn t29_5_get_entity_conflict_update_preserves_entity_type() {
         });
         got.expect("unified")
     };
-    assert_eq!(legacy.entity_type, "person", "entity_type preserved on legacy");
-    assert_eq!(unified.entity_type, "person", "entity_type preserved on unified");
+    assert_eq!(
+        legacy.entity_type, "person",
+        "entity_type preserved on legacy"
+    );
+    assert_eq!(
+        unified.entity_type, "person",
+        "entity_type preserved on unified"
+    );
 }

@@ -5,18 +5,16 @@
 
 use chrono::Utc;
 use engramai::graph::entity::{Entity, EntityKind};
-use engramai::graph::store::{GraphWrite, SqliteGraphStore};
 use engramai::graph::init_graph_tables;
+use engramai::graph::store::{GraphWrite, SqliteGraphStore};
 use uuid::Uuid;
 
 #[test]
 fn entity_with_384_dim_embedding_into_default_768_store_smoke() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-    conn.execute_batch(
-        "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL);",
-    )
-    .unwrap();
+    conn.execute_batch("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL);")
+        .unwrap();
     init_graph_tables(&conn).expect("init graph tables");
     let mut store = SqliteGraphStore::new(&mut conn).with_namespace("smoke");
     // Default embedding_dim = `crate::embeddings::default_embedding_dim()`
@@ -30,7 +28,10 @@ fn entity_with_384_dim_embedding_into_default_768_store_smoke() {
     e.embedding = Some(vec![0.1f32; 384]);
 
     let result = store.insert_entity(&e);
-    eprintln!("insert_entity (384-dim into 768-dim store) result: {:?}", result);
+    eprintln!(
+        "insert_entity (384-dim into 768-dim store) result: {:?}",
+        result
+    );
 
     if let Err(err) = result {
         // Expected by code reading. If we land here, RUN-0008 ingest

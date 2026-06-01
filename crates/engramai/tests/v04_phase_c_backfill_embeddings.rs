@@ -66,16 +66,20 @@ fn seed_legacy_embedding(
     created_at_rfc3339: &str,
 ) -> Vec<u8> {
     // Deterministic bytes so byte-equality is easy to assert.
-    let blob: Vec<u8> = (0..dimensions * 4)
-        .map(|i| (i % 251) as u8)
-        .collect();
+    let blob: Vec<u8> = (0..dimensions * 4).map(|i| (i % 251) as u8).collect();
     storage
         .conn()
         .execute(
             r#"INSERT OR REPLACE INTO memory_embeddings
                (memory_id, model, embedding, dimensions, created_at)
                VALUES (?, ?, ?, ?, ?)"#,
-            params![memory_id, model, blob, dimensions as i64, created_at_rfc3339],
+            params![
+                memory_id,
+                model,
+                blob,
+                dimensions as i64,
+                created_at_rfc3339
+            ],
         )
         .expect("seed legacy embedding");
     blob
@@ -92,7 +96,13 @@ fn t20_backfill_projects_embeddings_byte_equal() {
     // No T19 needed — Storage::add already dual-wrote the nodes row
     // via T12. We're testing T20 in isolation here.
 
-    let blob = seed_legacy_embedding(&storage, "mem-1", "all-MiniLM-L6-v2", 384, "2026-05-13T10:30:00Z");
+    let blob = seed_legacy_embedding(
+        &storage,
+        "mem-1",
+        "all-MiniLM-L6-v2",
+        384,
+        "2026-05-13T10:30:00Z",
+    );
 
     let run = backfill_embeddings_to_node_embeddings(&mut storage, None).expect("backfill");
     assert_eq!(run.rows_read, 1);
@@ -203,8 +213,7 @@ fn t20_skips_orphan_embeddings_when_node_missing() {
     // After running T19 on the missing namespace, the orphan can land.
     let _ = backfill_memories_to_nodes(&mut storage, Some("ns-skipped"))
         .expect("recover the missing node");
-    let run2 =
-        backfill_embeddings_to_node_embeddings(&mut storage, None).expect("retry T20");
+    let run2 = backfill_embeddings_to_node_embeddings(&mut storage, None).expect("retry T20");
     assert_eq!(run2.rows_inserted, 1, "orphan now lands");
     let final_count: i64 = storage
         .conn()
@@ -324,8 +333,7 @@ fn t20_malformed_created_at_uses_fallback() {
 fn t20_empty_table_completes_cleanly() {
     let tmp = tempdir().unwrap();
     let mut storage = Storage::new(tmp.path().join("engram.db")).unwrap();
-    let run =
-        backfill_embeddings_to_node_embeddings(&mut storage, None).expect("backfill empty");
+    let run = backfill_embeddings_to_node_embeddings(&mut storage, None).expect("backfill empty");
     assert_eq!(run.rows_read, 0);
     assert_eq!(run.rows_inserted, 0);
 }

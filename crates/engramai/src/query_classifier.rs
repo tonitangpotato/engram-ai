@@ -8,11 +8,11 @@
 //! Context, General) for type-affinity modulation — boosting memories
 //! whose `MemoryType` matches the intent behind the query.
 
-use chrono::{DateTime, Datelike, Duration, NaiveTime, Utc, TimeZone};
-use regex::RegexSet;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 use crate::anthropic_client::{build_anthropic_headers, DEFAULT_ANTHROPIC_API_URL};
+use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc};
+use regex::RegexSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 /// Detected query type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,24 +82,49 @@ impl QueryIntent {
     pub fn type_affinity(&self) -> TypeAffinity {
         match self {
             QueryIntent::Definition => TypeAffinity {
-                factual: 2.0, episodic: 0.5, relational: 1.5,
-                emotional: 0.3, procedural: 0.8, opinion: 0.5, causal: 0.8,
+                factual: 2.0,
+                episodic: 0.5,
+                relational: 1.5,
+                emotional: 0.3,
+                procedural: 0.8,
+                opinion: 0.5,
+                causal: 0.8,
             },
             QueryIntent::HowTo => TypeAffinity {
-                factual: 0.8, episodic: 0.5, relational: 0.5,
-                emotional: 0.3, procedural: 2.5, opinion: 0.5, causal: 1.0,
+                factual: 0.8,
+                episodic: 0.5,
+                relational: 0.5,
+                emotional: 0.3,
+                procedural: 2.5,
+                opinion: 0.5,
+                causal: 1.0,
             },
             QueryIntent::Event => TypeAffinity {
-                factual: 0.5, episodic: 2.5, relational: 0.8,
-                emotional: 1.5, procedural: 0.3, opinion: 0.5, causal: 0.8,
+                factual: 0.5,
+                episodic: 2.5,
+                relational: 0.8,
+                emotional: 1.5,
+                procedural: 0.3,
+                opinion: 0.5,
+                causal: 0.8,
             },
             QueryIntent::Relational => TypeAffinity {
-                factual: 0.8, episodic: 0.5, relational: 2.5,
-                emotional: 1.5, procedural: 0.3, opinion: 1.5, causal: 0.8,
+                factual: 0.8,
+                episodic: 0.5,
+                relational: 2.5,
+                emotional: 1.5,
+                procedural: 0.3,
+                opinion: 1.5,
+                causal: 0.8,
             },
             QueryIntent::Context => TypeAffinity {
-                factual: 1.2, episodic: 1.8, relational: 1.0,
-                emotional: 0.8, procedural: 1.0, opinion: 0.8, causal: 1.0,
+                factual: 1.2,
+                episodic: 1.8,
+                relational: 1.0,
+                emotional: 0.8,
+                procedural: 1.0,
+                opinion: 0.8,
+                causal: 1.0,
             },
             QueryIntent::General => TypeAffinity::neutral(),
         }
@@ -208,20 +233,49 @@ impl ChannelWeightModifiers {
 
 /// English temporal indicators
 const TEMPORAL_EN: &[&str] = &[
-    "yesterday", "today", "last week", "last month", "last year",
-    "this week", "this month", "this year",
-    "ago", "recently", "earlier", "before", "previous",
-    "last night", "this morning", "tonight",
-    "hours ago", "days ago", "weeks ago", "months ago",
+    "yesterday",
+    "today",
+    "last week",
+    "last month",
+    "last year",
+    "this week",
+    "this month",
+    "this year",
+    "ago",
+    "recently",
+    "earlier",
+    "before",
+    "previous",
+    "last night",
+    "this morning",
+    "tonight",
+    "hours ago",
+    "days ago",
+    "weeks ago",
+    "months ago",
 ];
 
 /// Chinese temporal indicators
 const TEMPORAL_ZH: &[&str] = &[
-    "昨天", "今天", "上周", "上个月", "去年",
-    "这周", "这个月", "今年",
-    "前天", "大前天", "刚才", "之前",
-    "几天前", "几周前", "几个月前",
-    "上午", "下午", "晚上", "早上",
+    "昨天",
+    "今天",
+    "上周",
+    "上个月",
+    "去年",
+    "这周",
+    "这个月",
+    "今年",
+    "前天",
+    "大前天",
+    "刚才",
+    "之前",
+    "几天前",
+    "几周前",
+    "几个月前",
+    "上午",
+    "下午",
+    "晚上",
+    "早上",
 ];
 
 /// Regex-like patterns for "N days/hours/weeks ago"
@@ -242,7 +296,10 @@ fn has_n_unit_ago(query: &str) -> Option<NUnitAgo> {
                 let unit = window[1].trim_end_matches('s');
                 match unit {
                     "day" | "week" | "month" | "hour" | "minute" => {
-                        return Some(NUnitAgo { n, unit: unit.to_string() });
+                        return Some(NUnitAgo {
+                            n,
+                            unit: unit.to_string(),
+                        });
                     }
                     _ => {}
                 }
@@ -255,7 +312,14 @@ fn has_n_unit_ago(query: &str) -> Option<NUnitAgo> {
             // Try to parse the number before the pattern
             let prefix = &query[..pos];
             // Get the last few characters that could be a number
-            let num_str: String = prefix.chars().rev().take_while(|c| c.is_ascii_digit()).collect::<String>().chars().rev().collect();
+            let num_str: String = prefix
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
             if let Ok(n) = num_str.parse::<i64>() {
                 let unit = match *ch_pattern {
                     "天前" => "day",
@@ -264,7 +328,10 @@ fn has_n_unit_ago(query: &str) -> Option<NUnitAgo> {
                     "小时前" => "hour",
                     _ => "day",
                 };
-                return Some(NUnitAgo { n, unit: unit.to_string() });
+                return Some(NUnitAgo {
+                    n,
+                    unit: unit.to_string(),
+                });
             }
         }
     }
@@ -316,7 +383,7 @@ fn is_keyword_query(query: &str) -> bool {
         if word.chars().any(|c| c.is_uppercase())
             && word.chars().any(|c| c.is_lowercase())
             && !word.starts_with(|c: char| c.is_uppercase())
-                || has_camel_case(word)
+            || has_camel_case(word)
         {
             return true;
         }
@@ -325,7 +392,10 @@ fn is_keyword_query(query: &str) -> bool {
             return true;
         }
         // Version numbers: v1.0.0, 0.1.0
-        if word.starts_with('v') && word[1..].contains('.') && word[1..].chars().any(|c| c.is_ascii_digit()) {
+        if word.starts_with('v')
+            && word[1..].contains('.')
+            && word[1..].chars().any(|c| c.is_ascii_digit())
+        {
             return true;
         }
         if word.chars().filter(|c| *c == '.').count() >= 1
@@ -367,9 +437,25 @@ fn is_semantic_query(query: &str) -> bool {
     }
     // Contains question words or natural language structure
     let lower = query.to_lowercase();
-    let question_words = ["how", "what", "why", "when", "where", "which", "who",
-                          "explain", "describe", "tell me", "can you",
-                          "怎么", "什么", "为什么", "如何", "哪个", "谁"];
+    let question_words = [
+        "how",
+        "what",
+        "why",
+        "when",
+        "where",
+        "which",
+        "who",
+        "explain",
+        "describe",
+        "tell me",
+        "can you",
+        "怎么",
+        "什么",
+        "为什么",
+        "如何",
+        "哪个",
+        "谁",
+    ];
     for qw in &question_words {
         if lower.contains(qw) {
             return true;
@@ -388,8 +474,12 @@ fn extract_time_range(query: &str) -> Option<TimeRange> {
     // "yesterday" / "昨天"
     if lower.contains("yesterday") || query.contains("昨天") {
         let yesterday = now - Duration::days(1);
-        let start = yesterday.date_naive().and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-        let end = yesterday.date_naive().and_time(NaiveTime::from_hms_opt(23, 59, 59).unwrap());
+        let start = yesterday
+            .date_naive()
+            .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        let end = yesterday
+            .date_naive()
+            .and_time(NaiveTime::from_hms_opt(23, 59, 59).unwrap());
         return Some(TimeRange {
             start: Utc.from_utc_datetime(&start),
             end: Utc.from_utc_datetime(&end),
@@ -398,7 +488,9 @@ fn extract_time_range(query: &str) -> Option<TimeRange> {
 
     // "today" / "今天"
     if lower.contains("today") || query.contains("今天") {
-        let start = now.date_naive().and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        let start = now
+            .date_naive()
+            .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
         return Some(TimeRange {
             start: Utc.from_utc_datetime(&start),
             end: now,
@@ -408,8 +500,12 @@ fn extract_time_range(query: &str) -> Option<TimeRange> {
     // "前天" (day before yesterday)
     if query.contains("前天") && !query.contains("大前天") {
         let day = now - Duration::days(2);
-        let start = day.date_naive().and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-        let end = day.date_naive().and_time(NaiveTime::from_hms_opt(23, 59, 59).unwrap());
+        let start = day
+            .date_naive()
+            .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        let end = day
+            .date_naive()
+            .and_time(NaiveTime::from_hms_opt(23, 59, 59).unwrap());
         return Some(TimeRange {
             start: Utc.from_utc_datetime(&start),
             end: Utc.from_utc_datetime(&end),
@@ -436,7 +532,8 @@ fn extract_time_range(query: &str) -> Option<TimeRange> {
     if lower.contains("this week") || query.contains("这周") {
         // From start of current week (Monday) to now
         let weekday = now.date_naive().weekday().num_days_from_monday();
-        let start = (now - Duration::days(weekday as i64)).date_naive()
+        let start = (now - Duration::days(weekday as i64))
+            .date_naive()
             .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
         return Some(TimeRange {
             start: Utc.from_utc_datetime(&start),
@@ -475,74 +572,141 @@ fn extract_time_range(query: &str) -> Option<TimeRange> {
 
 /// Intent patterns for English queries.
 const INTENT_DEFINITION_EN: &[&str] = &[
-    "what is", "what are", "what does", "what's",
-    "define", "definition of", "meaning of",
-    "tell me about", "explain what",
-    "who is", "who are",
+    "what is",
+    "what are",
+    "what does",
+    "what's",
+    "define",
+    "definition of",
+    "meaning of",
+    "tell me about",
+    "explain what",
+    "who is",
+    "who are",
 ];
 
 const INTENT_HOWTO_EN: &[&str] = &[
-    "how to", "how do i", "how do you", "how can i", "how should",
-    "steps to", "tutorial", "instructions for",
-    "guide to", "way to", "best way to",
-    "how does", "how is",
+    "how to",
+    "how do i",
+    "how do you",
+    "how can i",
+    "how should",
+    "steps to",
+    "tutorial",
+    "instructions for",
+    "guide to",
+    "way to",
+    "best way to",
+    "how does",
+    "how is",
 ];
 
 const INTENT_EVENT_EN: &[&str] = &[
-    "what happened", "what did", "what was discussed",
-    "when did", "did we", "did i", "did you",
-    "last time", "that time when",
-    "history of", "timeline",
+    "what happened",
+    "what did",
+    "what was discussed",
+    "when did",
+    "did we",
+    "did i",
+    "did you",
+    "last time",
+    "that time when",
+    "history of",
+    "timeline",
 ];
 
 const INTENT_RELATIONAL_EN: &[&str] = &[
-    "relationship between", "connection between",
-    "who knows", "related to",
-    "what do you think about", "opinion on", "opinion about",
-    "how do you feel about", "what about",
+    "relationship between",
+    "connection between",
+    "who knows",
+    "related to",
+    "what do you think about",
+    "opinion on",
+    "opinion about",
+    "how do you feel about",
+    "what about",
     "between", // weaker signal, combined with other heuristics
 ];
 
 const INTENT_CONTEXT_EN: &[&str] = &[
-    "i'm working on", "i am working on", "working on",
-    "currently building", "i'm building",
-    "dealing with", "i'm dealing",
-    "my project", "my task",
-    "right now i", "at the moment",
+    "i'm working on",
+    "i am working on",
+    "working on",
+    "currently building",
+    "i'm building",
+    "dealing with",
+    "i'm dealing",
+    "my project",
+    "my task",
+    "right now i",
+    "at the moment",
     "(?i)i am (?:building|working)",
 ];
 
 /// Intent patterns for Chinese queries.
 const INTENT_DEFINITION_ZH: &[&str] = &[
-    "是什么", "什么是", "定义", "意思是",
-    "介绍一下", "解释一下", "说说",
-    "什么书", "什么东西", "什么人",
-    "用了什么", "用的什么", "用什么",
-    "谁", "在哪", "哪里",
+    "是什么",
+    "什么是",
+    "定义",
+    "意思是",
+    "介绍一下",
+    "解释一下",
+    "说说",
+    "什么书",
+    "什么东西",
+    "什么人",
+    "用了什么",
+    "用的什么",
+    "用什么",
+    "谁",
+    "在哪",
+    "哪里",
 ];
 
 const INTENT_HOWTO_ZH: &[&str] = &[
-    "怎么做", "怎么搞", "怎么弄", "如何",
-    "步骤", "方法", "教程", "怎样",
-    "操作", "指南",
+    "怎么做",
+    "怎么搞",
+    "怎么弄",
+    "如何",
+    "步骤",
+    "方法",
+    "教程",
+    "怎样",
+    "操作",
+    "指南",
     "怎么\\w+",
 ];
 
 const INTENT_EVENT_ZH: &[&str] = &[
-    "发生了什么", "发生了啥", "做了什么", "做了啥",
-    "什么时候", "上次", "那次",
-    "经历", "过去",
+    "发生了什么",
+    "发生了啥",
+    "做了什么",
+    "做了啥",
+    "什么时候",
+    "上次",
+    "那次",
+    "经历",
+    "过去",
 ];
 
 const INTENT_RELATIONAL_ZH: &[&str] = &[
-    "关系", "认识", "之间",
-    "觉得怎么样", "看法", "对.*的看法",
+    "关系",
+    "认识",
+    "之间",
+    "觉得怎么样",
+    "看法",
+    "对.*的看法",
     "怎么看",
 ];
 
 const INTENT_CONTEXT_ZH: &[&str] = &[
-    "我在做", "我在搞", "正在做", "正在搞",
-    "手上有", "目前在", "现在在",
+    "我在做",
+    "我在搞",
+    "正在做",
+    "正在搞",
+    "手上有",
+    "目前在",
+    "现在在",
 ];
 
 // ── RegexSet-based intent matching ─────────────────────────────────
@@ -563,19 +727,17 @@ struct IntentRegex {
 static INTENT_REGEX: OnceLock<IntentRegex> = OnceLock::new();
 
 fn get_intent_regex() -> &'static IntentRegex {
-    INTENT_REGEX.get_or_init(|| {
-        IntentRegex {
-            howto_en: RegexSet::new(INTENT_HOWTO_EN).unwrap(),
-            howto_zh: RegexSet::new(INTENT_HOWTO_ZH).unwrap(),
-            event_en: RegexSet::new(INTENT_EVENT_EN).unwrap(),
-            event_zh: RegexSet::new(INTENT_EVENT_ZH).unwrap(),
-            definition_en: RegexSet::new(INTENT_DEFINITION_EN).unwrap(),
-            definition_zh: RegexSet::new(INTENT_DEFINITION_ZH).unwrap(),
-            relational_en: RegexSet::new(INTENT_RELATIONAL_EN).unwrap(),
-            relational_zh: RegexSet::new(INTENT_RELATIONAL_ZH).unwrap(),
-            context_en: RegexSet::new(INTENT_CONTEXT_EN).unwrap(),
-            context_zh: RegexSet::new(INTENT_CONTEXT_ZH).unwrap(),
-        }
+    INTENT_REGEX.get_or_init(|| IntentRegex {
+        howto_en: RegexSet::new(INTENT_HOWTO_EN).unwrap(),
+        howto_zh: RegexSet::new(INTENT_HOWTO_ZH).unwrap(),
+        event_en: RegexSet::new(INTENT_EVENT_EN).unwrap(),
+        event_zh: RegexSet::new(INTENT_EVENT_ZH).unwrap(),
+        definition_en: RegexSet::new(INTENT_DEFINITION_EN).unwrap(),
+        definition_zh: RegexSet::new(INTENT_DEFINITION_ZH).unwrap(),
+        relational_en: RegexSet::new(INTENT_RELATIONAL_EN).unwrap(),
+        relational_zh: RegexSet::new(INTENT_RELATIONAL_ZH).unwrap(),
+        context_en: RegexSet::new(INTENT_CONTEXT_EN).unwrap(),
+        context_zh: RegexSet::new(INTENT_CONTEXT_ZH).unwrap(),
     })
 }
 
@@ -584,11 +746,21 @@ pub fn classify_intent_regex(query: &str) -> QueryIntent {
     let r = get_intent_regex();
     let lower = query.to_lowercase();
 
-    if r.howto_en.is_match(&lower) || r.howto_zh.is_match(query) { return QueryIntent::HowTo; }
-    if r.event_en.is_match(&lower) || r.event_zh.is_match(query) { return QueryIntent::Event; }
-    if r.relational_en.is_match(&lower) || r.relational_zh.is_match(query) { return QueryIntent::Relational; }
-    if r.definition_en.is_match(&lower) || r.definition_zh.is_match(query) { return QueryIntent::Definition; }
-    if r.context_en.is_match(&lower) || r.context_zh.is_match(query) { return QueryIntent::Context; }
+    if r.howto_en.is_match(&lower) || r.howto_zh.is_match(query) {
+        return QueryIntent::HowTo;
+    }
+    if r.event_en.is_match(&lower) || r.event_zh.is_match(query) {
+        return QueryIntent::Event;
+    }
+    if r.relational_en.is_match(&lower) || r.relational_zh.is_match(query) {
+        return QueryIntent::Relational;
+    }
+    if r.definition_en.is_match(&lower) || r.definition_zh.is_match(query) {
+        return QueryIntent::Definition;
+    }
+    if r.context_en.is_match(&lower) || r.context_zh.is_match(query) {
+        return QueryIntent::Context;
+    }
     QueryIntent::General
 }
 
@@ -655,7 +827,8 @@ impl HaikuIntentClassifier {
             - general: greetings, unclear, or doesn't fit above\n\n\
             The query may be in English or Chinese — classify based on meaning, not language.\n\n\
             Respond with ONLY the category name, nothing else.\n\n\
-            Query: \"{}\"", query
+            Query: \"{}\"",
+            query
         );
 
         let body = serde_json::json!({
@@ -665,16 +838,18 @@ impl HaikuIntentClassifier {
         });
 
         let url = format!("{}/v1/messages", self.api_url);
-        let resp = self.client.post(&url)
-            .headers(headers)
-            .json(&body)
-            .send();
+        let resp = self.client.post(&url).headers(headers).json(&body).send();
 
         match resp {
             Ok(r) => {
-                if r.status() == reqwest::StatusCode::UNAUTHORIZED || r.status() == reqwest::StatusCode::FORBIDDEN {
+                if r.status() == reqwest::StatusCode::UNAUTHORIZED
+                    || r.status() == reqwest::StatusCode::FORBIDDEN
+                {
                     self.disabled.store(true, Ordering::Relaxed);
-                    log::warn!("HaikuIntentClassifier disabled: auth failure ({})", r.status());
+                    log::warn!(
+                        "HaikuIntentClassifier disabled: auth failure ({})",
+                        r.status()
+                    );
                     return QueryIntent::General;
                 }
                 if !r.status().is_success() {
@@ -749,7 +924,11 @@ pub fn classify_query_with_l2(
 }
 
 /// Inner classifier: determines QueryType and builds the full QueryAnalysis.
-fn classify_query_inner(query: &str, intent: QueryIntent, type_affinity: TypeAffinity) -> QueryAnalysis {
+fn classify_query_inner(
+    query: &str,
+    intent: QueryIntent,
+    type_affinity: TypeAffinity,
+) -> QueryAnalysis {
     // Check temporal first (highest priority — temporal queries often contain other signals)
     if is_temporal_query(query) {
         return QueryAnalysis {
@@ -843,10 +1022,16 @@ mod tests {
         let yesterday = now - Duration::days(1);
         // Start should be yesterday 00:00
         assert_eq!(range.start.date_naive(), yesterday.date_naive());
-        assert_eq!(range.start.time(), NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        assert_eq!(
+            range.start.time(),
+            NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+        );
         // End should be yesterday 23:59:59
         assert_eq!(range.end.date_naive(), yesterday.date_naive());
-        assert_eq!(range.end.time(), NaiveTime::from_hms_opt(23, 59, 59).unwrap());
+        assert_eq!(
+            range.end.time(),
+            NaiveTime::from_hms_opt(23, 59, 59).unwrap()
+        );
     }
 
     #[test]
@@ -856,8 +1041,11 @@ mod tests {
         let now = Utc::now();
         // Start should be ~7 days ago
         let diff = now - range.start;
-        assert!(diff.num_days() >= 6 && diff.num_days() <= 8,
-            "last week start should be ~7 days ago, got {} days", diff.num_days());
+        assert!(
+            diff.num_days() >= 6 && diff.num_days() <= 8,
+            "last week start should be ~7 days ago, got {} days",
+            diff.num_days()
+        );
         // End should be close to now
         let end_diff = now - range.end;
         assert!(end_diff.num_seconds() < 5, "end should be close to now");
@@ -870,17 +1058,28 @@ mod tests {
         let now = Utc::now();
         // Start should be ~3 days ago
         let diff = now - range.start;
-        assert!(diff.num_days() >= 2 && diff.num_days() <= 4,
-            "3 days ago start should be ~3 days, got {} days", diff.num_days());
+        assert!(
+            diff.num_days() >= 2 && diff.num_days() <= 4,
+            "3 days ago start should be ~3 days, got {} days",
+            diff.num_days()
+        );
     }
 
     #[test]
     fn test_weight_modifiers_temporal() {
         let analysis = classify_query("what happened yesterday");
         let m = &analysis.weight_modifiers;
-        assert!(m.temporal > 2.0, "temporal should be boosted: {}", m.temporal);
+        assert!(
+            m.temporal > 2.0,
+            "temporal should be boosted: {}",
+            m.temporal
+        );
         assert!(m.actr > 1.0, "actr should be boosted: {}", m.actr);
-        assert!(m.embedding < 1.0, "embedding should be reduced: {}", m.embedding);
+        assert!(
+            m.embedding < 1.0,
+            "embedding should be reduced: {}",
+            m.embedding
+        );
     }
 
     #[test]
@@ -988,30 +1187,66 @@ mod tests {
     #[test]
     fn test_type_affinity_definition_boosts_factual() {
         let affinity = QueryIntent::Definition.type_affinity();
-        assert!(affinity.factual > 1.5, "Definition should boost factual: {}", affinity.factual);
-        assert!(affinity.emotional < 0.5, "Definition should suppress emotional: {}", affinity.emotional);
+        assert!(
+            affinity.factual > 1.5,
+            "Definition should boost factual: {}",
+            affinity.factual
+        );
+        assert!(
+            affinity.emotional < 0.5,
+            "Definition should suppress emotional: {}",
+            affinity.emotional
+        );
     }
 
     #[test]
     fn test_type_affinity_howto_boosts_procedural() {
         let affinity = QueryIntent::HowTo.type_affinity();
-        assert!(affinity.procedural > 2.0, "HowTo should strongly boost procedural: {}", affinity.procedural);
-        assert!(affinity.emotional < 0.5, "HowTo should suppress emotional: {}", affinity.emotional);
+        assert!(
+            affinity.procedural > 2.0,
+            "HowTo should strongly boost procedural: {}",
+            affinity.procedural
+        );
+        assert!(
+            affinity.emotional < 0.5,
+            "HowTo should suppress emotional: {}",
+            affinity.emotional
+        );
     }
 
     #[test]
     fn test_type_affinity_event_boosts_episodic() {
         let affinity = QueryIntent::Event.type_affinity();
-        assert!(affinity.episodic > 2.0, "Event should strongly boost episodic: {}", affinity.episodic);
-        assert!(affinity.emotional > 1.0, "Event should boost emotional: {}", affinity.emotional);
-        assert!(affinity.procedural < 0.5, "Event should suppress procedural: {}", affinity.procedural);
+        assert!(
+            affinity.episodic > 2.0,
+            "Event should strongly boost episodic: {}",
+            affinity.episodic
+        );
+        assert!(
+            affinity.emotional > 1.0,
+            "Event should boost emotional: {}",
+            affinity.emotional
+        );
+        assert!(
+            affinity.procedural < 0.5,
+            "Event should suppress procedural: {}",
+            affinity.procedural
+        );
     }
 
     #[test]
     fn test_type_affinity_relational_boosts_relational() {
         let affinity = QueryIntent::Relational.type_affinity();
-        assert!(affinity.relational > 2.0, "Relational should strongly boost relational: {}", affinity.relational);
-        assert!(affinity.opinion > 1.0, "Relational should boost opinion: {}", affinity.opinion);
+        assert!(
+            affinity.relational > 2.0,
+            "Relational should strongly boost relational: {}",
+            affinity.relational
+        );
+        assert!(
+            affinity.opinion > 1.0,
+            "Relational should boost opinion: {}",
+            affinity.opinion
+        );
     }
 
     #[test]
@@ -1052,7 +1287,10 @@ mod tests {
     #[test]
     fn test_new_regex_definition_zh_what_tool() {
         // "用了什么工具" should match "用了什么" → Definition
-        assert_eq!(classify_intent_regex("用了什么工具"), QueryIntent::Definition);
+        assert_eq!(
+            classify_intent_regex("用了什么工具"),
+            QueryIntent::Definition
+        );
     }
 
     #[test]
@@ -1073,25 +1311,61 @@ mod tests {
 
     #[test]
     fn test_haiku_parse_intent_valid() {
-        assert_eq!(HaikuIntentClassifier::parse_intent("definition"), QueryIntent::Definition);
-        assert_eq!(HaikuIntentClassifier::parse_intent("howto"), QueryIntent::HowTo);
-        assert_eq!(HaikuIntentClassifier::parse_intent("event"), QueryIntent::Event);
-        assert_eq!(HaikuIntentClassifier::parse_intent("relational"), QueryIntent::Relational);
-        assert_eq!(HaikuIntentClassifier::parse_intent("context"), QueryIntent::Context);
-        assert_eq!(HaikuIntentClassifier::parse_intent("general"), QueryIntent::General);
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("definition"),
+            QueryIntent::Definition
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("howto"),
+            QueryIntent::HowTo
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("event"),
+            QueryIntent::Event
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("relational"),
+            QueryIntent::Relational
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("context"),
+            QueryIntent::Context
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("general"),
+            QueryIntent::General
+        );
     }
 
     #[test]
     fn test_haiku_parse_intent_case_insensitive() {
-        assert_eq!(HaikuIntentClassifier::parse_intent("Definition"), QueryIntent::Definition);
-        assert_eq!(HaikuIntentClassifier::parse_intent("HOWTO"), QueryIntent::HowTo);
-        assert_eq!(HaikuIntentClassifier::parse_intent("  Event  "), QueryIntent::Event);
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("Definition"),
+            QueryIntent::Definition
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("HOWTO"),
+            QueryIntent::HowTo
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("  Event  "),
+            QueryIntent::Event
+        );
     }
 
     #[test]
     fn test_haiku_parse_intent_invalid() {
-        assert_eq!(HaikuIntentClassifier::parse_intent("unknown"), QueryIntent::General);
-        assert_eq!(HaikuIntentClassifier::parse_intent(""), QueryIntent::General);
-        assert_eq!(HaikuIntentClassifier::parse_intent("something else entirely"), QueryIntent::General);
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("unknown"),
+            QueryIntent::General
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent(""),
+            QueryIntent::General
+        );
+        assert_eq!(
+            HaikuIntentClassifier::parse_intent("something else entirely"),
+            QueryIntent::General
+        );
     }
 }

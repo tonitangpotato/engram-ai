@@ -26,8 +26,8 @@
 //! caller using the returned [`LlmFallbackOutcome`]).
 
 use std::sync::{
-    Arc,
     mpsc::{self, RecvTimeoutError},
+    Arc,
 };
 use std::time::Duration;
 
@@ -55,11 +55,7 @@ pub trait LlmIntentClassifier: Send + Sync {
     /// Returning `Err` is a recoverable signal — the runner converts it to
     /// `LlmFallbackOutcome::Errored` and the classifier defaults back to the
     /// heuristic best guess (§3.4 totality).
-    fn classify(
-        &self,
-        query: &str,
-        signals: &SignalScores,
-    ) -> Result<Intent, LlmClassifierError>;
+    fn classify(&self, query: &str, signals: &SignalScores) -> Result<Intent, LlmClassifierError>;
 }
 
 /// Recoverable error type from an [`LlmIntentClassifier`].

@@ -35,8 +35,7 @@ impl SqliteFeedbackStore {
 
     pub fn in_memory() -> Result<Self, KcError> {
         Self::new(
-            rusqlite::Connection::open_in_memory()
-                .map_err(|e| KcError::Storage(e.to_string()))?,
+            rusqlite::Connection::open_in_memory().map_err(|e| KcError::Storage(e.to_string()))?,
         )
     }
 
@@ -283,21 +282,15 @@ mod tests {
         let proc = make_processor();
 
         // Record 3 feedbacks for the same topic
-        proc.record(
-            make_feedback("t2", FeedbackKind::ThumbsDown, None),
-            &store,
-        )
-        .unwrap();
+        proc.record(make_feedback("t2", FeedbackKind::ThumbsDown, None), &store)
+            .unwrap();
         proc.record(
             make_feedback("t2", FeedbackKind::Correction("fix this".into()), None),
             &store,
         )
         .unwrap();
-        proc.record(
-            make_feedback("t2", FeedbackKind::ThumbsUp, None),
-            &store,
-        )
-        .unwrap();
+        proc.record(make_feedback("t2", FeedbackKind::ThumbsUp, None), &store)
+            .unwrap();
 
         let count = store
             .mark_resolved(&TopicId("t2".to_string()), "compile-42")
@@ -312,11 +305,7 @@ mod tests {
     fn test_should_trigger_recompile() {
         let proc = make_processor();
 
-        assert!(proc.should_trigger_recompile(&make_feedback(
-            "t",
-            FeedbackKind::ThumbsDown,
-            None
-        )));
+        assert!(proc.should_trigger_recompile(&make_feedback("t", FeedbackKind::ThumbsDown, None)));
         assert!(proc.should_trigger_recompile(&make_feedback(
             "t",
             FeedbackKind::Correction("x".into()),
@@ -327,11 +316,7 @@ mod tests {
             FeedbackKind::TitleSuggestion("New Title".into()),
             None
         )));
-        assert!(!proc.should_trigger_recompile(&make_feedback(
-            "t",
-            FeedbackKind::ThumbsUp,
-            None
-        )));
+        assert!(!proc.should_trigger_recompile(&make_feedback("t", FeedbackKind::ThumbsUp, None)));
     }
 
     #[test]

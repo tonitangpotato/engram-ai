@@ -225,9 +225,8 @@ impl Reranker for MmrReranker {
                 let mmr = self.lambda * rel - (1.0 - self.lambda) * max_sim;
                 // Tie-break: prefer lower original index (stable wrt
                 // input ordering, matches fused-score order on ties).
-                let is_better = mmr > best_score
-                    || (mmr == best_score
-                        && idx < remaining[best_pos]);
+                let is_better =
+                    mmr > best_score || (mmr == best_score && idx < remaining[best_pos]);
                 if is_better {
                     best_score = mmr;
                     best_pos = pos;
@@ -632,10 +631,7 @@ mod tests {
         // Two Factual candidates with no embedding (the production
         // state on Factual/Episodic plans). The fetcher returns a
         // vector for each → both fields get populated.
-        let mut ranked = vec![
-            mk_memory("m1", 0.9, None),
-            mk_memory("m2", 0.8, None),
-        ];
+        let mut ranked = vec![mk_memory("m1", 0.9, None), mk_memory("m2", 0.8, None)];
         populate_missing_embeddings(&mut ranked, |ids| {
             assert_eq!(ids.len(), 2, "both missing ids requested in one batch");
             let mut m = std::collections::HashMap::new();
@@ -643,8 +639,14 @@ mod tests {
             m.insert("m2".to_string(), vec![0.0, 1.0, 0.0]);
             m
         });
-        assert_eq!(memory_embedding(&ranked[0]), Some([1.0, 0.0, 0.0].as_slice()));
-        assert_eq!(memory_embedding(&ranked[1]), Some([0.0, 1.0, 0.0].as_slice()));
+        assert_eq!(
+            memory_embedding(&ranked[0]),
+            Some([1.0, 0.0, 0.0].as_slice())
+        );
+        assert_eq!(
+            memory_embedding(&ranked[1]),
+            Some([0.0, 1.0, 0.0].as_slice())
+        );
     }
 
     #[test]
@@ -652,16 +654,16 @@ mod tests {
         // The fetcher only knows m1 (m2 deleted / no stored vector).
         // m2 stays None → MMR will treat it as maximally diverse, no
         // candidate is dropped.
-        let mut ranked = vec![
-            mk_memory("m1", 0.9, None),
-            mk_memory("m2", 0.8, None),
-        ];
+        let mut ranked = vec![mk_memory("m1", 0.9, None), mk_memory("m2", 0.8, None)];
         populate_missing_embeddings(&mut ranked, |_ids| {
             let mut m = std::collections::HashMap::new();
             m.insert("m1".to_string(), vec![1.0, 0.0, 0.0]);
             m
         });
-        assert_eq!(memory_embedding(&ranked[0]), Some([1.0, 0.0, 0.0].as_slice()));
+        assert_eq!(
+            memory_embedding(&ranked[0]),
+            Some([1.0, 0.0, 0.0].as_slice())
+        );
         assert_eq!(memory_embedding(&ranked[1]), None);
     }
 
@@ -674,7 +676,10 @@ mod tests {
             assert!(ids.is_empty(), "no missing ids → fetcher gets empty slice");
             std::collections::HashMap::new()
         });
-        assert_eq!(memory_embedding(&ranked[0]), Some([9.0, 9.0, 9.0].as_slice()));
+        assert_eq!(
+            memory_embedding(&ranked[0]),
+            Some([9.0, 9.0, 9.0].as_slice())
+        );
     }
 
     #[test]

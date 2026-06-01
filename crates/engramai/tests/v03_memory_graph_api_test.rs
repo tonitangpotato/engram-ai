@@ -85,10 +85,8 @@ fn find_entity_resolves_canonical_name_via_alias_table() {
         let mut g = mem.graph_mut();
         g.insert_entity(&e).expect("insert ok");
         g.upsert_alias(
-            /* normalized = */ "carol",
-            /* alias_raw  = */ "Carol",
-            /* canonical  = */ id,
-            /* source_ep  = */ None,
+            /* normalized = */ "carol", /* alias_raw  = */ "Carol",
+            /* canonical  = */ id, /* source_ep  = */ None,
         )
         .expect("upsert alias ok");
     }
@@ -142,8 +140,14 @@ fn neighbors_walks_one_hop_over_a_canonical_edge() {
         g.insert_edge(&edge).expect("insert edge");
     }
 
-    let got = mem.neighbors(alice_id, /* max_depth = */ 1).expect("read ok");
-    assert_eq!(got.len(), 1, "expected exactly one 1-hop neighbor, got {got:?}");
+    let got = mem
+        .neighbors(alice_id, /* max_depth = */ 1)
+        .expect("read ok");
+    assert_eq!(
+        got.len(),
+        1,
+        "expected exactly one 1-hop neighbor, got {got:?}"
+    );
     assert_eq!(got[0].0, acme_id, "neighbor id should be Acme");
     assert_eq!(
         got[0].1.subject_id, alice_id,

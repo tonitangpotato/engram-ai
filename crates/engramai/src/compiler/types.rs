@@ -255,7 +255,11 @@ mod dimensions_tests {
 
     #[test]
     fn confidence_as_str_roundtrip() {
-        for c in [Confidence::Confident, Confidence::Likely, Confidence::Uncertain] {
+        for c in [
+            Confidence::Confident,
+            Confidence::Likely,
+            Confidence::Uncertain,
+        ] {
             assert_eq!(Confidence::parse(c.as_str()), Some(c));
         }
     }
@@ -1247,8 +1251,12 @@ mod tests {
         };
 
         let variants: Vec<TriggerDecision> = vec![
-            TriggerDecision::Skip { reason: "no changes".into() },
-            TriggerDecision::Partial { change_set: cs.clone() },
+            TriggerDecision::Skip {
+                reason: "no changes".into(),
+            },
+            TriggerDecision::Partial {
+                change_set: cs.clone(),
+            },
             TriggerDecision::Full { change_set: cs },
         ];
 
@@ -1312,7 +1320,11 @@ mod tests {
 
     #[test]
     fn recompile_strategy_serde() {
-        for s in &[RecompileStrategy::Eager, RecompileStrategy::Lazy, RecompileStrategy::Manual] {
+        for s in &[
+            RecompileStrategy::Eager,
+            RecompileStrategy::Lazy,
+            RecompileStrategy::Manual,
+        ] {
             let json = serde_json::to_string(s).unwrap();
             let back: RecompileStrategy = serde_json::from_str(&json).unwrap();
             let json2 = serde_json::to_string(&back).unwrap();
@@ -1329,10 +1341,7 @@ mod tests {
             conflict: Conflict {
                 id: ConflictId("c-1".into()),
                 conflict_type: ConflictType::Contradiction,
-                scope: ConflictScope::BetweenTopics(
-                    TopicId("a".into()),
-                    TopicId("b".into()),
-                ),
+                scope: ConflictScope::BetweenTopics(TopicId("a".into()), TopicId("b".into())),
                 description: "X says Y but Z says W".into(),
                 status: ConflictStatus::Detected,
                 detected_at: now,
@@ -1506,7 +1515,10 @@ mod tests {
 
         let resp = LlmResponse {
             content: "Compiled output".into(),
-            usage: TokenUsage { input_tokens: 100, output_tokens: 200 },
+            usage: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 200,
+            },
             model: "gpt-4o".into(),
             duration_ms: 1500,
         };
@@ -1591,7 +1603,11 @@ mod tests {
 
     #[test]
     fn export_format_serde() {
-        for f in &[ExportFormat::Json, ExportFormat::Markdown, ExportFormat::Html] {
+        for f in &[
+            ExportFormat::Json,
+            ExportFormat::Markdown,
+            ExportFormat::Html,
+        ] {
             let json = serde_json::to_string(f).unwrap();
             let back: ExportFormat = serde_json::from_str(&json).unwrap();
             assert_eq!(*f, back);
@@ -1600,7 +1616,11 @@ mod tests {
 
     #[test]
     fn capability_level_serde() {
-        for c in &[CapabilityLevel::None, CapabilityLevel::Basic, CapabilityLevel::Full] {
+        for c in &[
+            CapabilityLevel::None,
+            CapabilityLevel::Basic,
+            CapabilityLevel::Full,
+        ] {
             let json = serde_json::to_string(c).unwrap();
             let back: CapabilityLevel = serde_json::from_str(&json).unwrap();
             assert_eq!(*c, back);
@@ -1655,11 +1675,18 @@ mod tests {
             "provider unavailable: openai down"
         );
         assert_eq!(
-            LlmError::RateLimited { retry_after_secs: 30 }.to_string(),
+            LlmError::RateLimited {
+                retry_after_secs: 30
+            }
+            .to_string(),
             "rate limited, retry after 30s"
         );
         assert_eq!(
-            LlmError::ContextTooLong { tokens: 50000, max: 32000 }.to_string(),
+            LlmError::ContextTooLong {
+                tokens: 50000,
+                max: 32000
+            }
+            .to_string(),
             "context too long: 50000 tokens (max 32000)"
         );
         assert_eq!(LlmError::Timeout.to_string(), "request timed out");
@@ -1669,8 +1696,13 @@ mod tests {
     fn llm_error_serde() {
         let errors: Vec<LlmError> = vec![
             LlmError::ProviderUnavailable("down".into()),
-            LlmError::RateLimited { retry_after_secs: 60 },
-            LlmError::ContextTooLong { tokens: 100, max: 50 },
+            LlmError::RateLimited {
+                retry_after_secs: 60,
+            },
+            LlmError::ContextTooLong {
+                tokens: 100,
+                max: 50,
+            },
             LlmError::InvalidResponse("bad json".into()),
             LlmError::Timeout,
         ];
@@ -1755,7 +1787,10 @@ mod tests {
         };
         let json = serde_json::to_string(&os).unwrap();
         let back: OperationSummary = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.success_count + back.failure_count + back.skipped_count, 100);
+        assert_eq!(
+            back.success_count + back.failure_count + back.skipped_count,
+            100
+        );
         assert!(back.token_cost.is_some());
         let usage = back.token_cost.unwrap();
         assert_eq!(usage.input_tokens, 1500);
@@ -1870,7 +1905,11 @@ mod tests {
 
     #[test]
     fn import_policy_serde() {
-        for p in &[ImportPolicy::Merge, ImportPolicy::Replace, ImportPolicy::Skip] {
+        for p in &[
+            ImportPolicy::Merge,
+            ImportPolicy::Replace,
+            ImportPolicy::Skip,
+        ] {
             let json = serde_json::to_string(p).unwrap();
             let back: ImportPolicy = serde_json::from_str(&json).unwrap();
             assert_eq!(*p, back);

@@ -67,10 +67,7 @@ pub struct GraphTopicSearcher<'a> {
 }
 
 impl<'a> GraphTopicSearcher<'a> {
-    pub fn new(
-        graph: &'a dyn GraphRead,
-        embedding: Option<&'a EmbeddingProvider>,
-    ) -> Self {
+    pub fn new(graph: &'a dyn GraphRead, embedding: Option<&'a EmbeddingProvider>) -> Self {
         Self { graph, embedding }
     }
 }
@@ -179,10 +176,7 @@ fn tokenize(text: &str) -> std::collections::HashSet<String> {
 /// Jaccard index `|A ∩ B| / |A ∪ B|` for two token sets.
 /// Returns `0.0` when both sides are empty (defined for our use case as
 /// "no signal").
-fn jaccard(
-    a: &std::collections::HashSet<String>,
-    b: &std::collections::HashSet<String>,
-) -> f64 {
+fn jaccard(a: &std::collections::HashSet<String>, b: &std::collections::HashSet<String>) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 0.0;
     }
@@ -204,12 +198,7 @@ mod tests {
     use crate::graph::{Entity, EntityKind};
     use chrono::Utc;
 
-    fn write_topic(
-        store: &mut SqliteGraphStore,
-        title: &str,
-        summary: &str,
-        ns: &str,
-    ) -> Uuid {
+    fn write_topic(store: &mut SqliteGraphStore, title: &str, summary: &str, ns: &str) -> Uuid {
         let topic_id = Uuid::new_v4();
         // graph_topics.id has a FK on graph_entities(id). Mirror a Topic
         // entity row before upserting (production path: synthesis.rs §230).

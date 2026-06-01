@@ -172,10 +172,7 @@ impl GraphDelta {
     fn canonical_value(&self) -> Value {
         let mut root = Map::new();
         // memory_id
-        root.insert(
-            "memory_id".into(),
-            Value::String(self.memory_id.clone()),
-        );
+        root.insert("memory_id".into(), Value::String(self.memory_id.clone()));
 
         // entities[].id, canonical_name, kind
         let entities: Vec<Value> = self
@@ -219,10 +216,7 @@ impl GraphDelta {
             .map(|e| {
                 let mut o = Map::new();
                 o.insert("id".into(), Value::String(e.id.to_string()));
-                o.insert(
-                    "subject_id".into(),
-                    Value::String(e.subject_id.to_string()),
-                );
+                o.insert("subject_id".into(), Value::String(e.subject_id.to_string()));
                 o.insert(
                     "predicate".into(),
                     serde_json::to_value(&e.predicate).unwrap_or(Value::Null),

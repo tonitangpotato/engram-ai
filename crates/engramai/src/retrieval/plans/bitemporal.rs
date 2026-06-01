@@ -127,10 +127,7 @@ impl AsOfMode {
     /// `true` iff this mode wants history (superseded rows are not filtered
     /// out). Used by the storage call site to pass `include_invalidated`.
     pub fn wants_history(&self) -> bool {
-        matches!(
-            self,
-            AsOfMode::IncludeSuperseded { .. } | AsOfMode::At(_)
-        )
+        matches!(self, AsOfMode::IncludeSuperseded { .. } | AsOfMode::At(_))
     }
 }
 
@@ -355,18 +352,15 @@ mod tests {
     fn at_mode_keeps_edges_valid_at_t() {
         // valid window [100, 800); at T=500 → live; at T=900 → out.
         let bounded = edge_at(Some(ts(100)), Some(ts(800)), None);
-        let projected_in =
-            project_edges(vec![bounded.clone()], AsOfMode::At(ts(500)));
+        let projected_in = project_edges(vec![bounded.clone()], AsOfMode::At(ts(500)));
         assert_eq!(projected_in.len(), 1);
         assert!(projected_in[0].is_live);
 
-        let projected_out =
-            project_edges(vec![bounded.clone()], AsOfMode::At(ts(900)));
+        let projected_out = project_edges(vec![bounded.clone()], AsOfMode::At(ts(900)));
         assert!(projected_out.is_empty());
 
         // exact boundary: valid_to is exclusive (`> t`), so at t == valid_to the edge is OUT.
-        let projected_boundary =
-            project_edges(vec![bounded], AsOfMode::At(ts(800)));
+        let projected_boundary = project_edges(vec![bounded], AsOfMode::At(ts(800)));
         assert!(projected_boundary.is_empty());
     }
 
@@ -378,7 +372,10 @@ mod tests {
         let edge = edge_at(Some(ts(100)), Some(ts(800)), Some(ts(900)));
         let projected = project_edges(vec![edge.clone()], AsOfMode::At(ts(500)));
         assert_eq!(projected.len(), 1);
-        assert!(projected[0].is_live, "as-of-T must report live regardless of current invalidation");
+        assert!(
+            projected[0].is_live,
+            "as-of-T must report live regardless of current invalidation"
+        );
         assert_eq!(projected[0].edge.id, edge.id);
     }
 
@@ -431,8 +428,7 @@ mod tests {
         assert_eq!(now_view[0].edge.id, live.id);
 
         // IncludeSuperseded recovers every row.
-        let history_view =
-            project_edges(edges, AsOfMode::IncludeSuperseded { now: ts(1_000) });
+        let history_view = project_edges(edges, AsOfMode::IncludeSuperseded { now: ts(1_000) });
         assert_eq!(history_view.len(), 6);
         let recovered = history_view.iter().filter(|p| !p.is_live).count();
         assert_eq!(recovered, 5, "all 5 superseded edges must be recoverable");

@@ -40,7 +40,7 @@ impl MemoryExtractor for NeutralExtractor {
             core_fact: text.chars().take(80).collect(),
             importance: 0.6,
             confidence: "confident".into(),
-            valence: 0.0,           // sentinel
+            valence: 0.0,             // sentinel
             domain: "general".into(), // sentinel
             ..Default::default()
         };
@@ -75,16 +75,12 @@ impl MemoryExtractor for OpinionatedExtractor {
 /// Helper: fetch the typed Dimensions for a stored memory id.
 /// Mirrors the read path used by `iss019_v2_metadata_compat.rs`.
 fn dims_of(mem: &Memory, id: &str) -> Dimensions {
-    let rec = mem
-        .get(id)
-        .expect("get ok")
-        .expect("record exists");
+    let rec = mem.get(id).expect("get ok").expect("record exists");
     let meta = rec
         .metadata
         .clone()
         .expect("v0.3 pipeline must populate metadata");
-    Dimensions::from_stored_metadata(&meta, &rec.content)
-        .expect("metadata parses to Dimensions")
+    Dimensions::from_stored_metadata(&meta, &rec.content).expect("metadata parses to Dimensions")
 }
 
 fn first_id(out: RawStoreOutcome) -> String {

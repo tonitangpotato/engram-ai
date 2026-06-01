@@ -127,7 +127,9 @@ impl ChangeDetector {
 
                 let modified: Vec<String> = current_memories
                     .iter()
-                    .filter(|m| prev_ids.contains(m.id.as_str()) && m.updated_at > record.compiled_at)
+                    .filter(|m| {
+                        prev_ids.contains(m.id.as_str()) && m.updated_at > record.compiled_at
+                    })
                     .map(|m| m.id.clone())
                     .collect();
 
@@ -231,14 +233,20 @@ impl<'a> QualityScorer<'a> {
     }
 
     /// Produce a quality report for a topic page given its source memories and feedback.
-    pub fn score(&self, topic: &TopicPage, memories: &[MemorySnapshot], feedback: &[FeedbackEntry]) -> QualityReport {
+    pub fn score(
+        &self,
+        topic: &TopicPage,
+        memories: &[MemorySnapshot],
+        feedback: &[FeedbackEntry],
+    ) -> QualityReport {
         let coverage = self.score_coverage(topic, memories);
         let coherence = self.score_coherence(topic);
         let freshness = self.score_freshness(memories);
         let overall = coherence * 0.4 + coverage * 0.35 + freshness * 0.25;
 
         // Feedback penalty: each unresolved ThumbsDown reduces score by 0.05, cap at -0.2
-        let unresolved_negatives = feedback.iter()
+        let unresolved_negatives = feedback
+            .iter()
             .filter(|f| matches!(f.kind, FeedbackKind::ThumbsDown) && !f.resolved)
             .count();
         let penalty = (unresolved_negatives as f64 * 0.05).min(0.2);
@@ -247,12 +255,13 @@ impl<'a> QualityScorer<'a> {
         let mut suggestions = Vec::new();
         if coverage < 0.7 {
             let uncited = memories.len() - (coverage * memories.len() as f64) as usize;
-            suggestions.push(format!("{} source memories may be uncited — consider recompilation", uncited));
+            suggestions.push(format!(
+                "{} source memories may be uncited — consider recompilation",
+                uncited
+            ));
         }
         if coherence < 0.5 {
-            suggestions.push(
-                "Low coherence: content may be too brief or poorly structured".into(),
-            );
+            suggestions.push("Low coherence: content may be too brief or poorly structured".into());
         }
         if freshness < 0.3 {
             suggestions
@@ -261,7 +270,10 @@ impl<'a> QualityScorer<'a> {
 
         let unresolved_count = feedback.iter().filter(|f| !f.resolved).count();
         if unresolved_count > 0 {
-            suggestions.push(format!("{} user corrections pending — recompile to incorporate", unresolved_count));
+            suggestions.push(format!(
+                "{} user corrections pending — recompile to incorporate",
+                unresolved_count
+            ));
         }
 
         QualityReport {
@@ -361,7 +373,11 @@ impl<'a> QualityScorer<'a> {
     /// Rank quality reports by overall score, worst first.
     pub fn rank_topics<'b>(&self, reports: &'b [QualityReport]) -> Vec<&'b QualityReport> {
         let mut sorted: Vec<&QualityReport> = reports.iter().collect();
-        sorted.sort_by(|a, b| a.overall.partial_cmp(&b.overall).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            a.overall
+                .partial_cmp(&b.overall)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         sorted
     }
 }
@@ -640,7 +656,10 @@ pub fn compile_without_llm(title: &str, memories: &[MemorySnapshot]) -> String {
             .then_with(|| b.created_at.cmp(&a.created_at))
     });
 
-    let mut out = format!("# {title}\n\n## Summary\n\nCompiled from {} memories.\n\n## Key Points\n\n", sorted.len());
+    let mut out = format!(
+        "# {title}\n\n## Summary\n\nCompiled from {} memories.\n\n## Key Points\n\n",
+        sorted.len()
+    );
 
     for m in &sorted {
         let date = m.created_at.format("%Y-%m-%d");
@@ -701,7 +720,12 @@ pub struct CompilationPipeline<S: KnowledgeStore, L: LlmProvider> {
 
 impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
     pub fn new(store: S, llm: Option<L>, config: KcConfig) -> Self {
-        Self { store, llm, config, verbose: false }
+        Self {
+            store,
+            llm,
+            config,
+            verbose: false,
+        }
     }
 
     /// Builder method to enable verbose mode (prints LLM prompts to stderr).
@@ -723,10 +747,7 @@ impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
             .clone()
             .unwrap_or_else(|| format!("Topic ({})", candidate.memories.len()));
 
-        let topic_id = TopicId(format!(
-            "topic-{}",
-            Utc::now().timestamp_millis()
-        ));
+        let topic_id = TopicId(format!("topic-{}", Utc::now().timestamp_millis()));
 
         // Compile content
         let content = self.compile_content(&title, memories, &[], None)?;
@@ -763,11 +784,14 @@ impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
         self.store.create_topic_page(&page)?;
 
         // Populate kc_compilation_sources for decay/health tracking
-        let source_refs: Vec<SourceMemoryRef> = memories.iter().map(|m| SourceMemoryRef {
-            memory_id: m.id.clone(),
-            relevance_score: m.importance,
-            added_at: now,
-        }).collect();
+        let source_refs: Vec<SourceMemoryRef> = memories
+            .iter()
+            .map(|m| SourceMemoryRef {
+                memory_id: m.id.clone(),
+                relevance_score: m.importance,
+                added_at: now,
+            })
+            .collect();
         self.store.save_source_refs(&topic_id, &source_refs)?;
 
         let record = CompilationRecord {
@@ -835,11 +859,14 @@ impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
         self.store.update_topic_page(&updated)?;
 
         // Populate kc_compilation_sources for decay/health tracking
-        let source_refs: Vec<SourceMemoryRef> = memories.iter().map(|m| SourceMemoryRef {
-            memory_id: m.id.clone(),
-            relevance_score: m.importance,
-            added_at: now,
-        }).collect();
+        let source_refs: Vec<SourceMemoryRef> = memories
+            .iter()
+            .map(|m| SourceMemoryRef {
+                memory_id: m.id.clone(),
+                relevance_score: m.importance,
+                added_at: now,
+            })
+            .collect();
         self.store.save_source_refs(&topic.id, &source_refs)?;
 
         let record = CompilationRecord {
@@ -870,10 +897,7 @@ impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
     ///
     /// For existing topics with no matching candidate:
     /// - Evaluates decay → `Archive` if stale enough, else `Skip`
-    pub fn dry_run(
-        &self,
-        memories: &[MemorySnapshot],
-    ) -> Result<DryRunReport, KcError> {
+    pub fn dry_run(&self, memories: &[MemorySnapshot]) -> Result<DryRunReport, KcError> {
         use crate::compiler::decay::DecayEngine;
         use crate::compiler::discovery::TopicDiscovery;
 
@@ -881,7 +905,9 @@ impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
         let memory_embeddings: Vec<(String, Vec<f32>)> = memories
             .iter()
             .map(|m| {
-                let embedding = m.embedding.clone()
+                let embedding = m
+                    .embedding
+                    .clone()
                     .unwrap_or_else(|| simple_hash_embedding(&m.content, 64));
                 (m.id.clone(), embedding)
             })
@@ -943,10 +969,7 @@ impl<S: KnowledgeStore, L: LlmProvider> CompilationPipeline<S, L> {
                         topic_id: None,
                         action: DryRunAction::NewCompilation,
                         affected_memories: candidate.memories.len(),
-                        reason: format!(
-                            "New cluster of {} memories",
-                            candidate.memories.len()
-                        ),
+                        reason: format!("New cluster of {} memories", candidate.memories.len()),
                     });
                     estimated_llm_calls += 1;
                 }
@@ -1073,9 +1096,7 @@ pub fn extract_summary(content: &str) -> String {
             break;
         }
     }
-    let summary: Vec<&str> = lines
-        .take_while(|l| !l.trim().is_empty())
-        .collect();
+    let summary: Vec<&str> = lines.take_while(|l| !l.trim().is_empty()).collect();
     if summary.is_empty() {
         content.chars().take(200).collect()
     } else {
@@ -1229,7 +1250,10 @@ mod tests {
             TriggerDecision::Full { change_set } | TriggerDecision::Partial { change_set } => {
                 assert!(!change_set.added.is_empty(), "should have added memories");
             }
-            other => panic!("expected Full or Partial for initial compilation, got {:?}", other),
+            other => panic!(
+                "expected Full or Partial for initial compilation, got {:?}",
+                other
+            ),
         }
     }
 
@@ -1341,7 +1365,11 @@ mod tests {
 
         let report = scorer.score(&topic, &mems, &[]);
 
-        assert!(report.coverage < 0.5, "coverage should be low: {}", report.coverage);
+        assert!(
+            report.coverage < 0.5,
+            "coverage should be low: {}",
+            report.coverage
+        );
     }
 
     #[test]
@@ -1409,13 +1437,8 @@ mod tests {
             removed: vec!["m_old".into()],
             last_compiled: Some(Utc::now()),
         };
-        let prompt = build_incremental_compile_prompt(
-            "Topic",
-            "existing content",
-            &changes,
-            &mems,
-            &[],
-        );
+        let prompt =
+            build_incremental_compile_prompt("Topic", "existing content", &changes, &mems, &[]);
         assert!(prompt.contains("existing content"));
         assert!(prompt.contains("New memory"));
         assert!(prompt.contains("m_old"));
@@ -1435,9 +1458,8 @@ mod tests {
         let mut config = make_config();
         config.min_cluster_size = 2;
 
-        let pipeline = CompilationPipeline::<SqliteKnowledgeStore, NoopProvider>::new(
-            store, None, config,
-        );
+        let pipeline =
+            CompilationPipeline::<SqliteKnowledgeStore, NoopProvider>::new(store, None, config);
 
         // Create memories with similar content so they cluster together
         let memories = vec![
@@ -1492,24 +1514,36 @@ mod tests {
 
         // Add source refs so decay doesn't trigger archive
         let refs = vec![
-            SourceMemoryRef { memory_id: "m1".into(), relevance_score: 0.9, added_at: now },
-            SourceMemoryRef { memory_id: "m2".into(), relevance_score: 0.9, added_at: now },
+            SourceMemoryRef {
+                memory_id: "m1".into(),
+                relevance_score: 0.9,
+                added_at: now,
+            },
+            SourceMemoryRef {
+                memory_id: "m2".into(),
+                relevance_score: 0.9,
+                added_at: now,
+            },
         ];
-        store.save_source_refs(&TopicId("existing-topic".into()), &refs).unwrap();
+        store
+            .save_source_refs(&TopicId("existing-topic".into()), &refs)
+            .unwrap();
 
         let mut config = make_config();
         config.min_cluster_size = 2;
 
-        let pipeline = CompilationPipeline::<SqliteKnowledgeStore, NoopProvider>::new(
-            store, None, config,
-        );
+        let pipeline =
+            CompilationPipeline::<SqliteKnowledgeStore, NoopProvider>::new(store, None, config);
 
         // Pass no memories — the existing topic should get Skip (or Archive via decay)
         // since there are no candidates at all
         let report = pipeline.dry_run(&[]).unwrap();
 
         // The existing topic should appear as Skip or Archive (decay-based)
-        assert!(!report.entries.is_empty(), "Should have entry for existing topic");
+        assert!(
+            !report.entries.is_empty(),
+            "Should have entry for existing topic"
+        );
         for entry in &report.entries {
             assert!(
                 matches!(entry.action, DryRunAction::Skip | DryRunAction::Archive),
@@ -1531,9 +1565,9 @@ mod tests {
         let config = make_config();
 
         // Build pipeline with verbose=true
-        let pipeline = CompilationPipeline::<SqliteKnowledgeStore, NoopProvider>::new(
-            store, None, config,
-        ).with_verbose(true);
+        let pipeline =
+            CompilationPipeline::<SqliteKnowledgeStore, NoopProvider>::new(store, None, config)
+                .with_verbose(true);
 
         let memories = vec![
             MemorySnapshot::test("m1", "Test memory one"),
@@ -1549,7 +1583,11 @@ mod tests {
 
         // compile_new should succeed even with verbose=true (prints to stderr)
         let result = pipeline.compile_new(&candidate, &memories);
-        assert!(result.is_ok(), "Compilation with verbose=true should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Compilation with verbose=true should succeed: {:?}",
+            result.err()
+        );
         let page = result.unwrap();
         assert_eq!(page.title, "Verbose Test Topic");
         assert!(page.content.contains("Test memory one"));
@@ -1579,7 +1617,10 @@ mod tests {
         let prompt = build_full_compile_prompt_with("Test", &[m], &[], &cfg);
         // Extract just the memory-line portion (after "Memories:\n") to avoid
         // matching the "cause:..." example in the header instruction.
-        let mem_section = prompt.split("Memories:\n").nth(1).expect("Memories: section");
+        let mem_section = prompt
+            .split("Memories:\n")
+            .nth(1)
+            .expect("Memories: section");
         assert!(mem_section.contains("- [factual] ("));
         assert!(mem_section.contains("legacy fact"));
         // Must NOT contain enriched pipes in the rendered memory lines.
@@ -1669,7 +1710,10 @@ mod tests {
         let m = MemorySnapshot::test_with_dimensions("m1", "coffee is good", dims);
         let cfg = PromptConfig::default();
         let prompt = build_full_compile_prompt_with("T", &[m], &[], &cfg);
-        let mem_section = prompt.split("Memories:\n").nth(1).expect("Memories: section");
+        let mem_section = prompt
+            .split("Memories:\n")
+            .nth(1)
+            .expect("Memories: section");
         assert!(mem_section.contains("stance:prefers coffee"));
         // No empty cause:/outcome:/who: pipes in the rendered line.
         assert!(!mem_section.contains("cause:"));

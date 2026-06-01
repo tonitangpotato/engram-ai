@@ -17,8 +17,7 @@ use engramai::retrieval::adapters::graph_entity_resolver::GraphEntityResolver;
 use engramai::retrieval::budget::{BudgetController, CostCaps, StageBudget};
 use engramai::retrieval::plans::factual::{FactualPlan, FactualPlanInputs};
 
-const DB: &str =
-    "/var/folders/48/npr42z0967b376x1rc7wbp6m0000gn/T/.tmpAZKa5X/graph.db";
+const DB: &str = "/var/folders/48/npr42z0967b376x1rc7wbp6m0000gn/T/.tmpAZKa5X/graph.db";
 const QUERY: &str = "Which year did Audrey adopt the first three of her dogs?";
 const ANSWER: &str = "a8b823f4";
 
@@ -58,13 +57,19 @@ fn main() {
     println!("outcome: {:?}", result.outcome);
     println!("anchors: {}", result.anchors.len());
     for a in &result.anchors {
-        println!("  - {} {:?} ms={:.3}", a.entity_id, a.canonical_name, a.match_strength);
+        println!(
+            "  - {} {:?} ms={:.3}",
+            a.entity_id, a.canonical_name, a.match_strength
+        );
     }
     println!("edges traversed (outgoing): {}", result.edges.len());
     println!("candidate pool size       : {}", result.memories.len());
 
     let in_pool = result.memories.iter().any(|m| m.memory_id == ANSWER);
-    println!("\nANSWER episode {ANSWER} in candidate pool? {}", if in_pool { "YES ✅" } else { "NO ❌" });
+    println!(
+        "\nANSWER episode {ANSWER} in candidate pool? {}",
+        if in_pool { "YES ✅" } else { "NO ❌" }
+    );
     if !in_pool {
         println!("→ confirms the gap is BEFORE fusion: the Factual plan never");
         println!("  surfaces the answer. (Expected with the current outgoing-only");

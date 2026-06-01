@@ -228,10 +228,7 @@ impl BoundedJobQueue {
 
 impl JobQueue for BoundedJobQueue {
     fn try_enqueue(&self, job: PipelineJob) -> Result<(), EnqueueError> {
-        let mut g = self
-            .inner
-            .lock()
-            .map_err(|_| EnqueueError::Closed)?; // poisoned == effectively closed
+        let mut g = self.inner.lock().map_err(|_| EnqueueError::Closed)?; // poisoned == effectively closed
         if g.closed {
             return Err(EnqueueError::Closed);
         }
@@ -355,7 +352,10 @@ mod tests {
         let q = BoundedJobQueue::new(1);
         q.try_enqueue(job_initial("a")).unwrap();
         // Initial would be rejected here.
-        assert_eq!(q.try_enqueue(job_initial("b")), Err(EnqueueError::QueueFull));
+        assert_eq!(
+            q.try_enqueue(job_initial("b")),
+            Err(EnqueueError::QueueFull)
+        );
         // But ReExtract pushes through.
         q.try_enqueue(job_reextract("r1")).unwrap();
         q.try_enqueue(job_reextract("r2")).unwrap();
@@ -403,10 +403,7 @@ mod tests {
         assert_eq!(q.try_enqueue(job_initial("c")), Err(EnqueueError::Closed));
         // ReExtract also rejected when closed — closed wins over
         // non-droppable. Shutdown means *no new work*, period.
-        assert_eq!(
-            q.try_enqueue(job_reextract("r")),
-            Err(EnqueueError::Closed)
-        );
+        assert_eq!(q.try_enqueue(job_reextract("r")), Err(EnqueueError::Closed));
         // But the pre-close queued items are still dequeueable.
         assert_eq!(q.try_dequeue().unwrap().memory_id, "a");
         assert_eq!(q.try_dequeue().unwrap().memory_id, "b");

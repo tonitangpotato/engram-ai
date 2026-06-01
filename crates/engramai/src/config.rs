@@ -148,12 +148,12 @@ pub struct MemoryConfig {
     pub interleave_ratio: f64,
     /// Core strength boost per replayed archived memory (base)
     pub replay_boost: f64,
-    
+
     // Layer rebalancing thresholds
     pub promote_threshold: f64,
     pub demote_threshold: f64,
     pub archive_threshold: f64,
-    
+
     // === Activation (ACT-R) ===
     /// Base-level activation decay parameter (d in t^-d)
     pub actr_decay: f64,
@@ -163,7 +163,7 @@ pub struct MemoryConfig {
     pub importance_weight: f64,
     /// Contradiction penalty in activation
     pub contradiction_penalty: f64,
-    
+
     // === Forgetting ===
     /// Spacing effect multiplier
     pub spacing_factor: f64,
@@ -173,15 +173,15 @@ pub struct MemoryConfig {
     pub consolidation_bonus: f64,
     /// Effective strength threshold for pruning
     pub forget_threshold: f64,
-    
+
     // === Reward ===
     /// Default reward magnitude
     pub reward_magnitude: f64,
-    
+
     // === Downscaling ===
     /// Global downscaling factor per consolidation cycle
     pub downscale_factor: f64,
-    
+
     // === Hebbian learning ===
     /// Enable Hebbian link formation
     pub hebbian_enabled: bool,
@@ -189,7 +189,7 @@ pub struct MemoryConfig {
     pub hebbian_threshold: i32,
     /// Link strength decay per consolidation cycle
     pub hebbian_decay: f64,
-    
+
     // === STDP (causal inference) ===
     /// Enable temporal direction tracking
     pub stdp_enabled: bool,
@@ -197,7 +197,7 @@ pub struct MemoryConfig {
     pub stdp_causal_threshold: f64,
     /// Minimum observations before STDP inference
     pub stdp_min_observations: i32,
-    
+
     // === Embedding ===
     /// Embedding provider configuration
     pub embedding: EmbeddingConfig,
@@ -211,20 +211,20 @@ pub struct MemoryConfig {
     /// Recommended: 0.25 for 25% recency/frequency contribution
     /// Note: fts_weight + embedding_weight + actr_weight should sum to ~1.0
     pub actr_weight: f64,
-    
+
     /// Sigmoid center for ACT-R activation normalization.
     /// Controls the "midpoint age" — memories with activation near this value
     /// get normalized to ~0.5. Default -5.5 ≈ 1-day-old single-access memory.
     /// Lower values shift the curve to favor older memories.
     #[serde(default = "default_actr_sigmoid_center")]
     pub actr_sigmoid_center: f64,
-    
+
     /// Sigmoid scale for ACT-R activation normalization.
     /// Controls steepness: smaller = sharper transition, larger = gentler.
     /// Default 1.5 gives good discrimination across the 1min–30day range.
     #[serde(default = "default_actr_sigmoid_scale")]
     pub actr_sigmoid_scale: f64,
-    
+
     // === Entity extraction ===
     /// Entity extraction configuration
     #[serde(default)]
@@ -232,7 +232,7 @@ pub struct MemoryConfig {
     /// Weight for entity matches in hybrid recall scoring (0.0-1.0)
     #[serde(default = "default_entity_weight")]
     pub entity_weight: f64,
-    
+
     // === Dedup on write ===
     /// Enable dedup checking on write (default: true)
     #[serde(default = "default_dedup_enabled")]
@@ -240,7 +240,7 @@ pub struct MemoryConfig {
     /// Cosine similarity threshold for considering memories as duplicates (default: 0.95)
     #[serde(default = "default_dedup_threshold")]
     pub dedup_threshold: f64,
-    
+
     // === Auto-extraction importance cap ===
     /// Maximum importance for auto-extracted memories (default: 0.7).
     /// Prevents LLM extractor from assigning high importance to noise.
@@ -255,7 +255,7 @@ pub struct MemoryConfig {
     /// Cosine similarity threshold for recall result dedup (default: 0.85)
     #[serde(default = "default_recall_dedup_threshold")]
     pub recall_dedup_threshold: f64,
-    
+
     // === Multi-retrieval fusion ===
     /// Weight for temporal channel in hybrid recall (0.0-1.0)
     /// Only meaningful when query has temporal indicators
@@ -417,9 +417,9 @@ impl Default for MemoryConfig {
             stdp_causal_threshold: 2.0,
             stdp_min_observations: 3,
             embedding: EmbeddingConfig::default(),
-            fts_weight: 0.15,        // 15% exact matching
-            embedding_weight: 0.60,   // 60% semantic similarity
-            actr_weight: 0.25,        // 25% recency/frequency/importance
+            fts_weight: 0.15,       // 15% exact matching
+            embedding_weight: 0.60, // 60% semantic similarity
+            actr_weight: 0.25,      // 25% recency/frequency/importance
             actr_sigmoid_center: default_actr_sigmoid_center(),
             actr_sigmoid_scale: default_actr_sigmoid_scale(),
             entity_config: EntityConfig::default(),
@@ -551,7 +551,10 @@ mod tests {
         assert!(deserialized.enabled);
         assert_eq!(deserialized.batch_size, 20);
         assert_eq!(deserialized.max_retries, 5);
-        assert_eq!(deserialized.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(
+            deserialized.model.as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
     }
 
     #[test]
@@ -597,9 +600,15 @@ mod tests {
         assert!((original.w_embedding - deserialized.w_embedding).abs() < f64::EPSILON);
         assert!((original.w_temporal - deserialized.w_temporal).abs() < f64::EPSILON);
         assert!((original.link_threshold - deserialized.link_threshold).abs() < f64::EPSILON);
-        assert_eq!(original.max_links_per_memory, deserialized.max_links_per_memory);
+        assert_eq!(
+            original.max_links_per_memory,
+            deserialized.max_links_per_memory
+        );
         assert_eq!(original.candidate_limit, deserialized.candidate_limit);
-        assert_eq!(original.temporal_window_days, deserialized.temporal_window_days);
+        assert_eq!(
+            original.temporal_window_days,
+            deserialized.temporal_window_days
+        );
         assert!((original.initial_strength - deserialized.initial_strength).abs() < f64::EPSILON);
         assert!((original.decay_corecall - deserialized.decay_corecall).abs() < f64::EPSILON);
         assert!((original.decay_multi - deserialized.decay_multi).abs() < f64::EPSILON);
@@ -696,8 +705,7 @@ mod tests {
         let mut config_on = MemoryConfig::default();
         config_on.unified_substrate = true;
         let json_on = serde_json::to_string(&config_on).expect("serialize on");
-        let deserialized_on: MemoryConfig =
-            serde_json::from_str(&json_on).expect("deserialize on");
+        let deserialized_on: MemoryConfig = serde_json::from_str(&json_on).expect("deserialize on");
         assert!(deserialized_on.unified_substrate);
     }
 
@@ -714,14 +722,10 @@ mod tests {
     #[test]
     fn test_unified_substrate_absent_key_defaults_true() {
         // Minimal config JSON omitting unified_substrate entirely.
-        let default_json = serde_json::to_string(&MemoryConfig::default())
-            .expect("serialize default");
-        let value: serde_json::Value =
-            serde_json::from_str(&default_json).expect("parse to value");
-        let mut obj = value
-            .as_object()
-            .expect("config is a json object")
-            .clone();
+        let default_json =
+            serde_json::to_string(&MemoryConfig::default()).expect("serialize default");
+        let value: serde_json::Value = serde_json::from_str(&default_json).expect("parse to value");
+        let mut obj = value.as_object().expect("config is a json object").clone();
         obj.remove("unified_substrate");
         let stripped = serde_json::to_string(&obj).expect("reserialize");
 

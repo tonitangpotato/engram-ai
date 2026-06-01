@@ -27,14 +27,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use engramai::graph::audit::{
-    CATEGORY_APPLY_GRAPH_DELTA_ERROR, CATEGORY_BUDGET_EXHAUSTED,
+    ExtractionFailure, CATEGORY_APPLY_GRAPH_DELTA_ERROR, CATEGORY_BUDGET_EXHAUSTED,
     CATEGORY_CANDIDATE_RETRIEVAL_ERROR, CATEGORY_CANONICAL_FETCH_ERROR, CATEGORY_DB_ERROR,
     CATEGORY_EXTRACTOR_ERROR, CATEGORY_FIND_EDGES_ERROR, CATEGORY_INTERNAL,
     CATEGORY_LLM_INVALID_OUTPUT, CATEGORY_LLM_TIMEOUT, CATEGORY_MISSING_CANONICAL,
     CATEGORY_QUEUE_FULL, CATEGORY_UNRESOLVED_DEFER, CATEGORY_UNRESOLVED_OBJECT,
-    CATEGORY_UNRESOLVED_SUBJECT, ExtractionFailure, STAGE_DEDUP, STAGE_EDGE_EXTRACT,
-    STAGE_ENTITY_EXTRACT, STAGE_INGEST, STAGE_KNOWLEDGE_COMPILE, STAGE_PERSIST,
-    STAGE_RESOLVE,
+    CATEGORY_UNRESOLVED_SUBJECT, STAGE_DEDUP, STAGE_EDGE_EXTRACT, STAGE_ENTITY_EXTRACT,
+    STAGE_INGEST, STAGE_KNOWLEDGE_COMPILE, STAGE_PERSIST, STAGE_RESOLVE,
 };
 use engramai::graph::store::GraphWrite;
 use engramai::graph::SqliteGraphStore;
@@ -150,9 +149,9 @@ fn dedup_and_knowledge_compile_stages_validate() {
             occurred_at: 1.0,
             resolved_at: None,
         };
-        store.record_extraction_failure(&f).unwrap_or_else(|e| {
-            panic!("stage {stage} rejected: {e:?}")
-        });
+        store
+            .record_extraction_failure(&f)
+            .unwrap_or_else(|e| panic!("stage {stage} rejected: {e:?}"));
     }
 }
 
@@ -174,10 +173,7 @@ fn dedup_and_knowledge_compile_stages_validate() {
 struct UnresolvableSubjectExtractor;
 
 impl TripleExtractor for UnresolvableSubjectExtractor {
-    fn extract_triples(
-        &self,
-        _content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, _content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         // Whitespace-only subject: ISS-048's `lift_novel_endpoints` skips
         // endpoints whose trimmed-lowercased key is empty (see
         // `crates/engramai/src/resolution/pipeline.rs::lift_novel_endpoints`),
@@ -206,8 +202,7 @@ fn unresolved_subject_does_not_roll_back_pipeline() {
     let db_path = dir.path().join("unresolved.db");
     let db_path_str = db_path.to_str().expect("utf-8 db path");
 
-    let triple_extractor: Arc<dyn TripleExtractor> =
-        Arc::new(UnresolvableSubjectExtractor);
+    let triple_extractor: Arc<dyn TripleExtractor> = Arc::new(UnresolvableSubjectExtractor);
 
     let mut config = ResolutionConfig::default();
     config.worker_count = 1;
@@ -240,13 +235,15 @@ fn unresolved_subject_does_not_roll_back_pipeline() {
 
     // (a) The failure row must be present and carry the exact label pair.
     let mut stmt = conn
-        .prepare(
-            "SELECT stage, error_category, error_detail FROM graph_extraction_failures",
-        )
+        .prepare("SELECT stage, error_category, error_detail FROM graph_extraction_failures")
         .expect("prepare select");
     let rows: Vec<(String, String, Option<String>)> = stmt
         .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
         })
         .expect("query")
         .map(|r| r.expect("row"))
@@ -296,10 +293,7 @@ fn unresolved_subject_does_not_roll_back_pipeline() {
 struct ErroringExtractor;
 
 impl TripleExtractor for ErroringExtractor {
-    fn extract_triples(
-        &self,
-        _content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, _content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         Err("simulated LLM 502".into())
     }
 }

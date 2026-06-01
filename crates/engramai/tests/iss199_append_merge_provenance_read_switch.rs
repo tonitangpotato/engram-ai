@@ -66,7 +66,9 @@ fn iss199_unified_rmw_without_memories_row() {
     // No legacy memories row.
     let mem_count: i64 = s
         .conn()
-        .query_row("SELECT COUNT(*) FROM memories WHERE id='m-1'", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM memories WHERE id='m-1'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(mem_count, 0);
 
@@ -97,7 +99,8 @@ fn iss199_reserved_keys_survive_rmw_on_unified() {
     r.contradicts = Some("other-mem".into());
     s.add(&r, "default").unwrap();
 
-    s.append_merge_provenance("m-1", "donor-1", 0.8, false).unwrap();
+    s.append_merge_provenance("m-1", "donor-1", 0.8, false)
+        .unwrap();
 
     let attrs: String = s
         .conn()
@@ -124,11 +127,14 @@ fn iss199_legacy_rmw_still_writes_memories() {
 
     let mut s = Storage::new(&db).unwrap();
     s.add(&rec("m-1", "prov test"), "default").unwrap();
-    s.append_merge_provenance("m-1", "donor-1", 0.91, true).unwrap();
+    s.append_merge_provenance("m-1", "donor-1", 0.91, true)
+        .unwrap();
 
     let meta: Option<String> = s
         .conn()
-        .query_row("SELECT metadata FROM memories WHERE id='m-1'", [], |r| r.get(0))
+        .query_row("SELECT metadata FROM memories WHERE id='m-1'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let hist = merge_history(meta.as_deref().unwrap());
     assert_eq!(hist.len(), 1);

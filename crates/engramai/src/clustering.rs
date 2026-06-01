@@ -130,10 +130,7 @@ where
             members.truncate(config.max_community_size);
         }
 
-        communities.push(Community {
-            members,
-            module_id,
-        });
+        communities.push(Community { members, module_id });
     }
 
     communities
@@ -172,10 +169,9 @@ impl EdgeWeightStrategy for CosineStrategy {
     type Item = EmbeddingItem;
 
     fn edge_weight(&self, a: &EmbeddingItem, b: &EmbeddingItem) -> Option<f64> {
-        let sim = crate::embeddings::EmbeddingProvider::cosine_similarity(
-            &a.embedding,
-            &b.embedding,
-        ) as f64;
+        let sim =
+            crate::embeddings::EmbeddingProvider::cosine_similarity(&a.embedding, &b.embedding)
+                as f64;
         if sim >= self.threshold {
             Some(sim)
         } else {
@@ -195,10 +191,22 @@ mod tests {
     #[test]
     fn test_cosine_strategy_basic() {
         let items = vec![
-            EmbeddingItem { id: "a".into(), embedding: vec![1.0, 0.0, 0.0] },
-            EmbeddingItem { id: "b".into(), embedding: vec![0.95, 0.1, 0.0] },
-            EmbeddingItem { id: "c".into(), embedding: vec![0.0, 1.0, 0.0] },
-            EmbeddingItem { id: "d".into(), embedding: vec![0.1, 0.95, 0.0] },
+            EmbeddingItem {
+                id: "a".into(),
+                embedding: vec![1.0, 0.0, 0.0],
+            },
+            EmbeddingItem {
+                id: "b".into(),
+                embedding: vec![0.95, 0.1, 0.0],
+            },
+            EmbeddingItem {
+                id: "c".into(),
+                embedding: vec![0.0, 1.0, 0.0],
+            },
+            EmbeddingItem {
+                id: "d".into(),
+                embedding: vec![0.1, 0.95, 0.0],
+            },
         ];
 
         let strategy = CosineStrategy::new(0.3);
@@ -208,7 +216,12 @@ mod tests {
         };
 
         let communities = cluster_with_infomap(&items, &strategy, &config);
-        assert_eq!(communities.len(), 2, "Expected 2 communities, got {}", communities.len());
+        assert_eq!(
+            communities.len(),
+            2,
+            "Expected 2 communities, got {}",
+            communities.len()
+        );
     }
 
     #[test]
@@ -223,8 +236,14 @@ mod tests {
     #[test]
     fn test_no_edges_above_threshold() {
         let items = vec![
-            EmbeddingItem { id: "a".into(), embedding: vec![1.0, 0.0, 0.0] },
-            EmbeddingItem { id: "b".into(), embedding: vec![0.0, 1.0, 0.0] },
+            EmbeddingItem {
+                id: "a".into(),
+                embedding: vec![1.0, 0.0, 0.0],
+            },
+            EmbeddingItem {
+                id: "b".into(),
+                embedding: vec![0.0, 1.0, 0.0],
+            },
         ];
 
         // Threshold too high for these orthogonal vectors.
@@ -259,8 +278,14 @@ mod tests {
     #[test]
     fn test_min_community_size_filter() {
         let items = vec![
-            EmbeddingItem { id: "a".into(), embedding: vec![1.0, 0.0] },
-            EmbeddingItem { id: "b".into(), embedding: vec![0.99, 0.01] },
+            EmbeddingItem {
+                id: "a".into(),
+                embedding: vec![1.0, 0.0],
+            },
+            EmbeddingItem {
+                id: "b".into(),
+                embedding: vec![0.99, 0.01],
+            },
         ];
 
         let strategy = CosineStrategy::new(0.3);

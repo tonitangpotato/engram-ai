@@ -44,8 +44,8 @@ use engramai::storage::Storage;
 use engramai::substrate::backfill::{
     backfill_embeddings_to_node_embeddings, backfill_entities_to_nodes,
     backfill_entity_relations_to_edges, backfill_hebbian_links_to_edges,
-    backfill_memories_to_nodes, backfill_memory_entities_to_edges,
-    backfill_soft_delete_into_nodes, backfill_synthesis_provenance_to_edges, BackfillRun,
+    backfill_memories_to_nodes, backfill_memory_entities_to_edges, backfill_soft_delete_into_nodes,
+    backfill_synthesis_provenance_to_edges, BackfillRun,
 };
 
 fn main() -> ExitCode {
@@ -59,11 +59,16 @@ fn main() -> ExitCode {
         }
     };
 
-    if source.to_string_lossy().contains("rustclaw/engram-memory.db")
+    if source
+        .to_string_lossy()
+        .contains("rustclaw/engram-memory.db")
         && !source.to_string_lossy().contains(".bak")
         && !source.to_string_lossy().starts_with("/tmp/")
     {
-        eprintln!("refusing to run against live production DB: {}", source.display());
+        eprintln!(
+            "refusing to run against live production DB: {}",
+            source.display()
+        );
         eprintln!("snapshot it first: cp engram-memory.db /tmp/t30-probe.db");
         return ExitCode::from(2);
     }
@@ -82,9 +87,7 @@ fn main() -> ExitCode {
     // themselves. The flag only affects READ-side adapter routing,
     // not the schema — both legacy and unified tables exist either
     // way after migrations run.
-    let path_str = source
-        .to_str()
-        .expect("snapshot path must be UTF-8");
+    let path_str = source.to_str().expect("snapshot path must be UTF-8");
     let mut storage = match Storage::with_unified_substrate(path_str, false) {
         Ok(s) => s,
         Err(e) => {
@@ -96,13 +99,28 @@ fn main() -> ExitCode {
     type DriverFn = fn(&mut Storage, Option<&str>) -> Result<BackfillRun, rusqlite::Error>;
     let drivers: &[(&str, DriverFn)] = &[
         ("T19 memories→nodes", backfill_memories_to_nodes),
-        ("T20 embeddings→node_embeddings", backfill_embeddings_to_node_embeddings),
+        (
+            "T20 embeddings→node_embeddings",
+            backfill_embeddings_to_node_embeddings,
+        ),
         ("T21 entities→nodes", backfill_entities_to_nodes),
-        ("T22 entity_relations→edges", backfill_entity_relations_to_edges),
-        ("T23 memory_entities→edges", backfill_memory_entities_to_edges),
+        (
+            "T22 entity_relations→edges",
+            backfill_entity_relations_to_edges,
+        ),
+        (
+            "T23 memory_entities→edges",
+            backfill_memory_entities_to_edges,
+        ),
         ("T24 hebbian_links→edges", backfill_hebbian_links_to_edges),
-        ("T25 synthesis_provenance→edges", backfill_synthesis_provenance_to_edges),
-        ("T26 soft_delete projection", backfill_soft_delete_into_nodes),
+        (
+            "T25 synthesis_provenance→edges",
+            backfill_synthesis_provenance_to_edges,
+        ),
+        (
+            "T26 soft_delete projection",
+            backfill_soft_delete_into_nodes,
+        ),
     ];
 
     let mut any_failed = false;

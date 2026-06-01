@@ -34,7 +34,7 @@ use std::time::SystemTime;
 
 use chrono::Utc;
 
-use super::import::{ImportPipeline, MarkdownImporter, JsonImporter};
+use super::import::{ImportPipeline, JsonImporter, MarkdownImporter};
 use super::storage::KnowledgeStore;
 use super::types::*;
 
@@ -83,21 +83,13 @@ impl WatcherConfig {
 #[derive(Clone, Debug)]
 pub enum FileOutcome {
     /// File was imported successfully.
-    Imported {
-        report: ImportReport,
-    },
+    Imported { report: ImportReport },
     /// File was skipped (unsupported format, too large, etc.).
-    Skipped {
-        reason: String,
-    },
+    Skipped { reason: String },
     /// File processing failed.
-    Failed {
-        error: String,
-    },
+    Failed { error: String },
     /// Audio file needs STT — caller must provide transcription.
-    NeedsStt {
-        audio_path: PathBuf,
-    },
+    NeedsStt { audio_path: PathBuf },
 }
 
 /// Result of processing one file from the inbox.
@@ -288,9 +280,7 @@ impl DirectoryWatcher {
                     FileOutcome::Imported { .. } => {
                         self.move_file(path, &self.config.processed_subdir)
                     }
-                    FileOutcome::Failed { .. } => {
-                        self.move_file(path, &self.config.error_subdir)
-                    }
+                    FileOutcome::Failed { .. } => self.move_file(path, &self.config.error_subdir),
                     FileOutcome::NeedsStt { .. } => {
                         // Don't move — caller will handle after STT
                         Ok(None)
@@ -303,7 +293,9 @@ impl DirectoryWatcher {
                 (outcome, dest.unwrap_or(None))
             }
             Err(e) => {
-                let dest = self.move_file(path, &self.config.error_subdir).unwrap_or(None);
+                let dest = self
+                    .move_file(path, &self.config.error_subdir)
+                    .unwrap_or(None);
                 (
                     FileOutcome::Failed {
                         error: format!("{}", e),
@@ -364,14 +356,8 @@ impl DirectoryWatcher {
 
         // Avoid name collisions
         if dest.exists() {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("file");
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let ts = Utc::now().format("%Y%m%d-%H%M%S");
             let new_name = if ext.is_empty() {
                 format!("{}-{}", stem, ts)
@@ -439,9 +425,8 @@ impl DirectoryWatcher {
             Utc::now().timestamp_millis()
         ));
 
-        fs::write(&tmp_path, &content).map_err(|e| {
-            KcError::ImportError(format!("Failed to write transcript: {}", e))
-        })?;
+        fs::write(&tmp_path, &content)
+            .map_err(|e| KcError::ImportError(format!("Failed to write transcript: {}", e)))?;
 
         let importer = MarkdownImporter {
             split: SplitStrategy::Smart,
@@ -510,8 +495,8 @@ impl DirectoryWatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::storage::SqliteKnowledgeStore;
+    use super::*;
     use tempfile::TempDir;
 
     fn make_store() -> SqliteKnowledgeStore {
@@ -766,7 +751,8 @@ mod tests {
         let audio_path = inbox.join("recording.ogg");
         fs::write(&audio_path, b"fake audio").unwrap();
 
-        let transcript = "This is the transcribed text from a voice recording about Rust programming.";
+        let transcript =
+            "This is the transcribed text from a voice recording about Rust programming.";
 
         let result = watcher
             .import_transcription(&audio_path, transcript, &store)
@@ -873,7 +859,10 @@ mod tests {
         fs::write(subdir.join("nested.md"), "# Nested\n\nShould be ignored\n").unwrap();
 
         let results = watcher.poll(&store).unwrap();
-        assert!(results.is_empty(), "Files in subdirectories should be ignored");
+        assert!(
+            results.is_empty(),
+            "Files in subdirectories should be ignored"
+        );
     }
 
     // ── Helper accessors ─────────────────────────────────────────────────

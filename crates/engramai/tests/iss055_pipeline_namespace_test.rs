@@ -41,10 +41,7 @@ use tempfile::tempdir;
 struct MockTripleExtractor;
 
 impl TripleExtractor for MockTripleExtractor {
-    fn extract_triples(
-        &self,
-        _content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, _content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         Ok(vec![Triple::new(
             "Alice".to_string(),
             Predicate::RelatedTo,

@@ -87,7 +87,10 @@ pub fn run_consolidation_cycle(
     let mut rng = rand::thread_rng();
 
     // Step 1: Consolidate all working memories
-    for record in all_memories.iter_mut().filter(|r| r.layer == MemoryLayer::Working) {
+    for record in all_memories
+        .iter_mut()
+        .filter(|r| r.layer == MemoryLayer::Working)
+    {
         consolidate_single(record, dt_days, config);
     }
 
@@ -96,11 +99,11 @@ pub fn run_consolidation_cycle(
         .iter_mut()
         .filter(|r| r.layer == MemoryLayer::Archive)
         .collect();
-    
+
     if !archive.is_empty() {
         let n_replay = ((archive.len() as f64 * config.interleave_ratio).ceil() as usize).max(1);
         archive.shuffle(&mut rng);
-        
+
         for record in archive.iter_mut().take(n_replay) {
             // Replaying an archived memory slightly boosts its core_strength
             record.core_strength += config.replay_boost * (0.5 + record.importance);
@@ -110,7 +113,10 @@ pub fn run_consolidation_cycle(
     }
 
     // Step 3: Decay core memories
-    for record in all_memories.iter_mut().filter(|r| r.layer == MemoryLayer::Core) {
+    for record in all_memories
+        .iter_mut()
+        .filter(|r| r.layer == MemoryLayer::Core)
+    {
         apply_decay(record, dt_days, 0.0, config.mu2); // No working decay for core
     }
 
@@ -125,13 +131,16 @@ pub fn run_consolidation_cycle(
         }
         Ok(())
     })();
-    
+
     match result {
         Ok(()) => storage.commit_transaction()?,
         Err(e) => {
             let _ = storage.rollback_transaction();
             // Try FTS rebuild in case of corruption
-            eprintln!("[engram] Consolidation failed, attempting FTS rebuild: {}", e);
+            eprintln!(
+                "[engram] Consolidation failed, attempting FTS rebuild: {}",
+                e
+            );
             let _ = storage.rebuild_fts();
             return Err(e);
         }

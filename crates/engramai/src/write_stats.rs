@@ -79,10 +79,7 @@ pub enum StoreEvent {
     /// observability can distinguish "graph extraction yielded
     /// nothing" from "write skipped" without losing the signal.
     /// Carries no `id` — correlate via the paired `Stored` event.
-    ExtractionFailure {
-        reason: SkipReason,
-        ms_elapsed: u64,
-    },
+    ExtractionFailure { reason: SkipReason, ms_elapsed: u64 },
 }
 
 impl StoreEvent {
@@ -214,20 +211,15 @@ impl EventSink for CountingSink {
                 ..
             } => {
                 stats.stored_count = stats.stored_count.saturating_add(1);
-                stats.stored_fact_count = stats
-                    .stored_fact_count
-                    .saturating_add(fact_count as u64);
-                stats.merged_count = stats
-                    .merged_count
-                    .saturating_add(merged_count as u64);
+                stats.stored_fact_count = stats.stored_fact_count.saturating_add(fact_count as u64);
+                stats.merged_count = stats.merged_count.saturating_add(merged_count as u64);
             }
             StoreEvent::Skipped { reason, .. } => {
                 stats.skipped_count = stats.skipped_count.saturating_add(1);
                 *stats.skipped_by_reason.entry(reason).or_insert(0) += 1;
             }
             StoreEvent::Quarantined { .. } => {
-                stats.quarantined_count =
-                    stats.quarantined_count.saturating_add(1);
+                stats.quarantined_count = stats.quarantined_count.saturating_add(1);
             }
             StoreEvent::ExtractionFailure { reason, .. } => {
                 // ISS-068: paired with a `Stored` event — do NOT

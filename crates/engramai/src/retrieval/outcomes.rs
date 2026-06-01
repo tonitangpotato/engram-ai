@@ -418,10 +418,7 @@ mod tests {
     fn is_ok_only_true_for_ok() {
         assert!(RetrievalOutcome::Ok.is_ok());
         assert!(!RetrievalOutcome::NoCognitiveState.is_ok());
-        assert!(!RetrievalOutcome::DowngradedFromEpisodic {
-            reason: "x".into()
-        }
-        .is_ok());
+        assert!(!RetrievalOutcome::DowngradedFromEpisodic { reason: "x".into() }.is_ok());
         assert!(!RetrievalOutcome::EntityFoundNoEdges { entities: vec![] }.is_ok());
     }
 

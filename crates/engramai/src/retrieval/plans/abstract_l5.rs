@@ -175,12 +175,7 @@ where
 pub struct NullTopicSearcher;
 
 impl TopicSearcher for NullTopicSearcher {
-    fn search(
-        &self,
-        _q: &GraphQuery,
-        _ns: &str,
-        _k: usize,
-    ) -> (Vec<TopicHit>, TopicSearchStatus) {
+    fn search(&self, _q: &GraphQuery, _ns: &str, _k: usize) -> (Vec<TopicHit>, TopicSearchStatus) {
         (Vec::new(), TopicSearchStatus::Ok)
     }
 }
@@ -346,11 +341,9 @@ where
         // A dedicated `Stage::TopicRecall` could be added later
         // without breaking compatibility — `Stage` is `#[non_exhaustive]`.
         inputs.budget.begin_stage(Stage::SeedRecall);
-        let (hits, status) = self.searcher.search(
-            inputs.query,
-            inputs.namespace,
-            self.k_topics,
-        );
+        let (hits, status) = self
+            .searcher
+            .search(inputs.query, inputs.namespace, self.k_topics);
         inputs.budget.end_stage();
 
         if matches!(status, TopicSearchStatus::Cutoff) {
@@ -472,8 +465,7 @@ mod tests {
         edge::{ConfidenceSource, ResolutionMethod},
         schema::{CanonicalPredicate, Predicate},
         store::{
-            CandidateMatch, CandidateQuery, EntityMentions, PipelineRunRow,
-            ProposedPredicateStats,
+            CandidateMatch, CandidateQuery, EntityMentions, PipelineRunRow, ProposedPredicateStats,
         },
         Edge, EdgeEnd, Entity, EntityKind, GraphError,
     };
@@ -518,10 +510,7 @@ mod tests {
     }
 
     impl GraphRead for FakeGraph {
-        fn get_topic(
-            &self,
-            id: Uuid,
-        ) -> Result<Option<KnowledgeTopic>, GraphError> {
+        fn get_topic(&self, id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError> {
             Ok(self.topics.get(&id).cloned())
         }
 
@@ -542,10 +531,7 @@ mod tests {
         ) -> Result<Vec<CandidateMatch>, GraphError> {
             unimplemented!()
         }
-        fn resolve_alias(
-            &self,
-            _n: &str,
-        ) -> Result<Option<Uuid>, GraphError> {
+        fn resolve_alias(&self, _n: &str) -> Result<Option<Uuid>, GraphError> {
             unimplemented!()
         }
         fn get_edge(&self, _id: Uuid) -> Result<Option<Edge>, GraphError> {
@@ -576,11 +562,7 @@ mod tests {
         ) -> Result<Vec<Edge>, GraphError> {
             unimplemented!()
         }
-        fn edges_as_of(
-            &self,
-            _s: Uuid,
-            _at: DateTime<Utc>,
-        ) -> Result<Vec<Edge>, GraphError> {
+        fn edges_as_of(&self, _s: Uuid, _at: DateTime<Utc>) -> Result<Vec<Edge>, GraphError> {
             unimplemented!()
         }
         fn traverse(
@@ -592,28 +574,16 @@ mod tests {
         ) -> Result<Vec<(Uuid, Edge)>, GraphError> {
             unimplemented!()
         }
-        fn entities_in_episode(
-            &self,
-            _e: Uuid,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn entities_in_episode(&self, _e: Uuid) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
-        fn edges_in_episode(
-            &self,
-            _e: Uuid,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn edges_in_episode(&self, _e: Uuid) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
-        fn mentions_of_entity(
-            &self,
-            _e: Uuid,
-        ) -> Result<EntityMentions, GraphError> {
+        fn mentions_of_entity(&self, _e: Uuid) -> Result<EntityMentions, GraphError> {
             unimplemented!()
         }
-        fn entities_linked_to_memory(
-            &self,
-            _m: &str,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn entities_linked_to_memory(&self, _m: &str) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
         fn memories_mentioning_entity(
@@ -623,10 +593,7 @@ mod tests {
         ) -> Result<Vec<String>, GraphError> {
             unimplemented!()
         }
-        fn edges_sourced_from_memory(
-            &self,
-            _m: &str,
-        ) -> Result<Vec<Edge>, GraphError> {
+        fn edges_sourced_from_memory(&self, _m: &str) -> Result<Vec<Edge>, GraphError> {
             unimplemented!()
         }
         fn list_topics(
@@ -649,10 +616,7 @@ mod tests {
         ) -> Result<Vec<ProposedPredicateStats>, GraphError> {
             unimplemented!()
         }
-        fn list_failed_episodes(
-            &self,
-            _u: bool,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn list_failed_episodes(&self, _u: bool) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
         fn list_namespaces(&self) -> Result<Vec<String>, GraphError> {
@@ -749,13 +713,7 @@ mod tests {
             vec![e1, e2],
             Some(cw.clone()),
         );
-        let topic_b = fresh_topic(
-            "default",
-            "Topic B",
-            vec!["m3"],
-            vec![e1],
-            None,
-        );
+        let topic_b = fresh_topic("default", "Topic B", vec!["m3"], vec![e1], None);
         let id_a = topic_a.topic_id;
         let id_b = topic_b.topic_id;
         graph.add_topic(topic_a);
@@ -763,8 +721,14 @@ mod tests {
 
         let searcher = StubSearcher {
             hits: vec![
-                TopicHit { topic_id: id_a, score: 0.9 },
-                TopicHit { topic_id: id_b, score: 0.7 },
+                TopicHit {
+                    topic_id: id_a,
+                    score: 0.9,
+                },
+                TopicHit {
+                    topic_id: id_b,
+                    score: 0.7,
+                },
             ],
             status: TopicSearchStatus::Ok,
         };
@@ -800,7 +764,10 @@ mod tests {
         graph.add_topic(topic);
 
         let searcher = StubSearcher {
-            hits: vec![TopicHit { topic_id: id, score: 0.1 }],
+            hits: vec![TopicHit {
+                topic_id: id,
+                score: 0.1,
+            }],
             status: TopicSearchStatus::Ok,
         };
         let plan = AbstractPlan::new(searcher).with_min_topic_score(0.5);
@@ -829,8 +796,14 @@ mod tests {
 
         let searcher = StubSearcher {
             hits: vec![
-                TopicHit { topic_id: id_high, score: 0.8 },
-                TopicHit { topic_id: id_low, score: 0.2 },
+                TopicHit {
+                    topic_id: id_high,
+                    score: 0.8,
+                },
+                TopicHit {
+                    topic_id: id_low,
+                    score: 0.2,
+                },
             ],
             status: TopicSearchStatus::Ok,
         };
@@ -858,8 +831,14 @@ mod tests {
 
         let searcher = StubSearcher {
             hits: vec![
-                TopicHit { topic_id: phantom_id, score: 0.95 }, // missing
-                TopicHit { topic_id: real_id, score: 0.6 },
+                TopicHit {
+                    topic_id: phantom_id,
+                    score: 0.95,
+                }, // missing
+                TopicHit {
+                    topic_id: real_id,
+                    score: 0.6,
+                },
             ],
             status: TopicSearchStatus::Ok,
         };
@@ -916,7 +895,10 @@ mod tests {
         graph.add_topic(other_ns);
 
         let searcher = StubSearcher {
-            hits: vec![TopicHit { topic_id: leak_id, score: 0.99 }],
+            hits: vec![TopicHit {
+                topic_id: leak_id,
+                score: 0.99,
+            }],
             status: TopicSearchStatus::Ok,
         };
         let plan = AbstractPlan::new(searcher);
@@ -948,8 +930,14 @@ mod tests {
 
         let searcher = StubSearcher {
             hits: vec![
-                TopicHit { topic_id: b.topic_id, score: 0.5 },
-                TopicHit { topic_id: a.topic_id, score: 0.5 },
+                TopicHit {
+                    topic_id: b.topic_id,
+                    score: 0.5,
+                },
+                TopicHit {
+                    topic_id: a.topic_id,
+                    score: 0.5,
+                },
             ],
             status: TopicSearchStatus::Ok,
         };

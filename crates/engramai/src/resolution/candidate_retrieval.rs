@@ -196,11 +196,7 @@ mod tests {
     use crate::graph::store::CandidateMatch;
     use uuid::Uuid;
 
-    fn row(
-        alias_match: bool,
-        embedding_score: Option<f32>,
-        recency_score: f32,
-    ) -> CandidateMatch {
+    fn row(alias_match: bool, embedding_score: Option<f32>, recency_score: f32) -> CandidateMatch {
         CandidateMatch {
             entity_id: Uuid::nil(),
             kind: EntityKind::Person,
@@ -217,7 +213,9 @@ mod tests {
     fn measurements_for_alias_only_emits_s2_and_s4() {
         let m = measurements_for(&row(true, None, 0.5));
         assert_eq!(m.len(), 2);
-        assert!(m.iter().any(|x| x.signal == Signal::NameMatch && x.value == 1.0));
+        assert!(m
+            .iter()
+            .any(|x| x.signal == Signal::NameMatch && x.value == 1.0));
         assert!(m
             .iter()
             .any(|x| x.signal == Signal::Recency && (x.value - 0.5).abs() < 1e-9));
@@ -291,7 +289,10 @@ mod tests {
     #[test]
     fn default_retrieval_params_use_thirty_day_window() {
         let p = RetrievalParams::default();
-        assert_eq!(p.recency_window, Some(Duration::from_secs(60 * 60 * 24 * 30)));
+        assert_eq!(
+            p.recency_window,
+            Some(Duration::from_secs(60 * 60 * 24 * 30))
+        );
         assert_eq!(p.top_k, 16);
         assert!(p.kind_filter.is_none());
     }
@@ -397,10 +398,7 @@ mod tests {
                 );
             }
             // s2 must be absent (alias_match=false → no NameMatch measurement).
-            assert!(c
-                .measurements
-                .iter()
-                .all(|m| m.signal != Signal::NameMatch));
+            assert!(c.measurements.iter().all(|m| m.signal != Signal::NameMatch));
         }
     }
 
@@ -458,21 +456,18 @@ mod tests {
         let now_dt = Utc::now();
         // Insert into namespace A.
         let e_a = {
-            let mut store_a =
-                SqliteGraphStore::new(&mut conn).with_namespace("ns_a").with_embedding_dim(3);
-            let e = insert_test_entity(
-                &mut store_a,
-                "Mel",
-                EntityKind::Person,
-                now_dt,
-                None,
-            );
+            let mut store_a = SqliteGraphStore::new(&mut conn)
+                .with_namespace("ns_a")
+                .with_embedding_dim(3);
+            let e = insert_test_entity(&mut store_a, "Mel", EntityKind::Person, now_dt, None);
             store_a.upsert_alias("mel", "Mel", e.id, None).unwrap();
             e
         };
 
         // Query from namespace B — must see nothing.
-        let store_b = SqliteGraphStore::new(&mut conn).with_namespace("ns_b").with_embedding_dim(3);
+        let store_b = SqliteGraphStore::new(&mut conn)
+            .with_namespace("ns_b")
+            .with_embedding_dim(3);
         let scored = retrieve_candidates(
             &store_b,
             "Mel",
@@ -485,8 +480,9 @@ mod tests {
         assert!(scored.is_empty(), "namespace isolation must hold");
 
         // Sanity: querying ns_a returns the hit.
-        let store_a2 =
-            SqliteGraphStore::new(&mut conn).with_namespace("ns_a").with_embedding_dim(3);
+        let store_a2 = SqliteGraphStore::new(&mut conn)
+            .with_namespace("ns_a")
+            .with_embedding_dim(3);
         let got = retrieve_candidates(
             &store_a2,
             "Mel",
@@ -506,39 +502,23 @@ mod tests {
         let mut store = SqliteGraphStore::new(&mut conn).with_embedding_dim(3);
         let now_dt = Utc::now();
 
-        let e_person = insert_test_entity(
-            &mut store,
-            "Mel",
-            EntityKind::Person,
-            now_dt,
-            None,
-        );
+        let e_person = insert_test_entity(&mut store, "Mel", EntityKind::Person, now_dt, None);
         store.upsert_alias("mel", "Mel", e_person.id, None).unwrap();
 
         // Same alias text, but a Place entity — must be filtered out when we
         // ask only for Persons.
-        let e_place = insert_test_entity(
-            &mut store,
-            "Mel",
-            EntityKind::Place,
-            now_dt,
-            None,
-        );
-        store.upsert_alias("mel-place", "Mel", e_place.id, None).unwrap();
+        let e_place = insert_test_entity(&mut store, "Mel", EntityKind::Place, now_dt, None);
+        store
+            .upsert_alias("mel-place", "Mel", e_place.id, None)
+            .unwrap();
 
         let params = RetrievalParams {
             kind_filter: Some(EntityKind::Person),
             ..RetrievalParams::default()
         };
-        let scored = retrieve_candidates(
-            &store,
-            "Mel",
-            None,
-            "default",
-            dt_to_unix(now_dt),
-            &params,
-        )
-        .unwrap();
+        let scored =
+            retrieve_candidates(&store, "Mel", None, "default", dt_to_unix(now_dt), &params)
+                .unwrap();
         assert_eq!(scored.len(), 1);
         assert_eq!(scored[0].match_row.entity_id, e_person.id);
         assert_eq!(scored[0].match_row.kind, EntityKind::Person);

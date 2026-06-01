@@ -179,11 +179,7 @@ impl CrossEncoderReranker {
             .map_err(|e| RetrievalError::Internal(format!("tokenize: {e}")))?;
 
         let ids: Vec<i64> = enc.get_ids().iter().map(|&x| x as i64).collect();
-        let mask: Vec<i64> = enc
-            .get_attention_mask()
-            .iter()
-            .map(|&x| x as i64)
-            .collect();
+        let mask: Vec<i64> = enc.get_attention_mask().iter().map(|&x| x as i64).collect();
         let type_ids: Vec<i64> = enc.get_type_ids().iter().map(|&x| x as i64).collect();
         let seq_len = ids.len();
 
@@ -259,10 +255,7 @@ fn build_session(model_path: &Path, intra_threads: usize) -> Result<Session, Ret
         .map_err(|e| RetrievalError::Internal(format!("intra_threads: {e}")))?
         .commit_from_file(model_path)
         .map_err(|e| {
-            RetrievalError::ConfigError(format!(
-                "commit_from_file({}): {e}",
-                model_path.display()
-            ))
+            RetrievalError::ConfigError(format!("commit_from_file({}): {e}", model_path.display()))
         })
 }
 
@@ -288,13 +281,9 @@ impl Reranker for CrossEncoderReranker {
 
         // Sort head by new score, descending. Stable sort to keep
         // input-order tie-breaks for purity.
-        head.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        head.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mut out: Vec<ScoredResult> =
-            Vec::with_capacity(candidates.len());
+        let mut out: Vec<ScoredResult> = Vec::with_capacity(candidates.len());
         for (item, score) in head {
             out.push(with_score(item, score));
         }
@@ -313,8 +302,8 @@ impl Reranker for CrossEncoderReranker {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::reranker::{assert_reranker_contract, ContractCheck};
+    use super::*;
     use crate::graph::topic::KnowledgeTopic;
     use crate::retrieval::api::SubScores;
     use crate::types::{MemoryLayer, MemoryRecord, MemoryType};
@@ -385,7 +374,11 @@ mod tests {
         let candidates = vec![
             mk_memory("a", "Paris is the capital of France.", 0.9),
             mk_memory("b", "The mitochondrion is the powerhouse of the cell.", 0.7),
-            mk_memory("c", "France has many cities including Lyon and Marseille.", 0.5),
+            mk_memory(
+                "c",
+                "France has many cities including Lyon and Marseille.",
+                0.5,
+            ),
         ];
         let check = ContractCheck {
             latency_budget: std::time::Duration::from_secs(2),
@@ -402,9 +395,17 @@ mod tests {
         // Fusion got it backwards on purpose — the irrelevant one is
         // first, the relevant one is last. Cross-encoder should fix it.
         let candidates = vec![
-            mk_memory("irrelevant", "The mitochondrion is the powerhouse of the cell.", 0.95),
+            mk_memory(
+                "irrelevant",
+                "The mitochondrion is the powerhouse of the cell.",
+                0.95,
+            ),
             mk_memory("partial", "France is a country in Western Europe.", 0.80),
-            mk_memory("relevant", "Paris is the capital and most populous city of France.", 0.50),
+            mk_memory(
+                "relevant",
+                "Paris is the capital and most populous city of France.",
+                0.50,
+            ),
         ];
         let out = r
             .rerank("What is the capital of France?", &candidates)

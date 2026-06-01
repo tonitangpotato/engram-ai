@@ -10,9 +10,7 @@
 //! in general, which is a deliberate design choice (see FINDING-7).
 
 use chrono::{NaiveDate, TimeZone, Utc};
-use engramai::dimensions::{
-    Confidence, Dimensions, Domain, TemporalMark, Valence,
-};
+use engramai::dimensions::{Confidence, Dimensions, Domain, TemporalMark, Valence};
 use engramai::merge_types::MergeWeights;
 use engramai::type_weights::TypeWeights;
 use proptest::prelude::*;
@@ -32,7 +30,8 @@ fn arb_token() -> impl Strategy<Value = String> {
 /// A single "short" string (possibly containing spaces, but no commas
 /// or semicolons), used for longer-wins narrative fields.
 fn arb_short_text() -> impl Strategy<Value = String> {
-    "[a-zA-Z0-9 _]{0,20}".prop_map(|s| s.trim().to_string())
+    "[a-zA-Z0-9 _]{0,20}"
+        .prop_map(|s| s.trim().to_string())
         .prop_filter("non-empty", |s| !s.is_empty())
 }
 
@@ -62,20 +61,17 @@ fn arb_opt_ssv() -> impl Strategy<Value = Option<String>> {
 
 fn arb_temporal() -> impl Strategy<Value = TemporalMark> {
     prop_oneof![
-        (1i64..2_000_000_000i64).prop_map(|t| {
-            TemporalMark::Exact(Utc.timestamp_opt(t, 0).single().unwrap())
+        (1i64..2_000_000_000i64)
+            .prop_map(|t| { TemporalMark::Exact(Utc.timestamp_opt(t, 0).single().unwrap()) }),
+        (1900i32..2100i32, 1u32..13u32, 1u32..28u32)
+            .prop_map(|(y, m, d)| { TemporalMark::Day(NaiveDate::from_ymd_opt(y, m, d).unwrap()) }),
+        (1900i32..2100i32, 1u32..12u32, 1u32..20u32, 1u32..8u32).prop_map(|(y, m, d, span)| {
+            let start = NaiveDate::from_ymd_opt(y, m, d).unwrap();
+            let end = start
+                .checked_add_days(chrono::Days::new(span.into()))
+                .unwrap_or(start);
+            TemporalMark::Range { start, end }
         }),
-        (1900i32..2100i32, 1u32..13u32, 1u32..28u32).prop_map(|(y, m, d)| {
-            TemporalMark::Day(NaiveDate::from_ymd_opt(y, m, d).unwrap())
-        }),
-        (1900i32..2100i32, 1u32..12u32, 1u32..20u32, 1u32..8u32)
-            .prop_map(|(y, m, d, span)| {
-                let start = NaiveDate::from_ymd_opt(y, m, d).unwrap();
-                let end = start
-                    .checked_add_days(chrono::Days::new(span.into()))
-                    .unwrap_or(start);
-                TemporalMark::Range { start, end }
-            }),
         arb_short_text().prop_map(TemporalMark::Vague),
     ]
 }
@@ -157,26 +153,8 @@ fn arb_dimensions() -> impl Strategy<Value = Dimensions> {
 
     (group_a, group_b).prop_map(
         |(
-            (
-                core,
-                participants,
-                temporal,
-                location,
-                context,
-                causation,
-                outcome,
-                method,
-            ),
-            (
-                relations,
-                sentiment,
-                stance,
-                valence,
-                domain,
-                confidence,
-                tags,
-                type_weights,
-            ),
+            (core, participants, temporal, location, context, causation, outcome, method),
+            (relations, sentiment, stance, valence, domain, confidence, tags, type_weights),
         )| {
             let mut d = Dimensions::minimal(&core).expect("non-empty by construction");
             d.participants = participants;

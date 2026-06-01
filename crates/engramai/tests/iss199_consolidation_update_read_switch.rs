@@ -62,11 +62,9 @@ fn iss199_unified_update_without_memories_row_succeeds() {
         // Precondition: no legacy `memories` row exists.
         let mem_count: i64 = s
             .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM memories WHERE id = 'm-1'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM memories WHERE id = 'm-1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(mem_count, 0, "unified add must not write memories");
     }
@@ -78,7 +76,8 @@ fn iss199_unified_update_without_memories_row_succeeds() {
         r.importance = 0.9;
         r.consolidation_count = 3;
         // Must NOT return QueryReturnedNoRows.
-        s.update(&r).expect("unified update must succeed without memories row");
+        s.update(&r)
+            .expect("unified update must succeed without memories row");
 
         // Mutation must land in `nodes`.
         let (content, importance, consol): (String, f64, i64) = s

@@ -77,23 +77,25 @@ fn iss089_path_b_no_extractor_honors_occurred_at() {
     };
 
     let out = mem
-        .store_raw("Yesterday I learned that elephants sleep standing up.", meta)
+        .store_raw(
+            "Yesterday I learned that elephants sleep standing up.",
+            meta,
+        )
         .expect("store_raw ok");
 
     let id = match out {
-        RawStoreOutcome::Stored(outcomes) => match outcomes.first().expect("at least one outcome") {
-            StoreOutcome::Inserted { id } => id.clone(),
-            StoreOutcome::Merged { id, .. } => id.clone(),
-        },
+        RawStoreOutcome::Stored(outcomes) => {
+            match outcomes.first().expect("at least one outcome") {
+                StoreOutcome::Inserted { id } => id.clone(),
+                StoreOutcome::Merged { id, .. } => id.clone(),
+            }
+        }
         other => panic!("expected Stored, got {:?}", other),
     };
 
     // Fetch the stored record directly by id (avoids recall ranking
     // / namespace-filter complications for this contract test).
-    let record = mem
-        .get(&id)
-        .expect("get ok")
-        .expect("record exists");
+    let record = mem.get(&id).expect("get ok").expect("record exists");
 
     // ISS-103: occurred_at lands on the dedicated field; created_at
     // stays wall-clock at insert time.
@@ -191,18 +193,16 @@ fn iss089_path_a_no_facts_fallback_honors_occurred_at() {
     };
 
     let out = mem
-        .store_raw(
-            "A short note that the extractor will deem fact-less.",
-            meta,
-        )
+        .store_raw("A short note that the extractor will deem fact-less.", meta)
         .expect("store_raw ok");
 
     let id = match out {
-        RawStoreOutcome::Stored(outcomes) => match outcomes.first().expect("at least one outcome")
-        {
-            StoreOutcome::Inserted { id } => id.clone(),
-            StoreOutcome::Merged { id, .. } => id.clone(),
-        },
+        RawStoreOutcome::Stored(outcomes) => {
+            match outcomes.first().expect("at least one outcome") {
+                StoreOutcome::Inserted { id } => id.clone(),
+                StoreOutcome::Merged { id, .. } => id.clone(),
+            }
+        }
         other => panic!("expected Stored, got {:?}", other),
     };
 
@@ -268,13 +268,8 @@ fn iss089_no_occurred_at_falls_back_to_now() {
 fn iss089_storage_meta_default_has_no_occurred_at() {
     // Lightweight contract test: callers using `..Default::default()`
     // get `occurred_at: None`, preserving v0.2 default behavior.
-    let _em = EnrichedMemory::minimal(
-        "anchor",
-        Importance::new(0.5),
-        Some("test".into()),
-        None,
-    )
-    .expect("minimal ok");
+    let _em = EnrichedMemory::minimal("anchor", Importance::new(0.5), Some("test".into()), None)
+        .expect("minimal ok");
 
     let m = StorageMeta {
         importance_hint: None,

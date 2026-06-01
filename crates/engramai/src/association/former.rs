@@ -198,10 +198,7 @@ mod tests {
         storage.add(&record, "default").unwrap();
 
         // Store embedding as BLOB
-        let blob: Vec<u8> = embedding
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
         let dims = embedding.len() as i64;
         storage
             .connection()
@@ -264,7 +261,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(created, 0, "candidates below threshold should produce 0 links");
+        assert_eq!(
+            created, 0,
+            "candidates below threshold should produce 0 links"
+        );
     }
 
     #[test]
@@ -308,7 +308,11 @@ mod tests {
             )
             .unwrap();
 
-        assert!(created >= 1, "should create at least 1 link, got {}", created);
+        assert!(
+            created >= 1,
+            "should create at least 1 link, got {}",
+            created
+        );
 
         // Verify link exists in DB
         let count: i64 = storage
@@ -365,7 +369,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(created, 3, "should create exactly max_links_per_memory links");
+        assert_eq!(
+            created, 3,
+            "should create exactly max_links_per_memory links"
+        );
 
         // Verify count in DB
         let count: i64 = storage
@@ -436,11 +443,20 @@ mod tests {
         );
 
         // signal_detail should be valid JSON with all three fields
-        let detail: serde_json::Value = serde_json::from_str(&signal_detail)
-            .expect("signal_detail should be valid JSON");
-        assert!(detail["entity_overlap"].is_number(), "should have entity_overlap");
-        assert!(detail["embedding_cosine"].is_number(), "should have embedding_cosine");
-        assert!(detail["temporal_proximity"].is_number(), "should have temporal_proximity");
+        let detail: serde_json::Value =
+            serde_json::from_str(&signal_detail).expect("signal_detail should be valid JSON");
+        assert!(
+            detail["entity_overlap"].is_number(),
+            "should have entity_overlap"
+        );
+        assert!(
+            detail["embedding_cosine"].is_number(),
+            "should have embedding_cosine"
+        );
+        assert!(
+            detail["temporal_proximity"].is_number(),
+            "should have temporal_proximity"
+        );
 
         // Entity overlap should be 1.0 (identical entity set: both have only "cat")
         let entity_overlap = detail["entity_overlap"].as_f64().unwrap();

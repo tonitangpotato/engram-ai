@@ -26,10 +26,8 @@ use crate::graph::store::{GraphWrite, SqliteGraphStore};
 pub fn fresh_conn() -> Connection {
     let conn = Connection::open_in_memory().expect("open in-memory");
     conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-    conn.execute_batch(
-        "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL);",
-    )
-    .unwrap();
+    conn.execute_batch("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL);")
+        .unwrap();
     init_graph_tables(&conn).expect("init graph tables");
     conn
 }

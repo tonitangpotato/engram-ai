@@ -210,7 +210,9 @@ pub fn validate_attributes(attrs: &serde_json::Value) -> Result<(), crate::graph
     if let Some(map) = attrs.as_object() {
         for key in RESERVED_ATTRIBUTE_KEYS {
             if map.contains_key(*key) {
-                return Err(crate::graph::GraphError::Invariant("reserved attribute key"));
+                return Err(crate::graph::GraphError::Invariant(
+                    "reserved attribute key",
+                ));
             }
         }
     }
@@ -403,8 +405,7 @@ mod tests {
 
     #[test]
     fn validate_attributes_rejects_merged_into() {
-        match validate_attributes(&json!({"merged_into": "00000000-0000-0000-0000-000000000000"}))
-        {
+        match validate_attributes(&json!({"merged_into": "00000000-0000-0000-0000-000000000000"})) {
             Err(GraphError::Invariant(msg)) => assert_eq!(msg, "reserved attribute key"),
             other => panic!("expected Invariant, got {:?}", other),
         }

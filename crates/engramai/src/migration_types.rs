@@ -169,8 +169,7 @@ pub fn classify_stored_metadata(
                 // Has the `dimensions` scaffold but no core narrative fields.
                 if content_len < BACKFILL_MIN_CONTENT_LEN {
                     Some(LegacyClassification::UnparseableLegacy {
-                        error: "no core dimensions; content too short for backfill"
-                            .to_string(),
+                        error: "no core dimensions; content too short for backfill".to_string(),
                     })
                 } else {
                     Some(LegacyClassification::LowDimLegacy {

@@ -92,7 +92,10 @@ fn recall_user_metadata(mem: &mut Memory, query: &str) -> serde_json::Value {
     let results = mem
         .recall_from_namespace(query, 3, None, None, Some("*"))
         .expect("recall ok");
-    assert!(!results.is_empty(), "recall returned no results for {query:?}");
+    assert!(
+        !results.is_empty(),
+        "recall returned no results for {query:?}"
+    );
     let metadata = results[0]
         .record
         .metadata
@@ -224,9 +227,16 @@ fn iss098_user_metadata_path_b_no_extractor() {
         .unwrap_or_else(|| panic!("metadata.user must be an object on Path B; got {}", user));
     for (k, expected_v) in caller_meta.as_object().unwrap() {
         let got = user_obj.get(k).unwrap_or_else(|| {
-            panic!("metadata.user dropped caller key {:?} on Path B; got {}", k, user)
+            panic!(
+                "metadata.user dropped caller key {:?} on Path B; got {}",
+                k, user
+            )
         });
-        assert_eq!(got, expected_v, "metadata.user key {:?} mismatch on Path B", k);
+        assert_eq!(
+            got, expected_v,
+            "metadata.user key {:?} mismatch on Path B",
+            k
+        );
     }
 }
 

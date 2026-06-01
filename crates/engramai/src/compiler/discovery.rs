@@ -13,9 +13,9 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use space::{Metric, Neighbor};
 
-use crate::embeddings::EmbeddingProvider;
 use super::llm::LlmProvider;
 use super::types::*;
+use crate::embeddings::EmbeddingProvider;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  COSINE METRIC FOR HNSW
@@ -139,10 +139,7 @@ impl TopicDiscovery {
 
     /// Exact O(n²) all-pairs similarity computation.
     /// Only used for small memory sets (< ANN_THRESHOLD).
-    fn discover_exact(
-        &self,
-        memories: &[(String, Vec<f32>)],
-    ) -> Vec<TopicCandidate> {
+    fn discover_exact(&self, memories: &[(String, Vec<f32>)]) -> Vec<TopicCandidate> {
         let n = memories.len();
 
         let mut network = Network::with_capacity(n);
@@ -153,7 +150,8 @@ impl TopicDiscovery {
 
         for i in 0..n {
             for j in (i + 1)..n {
-                let sim = EmbeddingProvider::cosine_similarity(&memories[i].1, &memories[j].1) as f64;
+                let sim =
+                    EmbeddingProvider::cosine_similarity(&memories[i].1, &memories[j].1) as f64;
                 if sim >= self.edge_threshold {
                     network.add_edge(i, j, sim);
                     network.add_edge(j, i, sim);
@@ -173,15 +171,11 @@ impl TopicDiscovery {
     /// HNSW-based approximate nearest neighbors graph construction.
     /// O(n·log n) build + O(n·K·log n) queries = O(n·log n) total.
     /// Each node connects to at most top_k neighbors, producing a sparse graph.
-    fn discover_ann(
-        &self,
-        memories: &[(String, Vec<f32>)],
-    ) -> Vec<TopicCandidate> {
+    fn discover_ann(&self, memories: &[(String, Vec<f32>)]) -> Vec<TopicCandidate> {
         let n = memories.len();
 
         // Build HNSW index
-        let params = Params::new()
-            .ef_construction(HNSW_EF_CONSTRUCTION);
+        let params = Params::new().ef_construction(HNSW_EF_CONSTRUCTION);
         let mut hnsw: Hnsw<CosineMetric, Vec<f32>, StdRng, HNSW_M, HNSW_M0> =
             Hnsw::new_params_and_prng(CosineMetric, params, StdRng::seed_from_u64(42));
 
@@ -199,7 +193,13 @@ impl TopicDiscovery {
         let mut sim_cache: HashMap<(usize, usize), f64> = HashMap::new();
         let mut edge_count = 0usize;
 
-        let mut dest = vec![Neighbor { index: 0, distance: 0 }; self.top_k + 1];
+        let mut dest = vec![
+            Neighbor {
+                index: 0,
+                distance: 0
+            };
+            self.top_k + 1
+        ];
 
         #[allow(clippy::needless_range_loop)]
         for i in 0..n {
@@ -247,10 +247,7 @@ impl TopicDiscovery {
         let n = memories.len();
 
         // Run Infomap with fewer trials for sparse graphs (3 instead of default 10)
-        let result = Infomap::new(network)
-            .seed(42)
-            .num_trials(3)
-            .run();
+        let result = Infomap::new(network).seed(42).num_trials(3).run();
 
         // Group memories by module assignment
         let mut modules: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -294,15 +291,9 @@ impl TopicDiscovery {
             for (pi, &i) in member_indices.iter().enumerate() {
                 for &j in &member_indices[(pi + 1)..] {
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-                    let sim = sim_cache
-                        .get(&(lo, hi))
-                        .copied()
-                        .unwrap_or_else(|| {
-                            EmbeddingProvider::cosine_similarity(
-                                &memories[i].1,
-                                &memories[j].1,
-                            ) as f64
-                        });
+                    let sim = sim_cache.get(&(lo, hi)).copied().unwrap_or_else(|| {
+                        EmbeddingProvider::cosine_similarity(&memories[i].1, &memories[j].1) as f64
+                    });
                     cohesion_sum += sim;
                     pair_count += 1;
                 }
@@ -348,8 +339,7 @@ impl TopicDiscovery {
         );
 
         let mut numbered = 0;
-        let candidate_ids: HashSet<&str> =
-            candidate.memories.iter().map(|s| s.as_str()).collect();
+        let candidate_ids: HashSet<&str> = candidate.memories.iter().map(|s| s.as_str()).collect();
 
         for (id, content) in memory_contents {
             if candidate_ids.contains(id.as_str()) {
@@ -384,12 +374,8 @@ impl TopicDiscovery {
     }
 
     /// Fallback label: first 5 words of the longest memory content in the candidate.
-    fn fallback_label(
-        memory_contents: &[(String, String)],
-        candidate: &TopicCandidate,
-    ) -> String {
-        let candidate_ids: HashSet<&str> =
-            candidate.memories.iter().map(|s| s.as_str()).collect();
+    fn fallback_label(memory_contents: &[(String, String)], candidate: &TopicCandidate) -> String {
+        let candidate_ids: HashSet<&str> = candidate.memories.iter().map(|s| s.as_str()).collect();
 
         let longest = memory_contents
             .iter()
@@ -414,8 +400,7 @@ impl TopicDiscovery {
         candidate: &TopicCandidate,
         existing: &[TopicPage],
     ) -> Option<TopicId> {
-        let candidate_set: HashSet<&str> =
-            candidate.memories.iter().map(|s| s.as_str()).collect();
+        let candidate_set: HashSet<&str> = candidate.memories.iter().map(|s| s.as_str()).collect();
 
         for page in existing {
             let page_set: HashSet<&str> = page
@@ -475,9 +460,7 @@ mod tests {
 
         fn failure() -> Self {
             Self {
-                response: Err(LlmError::ProviderUnavailable(
-                    "mock failure".to_string(),
-                )),
+                response: Err(LlmError::ProviderUnavailable("mock failure".to_string())),
             }
         }
     }
@@ -544,7 +527,12 @@ mod tests {
         let candidates = discovery.discover(&memories);
 
         // Should find 2 clusters
-        assert_eq!(candidates.len(), 2, "Expected 2 clusters, got {}", candidates.len());
+        assert_eq!(
+            candidates.len(),
+            2,
+            "Expected 2 clusters, got {}",
+            candidates.len()
+        );
 
         // Each cluster should have 3 members
         for c in &candidates {
@@ -605,7 +593,7 @@ mod tests {
         // With a high threshold, distant memories won't connect
         let memories = vec![
             ("m1".to_string(), vec![1.0f32, 0.0, 0.0]),
-            ("m2".to_string(), vec![0.7, 0.7, 0.0]),  // ~45 degrees from m1
+            ("m2".to_string(), vec![0.7, 0.7, 0.0]), // ~45 degrees from m1
             ("m3".to_string(), vec![0.0, 1.0, 0.0]),
         ];
 
@@ -653,7 +641,7 @@ mod tests {
         let memories = vec![
             ("m1".to_string(), vec![1.0f32, 0.0, 0.0]),
             ("m2".to_string(), vec![0.9, 0.1, 0.0]),
-            ("m3".to_string(), vec![0.5, 0.5, 0.0]),  // bridge
+            ("m3".to_string(), vec![0.5, 0.5, 0.0]), // bridge
             ("m4".to_string(), vec![0.1, 0.9, 0.0]),
             ("m5".to_string(), vec![0.0, 1.0, 0.0]),
         ];
@@ -690,7 +678,9 @@ mod tests {
 
         let llm = MockLlmProvider::success("Rust Development");
         let discovery = TopicDiscovery::new(2);
-        let label = discovery.label_cluster(&candidate, &memory_contents, &llm).unwrap();
+        let label = discovery
+            .label_cluster(&candidate, &memory_contents, &llm)
+            .unwrap();
         assert_eq!(label, "Rust Development");
     }
 
@@ -707,14 +697,15 @@ mod tests {
             ("m1".to_string(), "Short note".to_string()),
             (
                 "m2".to_string(),
-                "This is a longer note about building systems in Rust for AI agents"
-                    .to_string(),
+                "This is a longer note about building systems in Rust for AI agents".to_string(),
             ),
         ];
 
         let llm = MockLlmProvider::failure();
         let discovery = TopicDiscovery::new(2);
-        let label = discovery.label_cluster(&candidate, &memory_contents, &llm).unwrap();
+        let label = discovery
+            .label_cluster(&candidate, &memory_contents, &llm)
+            .unwrap();
         // Should use first 5 words of the longest memory
         assert_eq!(label, "This is a longer note");
     }
@@ -722,11 +713,7 @@ mod tests {
     #[test]
     fn test_detect_overlap() {
         let candidate = TopicCandidate {
-            memories: vec![
-                "m1".to_string(),
-                "m2".to_string(),
-                "m3".to_string(),
-            ],
+            memories: vec!["m1".to_string(), "m2".to_string(), "m3".to_string()],
             centroid_embedding: vec![1.0, 0.0, 0.0],
             cohesion_score: 0.8,
             suggested_title: None,
@@ -780,28 +767,19 @@ mod tests {
         // Cluster A: 50 memories near [1, 0, 0, 0, 0]
         for i in 0..50 {
             let noise = (i as f32) * 0.005;
-            memories.push((
-                format!("a{}", i),
-                vec![1.0 - noise, noise, 0.0, 0.0, 0.0],
-            ));
+            memories.push((format!("a{}", i), vec![1.0 - noise, noise, 0.0, 0.0, 0.0]));
         }
 
         // Cluster B: 50 memories near [0, 1, 0, 0, 0]
         for i in 0..50 {
             let noise = (i as f32) * 0.005;
-            memories.push((
-                format!("b{}", i),
-                vec![0.0, 1.0 - noise, noise, 0.0, 0.0],
-            ));
+            memories.push((format!("b{}", i), vec![0.0, 1.0 - noise, noise, 0.0, 0.0]));
         }
 
         // Cluster C: 50 memories near [0, 0, 1, 0, 0]
         for i in 0..50 {
             let noise = (i as f32) * 0.005;
-            memories.push((
-                format!("c{}", i),
-                vec![0.0, 0.0, 1.0 - noise, noise, 0.0],
-            ));
+            memories.push((format!("c{}", i), vec![0.0, 0.0, 1.0 - noise, noise, 0.0]));
         }
 
         let discovery = TopicDiscovery::new(5).with_edge_threshold(0.3);
@@ -811,22 +789,36 @@ mod tests {
         // ANN approximation may produce slight variations in community boundaries
         assert!(
             candidates.len() >= 2 && candidates.len() <= 6,
-            "Expected 2-6 clusters (approximately 3), got {}", candidates.len()
+            "Expected 2-6 clusters (approximately 3), got {}",
+            candidates.len()
         );
 
         // Each cluster should be reasonably sized
         for c in &candidates {
-            assert!(c.memories.len() >= 5, "Cluster too small: {}", c.memories.len());
+            assert!(
+                c.memories.len() >= 5,
+                "Cluster too small: {}",
+                c.memories.len()
+            );
         }
 
         // Verify cluster purity: memories from cluster A should be together
-        if let Some(cluster_a) = candidates.iter().find(|c| c.memories.contains(&"a0".to_string())) {
-            let a_count = cluster_a.memories.iter().filter(|m| m.starts_with('a')).count();
+        if let Some(cluster_a) = candidates
+            .iter()
+            .find(|c| c.memories.contains(&"a0".to_string()))
+        {
+            let a_count = cluster_a
+                .memories
+                .iter()
+                .filter(|m| m.starts_with('a'))
+                .count();
             let purity = a_count as f64 / cluster_a.memories.len() as f64;
             assert!(
                 purity > 0.8,
                 "Cluster A purity too low: {:.2} ({}/{})",
-                purity, a_count, cluster_a.memories.len()
+                purity,
+                a_count,
+                cluster_a.memories.len()
             );
         }
     }

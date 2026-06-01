@@ -18,7 +18,7 @@
 
 use engramai::extractor::{ExtractedFact, MemoryExtractor};
 use engramai::memory::Memory;
-use engramai::store_api::{QuarantineReason, RawStoreOutcome, StorageMeta, SkipReason};
+use engramai::store_api::{QuarantineReason, RawStoreOutcome, SkipReason, StorageMeta};
 use engramai::write_stats::{CountingSink, EventSink, SharedSink, StoreEvent};
 use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};
@@ -48,14 +48,22 @@ type ExtractErr = Box<dyn StdError + Send + Sync>;
 
 struct EmptyExtractor;
 impl MemoryExtractor for EmptyExtractor {
-    fn extract(&self, _text: &str, _reference: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExtractedFact>, ExtractErr> {
+    fn extract(
+        &self,
+        _text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<ExtractedFact>, ExtractErr> {
         Ok(vec![])
     }
 }
 
 struct ErrorExtractor;
 impl MemoryExtractor for ErrorExtractor {
-    fn extract(&self, _text: &str, _reference: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExtractedFact>, ExtractErr> {
+    fn extract(
+        &self,
+        _text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<ExtractedFact>, ExtractErr> {
         Err("503 upstream timeout".into())
     }
 }
@@ -64,7 +72,11 @@ struct MultiFactExtractor {
     fact_count: usize,
 }
 impl MemoryExtractor for MultiFactExtractor {
-    fn extract(&self, _text: &str, _reference: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExtractedFact>, ExtractErr> {
+    fn extract(
+        &self,
+        _text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<ExtractedFact>, ExtractErr> {
         let facts = (0..self.fact_count)
             .map(|i| ExtractedFact {
                 core_fact: format!("fact number {i}"),
@@ -157,10 +169,7 @@ fn whitespace_content_bumps_too_short_bucket() {
     let stats = mem.write_stats().unwrap();
     assert_eq!(stats.skipped_count, 1);
     assert_eq!(stats.stored_count, 0);
-    assert_eq!(
-        stats.skipped_by_reason.get(&SkipReason::TooShort),
-        Some(&1)
-    );
+    assert_eq!(stats.skipped_by_reason.get(&SkipReason::TooShort), Some(&1));
 }
 
 #[test]
@@ -242,7 +251,10 @@ fn batch_extractor_emits_single_stored_event_with_fact_count() {
         .expect("ok");
 
     assert_eq!(capture.len(), 1, "one store_raw call -> one event");
-    assert!(capture.last_is_stored(), "batch should produce Stored event");
+    assert!(
+        capture.last_is_stored(),
+        "batch should produce Stored event"
+    );
     assert_eq!(capture.stored_fact_counts(), vec![3]);
 }
 
@@ -283,7 +295,11 @@ fn custom_sink_replaces_default_and_observes_every_event() {
     let _ = mem.store_raw("   ", default_meta()).unwrap();
     let _ = mem.store_raw("second real input", default_meta()).unwrap();
 
-    assert_eq!(capture.len(), 3, "every store_raw call records exactly one event");
+    assert_eq!(
+        capture.len(),
+        3,
+        "every store_raw call records exactly one event"
+    );
 
     // Restoring the default sink works.
     mem.install_default_write_stats();
@@ -333,9 +349,7 @@ fn coverage_ratio_matches_pilot_formula() {
     // should compute 0.75 exactly.
     let mut mem = new_mem();
     for i in 0..3 {
-        let _ = mem
-            .store_raw(&format!("row {i}"), default_meta())
-            .unwrap();
+        let _ = mem.store_raw(&format!("row {i}"), default_meta()).unwrap();
     }
     let _ = mem.store_raw("   ", default_meta()).unwrap();
     let s = mem.write_stats().unwrap();

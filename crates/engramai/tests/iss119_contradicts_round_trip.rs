@@ -22,8 +22,13 @@ fn fresh() -> (tempfile::TempDir, Storage) {
     (dir, s)
 }
 
-fn ingest(s: &mut Storage, id: &str, contradicts: Option<&str>, contradicted_by: Option<&str>,
-          metadata: Option<serde_json::Value>) {
+fn ingest(
+    s: &mut Storage,
+    id: &str,
+    contradicts: Option<&str>,
+    contradicted_by: Option<&str>,
+    metadata: Option<serde_json::Value>,
+) {
     let rec = MemoryRecord {
         id: id.into(),
         content: format!("c {id}"),
@@ -65,8 +70,10 @@ fn iss119_contradicts_stamped_into_nodes_attributes() {
     let attrs = read_attributes_json(&s, "m1");
     let v: serde_json::Value = serde_json::from_str(&attrs).unwrap();
     assert_eq!(v["_legacy_contradicts"], serde_json::json!("m_other"));
-    assert!(v.get("_legacy_contradicted_by").is_none(),
-            "absent contradicted_by stays absent");
+    assert!(
+        v.get("_legacy_contradicted_by").is_none(),
+        "absent contradicted_by stays absent"
+    );
 }
 
 #[test]
@@ -83,9 +90,8 @@ fn iss119_contradicted_by_stamped_into_nodes_attributes() {
 fn iss119_both_legacy_keys_stamped() {
     let (_d, mut s) = fresh();
     ingest(&mut s, "m1", Some("ca"), Some("cb"), None);
-    let v: serde_json::Value =
-        serde_json::from_str(&read_attributes_json(&s, "m1")).unwrap();
-    assert_eq!(v["_legacy_contradicts"],     serde_json::json!("ca"));
+    let v: serde_json::Value = serde_json::from_str(&read_attributes_json(&s, "m1")).unwrap();
+    assert_eq!(v["_legacy_contradicts"], serde_json::json!("ca"));
     assert_eq!(v["_legacy_contradicted_by"], serde_json::json!("cb"));
 }
 
@@ -97,8 +103,7 @@ fn iss119_empty_strings_not_stamped() {
     let (_d, mut s) = fresh();
     ingest(&mut s, "m1", Some(""), Some(""), None);
 
-    let v: serde_json::Value =
-        serde_json::from_str(&read_attributes_json(&s, "m1")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&read_attributes_json(&s, "m1")).unwrap();
     assert!(v.get("_legacy_contradicts").is_none());
     assert!(v.get("_legacy_contradicted_by").is_none());
 }
@@ -112,8 +117,7 @@ fn iss119_user_metadata_preserved_alongside_legacy_keys() {
     let user_md = serde_json::json!({"tag": "important", "score": 0.9});
     ingest(&mut s, "m1", Some("c"), None, Some(user_md));
 
-    let v: serde_json::Value =
-        serde_json::from_str(&read_attributes_json(&s, "m1")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&read_attributes_json(&s, "m1")).unwrap();
     assert_eq!(v["_legacy_contradicts"], serde_json::json!("c"));
     assert_eq!(v["tag"], serde_json::json!("important"));
     assert_eq!(v["score"], serde_json::json!(0.9));

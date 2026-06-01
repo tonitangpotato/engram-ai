@@ -67,8 +67,7 @@ impl MarkdownImporter {
         let entries = std::fs::read_dir(dir)
             .map_err(|e| KcError::ImportError(format!("read dir {}: {}", dir.display(), e)))?;
         for entry in entries {
-            let entry = entry
-                .map_err(|e| KcError::ImportError(format!("dir entry: {}", e)))?;
+            let entry = entry.map_err(|e| KcError::ImportError(format!("dir entry: {}", e)))?;
             let path = entry.path();
             if path.is_dir() {
                 Self::walk_dir(&path, files)?;
@@ -459,14 +458,12 @@ impl ImportPipeline {
 
         for candidate in &candidates {
             // Find existing page with matching content hash
-            let existing = existing_pages
-                .iter()
-                .find(|p| {
-                    // Check if any source_memory_id matches the content_hash
-                    p.metadata
-                        .source_memory_ids
-                        .contains(&candidate.content_hash)
-                });
+            let existing = existing_pages.iter().find(|p| {
+                // Check if any source_memory_id matches the content_hash
+                p.metadata
+                    .source_memory_ids
+                    .contains(&candidate.content_hash)
+            });
 
             match config.duplicate_strategy {
                 DuplicateStrategy::Skip => {
@@ -497,12 +494,10 @@ impl ImportPipeline {
                         }
                     }
                 }
-                DuplicateStrategy::Append => {
-                    match Self::create_page(store, candidate) {
-                        Ok(()) => imported += 1,
-                        Err(e) => errors.push(format!("{}", e)),
-                    }
-                }
+                DuplicateStrategy::Append => match Self::create_page(store, candidate) {
+                    Ok(()) => imported += 1,
+                    Err(e) => errors.push(format!("{}", e)),
+                },
                 DuplicateStrategy::Ask => {
                     // In non-interactive mode, treat Ask as Skip
                     if existing.is_some() {
@@ -529,10 +524,7 @@ impl ImportPipeline {
     }
 
     /// Create a new TopicPage from a MemoryCandidate and store it.
-    fn create_page(
-        store: &dyn KnowledgeStore,
-        candidate: &MemoryCandidate,
-    ) -> Result<(), KcError> {
+    fn create_page(store: &dyn KnowledgeStore, candidate: &MemoryCandidate) -> Result<(), KcError> {
         let now = Utc::now();
         let id = format!("import-{}", candidate.content_hash);
 
@@ -562,10 +554,7 @@ impl ImportPipeline {
     /// Derive a title from the first line of content.
     fn derive_title(content: &str) -> String {
         let first_line = content.lines().next().unwrap_or("Imported");
-        let title = first_line
-            .trim()
-            .trim_start_matches('#')
-            .trim();
+        let title = first_line.trim().trim_start_matches('#').trim();
         if title.is_empty() {
             "Imported".to_owned()
         } else if title.len() > 100 {
@@ -652,7 +641,8 @@ mod tests {
     #[test]
     fn test_markdown_importer_by_paragraph() {
         let dir = TempDir::new().unwrap();
-        let content = "First paragraph with some text.\n\nSecond paragraph here.\n\nThird paragraph too.\n";
+        let content =
+            "First paragraph with some text.\n\nSecond paragraph here.\n\nThird paragraph too.\n";
         let path = write_temp_file(&dir, "para.md", content);
 
         let importer = MarkdownImporter {
@@ -797,10 +787,7 @@ More content about [[Topics]].
         assert_eq!(candidates[0].content, "First memory");
         assert_eq!(candidates[0].source, "test.json");
         assert_eq!(candidates[1].content, "Second memory");
-        assert_eq!(
-            candidates[1].metadata.get("topic").unwrap(),
-            "rust"
-        );
+        assert_eq!(candidates[1].metadata.get("topic").unwrap(), "rust");
         assert_eq!(candidates[2].content, "Third memory");
         assert_eq!(candidates[2].source, "");
 

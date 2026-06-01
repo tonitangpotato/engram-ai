@@ -86,10 +86,7 @@ pub fn check_gate(
     // Rule 1: Minimum cluster size
     if n < config.min_cluster_size {
         return make_result(GateDecision::Skip {
-            reason: format!(
-                "too small: {} members, min {}",
-                n, config.min_cluster_size
-            ),
+            reason: format!("too small: {} members, min {}", n, config.min_cluster_size),
         });
     }
 
@@ -110,10 +107,7 @@ pub fn check_gate(
     // Rule 3: Quality threshold
     if q < config.gate_quality_threshold {
         return make_result(GateDecision::Skip {
-            reason: format!(
-                "low quality: {:.3} < {}",
-                q, config.gate_quality_threshold
-            ),
+            reason: format!("low quality: {:.3} < {}", q, config.gate_quality_threshold),
         });
     }
 
@@ -145,16 +139,14 @@ pub fn check_gate(
     }
 
     // Rule 7: Type diversity check
-    let distinct_types: HashSet<MemoryType> =
-        members.iter().map(|m| m.memory_type).collect();
+    let distinct_types: HashSet<MemoryType> = members.iter().map(|m| m.memory_type).collect();
 
     if distinct_types.len() < config.min_type_diversity {
         // Check exceptions: all Factual or all Episodic with entity_overlap > 0.5
         let single_type = *distinct_types.iter().next().unwrap();
-        let has_entity_exception = matches!(
-            single_type,
-            MemoryType::Factual | MemoryType::Episodic
-        ) && cluster.signals_summary.entity_contribution > 0.5;
+        let has_entity_exception =
+            matches!(single_type, MemoryType::Factual | MemoryType::Episodic)
+                && cluster.signals_summary.entity_contribution > 0.5;
 
         if !has_entity_exception {
             return make_result(GateDecision::Skip {
@@ -234,7 +226,11 @@ mod tests {
     }
 
     fn make_diverse_members(n: usize) -> Vec<MemoryRecord> {
-        let types = [MemoryType::Factual, MemoryType::Episodic, MemoryType::Relational];
+        let types = [
+            MemoryType::Factual,
+            MemoryType::Episodic,
+            MemoryType::Relational,
+        ];
         (0..n)
             .map(|i| {
                 make_member(
@@ -405,11 +401,7 @@ mod tests {
 
         match &result.decision {
             GateDecision::Skip { reason } => {
-                assert!(
-                    reason.contains("no growth"),
-                    "reason: {}",
-                    reason
-                );
+                assert!(reason.contains("no growth"), "reason: {}", reason);
             }
             other => panic!("expected Skip, got {:?}", other),
         }
@@ -500,7 +492,11 @@ mod tests {
     #[test]
     fn rule8_skip_expensive_non_premium() {
         // Create members with very long content to exceed cost threshold
-        let types = [MemoryType::Factual, MemoryType::Episodic, MemoryType::Relational];
+        let types = [
+            MemoryType::Factual,
+            MemoryType::Episodic,
+            MemoryType::Relational,
+        ];
         let members: Vec<MemoryRecord> = (0..5)
             .map(|i| {
                 make_member(
@@ -600,7 +596,11 @@ mod tests {
 
     #[test]
     fn edge_case_premium_quality_bypasses_cost() {
-        let types = [MemoryType::Factual, MemoryType::Episodic, MemoryType::Relational];
+        let types = [
+            MemoryType::Factual,
+            MemoryType::Episodic,
+            MemoryType::Relational,
+        ];
         let members: Vec<MemoryRecord> = (0..5)
             .map(|i| {
                 make_member(

@@ -78,7 +78,11 @@ fn parse_args() -> Result<Args, String> {
                 source_kind = match kind.as_str() {
                     "engram" => SourceKind::Engram,
                     "sessions" => SourceKind::Sessions,
-                    other => return Err(format!("--source-kind: unknown '{other}' (expected engram|sessions)")),
+                    other => {
+                        return Err(format!(
+                            "--source-kind: unknown '{other}' (expected engram|sessions)"
+                        ))
+                    }
                 };
             }
             "-h" | "--help" => {
@@ -215,7 +219,9 @@ fn load_sample_from_sessions(
             if m.get("role").and_then(|v| v.as_str()) != Some("user") {
                 continue;
             }
-            let Some(content) = m.get("content") else { continue };
+            let Some(content) = m.get("content") else {
+                continue;
+            };
             // Content can be a string or an array of content blocks.
             let text = match content {
                 Value::String(s) => s.clone(),
@@ -538,7 +544,10 @@ fn main() -> ExitCode {
 
     let extractor = AnthropicExtractor::new(&args.api_key, args.is_oauth);
     mem.set_extractor(Box::new(extractor));
-    println!("🧠 Target Memory initialized with AnthropicExtractor (oauth={})", args.is_oauth);
+    println!(
+        "🧠 Target Memory initialized with AnthropicExtractor (oauth={})",
+        args.is_oauth
+    );
     println!();
 
     // ── Replay ────────────────────────────────────────────────
@@ -576,7 +585,12 @@ fn main() -> ExitCode {
     }
     let elapsed = t_start.elapsed();
     println!();
-    println!("⏱  Replay done: {} rows in {:.1}s ({} errors)", replayed, elapsed.as_secs_f64(), errs);
+    println!(
+        "⏱  Replay done: {} rows in {:.1}s ({} errors)",
+        replayed,
+        elapsed.as_secs_f64(),
+        errs
+    );
 
     // ── Snapshot stats ────────────────────────────────────────
     let stats = match mem.write_stats() {
@@ -617,14 +631,26 @@ fn main() -> ExitCode {
     };
     println!("🎯 DimensionalCoverage (target DB):");
     println!("   total_rows             = {}", cov.total_rows);
-    println!("   with engram.dimensions = {} ({:.1}%)",
-        cov.rows_with_dimensions_block, cov.pct(cov.rows_with_dimensions_block) * 100.0);
-    println!("   participants present   = {} ({:.1}%)",
-        cov.rows_with_participants, cov.pct(cov.rows_with_participants) * 100.0);
-    println!("   temporal present       = {} ({:.1}%)",
-        cov.rows_with_temporal, cov.pct(cov.rows_with_temporal) * 100.0);
-    println!("   causation present      = {} ({:.1}%)",
-        cov.rows_with_causation, cov.pct(cov.rows_with_causation) * 100.0);
+    println!(
+        "   with engram.dimensions = {} ({:.1}%)",
+        cov.rows_with_dimensions_block,
+        cov.pct(cov.rows_with_dimensions_block) * 100.0
+    );
+    println!(
+        "   participants present   = {} ({:.1}%)",
+        cov.rows_with_participants,
+        cov.pct(cov.rows_with_participants) * 100.0
+    );
+    println!(
+        "   temporal present       = {} ({:.1}%)",
+        cov.rows_with_temporal,
+        cov.pct(cov.rows_with_temporal) * 100.0
+    );
+    println!(
+        "   causation present      = {} ({:.1}%)",
+        cov.rows_with_causation,
+        cov.pct(cov.rows_with_causation) * 100.0
+    );
     println!();
 
     // ── Assertions ────────────────────────────────────────────
@@ -634,40 +660,68 @@ fn main() -> ExitCode {
     let mut failed = 0;
 
     let a1 = stats.coverage() > 0.95;
-    println!("  [{}] stored/(total) > 0.95   — actual {:.2}%",
-        if a1 { "✅" } else { "❌" }, stats.coverage() * 100.0);
-    if !a1 { failed += 1; }
+    println!(
+        "  [{}] stored/(total) > 0.95   — actual {:.2}%",
+        if a1 { "✅" } else { "❌" },
+        stats.coverage() * 100.0
+    );
+    if !a1 {
+        failed += 1;
+    }
 
     let part_pct = cov.pct(cov.rows_with_participants);
     let a2 = part_pct > 0.60;
-    println!("  [{}] participants > 60%      — actual {:.1}%",
-        if a2 { "✅" } else { "❌" }, part_pct * 100.0);
-    if !a2 { failed += 1; }
+    println!(
+        "  [{}] participants > 60%      — actual {:.1}%",
+        if a2 { "✅" } else { "❌" },
+        part_pct * 100.0
+    );
+    if !a2 {
+        failed += 1;
+    }
 
     let temp_pct = cov.pct(cov.rows_with_temporal);
     let a3 = temp_pct > 0.40;
-    println!("  [{}] temporal > 40%          — actual {:.1}%",
-        if a3 { "✅" } else { "❌" }, temp_pct * 100.0);
-    if !a3 { failed += 1; }
+    println!(
+        "  [{}] temporal > 40%          — actual {:.1}%",
+        if a3 { "✅" } else { "❌" },
+        temp_pct * 100.0
+    );
+    if !a3 {
+        failed += 1;
+    }
 
     let cause_pct = cov.pct(cov.rows_with_causation);
     let a4 = cause_pct > 0.30;
-    println!("  [{}] causation > 30%         — actual {:.1}%",
-        if a4 { "✅" } else { "❌" }, cause_pct * 100.0);
-    if !a4 { failed += 1; }
+    println!(
+        "  [{}] causation > 30%         — actual {:.1}%",
+        if a4 { "✅" } else { "❌" },
+        cause_pct * 100.0
+    );
+    if !a4 {
+        failed += 1;
+    }
 
     let missing = cov.total_rows - cov.rows_with_dimensions_block;
     let a5 = missing == 0;
-    println!("  [{}] zero rows missing engram.dimensions — actual {} missing",
-        if a5 { "✅" } else { "❌" }, missing);
-    if !a5 { failed += 1; }
+    println!(
+        "  [{}] zero rows missing engram.dimensions — actual {} missing",
+        if a5 { "✅" } else { "❌" },
+        missing
+    );
+    if !a5 {
+        failed += 1;
+    }
 
     println!();
     if failed == 0 {
         println!("🟢 ALL ASSERTIONS PASSED — Step 9 green. Cleared for Step 10 (58MB full).");
         ExitCode::SUCCESS
     } else {
-        println!("🔴 {} assertion(s) FAILED — do not proceed to Step 10.", failed);
+        println!(
+            "🔴 {} assertion(s) FAILED — do not proceed to Step 10.",
+            failed
+        );
         ExitCode::from(1)
     }
 }

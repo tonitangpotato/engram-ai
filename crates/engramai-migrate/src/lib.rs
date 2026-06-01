@@ -41,16 +41,11 @@ pub use checkpoint::{
 };
 pub use cli::{
     migrate, status, BackfillReport, CountsReport, MigrateExtractor, MigrateOptions,
-    MigrationReport,
-    OutputFormat, PostCounts, PreCounts, TopicCarryForwardReport,
+    MigrationReport, OutputFormat, PostCounts, PreCounts, TopicCarryForwardReport,
 };
 pub use compat::{
     assert_v02_compat, contract_for, MethodContract, V02CompatSurface, BEHAVIORAL_CONTRACT,
     V02_FROZEN_METHODS,
-};
-pub use schema::{
-    apply_additive_columns, record_schema_version_v3, rename_entities_valence_if_present,
-    run_phase2, SCHEMA_VERSION_DDL,
 };
 pub use error::{ErrorTag, ExitCode, MigrationError};
 pub use failure::{
@@ -68,12 +63,16 @@ pub use lock::{
 };
 pub use phase_machine::{PhaseExecutors, PhaseMachine, PhaseMachineConfig, PhaseRunOutcome};
 pub use preflight::{
-    check_disk_space, detect_schema_version, required_free_bytes, run_preflight,
-    PreflightInputs, PreflightOutcome, SchemaState, DISK_SPACE_MULTIPLIER_DEN,
-    DISK_SPACE_MULTIPLIER_NUM, TARGET_SCHEMA_VERSION,
+    check_disk_space, detect_schema_version, required_free_bytes, run_preflight, PreflightInputs,
+    PreflightOutcome, SchemaState, DISK_SPACE_MULTIPLIER_DEN, DISK_SPACE_MULTIPLIER_NUM,
+    TARGET_SCHEMA_VERSION,
 };
 pub use processor::{BackfillResolver, PipelineRecordProcessor};
 pub use progress::{
     EmitterConfig, MigrationLogRow, MigrationPhase, MigrationProgress, ProgressCallback,
     ProgressEmitter, ProgressEvent,
+};
+pub use schema::{
+    apply_additive_columns, record_schema_version_v3, rename_entities_valence_if_present,
+    run_phase2, SCHEMA_VERSION_DDL,
 };

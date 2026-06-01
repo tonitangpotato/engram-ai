@@ -255,45 +255,63 @@ impl MetaCognitionTracker {
         let recall_count = self.recall_window.len();
 
         // Recall metrics
-        let (avg_result_count, avg_confidence, empty_recall_rate, avg_latency_ms, p95_latency_ms, embedding_utilization, avg_feedback_score) =
-            if recall_count == 0 {
-                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, None)
+        let (
+            avg_result_count,
+            avg_confidence,
+            empty_recall_rate,
+            avg_latency_ms,
+            p95_latency_ms,
+            embedding_utilization,
+            avg_feedback_score,
+        ) = if recall_count == 0 {
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, None)
+        } else {
+            let n = recall_count as f64;
+            let sum_results: usize = self.recall_window.iter().map(|e| e.result_count).sum();
+            let sum_conf: f64 = self.recall_window.iter().map(|e| e.mean_confidence).sum();
+            let empty_count = self
+                .recall_window
+                .iter()
+                .filter(|e| e.result_count == 0)
+                .count();
+            let sum_latency: u64 = self.recall_window.iter().map(|e| e.latency_ms).sum();
+            let emb_count = self
+                .recall_window
+                .iter()
+                .filter(|e| e.used_embedding)
+                .count();
+
+            // P95 latency
+            let mut latencies: Vec<u64> = self.recall_window.iter().map(|e| e.latency_ms).collect();
+            latencies.sort_unstable();
+            let p95_idx = ((recall_count as f64) * 0.95).ceil() as usize;
+            let p95 = latencies
+                .get(p95_idx.min(recall_count - 1))
+                .copied()
+                .unwrap_or(0);
+
+            // Feedback average (only events with feedback)
+            let feedback_events: Vec<f64> = self
+                .recall_window
+                .iter()
+                .filter_map(|e| e.feedback_score)
+                .collect();
+            let avg_fb = if feedback_events.is_empty() {
+                None
             } else {
-                let n = recall_count as f64;
-                let sum_results: usize = self.recall_window.iter().map(|e| e.result_count).sum();
-                let sum_conf: f64 = self.recall_window.iter().map(|e| e.mean_confidence).sum();
-                let empty_count = self.recall_window.iter().filter(|e| e.result_count == 0).count();
-                let sum_latency: u64 = self.recall_window.iter().map(|e| e.latency_ms).sum();
-                let emb_count = self.recall_window.iter().filter(|e| e.used_embedding).count();
-
-                // P95 latency
-                let mut latencies: Vec<u64> = self.recall_window.iter().map(|e| e.latency_ms).collect();
-                latencies.sort_unstable();
-                let p95_idx = ((recall_count as f64) * 0.95).ceil() as usize;
-                let p95 = latencies.get(p95_idx.min(recall_count - 1)).copied().unwrap_or(0);
-
-                // Feedback average (only events with feedback)
-                let feedback_events: Vec<f64> = self
-                    .recall_window
-                    .iter()
-                    .filter_map(|e| e.feedback_score)
-                    .collect();
-                let avg_fb = if feedback_events.is_empty() {
-                    None
-                } else {
-                    Some(feedback_events.iter().sum::<f64>() / feedback_events.len() as f64)
-                };
-
-                (
-                    sum_results as f64 / n,
-                    sum_conf / n,
-                    empty_count as f64 / n,
-                    sum_latency as f64 / n,
-                    p95 as f64,
-                    emb_count as f64 / n,
-                    avg_fb,
-                )
+                Some(feedback_events.iter().sum::<f64>() / feedback_events.len() as f64)
             };
+
+            (
+                sum_results as f64 / n,
+                sum_conf / n,
+                empty_count as f64 / n,
+                sum_latency as f64 / n,
+                p95 as f64,
+                emb_count as f64 / n,
+                avg_fb,
+            )
+        };
 
         // Synthesis metrics
         let synthesis_count = self.synthesis_window.len();
@@ -301,8 +319,16 @@ impl MetaCognitionTracker {
             (0.0, 0.0)
         } else {
             let sn = synthesis_count as f64;
-            let sum_insights: usize = self.synthesis_window.iter().map(|e| e.insights_created).sum();
-            let err_count = self.synthesis_window.iter().filter(|e| e.error_count > 0).count();
+            let sum_insights: usize = self
+                .synthesis_window
+                .iter()
+                .map(|e| e.insights_created)
+                .sum();
+            let err_count = self
+                .synthesis_window
+                .iter()
+                .filter(|e| e.error_count > 0)
+                .count();
             (sum_insights as f64 / sn, err_count as f64 / sn)
         };
 
@@ -446,10 +472,7 @@ impl MetaCognitionTracker {
     /// Load historical events from SQLite into the rolling window.
     ///
     /// Call this on startup to pre-populate the window from persisted data.
-    pub fn load_history(
-        &mut self,
-        conn: &Connection,
-    ) -> Result<usize, Box<dyn std::error::Error>> {
+    pub fn load_history(&mut self, conn: &Connection) -> Result<usize, Box<dyn std::error::Error>> {
         let mut count = 0;
 
         // Load recent recall events
@@ -460,21 +483,18 @@ impl MetaCognitionTracker {
              WHERE event_type = 'recall'
              ORDER BY id DESC LIMIT ?1",
         )?;
-        let recall_rows = stmt.query_map(
-            rusqlite::params![ROLLING_WINDOW_SIZE],
-            |row| {
-                Ok(RecallEvent {
-                    timestamp: row.get(0)?,
-                    query: row.get::<_, String>(1).unwrap_or_default(),
-                    result_count: row.get::<_, i64>(2).unwrap_or(0) as usize,
-                    mean_confidence: row.get(3).unwrap_or(0.0),
-                    max_confidence: row.get(4).unwrap_or(0.0),
-                    latency_ms: row.get::<_, i64>(5).unwrap_or(0) as u64,
-                    used_embedding: row.get::<_, i32>(6).unwrap_or(0) != 0,
-                    feedback_score: row.get(7).ok(),
-                })
-            },
-        )?;
+        let recall_rows = stmt.query_map(rusqlite::params![ROLLING_WINDOW_SIZE], |row| {
+            Ok(RecallEvent {
+                timestamp: row.get(0)?,
+                query: row.get::<_, String>(1).unwrap_or_default(),
+                result_count: row.get::<_, i64>(2).unwrap_or(0) as usize,
+                mean_confidence: row.get(3).unwrap_or(0.0),
+                max_confidence: row.get(4).unwrap_or(0.0),
+                latency_ms: row.get::<_, i64>(5).unwrap_or(0) as u64,
+                used_embedding: row.get::<_, i32>(6).unwrap_or(0) != 0,
+                feedback_score: row.get(7).ok(),
+            })
+        })?;
         for event in recall_rows.flatten() {
             self.recall_window.push_front(event);
             count += 1;
@@ -487,18 +507,15 @@ impl MetaCognitionTracker {
              WHERE event_type = 'synthesis'
              ORDER BY id DESC LIMIT ?1",
         )?;
-        let synth_rows = stmt.query_map(
-            rusqlite::params![ROLLING_WINDOW_SIZE],
-            |row| {
-                Ok(SynthesisEvent {
-                    timestamp: row.get(0)?,
-                    clusters_found: row.get::<_, i64>(1).unwrap_or(0) as usize,
-                    insights_created: row.get::<_, i64>(2).unwrap_or(0) as usize,
-                    duration_ms: row.get::<_, i64>(3).unwrap_or(0) as u64,
-                    error_count: row.get::<_, i64>(4).unwrap_or(0) as usize,
-                })
-            },
-        )?;
+        let synth_rows = stmt.query_map(rusqlite::params![ROLLING_WINDOW_SIZE], |row| {
+            Ok(SynthesisEvent {
+                timestamp: row.get(0)?,
+                clusters_found: row.get::<_, i64>(1).unwrap_or(0) as usize,
+                insights_created: row.get::<_, i64>(2).unwrap_or(0) as usize,
+                duration_ms: row.get::<_, i64>(3).unwrap_or(0) as u64,
+                error_count: row.get::<_, i64>(4).unwrap_or(0) as usize,
+            })
+        })?;
         for event in synth_rows.flatten() {
             self.synthesis_window.push_front(event);
             count += 1;
@@ -659,7 +676,9 @@ mod tests {
 
         let suggestions = tracker.parameter_suggestions(&config);
         assert!(!suggestions.is_empty());
-        assert!(suggestions.iter().any(|s| s.parameter == "forget_threshold"));
+        assert!(suggestions
+            .iter()
+            .any(|s| s.parameter == "forget_threshold"));
     }
 
     #[test]

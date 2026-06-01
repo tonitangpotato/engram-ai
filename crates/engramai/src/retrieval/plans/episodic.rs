@@ -172,11 +172,7 @@ impl ResolvedWindow {
 ///   hot retrieval path inside the [`Stage::TimeBoundedRecall`] budget.
 pub trait EpisodicMemoryStore {
     /// Return memory ids whose valid time intersects `window`.
-    fn memories_in_window(
-        &self,
-        window: &ResolvedWindow,
-        limit: usize,
-    ) -> Vec<MemoryId>;
+    fn memories_in_window(&self, window: &ResolvedWindow, limit: usize) -> Vec<MemoryId>;
 
     /// Return memory ids that mention any of `entities`. Used for the
     /// optional entity filter in step 3. The default implementation
@@ -199,11 +195,7 @@ impl<T> EpisodicMemoryStore for &T
 where
     T: EpisodicMemoryStore + ?Sized,
 {
-    fn memories_in_window(
-        &self,
-        window: &ResolvedWindow,
-        limit: usize,
-    ) -> Vec<MemoryId> {
+    fn memories_in_window(&self, window: &ResolvedWindow, limit: usize) -> Vec<MemoryId> {
         (**self).memories_in_window(window, limit)
     }
 
@@ -223,11 +215,7 @@ where
 pub struct NullEpisodicStore;
 
 impl EpisodicMemoryStore for NullEpisodicStore {
-    fn memories_in_window(
-        &self,
-        _window: &ResolvedWindow,
-        _limit: usize,
-    ) -> Vec<MemoryId> {
+    fn memories_in_window(&self, _window: &ResolvedWindow, _limit: usize) -> Vec<MemoryId> {
         Vec::new()
     }
 }
@@ -340,12 +328,10 @@ impl EpisodicOutcome {
     pub fn to_retrieval_outcome(&self, results_empty: bool) -> RetrievalOutcome {
         match self {
             EpisodicOutcome::Ok if !results_empty => RetrievalOutcome::Ok,
-            EpisodicOutcome::Ok | EpisodicOutcome::Empty => {
-                RetrievalOutcome::NoMemoriesInWindow {
-                    start: None,
-                    end: None,
-                }
-            }
+            EpisodicOutcome::Ok | EpisodicOutcome::Empty => RetrievalOutcome::NoMemoriesInWindow {
+                start: None,
+                end: None,
+            },
             EpisodicOutcome::DowngradedFromEpisodic => RetrievalOutcome::DowngradedFromEpisodic {
                 reason: "no_time_expression".to_string(),
             },
@@ -436,8 +422,8 @@ where
             TimeWindow::Relative(d) => {
                 // Pin: `Relative(d)` = `[now - d, now]`. `TimeWindow`
                 // carries `std::time::Duration`; convert to `chrono`.
-                let span = chrono::Duration::from_std(*d)
-                    .unwrap_or_else(|_| chrono::Duration::zero());
+                let span =
+                    chrono::Duration::from_std(*d).unwrap_or_else(|_| chrono::Duration::zero());
                 Some(ResolvedWindow {
                     start: now - span,
                     end: now,
@@ -451,11 +437,7 @@ where
     /// Cutoff check: window must intersect `[cutoff.earliest, +∞)`. A
     /// window strictly before the cutoff (or strictly in the future of
     /// `as_of`) is a [`EpisodicOutcome::Cutoff`].
-    fn outside_cutoff(
-        &self,
-        window: &ResolvedWindow,
-        as_of: Option<DateTime<Utc>>,
-    ) -> bool {
+    fn outside_cutoff(&self, window: &ResolvedWindow, as_of: Option<DateTime<Utc>>) -> bool {
         if window.end < self.cutoff.earliest {
             return true;
         }
@@ -491,7 +473,10 @@ where
         let window_input = match inputs.time_window.clone() {
             Some(TimeWindow::None) | None => {
                 if text_has_temporal_signal(&inputs.query.text) {
-                    TimeWindow::Range { from: None, to: None }
+                    TimeWindow::Range {
+                        from: None,
+                        to: None,
+                    }
                 } else {
                     TimeWindow::None
                 }
@@ -532,9 +517,7 @@ where
         if let Some(entities) = inputs.query.entity_filter.as_ref() {
             if !entities.is_empty() {
                 inputs.budget.begin_stage(Stage::OptionalGraphFilter);
-                if let Some(entity_set) =
-                    self.store.memories_mentioning_entities(entities, limit)
-                {
+                if let Some(entity_set) = self.store.memories_mentioning_entities(entities, limit) {
                     use std::collections::HashSet;
                     let keep: HashSet<&MemoryId> = entity_set.iter().collect();
                     memories.retain(|m| keep.contains(m));
@@ -545,11 +528,7 @@ where
 
         // Step 4 — bi-temporal projection mode.
         inputs.budget.begin_stage(Stage::EdgeTraversal);
-        let mode = AsOfMode::from_query(
-            inputs.query.as_of,
-            inputs.query.include_superseded,
-            now,
-        );
+        let mode = AsOfMode::from_query(inputs.query.as_of, inputs.query.include_superseded, now);
         inputs.budget.end_stage();
 
         let outcome = if memories.is_empty() {
@@ -614,7 +593,13 @@ mod tests {
         let plan = EpisodicPlan::default(); // earliest = epoch
         let now = Utc.with_ymd_and_hms(2026, 4, 27, 0, 0, 0).unwrap();
         let w = plan
-            .resolve_window(&TimeWindow::Range { from: None, to: None }, now)
+            .resolve_window(
+                &TimeWindow::Range {
+                    from: None,
+                    to: None,
+                },
+                now,
+            )
             .unwrap();
         assert_eq!(w.end, now);
         assert!(w.start < w.end);
@@ -682,11 +667,7 @@ mod tests {
     fn execute_text_temporal_synthesizes_window() {
         struct PopulatedStore;
         impl EpisodicMemoryStore for PopulatedStore {
-            fn memories_in_window(
-                &self,
-                _w: &ResolvedWindow,
-                _l: usize,
-            ) -> Vec<MemoryId> {
+            fn memories_in_window(&self, _w: &ResolvedWindow, _l: usize) -> Vec<MemoryId> {
                 vec![MemoryId::from("mem-1"), MemoryId::from("mem-2")]
             }
         }
@@ -799,11 +780,7 @@ mod tests {
     fn execute_entity_filter_intersects() {
         struct OneInWindow;
         impl EpisodicMemoryStore for OneInWindow {
-            fn memories_in_window(
-                &self,
-                _w: &ResolvedWindow,
-                _l: usize,
-            ) -> Vec<MemoryId> {
+            fn memories_in_window(&self, _w: &ResolvedWindow, _l: usize) -> Vec<MemoryId> {
                 vec![MemoryId::from("mem-A")]
             }
             fn memories_mentioning_entities(

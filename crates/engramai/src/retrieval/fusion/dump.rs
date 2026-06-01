@@ -244,11 +244,7 @@ impl Stage {
 /// filename — extracting this gate into one place makes it
 /// impossible for the two stages to drift in their gating
 /// semantics (e.g. one accidentally bypassing the whitelist).
-fn maybe_dump_internal(
-    stage: Stage,
-    intent: Intent,
-    candidates: &[ScoredResult],
-) {
+fn maybe_dump_internal(stage: Stage, intent: Intent, candidates: &[ScoredResult]) {
     let env = dump_env();
     let Some(dir) = env.dir.as_ref() else {
         return; // fast path — diagnostic off
@@ -290,16 +286,12 @@ fn write_dump(
         Some(infix) => dir.join(format!("{label}-{infix}-{intent_str}.jsonl")),
     };
 
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
+    let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
 
     for (i, c) in candidates.iter().enumerate() {
         let row = project_row(label, intent_str, i + 1, c);
-        let line = serde_json::to_string(&row).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let line = serde_json::to_string(&row)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         f.write_all(line.as_bytes())?;
         f.write_all(b"\n")?;
     }
@@ -337,7 +329,12 @@ fn project_row<'a>(
     c: &ScoredResult,
 ) -> DumpRow<'a> {
     match c {
-        ScoredResult::Memory { record, score, sub_scores, .. } => DumpRow {
+        ScoredResult::Memory {
+            record,
+            score,
+            sub_scores,
+            ..
+        } => DumpRow {
             label,
             intent: intent_str,
             rank,
@@ -522,8 +519,14 @@ mod tests {
         assert_eq!(row1["memory_id"], "b");
 
         // Second call appends (does not truncate).
-        write_dump(dir.path(), "q40", Stage::Fused, Intent::Factual, &cands[..1])
-            .expect("append");
+        write_dump(
+            dir.path(),
+            "q40",
+            Stage::Fused,
+            Intent::Factual,
+            &cands[..1],
+        )
+        .expect("append");
         let body2 = std::fs::read_to_string(&path).expect("read");
         assert_eq!(body2.lines().count(), 3, "append must not truncate");
     }
@@ -538,8 +541,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cands = vec![mem("a", 0.5, SubScores::default())];
 
-        write_dump(dir.path(), "q42", Stage::Fused, Intent::Episodic, &cands)
-            .expect("write");
+        write_dump(dir.path(), "q42", Stage::Fused, Intent::Episodic, &cands).expect("write");
 
         // Exact filename — no "fused" infix, matching the original
         // ISS-175 contract (dump.rs docstring "Filename":
@@ -576,8 +578,7 @@ mod tests {
         };
         let cands = vec![mem("m1", 0.7, sub)];
 
-        write_dump(dir.path(), "q40", Stage::Prefusion, Intent::Factual, &cands)
-            .expect("write");
+        write_dump(dir.path(), "q40", Stage::Prefusion, Intent::Factual, &cands).expect("write");
 
         let path = dir.path().join("q40-prefusion-factual.jsonl");
         assert!(path.exists(), "prefusion dump missing at {path:?}");
@@ -628,8 +629,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cands = vec![mem("c", 0.4, SubScores::default())];
 
-        write_dump(dir.path(), "qx", Stage::Fused, Intent::Abstract, &cands)
-            .expect("fused");
+        write_dump(dir.path(), "qx", Stage::Fused, Intent::Abstract, &cands).expect("fused");
         write_dump(dir.path(), "qx", Stage::Prefusion, Intent::Abstract, &cands)
             .expect("prefusion");
 
@@ -637,8 +637,7 @@ mod tests {
         assert!(dir.path().join("qx-prefusion-abstract.jsonl").exists());
 
         // Both files contain the same row content (schema is shared).
-        let a = std::fs::read_to_string(dir.path().join("qx-abstract.jsonl"))
-            .expect("read a");
+        let a = std::fs::read_to_string(dir.path().join("qx-abstract.jsonl")).expect("read a");
         let b = std::fs::read_to_string(dir.path().join("qx-prefusion-abstract.jsonl"))
             .expect("read b");
         assert_eq!(a, b, "schema must be identical across stages");

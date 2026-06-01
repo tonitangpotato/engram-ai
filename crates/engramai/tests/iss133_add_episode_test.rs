@@ -63,10 +63,7 @@ impl MockTripleExtractor {
 }
 
 impl TripleExtractor for MockTripleExtractor {
-    fn extract_triples(
-        &self,
-        _content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, _content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         Ok(vec![Triple::new(
             "Alice".to_string(),
@@ -211,7 +208,9 @@ fn add_episode_session_id_lands_in_user_metadata() {
     let id = Uuid::new_v4();
     let session = Uuid::new_v4();
 
-    let ep = Episode::new("turn in a session").with_id(id).with_session(session);
+    let ep = Episode::new("turn in a session")
+        .with_id(id)
+        .with_session(session);
     mem.add_episode(ep).expect("admits");
 
     let rec = mem.get(&id.to_string()).unwrap().unwrap();
@@ -265,7 +264,9 @@ fn reextract_episodes_buckets_already_completed_as_skipped_idempotent() {
     // if something is wired wrong.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let status = mem.extraction_status(&id.to_string()).expect("status query");
+        let status = mem
+            .extraction_status(&id.to_string())
+            .expect("status query");
         if matches!(status, ExtractionStatus::Completed { .. }) {
             break;
         }

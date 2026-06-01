@@ -150,8 +150,12 @@ pub fn directionality(p: &CanonicalPredicate) -> Directionality {
 
         // Directed with a known inverse canonical predicate.
         ParentOf => Directionality::Directed { inverse: None }, // ChildOf not in baseline
-        CausedBy => Directionality::Directed { inverse: Some(LeadsTo) },
-        LeadsTo => Directionality::Directed { inverse: Some(CausedBy) },
+        CausedBy => Directionality::Directed {
+            inverse: Some(LeadsTo),
+        },
+        LeadsTo => Directionality::Directed {
+            inverse: Some(CausedBy),
+        },
 
         // Directed without a baseline inverse. A future minor release may
         // introduce inverse variants (e.g. `ContainedBy` for `PartOf`); per
@@ -284,9 +288,23 @@ mod tests {
         // Exhaustive list — if a variant is added to CanonicalPredicate,
         // this test must be extended (and `directionality`'s match too).
         let all = [
-            IsA, PartOf, WorksAt, MemberOf, MarriedTo, ParentOf, DependsOn,
-            Uses, Implements, CausedBy, LeadsTo, PrecededBy, CreatedBy,
-            MentionedIn, Contradicts, Supports, RelatedTo,
+            IsA,
+            PartOf,
+            WorksAt,
+            MemberOf,
+            MarriedTo,
+            ParentOf,
+            DependsOn,
+            Uses,
+            Implements,
+            CausedBy,
+            LeadsTo,
+            PrecededBy,
+            CreatedBy,
+            MentionedIn,
+            Contradicts,
+            Supports,
+            RelatedTo,
         ];
         for p in &all {
             // Must not panic and must return a sensible value.
@@ -308,11 +326,15 @@ mod tests {
         // CausedBy/LeadsTo are mutual inverses.
         assert_eq!(
             directionality(&CausedBy),
-            Directionality::Directed { inverse: Some(LeadsTo) }
+            Directionality::Directed {
+                inverse: Some(LeadsTo)
+            }
         );
         assert_eq!(
             directionality(&LeadsTo),
-            Directionality::Directed { inverse: Some(CausedBy) }
+            Directionality::Directed {
+                inverse: Some(CausedBy)
+            }
         );
     }
 
@@ -344,9 +366,23 @@ mod tests {
         // CanonicalPredicate, this test must be extended (and
         // `cardinality`'s match too — the compiler will enforce that).
         let all = [
-            IsA, PartOf, WorksAt, MemberOf, MarriedTo, ParentOf, DependsOn,
-            Uses, Implements, CausedBy, LeadsTo, PrecededBy, CreatedBy,
-            MentionedIn, Contradicts, Supports, RelatedTo,
+            IsA,
+            PartOf,
+            WorksAt,
+            MemberOf,
+            MarriedTo,
+            ParentOf,
+            DependsOn,
+            Uses,
+            Implements,
+            CausedBy,
+            LeadsTo,
+            PrecededBy,
+            CreatedBy,
+            MentionedIn,
+            Contradicts,
+            Supports,
+            RelatedTo,
         ];
         assert_eq!(all.len(), 17, "CanonicalPredicate should have 17 variants");
         for p in &all {

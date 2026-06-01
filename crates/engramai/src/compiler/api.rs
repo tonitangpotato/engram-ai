@@ -222,19 +222,15 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
                 let quality_boost = page.metadata.quality_score.unwrap_or(0.0) * 0.3;
 
                 // c. Freshness boost: days since updated_at, decaying with 1/(1 + days/30)
-                let days_since_update =
-                    (now - page.metadata.updated_at).num_days().max(0) as f64;
+                let days_since_update = (now - page.metadata.updated_at).num_days().max(0) as f64;
                 let freshness_boost = 1.0 / (1.0 + days_since_update / 30.0);
 
                 // d. Source count boost: min(source_memory_ids.len() / 10.0, 0.5)
-                let source_boost =
-                    (page.metadata.source_memory_ids.len() as f64 / 10.0).min(0.5);
+                let source_boost = (page.metadata.source_memory_ids.len() as f64 / 10.0).min(0.5);
 
                 // e. Final score
-                let score = text_score * opts.topic_boost
-                    + quality_boost
-                    + freshness_boost
-                    + source_boost;
+                let score =
+                    text_score * opts.topic_boost + quality_boost + freshness_boost + source_boost;
 
                 // Snippet: first 200 chars of content
                 let snippet: String = page.content.chars().take(200).collect();
@@ -291,10 +287,7 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
     // ── Maintenance ──────────────────────────────────────────────────────
 
     /// Evaluate decay (freshness) for topics in the given scope.
-    pub fn evaluate_decay(
-        &self,
-        scope: &DecayScope,
-    ) -> Result<Vec<decay::DecayResult>, KcError> {
+    pub fn evaluate_decay(&self, scope: &DecayScope) -> Result<Vec<decay::DecayResult>, KcError> {
         let engine = DecayEngine::new(self.config.decay.clone());
 
         match scope {
@@ -308,8 +301,7 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
                 Ok(vec![result])
             }
             DecayScope::Stale => {
-                let stale_pages =
-                    self.store.get_pages_by_status(TopicStatus::Stale)?;
+                let stale_pages = self.store.get_pages_by_status(TopicStatus::Stale)?;
                 let mut results = Vec::with_capacity(stale_pages.len());
                 for page in &stale_pages {
                     results.push(engine.evaluate_topic(page, &self.store)?);
@@ -324,11 +316,7 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
     /// - `MarkStale` → update topic status to Stale
     /// - `Archive` → call `store.mark_archived()`
     /// - `Refresh` → mark as Stale (actual recompile is a separate step)
-    pub fn apply_decay(
-        &self,
-        _topic_id: &TopicId,
-        action: &DecayAction,
-    ) -> Result<(), KcError> {
+    pub fn apply_decay(&self, _topic_id: &TopicId, action: &DecayAction) -> Result<(), KcError> {
         let engine = DecayEngine::new(self.config.decay.clone());
         engine.apply_decay(action, &self.store)
     }
@@ -342,20 +330,15 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
         let _duplicates = detector.detect_duplicates(&all_topics);
 
         // Detect conflicts across all topic pairs (no LLM)
-        let scope = ConflictScope::BetweenTopics(
-            TopicId("*".to_string()),
-            TopicId("*".to_string()),
-        );
+        let scope =
+            ConflictScope::BetweenTopics(TopicId("*".to_string()), TopicId("*".to_string()));
         let records = detector.detect_conflicts(&all_topics, &scope, None)?;
 
         Ok(records.into_iter().map(|r| r.conflict).collect())
     }
 
     /// Audit source link integrity for topics in the given scope.
-    pub fn audit_links(
-        &self,
-        scope: &AuditScope,
-    ) -> Result<Vec<health::LinkAuditEntry>, KcError> {
+    pub fn audit_links(&self, scope: &AuditScope) -> Result<Vec<health::LinkAuditEntry>, KcError> {
         let auditor = HealthAuditor;
 
         match scope {
@@ -408,15 +391,8 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
     ///
     /// - `.md` → `MarkdownImporter`
     /// - `.json` → `JsonImporter`
-    pub fn import_from(
-        &self,
-        path: &Path,
-        config: &ImportConfig,
-    ) -> Result<ImportReport, KcError> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+    pub fn import_from(&self, path: &Path, config: &ImportConfig) -> Result<ImportReport, KcError> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         match ext {
             "md" => {
@@ -460,9 +436,7 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
             .ok_or_else(|| KcError::NotFound(format!("topic '{}'", topic_id)))?;
 
         // Remove existing privacy tags
-        page.metadata.tags.retain(|t| {
-            !t.starts_with("privacy:")
-        });
+        page.metadata.tags.retain(|t| !t.starts_with("privacy:"));
 
         // Add the new privacy tag (Public has no tag)
         match level {
@@ -481,17 +455,16 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
     ///
     /// Discovers topic candidates, checks overlap with existing topics,
     /// evaluates decay on unmatched topics. Does NOT call LLM or mutate store.
-    pub fn dry_run(
-        &self,
-        memories: &[MemorySnapshot],
-    ) -> Result<DryRunReport, KcError> {
+    pub fn dry_run(&self, memories: &[MemorySnapshot]) -> Result<DryRunReport, KcError> {
         use std::collections::HashSet;
 
         // Build embeddings for topic discovery — use real embeddings when available
         let memory_embeddings: Vec<(String, Vec<f32>)> = memories
             .iter()
             .map(|m| {
-                let embedding = m.embedding.clone()
+                let embedding = m
+                    .embedding
+                    .clone()
                     .unwrap_or_else(|| simple_hash_embedding(&m.content, 64));
                 (m.id.clone(), embedding)
             })
@@ -511,7 +484,11 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
                     matched_topic_ids.insert(topic_id.clone());
                     if let Some(page) = self.store.get_topic_page(&topic_id)? {
                         let existing_ids: HashSet<&str> = page
-                            .metadata.source_memory_ids.iter().map(|s| s.as_str()).collect();
+                            .metadata
+                            .source_memory_ids
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect();
                         let candidate_ids: HashSet<&str> =
                             candidate.memories.iter().map(|s| s.as_str()).collect();
                         let added = candidate_ids.difference(&existing_ids).count();
@@ -559,7 +536,10 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
                     topic_id: Some(page.id.clone()),
                     action: DryRunAction::Archive,
                     affected_memories: 0,
-                    reason: format!("Freshness {:.2} below threshold", decay_result.freshness_score),
+                    reason: format!(
+                        "Freshness {:.2} below threshold",
+                        decay_result.freshness_score
+                    ),
                 });
             } else {
                 entries.push(DryRunEntry {
@@ -571,11 +551,16 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
             }
         }
 
-        let total_topics_affected = entries.iter()
+        let total_topics_affected = entries
+            .iter()
             .filter(|e| !matches!(e.action, DryRunAction::Skip))
             .count();
 
-        Ok(DryRunReport { entries, total_topics_affected, estimated_llm_calls })
+        Ok(DryRunReport {
+            entries,
+            total_topics_affected,
+            estimated_llm_calls,
+        })
     }
 
     // ── Compilation ──────────────────────────────────────────────────────
@@ -596,7 +581,9 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
         let memory_embeddings: Vec<(String, Vec<f32>)> = memories
             .iter()
             .map(|m| {
-                let embedding = m.embedding.clone()
+                let embedding = m
+                    .embedding
+                    .clone()
                     .unwrap_or_else(|| simple_hash_embedding(&m.content, 64));
                 (m.id.clone(), embedding)
             })
@@ -646,11 +633,14 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
                     .unwrap_or_else(|| format!("Topic ({})", candidate.memories.len()))
             };
 
-            let content =
-                super::compilation::compile_without_llm(&title, &candidate_memories);
+            let content = super::compilation::compile_without_llm(&title, &candidate_memories);
 
             let now = chrono::Utc::now();
-            let topic_id = TopicId(format!("topic-{}-{}", now.timestamp_millis(), topic_counter));
+            let topic_id = TopicId(format!(
+                "topic-{}-{}",
+                now.timestamp_millis(),
+                topic_counter
+            ));
             topic_counter += 1;
 
             let page = TopicPage {
@@ -681,11 +671,14 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
             self.store.create_topic_page(&page)?;
 
             // Populate kc_compilation_sources for decay/health tracking
-            let source_refs: Vec<SourceMemoryRef> = candidate_memories.iter().map(|m| SourceMemoryRef {
-                memory_id: m.id.clone(),
-                relevance_score: m.importance,
-                added_at: now,
-            }).collect();
+            let source_refs: Vec<SourceMemoryRef> = candidate_memories
+                .iter()
+                .map(|m| SourceMemoryRef {
+                    memory_id: m.id.clone(),
+                    relevance_score: m.importance,
+                    added_at: now,
+                })
+                .collect();
             self.store.save_source_refs(&topic_id, &source_refs)?;
 
             let record = CompilationRecord {
@@ -738,7 +731,9 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
         let memory_embeddings: Vec<(String, Vec<f32>)> = memories
             .iter()
             .map(|m| {
-                let embedding = m.embedding.clone()
+                let embedding = m
+                    .embedding
+                    .clone()
                     .unwrap_or_else(|| simple_hash_embedding(&m.content, 64));
                 (m.id.clone(), embedding)
             })
@@ -784,11 +779,14 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
                     .unwrap_or_else(|| format!("Topic ({})", candidate.memories.len()))
             };
 
-            let content =
-                super::compilation::compile_without_llm(&title, &candidate_memories);
+            let content = super::compilation::compile_without_llm(&title, &candidate_memories);
 
             let now = chrono::Utc::now();
-            let topic_id = TopicId(format!("topic-{}-{}", now.timestamp_millis(), topic_counter));
+            let topic_id = TopicId(format!(
+                "topic-{}-{}",
+                now.timestamp_millis(),
+                topic_counter
+            ));
             topic_counter += 1;
 
             let page = TopicPage {
@@ -816,11 +814,14 @@ impl<S: KnowledgeStore> MaintenanceApi<S> {
 
             self.store.create_topic_page(&page)?;
 
-            let source_refs: Vec<SourceMemoryRef> = candidate_memories.iter().map(|m| SourceMemoryRef {
-                memory_id: m.id.clone(),
-                relevance_score: m.importance,
-                added_at: now,
-            }).collect();
+            let source_refs: Vec<SourceMemoryRef> = candidate_memories
+                .iter()
+                .map(|m| SourceMemoryRef {
+                    memory_id: m.id.clone(),
+                    relevance_score: m.importance,
+                    added_at: now,
+                })
+                .collect();
             self.store.save_source_refs(&topic_id, &source_refs)?;
 
             let record = CompilationRecord {
@@ -856,8 +857,8 @@ fn simple_hash_embedding(content: &str, dims: usize) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::export::ExportOutput;
+    use super::*;
     use crate::compiler::storage::SqliteKnowledgeStore;
     use chrono::Utc;
 
@@ -893,7 +894,11 @@ mod tests {
     #[test]
     fn test_query_with_matches() {
         let api = make_api();
-        let page = make_topic("t1", "Rust Programming", "Rust is a systems programming language");
+        let page = make_topic(
+            "t1",
+            "Rust Programming",
+            "Rust is a systems programming language",
+        );
         api.store.create_topic_page(&page).unwrap();
 
         let results = api.query("rust", &QueryOpts::default()).unwrap();
@@ -1122,8 +1127,15 @@ mod tests {
         api.set_privacy_level(&TopicId("t1".to_owned()), PrivacyLevel::Private)
             .unwrap();
 
-        let updated = api.store.get_topic_page(&TopicId("t1".to_owned())).unwrap().unwrap();
-        assert!(updated.metadata.tags.contains(&"privacy:private".to_string()));
+        let updated = api
+            .store
+            .get_topic_page(&TopicId("t1".to_owned()))
+            .unwrap()
+            .unwrap();
+        assert!(updated
+            .metadata
+            .tags
+            .contains(&"privacy:private".to_string()));
     }
 
     // ── export ───────────────────────────────────────────────────────────
@@ -1183,7 +1195,11 @@ mod tests {
     #[test]
     fn test_recall_matches_topic() {
         let api = make_api();
-        let page = make_topic("t1", "Rust Programming", "Rust is a systems programming language");
+        let page = make_topic(
+            "t1",
+            "Rust Programming",
+            "Rust is a systems programming language",
+        );
         api.store.create_topic_page(&page).unwrap();
 
         let results = api.recall("rust", &RecallOpts::default()).unwrap();

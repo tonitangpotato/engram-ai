@@ -40,19 +40,23 @@ fn rec(id: &str) -> MemoryRecord {
 }
 
 fn count_legacy(s: &Storage, mem: &str, model: &str) -> i64 {
-    s.conn().query_row(
-        "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?1 AND model = ?2",
-        params![mem, model],
-        |row| row.get(0),
-    ).unwrap()
+    s.conn()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?1 AND model = ?2",
+            params![mem, model],
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 
 fn count_unified(s: &Storage, mem: &str, model: &str) -> i64 {
-    s.conn().query_row(
-        "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?1 AND model = ?2",
-        params![mem, model],
-        |row| row.get(0),
-    ).unwrap()
+    s.conn()
+        .query_row(
+            "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?1 AND model = ?2",
+            params![mem, model],
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 
 #[test]
@@ -71,13 +75,20 @@ fn iss125_delete_embedding_clears_both_tables() {
     assert_eq!(count_unified(&s, "m-1", "ollama/nomic-embed-text"), 1);
 
     // Delete it.
-    s.delete_embedding("m-1", "ollama/nomic-embed-text").expect("delete");
+    s.delete_embedding("m-1", "ollama/nomic-embed-text")
+        .expect("delete");
 
     // Both substrates are empty.
-    assert_eq!(count_legacy(&s, "m-1", "ollama/nomic-embed-text"), 0,
-        "ISS-125: memory_embeddings must be cleared");
-    assert_eq!(count_unified(&s, "m-1", "ollama/nomic-embed-text"), 0,
-        "ISS-125: node_embeddings must be cleared (was an orphan before fix)");
+    assert_eq!(
+        count_legacy(&s, "m-1", "ollama/nomic-embed-text"),
+        0,
+        "ISS-125: memory_embeddings must be cleared"
+    );
+    assert_eq!(
+        count_unified(&s, "m-1", "ollama/nomic-embed-text"),
+        0,
+        "ISS-125: node_embeddings must be cleared (was an orphan before fix)"
+    );
 }
 
 #[test]
@@ -88,20 +99,29 @@ fn iss125_delete_embedding_only_removes_matching_model() {
     s.add(&rec("m-2"), "default").expect("add");
 
     let v = vec![0.1f32; 4];
-    s.store_embedding("m-2", &v, "ollama/model-a", 4).expect("store a");
-    s.store_embedding("m-2", &v, "ollama/model-b", 4).expect("store b");
+    s.store_embedding("m-2", &v, "ollama/model-a", 4)
+        .expect("store a");
+    s.store_embedding("m-2", &v, "ollama/model-b", 4)
+        .expect("store b");
 
-    s.delete_embedding("m-2", "ollama/model-a").expect("delete a");
+    s.delete_embedding("m-2", "ollama/model-a")
+        .expect("delete a");
 
     // model-a gone on both sides.
     assert_eq!(count_legacy(&s, "m-2", "ollama/model-a"), 0);
     assert_eq!(count_unified(&s, "m-2", "ollama/model-a"), 0);
 
     // model-b survives on both sides.
-    assert_eq!(count_legacy(&s, "m-2", "ollama/model-b"), 1,
-        "ISS-125: model-b legacy row must survive deletion of model-a");
-    assert_eq!(count_unified(&s, "m-2", "ollama/model-b"), 1,
-        "ISS-125: model-b unified row must survive deletion of model-a");
+    assert_eq!(
+        count_legacy(&s, "m-2", "ollama/model-b"),
+        1,
+        "ISS-125: model-b legacy row must survive deletion of model-a"
+    );
+    assert_eq!(
+        count_unified(&s, "m-2", "ollama/model-b"),
+        1,
+        "ISS-125: model-b unified row must survive deletion of model-a"
+    );
 }
 
 #[test]
@@ -115,7 +135,8 @@ fn iss125_delete_embedding_idempotent() {
     s.store_embedding("m-3", &v, "ollama/x", 4).expect("store");
 
     s.delete_embedding("m-3", "ollama/x").expect("delete 1");
-    s.delete_embedding("m-3", "ollama/x").expect("delete 2 (idempotent)");
+    s.delete_embedding("m-3", "ollama/x")
+        .expect("delete 2 (idempotent)");
 
     assert_eq!(count_legacy(&s, "m-3", "ollama/x"), 0);
     assert_eq!(count_unified(&s, "m-3", "ollama/x"), 0);
@@ -133,17 +154,25 @@ fn iss125_delete_embedding_normalizes_model() {
 
     let v = vec![0.1f32; 4];
     // store with un-prefixed model (will be normalized to ollama/...)
-    s.store_embedding("m-4", &v, "nomic-embed-text", 4).expect("store");
+    s.store_embedding("m-4", &v, "nomic-embed-text", 4)
+        .expect("store");
 
     // Rows actually land under the normalized model id.
     assert_eq!(count_legacy(&s, "m-4", "ollama/nomic-embed-text"), 1);
     assert_eq!(count_unified(&s, "m-4", "ollama/nomic-embed-text"), 1);
 
     // Delete using the un-prefixed form — must normalize internally.
-    s.delete_embedding("m-4", "nomic-embed-text").expect("delete");
+    s.delete_embedding("m-4", "nomic-embed-text")
+        .expect("delete");
 
-    assert_eq!(count_legacy(&s, "m-4", "ollama/nomic-embed-text"), 0,
-        "ISS-125: delete must normalize model id");
-    assert_eq!(count_unified(&s, "m-4", "ollama/nomic-embed-text"), 0,
-        "ISS-125: unified delete must normalize model id");
+    assert_eq!(
+        count_legacy(&s, "m-4", "ollama/nomic-embed-text"),
+        0,
+        "ISS-125: delete must normalize model id"
+    );
+    assert_eq!(
+        count_unified(&s, "m-4", "ollama/nomic-embed-text"),
+        0,
+        "ISS-125: unified delete must normalize model id"
+    );
 }

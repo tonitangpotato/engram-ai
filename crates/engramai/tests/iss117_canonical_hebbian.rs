@@ -263,9 +263,7 @@ fn iss117_record_cross_namespace_coactivation_forms_single_canonical_row() {
 
     for _ in 0..3 {
         storage
-            .record_cross_namespace_coactivation(
-                "x_in_ns1", "ns1", "y_in_ns2", "ns2", 3,
-            )
+            .record_cross_namespace_coactivation("x_in_ns1", "ns1", "y_in_ns2", "ns2", 3)
             .unwrap();
     }
 
@@ -311,7 +309,8 @@ fn iss117_migration_collapses_double_direction_rows() {
               created_at, namespace) \
              VALUES ('a', 'b', 1.0, 5, 2, 1, 'forward', 1000.0, 'default')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         // Reverse row: strength=0.8, count=3, created=2000.
         conn.execute(
             "INSERT INTO hebbian_links \
@@ -320,7 +319,8 @@ fn iss117_migration_collapses_double_direction_rows() {
               created_at, namespace) \
              VALUES ('b', 'a', 0.8, 3, 0, 0, 'backward', 2000.0, 'default')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     // Reopen via Storage::new — the migration should run and collapse.
@@ -340,23 +340,27 @@ fn iss117_migration_collapses_double_direction_rows() {
     assert_eq!(n, 1, "migration should collapse double rows");
 
     // Surviving row is canonical (a, b), with merged metrics.
-    let (s, t, strength, count, tf, tb, created): (
-        String, String, f64, i32, i32, i32, f64,
-    ) = storage
-        .connection()
-        .query_row(
-            "SELECT source_id, target_id, strength, coactivation_count, \
+    let (s, t, strength, count, tf, tb, created): (String, String, f64, i32, i32, i32, f64) =
+        storage
+            .connection()
+            .query_row(
+                "SELECT source_id, target_id, strength, coactivation_count, \
                     temporal_forward, temporal_backward, created_at \
              FROM hebbian_links WHERE source_id = 'a' AND target_id = 'b'",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
-                    row.get(4)?, row.get(5)?, row.get(6)?,
-                ))
-            },
-        )
-        .unwrap();
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
 
     assert_eq!(s, "a");
     assert_eq!(t, "b");
@@ -384,11 +388,8 @@ fn iss117_migration_is_idempotent() {
 
     let before = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row::<i64, _, _>(
-            "SELECT COUNT(*) FROM hebbian_links",
-            [],
-            |row| row.get(0),
-        ).unwrap()
+        conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM hebbian_links", [], |row| row.get(0))
+            .unwrap()
     };
 
     // Reopen → migration runs again on already-canonical table.
@@ -396,11 +397,8 @@ fn iss117_migration_is_idempotent() {
 
     let after = {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.query_row::<i64, _, _>(
-            "SELECT COUNT(*) FROM hebbian_links",
-            [],
-            |row| row.get(0),
-        ).unwrap()
+        conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM hebbian_links", [], |row| row.get(0))
+            .unwrap()
     };
 
     assert_eq!(before, after, "migration must be a no-op when canonical");
@@ -429,7 +427,8 @@ fn iss117_migration_leaves_single_direction_rows_alone() {
               created_at, namespace) \
              VALUES ('a', 'b', 0.5, 2, 1, 0, 'forward', 1500.0, 'default')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     // Trigger migration.
@@ -479,9 +478,7 @@ fn iss118_cross_ns_row_survives_reopen_when_id_order_inverts_ns_order() {
 
         for _ in 0..3 {
             storage
-                .record_cross_namespace_coactivation(
-                    "hub", "ns_aaa", "apple", "ns_zzz", 3,
-                )
+                .record_cross_namespace_coactivation("hub", "ns_aaa", "apple", "ns_zzz", 3)
                 .unwrap();
         }
 
@@ -522,9 +519,7 @@ fn iss118_cross_ns_row_with_multiple_neighbours_survives_reopen() {
         for neighbour in &["a", "b", "c"] {
             for _ in 0..3 {
                 storage
-                    .record_cross_namespace_coactivation(
-                        "hub", "ns_hub", neighbour, "ns_other", 3,
-                    )
+                    .record_cross_namespace_coactivation("hub", "ns_hub", neighbour, "ns_other", 3)
                     .unwrap();
             }
         }
@@ -585,7 +580,8 @@ fn iss118_same_ns_with_inverted_id_order_still_canonicalises() {
               created_at, namespace) \
              VALUES ('alpha', 'beta', 0.5, 2, 1, 0, 'forward', 1000.0, 'shared_ns')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO hebbian_links \
              (source_id, target_id, strength, coactivation_count, \
@@ -593,7 +589,8 @@ fn iss118_same_ns_with_inverted_id_order_still_canonicalises() {
               created_at, namespace) \
              VALUES ('beta', 'alpha', 0.3, 1, 0, 1, 'backward', 2000.0, 'shared_ns')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     // Trigger migration.

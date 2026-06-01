@@ -37,26 +37,46 @@ const CASES: &[(&str, &str)] = &[
 ];
 
 fn fmt(ts: &[Triple]) -> String {
-    if ts.is_empty() { return "    (none)".into(); }
-    ts.iter().map(|t| format!("    {} --[{}]--> {}  ({:.2})",
-        t.subject, t.predicate.as_str(), t.object, t.confidence))
-        .collect::<Vec<_>>().join("\n")
+    if ts.is_empty() {
+        return "    (none)".into();
+    }
+    ts.iter()
+        .map(|t| {
+            format!(
+                "    {} --[{}]--> {}  ({:.2})",
+                t.subject,
+                t.predicate.as_str(),
+                t.object,
+                t.confidence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn has_date_token(ts: &[Triple]) -> bool {
     let date_like = |s: &str| {
         let l = s.to_lowercase();
-        l.contains("2023") || l.contains("july") || l.contains("august")
-            || l.contains("yesterday") || l.contains("last week")
-            || l.contains("weekend") || l.contains("27th") || l.contains("august 27")
+        l.contains("2023")
+            || l.contains("july")
+            || l.contains("august")
+            || l.contains("yesterday")
+            || l.contains("last week")
+            || l.contains("weekend")
+            || l.contains("27th")
+            || l.contains("august 27")
     };
-    ts.iter().any(|t| date_like(&t.subject) || date_like(&t.object))
+    ts.iter()
+        .any(|t| date_like(&t.subject) || date_like(&t.object))
 }
 
 fn main() -> ExitCode {
     let token = match env::var("ANTHROPIC_AUTH_TOKEN") {
         Ok(t) if !t.trim().is_empty() => t,
-        _ => { eprintln!("ERROR: set ANTHROPIC_AUTH_TOKEN"); return ExitCode::from(2); }
+        _ => {
+            eprintln!("ERROR: set ANTHROPIC_AUTH_TOKEN");
+            return ExitCode::from(2);
+        }
     };
     let ext = AnthropicTripleExtractor::with_model(&token, true, MODEL);
 
@@ -73,8 +93,10 @@ fn main() -> ExitCode {
         let b = ext.extract_triples(sent).unwrap_or_default();
         env::remove_var("ENGRAM_TRIPLE_PROMPT_V2");
 
-        let ad = has_date_token(&a); let bd = has_date_token(&b);
-        a_date += ad as usize; b_date += bd as usize;
+        let ad = has_date_token(&a);
+        let bd = has_date_token(&b);
+        a_date += ad as usize;
+        b_date += bd as usize;
         println!("  legacy ({} triples, date-token={}):", a.len(), ad);
         println!("{}", fmt(&a));
         println!("  v2     ({} triples, date-token={}):", b.len(), bd);
@@ -83,7 +105,13 @@ fn main() -> ExitCode {
     }
 
     println!("---");
-    println!("SUMMARY: legacy date-bearing cases {}/{}, v2 {}/{}", a_date, CASES.len(), b_date, CASES.len());
+    println!(
+        "SUMMARY: legacy date-bearing cases {}/{}, v2 {}/{}",
+        a_date,
+        CASES.len(),
+        b_date,
+        CASES.len()
+    );
     println!("NOTE: triples never carry the resolved date regardless of prompt -> the");
     println!("date lives only in the memory TEXT + temporal metadata, not in edges.");
     println!("If both are ~0, the multi-hop loss is NOT triple-fragmentation of the date;");

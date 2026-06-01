@@ -139,7 +139,10 @@ mod tests {
     fn test_unknown_predicate_falls_back_to_related_to() {
         assert_eq!(Predicate::from_str_lossy("foobar"), Predicate::RelatedTo);
         assert_eq!(Predicate::from_str_lossy(""), Predicate::RelatedTo);
-        assert_eq!(Predicate::from_str_lossy("UNKNOWN_THING"), Predicate::RelatedTo);
+        assert_eq!(
+            Predicate::from_str_lossy("UNKNOWN_THING"),
+            Predicate::RelatedTo
+        );
     }
 
     #[test]

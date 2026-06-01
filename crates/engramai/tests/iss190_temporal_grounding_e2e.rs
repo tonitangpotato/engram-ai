@@ -13,9 +13,9 @@
 //! which is exercised separately by the conv-44 benchmark (AC-6).
 
 use chrono::{Datelike, TimeZone};
+use engramai::dimensions::TemporalMark;
 use engramai::enriched::parse_temporal_mark;
 use engramai::extractor::{ExtractedFact, MemoryExtractor};
-use engramai::dimensions::TemporalMark;
 use engramai::memory::Memory;
 use engramai::store_api::{RawStoreOutcome, StorageMeta, StoreOutcome};
 use std::error::Error as StdError;

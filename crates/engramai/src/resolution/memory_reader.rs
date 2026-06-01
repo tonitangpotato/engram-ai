@@ -71,10 +71,7 @@ impl SqliteMemoryReader {
 }
 
 impl MemoryReader for SqliteMemoryReader {
-    fn fetch(
-        &self,
-        memory_id: &str,
-    ) -> Result<Option<(MemoryRecord, String)>, MemoryReadError> {
+    fn fetch(&self, memory_id: &str) -> Result<Option<(MemoryRecord, String)>, MemoryReadError> {
         let guard = self
             .conn
             .lock()
@@ -131,7 +128,10 @@ mod tests {
 
         let reader = SqliteMemoryReader::open(&db_path).unwrap();
         let fetched = reader.fetch("mem-1").unwrap();
-        assert!(fetched.is_some(), "row written via Storage should be readable via reader");
+        assert!(
+            fetched.is_some(),
+            "row written via Storage should be readable via reader"
+        );
         let (fetched, namespace) = fetched.unwrap();
         assert_eq!(fetched.id, "mem-1");
         assert_eq!(fetched.content, "alice met bob in paris");

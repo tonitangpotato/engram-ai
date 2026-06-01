@@ -105,10 +105,7 @@ pub fn compute_composite_score(signals: &PairwiseSignals, weights: &ClusterWeigh
 #[derive(Debug, Clone)]
 pub enum HotAssignResult {
     /// Memory was assigned to an existing cluster.
-    Assigned {
-        cluster_id: String,
-        confidence: f64,
-    },
+    Assigned { cluster_id: String, confidence: f64 },
     /// No cluster was close enough; memory is pending for warm/cold recluster.
     Pending,
     /// No clusters exist yet; memory is pending.
@@ -137,9 +134,21 @@ pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
-    let norm_a: f64 = a.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
-    let norm_b: f64 = b.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let dot: f64 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (*x as f64) * (*y as f64))
+        .sum();
+    let norm_a: f64 = a
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
+    let norm_b: f64 = b
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
     if norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
     }
@@ -206,7 +215,10 @@ pub fn assign_new_memory(
 
 /// Compute the mean embedding vector for a set of memory IDs.
 /// Skips memories without embeddings. Returns None if no embeddings found.
-pub(crate) fn compute_centroid_embedding(storage: &Storage, member_ids: &[String]) -> Option<Vec<f32>> {
+pub(crate) fn compute_centroid_embedding(
+    storage: &Storage,
+    member_ids: &[String],
+) -> Option<Vec<f32>> {
     let mut sum: Vec<f64> = Vec::new();
     let mut count = 0usize;
 
@@ -266,12 +278,7 @@ pub fn recluster_dirty(
     involved_ids.dedup();
 
     // 3. Run local discover_clusters on the subset
-    let local_clusters = discover_clusters_subset(
-        storage,
-        &involved_ids,
-        config,
-        embedding_model,
-    )?;
+    let local_clusters = discover_clusters_subset(storage, &involved_ids, config, embedding_model)?;
 
     // 4. Convert MemoryCluster → (cluster_id, member_ids, centroid_embedding)
     //    for replace_clusters storage API
@@ -311,10 +318,10 @@ fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
 
 /// Node in a Vantage-Point Tree.
 struct VpNode {
-    point_idx: usize,      // index into VpTree::points
-    threshold: f32,        // median distance (split boundary)
-    left: Option<usize>,   // index into VpTree::nodes
-    right: Option<usize>,  // index into VpTree::nodes
+    point_idx: usize,     // index into VpTree::points
+    threshold: f32,       // median distance (split boundary)
+    left: Option<usize>,  // index into VpTree::nodes
+    right: Option<usize>, // index into VpTree::nodes
 }
 
 /// Vantage-Point Tree for nearest-neighbor search on L2-normalized embeddings.
@@ -392,7 +399,6 @@ impl VpTree {
 
         Some(node_idx)
     }
-
 }
 
 impl VpTree {
@@ -454,7 +460,11 @@ impl VpTree {
                 self.search_node(left, query, query_orig_idx, k, heap);
             }
             // Search right if it could contain closer points
-            let tau = if heap.len() < k { f32::INFINITY } else { heap[0].0 };
+            let tau = if heap.len() < k {
+                f32::INFINITY
+            } else {
+                heap[0].0
+            };
             if d + tau > node.threshold {
                 if let Some(right) = node.right {
                     self.search_node(right, query, query_orig_idx, k, heap);
@@ -466,7 +476,11 @@ impl VpTree {
                 self.search_node(right, query, query_orig_idx, k, heap);
             }
             // Search left if it could contain closer points
-            let tau = if heap.len() < k { f32::INFINITY } else { heap[0].0 };
+            let tau = if heap.len() < k {
+                f32::INFINITY
+            } else {
+                heap[0].0
+            };
             if d - tau <= node.threshold {
                 if let Some(left) = node.left {
                     self.search_node(left, query, query_orig_idx, k, heap);
@@ -480,10 +494,7 @@ impl VpTree {
             return Vec::new();
         }
 
-        let query_internal = self
-            .points
-            .iter()
-            .position(|(orig, _)| *orig == query_idx);
+        let query_internal = self.points.iter().position(|(orig, _)| *orig == query_idx);
         let query_internal = match query_internal {
             Some(i) => i,
             None => return Vec::new(),
@@ -539,10 +550,8 @@ pub fn discover_clusters_subset(
 ) -> Result<Vec<MemoryCluster>, Box<dyn std::error::Error>> {
     // Load only the specified memories
     let records = storage.get_memories_by_ids(memory_ids)?;
-    let candidates: Vec<&MemoryRecord> = records
-        .iter()
-        .filter(|m| !is_synthesis_output(m))
-        .collect();
+    let candidates: Vec<&MemoryRecord> =
+        records.iter().filter(|m| !is_synthesis_output(m)).collect();
 
     if candidates.len() < config.min_cluster_size {
         return Ok(Vec::new());
@@ -713,17 +722,19 @@ fn discover_clusters_inner(
         n,
         edges.len(),
         max_neighbors,
-        if config.max_neighbors_per_node.is_some() { "manual" } else { "adaptive" },
+        if config.max_neighbors_per_node.is_some() {
+            "manual"
+        } else {
+            "adaptive"
+        },
     );
     let edges = sparsify_edges(edges, max_neighbors);
     let clusters = infomap_communities(&edges, &candidate_ids, config);
 
-
     // Step 6: Build MemoryCluster structs
     let mut result: Vec<MemoryCluster> = Vec::new();
     for members in &clusters {
-        if let Some(cluster) =
-            build_memory_cluster(members, &edges, &records, &entity_map, config)
+        if let Some(cluster) = build_memory_cluster(members, &edges, &records, &entity_map, config)
         {
             result.push(cluster);
         }
@@ -744,10 +755,7 @@ fn discover_clusters_inner(
 /// This preserves local neighborhood structure while dramatically reducing
 /// the total edge count for Infomap. Each undirected edge (a,b) counts
 /// towards both a's and b's quota.
-fn sparsify_edges(
-    mut edges: Vec<(String, String, f64)>,
-    k: usize,
-) -> Vec<(String, String, f64)> {
+fn sparsify_edges(mut edges: Vec<(String, String, f64)>, k: usize) -> Vec<(String, String, f64)> {
     // Sort edges by weight descending
     edges.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -826,11 +834,15 @@ fn infomap_communities(
         edges.len() as f64 / id_list.len() as f64
     };
     let trials = config.infomap_trials.unwrap_or({
-        if edge_density < 5.0 { 1 } else { 3 }
+        if edge_density < 5.0 {
+            1
+        } else {
+            3
+        }
     });
-    let hierarchical = config.infomap_hierarchical.unwrap_or({
-        id_list.len() > 2000
-    });
+    let hierarchical = config
+        .infomap_hierarchical
+        .unwrap_or({ id_list.len() > 2000 });
 
     log::debug!(
         "infomap params: nodes={}, edges={}, density={:.1}, trials={} ({}), hierarchical={} ({})",
@@ -838,9 +850,17 @@ fn infomap_communities(
         edges.len(),
         edge_density,
         trials,
-        if config.infomap_trials.is_some() { "manual" } else { "adaptive" },
+        if config.infomap_trials.is_some() {
+            "manual"
+        } else {
+            "adaptive"
+        },
         hierarchical,
-        if config.infomap_hierarchical.is_some() { "manual" } else { "adaptive" },
+        if config.infomap_hierarchical.is_some() {
+            "manual"
+        } else {
+            "adaptive"
+        },
     );
     let result = Infomap::new(&network)
         .seed(42)
@@ -863,10 +883,7 @@ fn infomap_communities(
             continue;
         }
 
-        let mut members: Vec<String> = member_indices
-            .iter()
-            .map(|&i| id_list[i].clone())
-            .collect();
+        let mut members: Vec<String> = member_indices.iter().map(|&i| id_list[i].clone()).collect();
         members.sort();
 
         if members.len() > config.max_cluster_size {
@@ -955,15 +972,16 @@ fn build_memory_cluster(
     let embedding_c = config.weights.embedding;
     let temporal_c = config.weights.temporal;
 
-    let dominant_signal = if hebbian_c >= entity_c && hebbian_c >= embedding_c && hebbian_c >= temporal_c {
-        ClusterSignal::Hebbian
-    } else if entity_c >= embedding_c && entity_c >= temporal_c {
-        ClusterSignal::Entity
-    } else if embedding_c >= temporal_c {
-        ClusterSignal::Embedding
-    } else {
-        ClusterSignal::Temporal
-    };
+    let dominant_signal =
+        if hebbian_c >= entity_c && hebbian_c >= embedding_c && hebbian_c >= temporal_c {
+            ClusterSignal::Hebbian
+        } else if entity_c >= embedding_c && entity_c >= temporal_c {
+            ClusterSignal::Entity
+        } else if embedding_c >= temporal_c {
+            ClusterSignal::Embedding
+        } else {
+            ClusterSignal::Temporal
+        };
 
     let signals_summary = SignalsSummary {
         dominant_signal,
@@ -1037,14 +1055,13 @@ pub fn apply_emotional_modulation(
         indexed.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    b.2.partial_cmp(&a.2)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+                .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
         });
 
-        let reordered: Vec<MemoryCluster> =
-            indexed.into_iter().map(|(i, _, _)| clusters[i].clone()).collect();
+        let reordered: Vec<MemoryCluster> = indexed
+            .into_iter()
+            .map(|(i, _, _)| clusters[i].clone())
+            .collect();
         return reordered;
     }
 
@@ -1287,7 +1304,8 @@ mod tests {
 
         // Should find 2 separate communities, not 1 merged blob.
         assert_eq!(
-            components.len(), 2,
+            components.len(),
+            2,
             "Expected 2 communities (Infomap should split at weak bridge), got {}",
             components.len()
         );
@@ -1506,8 +1524,11 @@ mod tests {
             vec![0.5, 0.5, 0.5], // 8  — center
             vec![0.1, 0.1, 0.1], // 9  — near origin
         ];
-        let points: Vec<(usize, &[f32])> =
-            raw.iter().enumerate().map(|(i, v)| (i, v.as_slice())).collect();
+        let points: Vec<(usize, &[f32])> = raw
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i, v.as_slice()))
+            .collect();
         let tree = VpTree::build(&points);
 
         // Query point 0 (origin), k=3
@@ -1560,7 +1581,11 @@ mod tests {
     fn test_cosine_similarity_identical() {
         let v = vec![1.0_f32, 2.0, 3.0];
         let sim = cosine_similarity(&v, &v);
-        assert!((sim - 1.0).abs() < 1e-9, "identical vectors should have similarity 1.0, got {}", sim);
+        assert!(
+            (sim - 1.0).abs() < 1e-9,
+            "identical vectors should have similarity 1.0, got {}",
+            sim
+        );
     }
 
     #[test]
@@ -1568,7 +1593,11 @@ mod tests {
         let a = vec![1.0_f32, 0.0, 0.0];
         let b = vec![0.0_f32, 1.0, 0.0];
         let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-9, "orthogonal vectors should have similarity 0.0, got {}", sim);
+        assert!(
+            sim.abs() < 1e-9,
+            "orthogonal vectors should have similarity 0.0, got {}",
+            sim
+        );
     }
 
     #[test]
@@ -1576,7 +1605,11 @@ mod tests {
         let a = vec![1.0_f32, 2.0, 3.0];
         let b = vec![-1.0_f32, -2.0, -3.0];
         let sim = cosine_similarity(&a, &b);
-        assert!((sim - (-1.0)).abs() < 1e-9, "opposite vectors should have similarity -1.0, got {}", sim);
+        assert!(
+            (sim - (-1.0)).abs() < 1e-9,
+            "opposite vectors should have similarity -1.0, got {}",
+            sim
+        );
     }
 
     // =======================================================================
@@ -1611,15 +1644,24 @@ mod tests {
 
         // Seed a centroid: [1.0, 0.0, 0.0]
         let centroid = vec![1.0_f32, 0.0, 0.0];
-        storage.update_centroid_incremental("cluster-a", &centroid).unwrap();
+        storage
+            .update_centroid_incremental("cluster-a", &centroid)
+            .unwrap();
 
         // New memory very similar to the centroid
         let embedding = vec![0.9_f32, 0.1, 0.0];
         let result = assign_new_memory(&storage, "mem-1", &embedding, &config).unwrap();
         match result {
-            HotAssignResult::Assigned { cluster_id, confidence } => {
+            HotAssignResult::Assigned {
+                cluster_id,
+                confidence,
+            } => {
                 assert_eq!(cluster_id, "cluster-a");
-                assert!(confidence >= 0.6, "confidence {} should be >= 0.6", confidence);
+                assert!(
+                    confidence >= 0.6,
+                    "confidence {} should be >= 0.6",
+                    confidence
+                );
             }
             other => panic!("expected Assigned, got {:?}", other),
         }
@@ -1632,7 +1674,9 @@ mod tests {
 
         // Seed a centroid: [1.0, 0.0, 0.0]
         let centroid = vec![1.0_f32, 0.0, 0.0];
-        storage.update_centroid_incremental("cluster-a", &centroid).unwrap();
+        storage
+            .update_centroid_incremental("cluster-a", &centroid)
+            .unwrap();
 
         // New memory nearly orthogonal → below threshold
         let embedding = vec![0.0_f32, 1.0, 0.0];
@@ -1684,7 +1728,9 @@ mod tests {
             vec![0.0, 0.1, 0.9],
         ];
         for (id, emb) in ids.iter().zip(embeddings.iter()) {
-            storage.store_embedding(id, emb, "test/model", emb.len()).unwrap();
+            storage
+                .store_embedding(id, emb, "test/model", emb.len())
+                .unwrap();
         }
 
         // Add all as pending
@@ -1702,7 +1748,10 @@ mod tests {
 
         // Verify pending is cleared
         let remaining = storage.get_pending_memory_ids().unwrap();
-        assert!(remaining.is_empty(), "pending should be cleared after recluster");
+        assert!(
+            remaining.is_empty(),
+            "pending should be cleared after recluster"
+        );
     }
 
     #[test]
@@ -1717,8 +1766,12 @@ mod tests {
 
         let emb1 = vec![1.0_f32, 0.0, 0.0];
         let emb2 = vec![0.0_f32, 1.0, 0.0];
-        storage.store_embedding("c-1", &emb1, "test/model", 3).unwrap();
-        storage.store_embedding("c-2", &emb2, "test/model", 3).unwrap();
+        storage
+            .store_embedding("c-1", &emb1, "test/model", 3)
+            .unwrap();
+        storage
+            .store_embedding("c-2", &emb2, "test/model", 3)
+            .unwrap();
 
         let ids = vec!["c-1".to_string(), "c-2".to_string()];
         let centroid = compute_centroid_embedding(&storage, &ids).unwrap();
@@ -1741,8 +1794,11 @@ mod tests {
             vec![2.0, 0.0],
             vec![3.0, 0.0],
         ];
-        let points: Vec<(usize, &[f32])> =
-            raw.iter().enumerate().map(|(i, v)| (i, v.as_slice())).collect();
+        let points: Vec<(usize, &[f32])> = raw
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i, v.as_slice()))
+            .collect();
         let tree = VpTree::build(&points);
 
         for i in 0..4 {

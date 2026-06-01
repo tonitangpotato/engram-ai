@@ -23,12 +23,7 @@ fn full_signal_flow_anomaly_to_regulation() {
     // Phase 1: Feed a stream of negative anomaly signals into "coding" domain.
     // Need >= fallback_min_signals (10) to trigger SoulUpdateSuggestion in fallback mode.
     for _ in 0..12 {
-        let sig = InteroceptiveSignal::new(
-            SignalSource::Anomaly,
-            Some("coding".into()),
-            -0.6,
-            0.7,
-        );
+        let sig = InteroceptiveSignal::new(SignalSource::Anomaly, Some("coding".into()), -0.6, 0.7);
         hub.process_signal(sig);
     }
 
@@ -81,13 +76,20 @@ fn full_signal_flow_low_confidence_to_retrieval_adjustment() {
     let state = hub.current_state();
     let ds = state.domain_states.get("research").unwrap();
     // Confidence should be low (EWMA tracks valence component mapped to confidence).
-    assert!(ds.confidence < 0.3, "confidence should be below 0.3, got {}", ds.confidence);
+    assert!(
+        ds.confidence < 0.3,
+        "confidence should be below 0.3, got {}",
+        ds.confidence
+    );
 
     let actions = evaluate_with_hub(&state, &config, Some(&hub));
     assert!(
         actions.iter().any(|a| matches!(
             a,
-            RegulationAction::RetrievalAdjustment { expand_search: true, .. }
+            RegulationAction::RetrievalAdjustment {
+                expand_search: true,
+                ..
+            }
         )),
         "expected RetrievalAdjustment, got: {:?}",
         actions
@@ -145,7 +147,9 @@ fn multi_domain_simultaneous_signals() {
     // Trading anomaly should trigger an alert (anomaly_level > 2.0).
     let actions = evaluate_with_hub(&state, &config, Some(&hub));
     assert!(
-        actions.iter().any(|a| matches!(a, RegulationAction::Alert { .. })),
+        actions
+            .iter()
+            .any(|a| matches!(a, RegulationAction::Alert { .. })),
         "expected anomaly alert for trading, got: {:?}",
         actions
     );

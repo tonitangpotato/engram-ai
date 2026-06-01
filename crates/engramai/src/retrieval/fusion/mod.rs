@@ -27,10 +27,8 @@ pub use combiner::{
 pub use cross_encoder::{CrossEncoderConfig, CrossEncoderReranker};
 pub use dump::{clear_dump_label, set_dump_label};
 pub use mmr::MmrReranker;
-pub use reranker::{
-    assert_reranker_contract, ContractCheck, NullReranker, Reranker,
-};
+pub use reranker::{assert_reranker_contract, ContractCheck, NullReranker, Reranker};
 pub use signals::{
-    actr_score, bm25_score, graph_score, recency_score, vector_score,
-    BM25_DEFAULT_SATURATION, GRAPH_DEFAULT_DECAY, RECENCY_DEFAULT_HALF_LIFE,
+    actr_score, bm25_score, graph_score, recency_score, vector_score, BM25_DEFAULT_SATURATION,
+    GRAPH_DEFAULT_DECAY, RECENCY_DEFAULT_HALF_LIFE,
 };

@@ -6,8 +6,8 @@
 //! When vector and FTS results agree (high Jaccard overlap), both signals
 //! are strong. When they disagree, the system adapts weights.
 
-use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 use crate::embeddings::EmbeddingProvider;
 use crate::storage::Storage;
@@ -77,11 +77,11 @@ pub fn hybrid_search(
 ) -> Result<Vec<HybridSearchResult>, Box<dyn std::error::Error>> {
     let ns = opts.namespace.as_deref();
     let fetch_limit = opts.limit * 3; // Fetch more to combine
-    
+
     // Get FTS results
     let fts_results = storage.search_fts_ns(query_text, fetch_limit, ns)?;
     let fts_count = fts_results.len();
-    
+
     // Normalize FTS scores (rank-based, highest rank = highest score)
     let fts_scores: HashMap<String, f64> = fts_results
         .iter()
@@ -92,11 +92,11 @@ pub fn hybrid_search(
             (record.id.clone(), score)
         })
         .collect();
-    
+
     // Get vector results if query vector provided
     let vector_scores: HashMap<String, f64> = if let Some(qvec) = query_vector {
         let embeddings = storage.get_embeddings_in_namespace(ns, model)?;
-        
+
         embeddings
             .iter()
             .map(|(id, emb)| {
@@ -109,23 +109,24 @@ pub fn hybrid_search(
     } else {
         HashMap::new()
     };
-    
+
     // Combine all candidate IDs
-    let all_ids: HashSet<String> = fts_scores.keys()
+    let all_ids: HashSet<String> = fts_scores
+        .keys()
         .chain(vector_scores.keys())
         .cloned()
         .collect();
-    
+
     // Calculate hybrid scores
     let mut results: Vec<HybridSearchResult> = all_ids
         .into_iter()
         .map(|id| {
             let vs = vector_scores.get(&id).copied().unwrap_or(0.0);
             let fs = fts_scores.get(&id).copied().unwrap_or(0.0);
-            
+
             // Weighted combination
             let score = opts.vector_weight * vs + opts.fts_weight * fs;
-            
+
             HybridSearchResult {
                 id,
                 score,
@@ -135,27 +136,31 @@ pub fn hybrid_search(
             }
         })
         .collect();
-    
+
     // Sort by score descending
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-    
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     // Take top-k
     results.truncate(opts.limit);
-    
+
     // Fetch records if requested
     if opts.include_records {
         for result in &mut results {
             result.record = storage.get(&result.id)?;
         }
     }
-    
+
     log::debug!(
         "Hybrid search: {} FTS results, {} vector results, {} combined",
         fts_count,
         vector_scores.len(),
         results.len()
     );
-    
+
     Ok(results)
 }
 
@@ -184,15 +189,15 @@ pub fn adaptive_hybrid_search(
     model: &str,
 ) -> Result<Vec<HybridSearchResult>, Box<dyn std::error::Error>> {
     let fetch_limit = limit * 3;
-    
+
     // Get FTS results
     let fts_results = storage.search_fts_ns(query_text, fetch_limit, None)?;
     let fts_ids: HashSet<String> = fts_results.iter().map(|r| r.id.clone()).collect();
-    
+
     // Get vector results
     let vector_scores: HashMap<String, f64> = if let Some(qvec) = query_vector {
         let embeddings = storage.get_embeddings_in_namespace(None, model)?;
-        
+
         let mut scores: Vec<(String, f64)> = embeddings
             .iter()
             .map(|(id, emb)| {
@@ -201,18 +206,18 @@ pub fn adaptive_hybrid_search(
                 (id.clone(), score as f64)
             })
             .collect();
-        
+
         // Sort by score and take top-k
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scores.truncate(fetch_limit);
-        
+
         scores.into_iter().collect()
     } else {
         HashMap::new()
     };
-    
+
     let vector_ids: HashSet<String> = vector_scores.keys().cloned().collect();
-    
+
     // Calculate Jaccard overlap
     let (vector_weight, fts_weight) = if vector_ids.is_empty() {
         // No vector results, use FTS only
@@ -220,13 +225,13 @@ pub fn adaptive_hybrid_search(
     } else {
         let intersection = fts_ids.intersection(&vector_ids).count();
         let union = fts_ids.union(&vector_ids).count();
-        
+
         let jaccard = if union > 0 {
             intersection as f64 / union as f64
         } else {
             0.0
         };
-        
+
         // Adaptive weights based on overlap:
         // - High overlap (≥0.6): Both signals agree, use balanced weights
         // - Medium overlap (0.3-0.6): Slight preference for vector (semantic)
@@ -239,14 +244,14 @@ pub fn adaptive_hybrid_search(
             (0.7, 0.3)
         }
     };
-    
+
     log::debug!(
         "Adaptive weights: vector={:.2}, fts={:.2} (overlap={})",
         vector_weight,
         fts_weight,
         fts_ids.intersection(&vector_ids).count()
     );
-    
+
     // Normalize FTS scores
     let fts_scores: HashMap<String, f64> = fts_results
         .iter()
@@ -256,27 +261,28 @@ pub fn adaptive_hybrid_search(
             (record.id.clone(), score)
         })
         .collect();
-    
+
     // Combine all IDs
-    let all_ids: HashSet<String> = fts_scores.keys()
+    let all_ids: HashSet<String> = fts_scores
+        .keys()
         .chain(vector_scores.keys())
         .cloned()
         .collect();
-    
+
     // Calculate hybrid scores
     let mut results: Vec<HybridSearchResult> = all_ids
         .into_iter()
         .filter_map(|id| {
             let vs = vector_scores.get(&id).copied().unwrap_or(0.0);
             let fs = fts_scores.get(&id).copied().unwrap_or(0.0);
-            
+
             // Skip if both scores are 0
             if vs == 0.0 && fs == 0.0 {
                 return None;
             }
-            
+
             let score = vector_weight * vs + fts_weight * fs;
-            
+
             Some(HybridSearchResult {
                 id,
                 score,
@@ -286,16 +292,20 @@ pub fn adaptive_hybrid_search(
             })
         })
         .collect();
-    
+
     // Sort by score
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(limit);
-    
+
     // Fetch records
     for result in &mut results {
         result.record = storage.get(&result.id)?;
     }
-    
+
     Ok(results)
 }
 
@@ -315,7 +325,7 @@ pub fn reciprocal_rank_fusion(
     model: &str,
 ) -> Result<Vec<HybridSearchResult>, Box<dyn std::error::Error>> {
     let fetch_limit = limit * 3;
-    
+
     // Get FTS results
     let fts_results = storage.search_fts_ns(query_text, fetch_limit, None)?;
     let fts_ranks: HashMap<String, usize> = fts_results
@@ -323,11 +333,11 @@ pub fn reciprocal_rank_fusion(
         .enumerate()
         .map(|(rank, r)| (r.id.clone(), rank + 1)) // 1-indexed
         .collect();
-    
+
     // Get vector results
     let vector_ranks: HashMap<String, usize> = if let Some(qvec) = query_vector {
         let embeddings = storage.get_embeddings_in_namespace(None, model)?;
-        
+
         let mut scored: Vec<(String, f64)> = embeddings
             .iter()
             .map(|(id, emb)| {
@@ -335,10 +345,10 @@ pub fn reciprocal_rank_fusion(
                 (id.clone(), sim as f64)
             })
             .collect();
-        
+
         // Sort by similarity descending
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        
+
         scored
             .into_iter()
             .enumerate()
@@ -347,36 +357,41 @@ pub fn reciprocal_rank_fusion(
     } else {
         HashMap::new()
     };
-    
+
     // Combine all IDs
-    let all_ids: HashSet<String> = fts_ranks.keys()
+    let all_ids: HashSet<String> = fts_ranks
+        .keys()
         .chain(vector_ranks.keys())
         .cloned()
         .collect();
-    
+
     // Calculate RRF scores
     let mut results: Vec<HybridSearchResult> = all_ids
         .into_iter()
         .map(|id| {
-            let fts_contribution = fts_ranks.get(&id)
+            let fts_contribution = fts_ranks
+                .get(&id)
                 .map(|&rank| 1.0 / (k + rank as f64))
                 .unwrap_or(0.0);
-            
-            let vector_contribution = vector_ranks.get(&id)
+
+            let vector_contribution = vector_ranks
+                .get(&id)
                 .map(|&rank| 1.0 / (k + rank as f64))
                 .unwrap_or(0.0);
-            
+
             let rrf_score = fts_contribution + vector_contribution;
-            
+
             // Normalize FTS/vector scores for output
-            let fts_score = fts_ranks.get(&id)
+            let fts_score = fts_ranks
+                .get(&id)
                 .map(|&rank| 1.0 - (rank as f64 / fetch_limit as f64))
                 .unwrap_or(0.0);
-            
-            let vector_score = vector_ranks.get(&id)
+
+            let vector_score = vector_ranks
+                .get(&id)
                 .map(|&rank| 1.0 - (rank as f64 / fetch_limit as f64))
                 .unwrap_or(0.0);
-            
+
             HybridSearchResult {
                 id,
                 score: rrf_score,
@@ -386,16 +401,20 @@ pub fn reciprocal_rank_fusion(
             }
         })
         .collect();
-    
+
     // Sort by RRF score
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(limit);
-    
+
     // Fetch records
     for result in &mut results {
         result.record = storage.get(&result.id)?;
     }
-    
+
     Ok(results)
 }
 
@@ -404,10 +423,10 @@ pub fn jaccard_similarity(set_a: &HashSet<String>, set_b: &HashSet<String>) -> f
     if set_a.is_empty() && set_b.is_empty() {
         return 1.0; // Both empty = identical
     }
-    
+
     let intersection = set_a.intersection(set_b).count();
     let union = set_a.union(set_b).count();
-    
+
     if union == 0 {
         0.0
     } else {
@@ -418,48 +437,48 @@ pub fn jaccard_similarity(set_a: &HashSet<String>, set_b: &HashSet<String>) -> f
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_jaccard_similarity() {
         let a: HashSet<String> = ["1", "2", "3"].iter().map(|s| s.to_string()).collect();
         let b: HashSet<String> = ["2", "3", "4"].iter().map(|s| s.to_string()).collect();
-        
+
         let sim = jaccard_similarity(&a, &b);
         // Intersection: {2, 3} = 2, Union: {1, 2, 3, 4} = 4
         assert!((sim - 0.5).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_jaccard_identical() {
         let a: HashSet<String> = ["1", "2", "3"].iter().map(|s| s.to_string()).collect();
         let b = a.clone();
-        
+
         let sim = jaccard_similarity(&a, &b);
         assert!((sim - 1.0).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_jaccard_disjoint() {
         let a: HashSet<String> = ["1", "2"].iter().map(|s| s.to_string()).collect();
         let b: HashSet<String> = ["3", "4"].iter().map(|s| s.to_string()).collect();
-        
+
         let sim = jaccard_similarity(&a, &b);
         assert!(sim.abs() < 0.01);
     }
-    
+
     #[test]
     fn test_jaccard_empty() {
         let a: HashSet<String> = HashSet::new();
         let b: HashSet<String> = HashSet::new();
-        
+
         let sim = jaccard_similarity(&a, &b);
         assert!((sim - 1.0).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_hybrid_search_opts_default() {
         let opts = HybridSearchOpts::default();
-        
+
         assert!((opts.vector_weight - 0.7).abs() < 0.01);
         assert!((opts.fts_weight - 0.3).abs() < 0.01);
         assert_eq!(opts.limit, 10);

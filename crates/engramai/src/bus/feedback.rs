@@ -59,7 +59,7 @@ impl ActionStats {
     pub fn should_deprioritize(&self) -> bool {
         self.total >= MIN_ATTEMPTS_FOR_SUGGESTION && self.score < LOW_SCORE_THRESHOLD
     }
-    
+
     /// Describe the action performance in human-readable terms.
     pub fn describe(&self) -> String {
         let rating = if self.score >= 0.8 {
@@ -71,10 +71,14 @@ impl ActionStats {
         } else {
             "very poor"
         };
-        
+
         format!(
             "{}: {} ({:.0}% success rate, {}/{} positive)",
-            self.action, rating, self.score * 100.0, self.positive, self.total
+            self.action,
+            rating,
+            self.score * 100.0,
+            self.positive,
+            self.total
         )
     }
 }
@@ -90,7 +94,7 @@ impl<'a> BehaviorFeedback<'a> {
         Self::ensure_table(conn)?;
         Ok(Self { conn })
     }
-    
+
     /// Ensure the behavior_log table exists.
     fn ensure_table(conn: &Connection) -> Result<(), rusqlite::Error> {
         conn.execute_batch(
@@ -108,7 +112,7 @@ impl<'a> BehaviorFeedback<'a> {
         )?;
         Ok(())
     }
-    
+
     /// Log an action outcome.
     ///
     /// # Arguments
@@ -122,7 +126,7 @@ impl<'a> BehaviorFeedback<'a> {
         )?;
         Ok(())
     }
-    
+
     /// Get the success score for an action.
     ///
     /// Returns the positive rate over the recent window of attempts.
@@ -130,7 +134,7 @@ impl<'a> BehaviorFeedback<'a> {
     pub fn get_action_score(&self, action: &str) -> Result<Option<f64>, rusqlite::Error> {
         self.get_action_score_window(action, DEFAULT_SCORE_WINDOW)
     }
-    
+
     /// Get the success score for an action over a specific window.
     pub fn get_action_score_window(
         &self,
@@ -139,9 +143,9 @@ impl<'a> BehaviorFeedback<'a> {
     ) -> Result<Option<f64>, rusqlite::Error> {
         // Get recent outcomes
         let mut stmt = self.conn.prepare(
-            "SELECT outcome FROM behavior_log WHERE action = ? ORDER BY timestamp DESC LIMIT ?"
+            "SELECT outcome FROM behavior_log WHERE action = ? ORDER BY timestamp DESC LIMIT ?",
         )?;
-        
+
         let outcomes: Vec<bool> = stmt
             .query_map(params![action, window as i64], |row| {
                 let outcome: i32 = row.get(0)?;
@@ -149,18 +153,19 @@ impl<'a> BehaviorFeedback<'a> {
             })?
             .filter_map(|r| r.ok())
             .collect();
-        
+
         if outcomes.is_empty() {
             return Ok(None);
         }
-        
+
         let positive_count = outcomes.iter().filter(|&&o| o).count();
         Ok(Some(positive_count as f64 / outcomes.len() as f64))
     }
-    
+
     /// Get full statistics for an action.
     pub fn get_action_stats(&self, action: &str) -> Result<Option<ActionStats>, rusqlite::Error> {
-        let result: Option<(i32, i32)> = self.conn
+        let result: Option<(i32, i32)> = self
+            .conn
             .query_row(
                 "SELECT COUNT(*), SUM(outcome) FROM behavior_log WHERE action = ?",
                 params![action],
@@ -171,27 +176,25 @@ impl<'a> BehaviorFeedback<'a> {
                 },
             )
             .optional()?;
-        
+
         match result {
-            Some((total, positive)) if total > 0 => {
-                Ok(Some(ActionStats {
-                    action: action.to_string(),
-                    total,
-                    positive,
-                    negative: total - positive,
-                    score: positive as f64 / total as f64,
-                }))
-            }
+            Some((total, positive)) if total > 0 => Ok(Some(ActionStats {
+                action: action.to_string(),
+                total,
+                positive,
+                negative: total - positive,
+                score: positive as f64 / total as f64,
+            })),
             _ => Ok(None),
         }
     }
-    
+
     /// Get all action statistics.
     pub fn get_all_action_stats(&self) -> Result<Vec<ActionStats>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT action, COUNT(*), SUM(outcome) FROM behavior_log GROUP BY action ORDER BY COUNT(*) DESC"
         )?;
-        
+
         let rows = stmt.query_map([], |row| {
             let action: String = row.get(0)?;
             let total: i32 = row.get(1)?;
@@ -201,33 +204,48 @@ impl<'a> BehaviorFeedback<'a> {
                 total,
                 positive,
                 negative: total - positive,
-                score: if total > 0 { positive as f64 / total as f64 } else { 0.0 },
+                score: if total > 0 {
+                    positive as f64 / total as f64
+                } else {
+                    0.0
+                },
             })
         })?;
-        
+
         rows.collect()
     }
-    
+
     /// Get actions that should be deprioritized.
     pub fn get_actions_to_deprioritize(&self) -> Result<Vec<ActionStats>, rusqlite::Error> {
         let all = self.get_all_action_stats()?;
-        Ok(all.into_iter().filter(|a| a.should_deprioritize()).collect())
+        Ok(all
+            .into_iter()
+            .filter(|a| a.should_deprioritize())
+            .collect())
     }
-    
+
     /// Get actions with high success rate.
-    pub fn get_successful_actions(&self, min_score: f64) -> Result<Vec<ActionStats>, rusqlite::Error> {
+    pub fn get_successful_actions(
+        &self,
+        min_score: f64,
+    ) -> Result<Vec<ActionStats>, rusqlite::Error> {
         let all = self.get_all_action_stats()?;
-        Ok(all.into_iter()
+        Ok(all
+            .into_iter()
             .filter(|a| a.total >= MIN_ATTEMPTS_FOR_SUGGESTION && a.score >= min_score)
             .collect())
     }
-    
+
     /// Get recent behavior logs for an action.
-    pub fn get_recent_logs(&self, action: &str, limit: usize) -> Result<Vec<BehaviorLog>, rusqlite::Error> {
+    pub fn get_recent_logs(
+        &self,
+        action: &str,
+        limit: usize,
+    ) -> Result<Vec<BehaviorLog>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT action, outcome, timestamp FROM behavior_log WHERE action = ? ORDER BY timestamp DESC LIMIT ?"
         )?;
-        
+
         let rows = stmt.query_map(params![action, limit as i64], |row| {
             let timestamp_f64: f64 = row.get(2)?;
             let outcome: i32 = row.get(1)?;
@@ -237,19 +255,18 @@ impl<'a> BehaviorFeedback<'a> {
                 timestamp: f64_to_datetime(timestamp_f64),
             })
         })?;
-        
+
         rows.collect()
     }
-    
+
     /// Clear all logs for an action (e.g., after adjusting HEARTBEAT).
     pub fn clear_action(&self, action: &str) -> Result<usize, rusqlite::Error> {
-        let deleted = self.conn.execute(
-            "DELETE FROM behavior_log WHERE action = ?",
-            params![action],
-        )?;
+        let deleted = self
+            .conn
+            .execute("DELETE FROM behavior_log WHERE action = ?", params![action])?;
         Ok(deleted)
     }
-    
+
     /// Prune old logs (keep only recent N per action).
     pub fn prune_old_logs(&self, keep_per_action: usize) -> Result<usize, rusqlite::Error> {
         // SQLite doesn't support DELETE with ROW_NUMBER directly,
@@ -288,12 +305,13 @@ impl<'a> BehaviorFeedback<'a> {
                 0.2
             };
 
-            InteroceptiveSignal::new(SignalSource::Feedback, None, valence, arousal)
-                .with_context(SignalContext::ActionOutcome {
+            InteroceptiveSignal::new(SignalSource::Feedback, None, valence, arousal).with_context(
+                SignalContext::ActionOutcome {
                     action: action.to_string(),
                     success: s.score > 0.5,
                     cumulative_score: s.score,
-                })
+                },
+            )
         }))
     }
 }
@@ -301,84 +319,84 @@ impl<'a> BehaviorFeedback<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_log_and_get_score() {
         let conn = Connection::open_in_memory().unwrap();
         let feedback = BehaviorFeedback::new(&conn).unwrap();
-        
+
         // Log some outcomes
         feedback.log_outcome("check_email", true).unwrap();
         feedback.log_outcome("check_email", true).unwrap();
         feedback.log_outcome("check_email", false).unwrap();
         feedback.log_outcome("check_email", true).unwrap();
-        
+
         let score = feedback.get_action_score("check_email").unwrap().unwrap();
         // 3 positive out of 4 = 0.75
         assert!((score - 0.75).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_low_score_flagging() {
         let conn = Connection::open_in_memory().unwrap();
         let feedback = BehaviorFeedback::new(&conn).unwrap();
-        
+
         // Log many negative outcomes
         for _ in 0..12 {
             feedback.log_outcome("bad_action", false).unwrap();
         }
-        
+
         let stats = feedback.get_action_stats("bad_action").unwrap().unwrap();
         assert!(stats.should_deprioritize());
         assert!(stats.score < LOW_SCORE_THRESHOLD);
     }
-    
+
     #[test]
     fn test_get_all_stats() {
         let conn = Connection::open_in_memory().unwrap();
         let feedback = BehaviorFeedback::new(&conn).unwrap();
-        
+
         feedback.log_outcome("action_a", true).unwrap();
         feedback.log_outcome("action_b", false).unwrap();
         feedback.log_outcome("action_c", true).unwrap();
-        
+
         let all = feedback.get_all_action_stats().unwrap();
         assert_eq!(all.len(), 3);
     }
-    
+
     #[test]
     fn test_unknown_action() {
         let conn = Connection::open_in_memory().unwrap();
         let feedback = BehaviorFeedback::new(&conn).unwrap();
-        
+
         let score = feedback.get_action_score("nonexistent").unwrap();
         assert!(score.is_none());
     }
-    
+
     #[test]
     fn test_clear_action() {
         let conn = Connection::open_in_memory().unwrap();
         let feedback = BehaviorFeedback::new(&conn).unwrap();
-        
+
         feedback.log_outcome("to_clear", true).unwrap();
         feedback.log_outcome("to_clear", false).unwrap();
-        
+
         let deleted = feedback.clear_action("to_clear").unwrap();
         assert_eq!(deleted, 2);
-        
+
         let score = feedback.get_action_score("to_clear").unwrap();
         assert!(score.is_none());
     }
-    
+
     #[test]
     fn test_get_recent_logs() {
         let conn = Connection::open_in_memory().unwrap();
         let feedback = BehaviorFeedback::new(&conn).unwrap();
-        
+
         feedback.log_outcome("test", true).unwrap();
         feedback.log_outcome("test", false).unwrap();
         feedback.log_outcome("test", true).unwrap();
-        
+
         let logs = feedback.get_recent_logs("test", 10).unwrap();
         assert_eq!(logs.len(), 3);
         // Most recent first
@@ -398,11 +416,14 @@ mod tests {
         }
 
         let sig = feedback.to_signal("good_action").unwrap().unwrap();
-        assert!(matches!(sig.source, crate::interoceptive::SignalSource::Feedback));
+        assert!(matches!(
+            sig.source,
+            crate::interoceptive::SignalSource::Feedback
+        ));
         // 80% success → valence = 0.8*2-1 = 0.6
         assert!(sig.valence > 0.4, "valence was {}", sig.valence);
         assert!(sig.arousal < 0.3, "arousal was {}", sig.arousal); // not alarming
-        // Should have ActionOutcome context
+                                                                   // Should have ActionOutcome context
         assert!(matches!(
             sig.context,
             Some(crate::interoceptive::SignalContext::ActionOutcome { success: true, .. })

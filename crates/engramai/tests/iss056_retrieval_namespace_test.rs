@@ -75,10 +75,7 @@ fn block_on<F: std::future::Future>(mut fut: F) -> F::Output {
 struct ContentDispatchedMockExtractor;
 
 impl TripleExtractor for ContentDispatchedMockExtractor {
-    fn extract_triples(
-        &self,
-        content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         // Content "alpha-doc" → Alice→Bob; "beta-doc" → Carol→Dave.
         // This guarantees disjoint entity sets per namespace so any
         // cross-namespace leak shows up as a wrong-name hit.
@@ -151,8 +148,7 @@ fn graph_query_namespace_isolation() {
     let graph_db = mem_db.clone();
     let mem_db_str = mem_db.to_str().unwrap();
 
-    let triple_extractor: Arc<dyn TripleExtractor> =
-        Arc::new(ContentDispatchedMockExtractor);
+    let triple_extractor: Arc<dyn TripleExtractor> = Arc::new(ContentDispatchedMockExtractor);
     let mut rc = ResolutionConfig::default();
     rc.worker_count = 1;
     rc.queue_cap = 4;
@@ -181,12 +177,16 @@ fn graph_query_namespace_isolation() {
     assert!(matches!(out_b, RawStoreOutcome::Stored(_)));
 
     // Wait for the resolution worker to drain both jobs.
-    let alpha_entities =
-        wait_for_entity_in_namespace(&graph_db, "alpha", Duration::from_secs(5));
-    let beta_entities =
-        wait_for_entity_in_namespace(&graph_db, "beta", Duration::from_secs(5));
-    assert!(alpha_entities > 0, "alpha namespace ingest produced no entities");
-    assert!(beta_entities > 0, "beta namespace ingest produced no entities");
+    let alpha_entities = wait_for_entity_in_namespace(&graph_db, "alpha", Duration::from_secs(5));
+    let beta_entities = wait_for_entity_in_namespace(&graph_db, "beta", Duration::from_secs(5));
+    assert!(
+        alpha_entities > 0,
+        "alpha namespace ingest produced no entities"
+    );
+    assert!(
+        beta_entities > 0,
+        "beta namespace ingest produced no entities"
+    );
 
     mem.shutdown_pipeline(Duration::from_secs(2))
         .expect("shutdown ok");
@@ -245,8 +245,7 @@ fn graph_query_namespace_isolation() {
                         content,
                     );
                 }
-                let mentions_allowed =
-                    allowed_substr.iter().any(|s| content.contains(s));
+                let mentions_allowed = allowed_substr.iter().any(|s| content.contains(s));
                 assert!(
                     mentions_allowed,
                     "[{}] result content {:?} mentions none of the \
@@ -283,8 +282,7 @@ fn graph_query_without_namespace_uses_default() {
     let graph_db = mem_db.clone();
     let mem_db_str = mem_db.to_str().unwrap();
 
-    let triple_extractor: Arc<dyn TripleExtractor> =
-        Arc::new(ContentDispatchedMockExtractor);
+    let triple_extractor: Arc<dyn TripleExtractor> = Arc::new(ContentDispatchedMockExtractor);
     let mut rc = ResolutionConfig::default();
     rc.worker_count = 1;
     rc.queue_cap = 4;

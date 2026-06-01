@@ -174,19 +174,29 @@ fn store_raw_user_metadata_is_preserved() {
 /// - `make_fact` — closure that constructs the ExtractedFact returned
 ///   on a successful call.
 struct ProgrammableExtractor {
-    calls:       Arc<AtomicUsize>,
-    fail_until:  usize,
+    calls: Arc<AtomicUsize>,
+    fail_until: usize,
 }
 
 impl ProgrammableExtractor {
     fn new(fail_until: usize) -> (Self, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
-        (Self { calls: Arc::clone(&calls), fail_until }, calls)
+        (
+            Self {
+                calls: Arc::clone(&calls),
+                fail_until,
+            },
+            calls,
+        )
     }
 }
 
 impl MemoryExtractor for ProgrammableExtractor {
-    fn extract(&self, text: &str, _reference: Option<chrono::DateTime<chrono::Utc>>) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
+    fn extract(
+        &self,
+        text: &str,
+        _reference: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<ExtractedFact>, Box<dyn StdError + Send + Sync>> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n < self.fail_until {
             // Simulated extractor-level failure (transient).
@@ -232,10 +242,7 @@ fn store_raw_extractor_error_persists_quarantine_row() {
     // Must be Quarantined, not Skipped and not Stored.
     match out {
         RawStoreOutcome::Quarantined { id, reason } => {
-            assert!(
-                !id.as_str().is_empty(),
-                "quarantine id should be non-empty"
-            );
+            assert!(!id.as_str().is_empty(), "quarantine id should be non-empty");
             assert!(
                 matches!(reason, QuarantineReason::ExtractorError(_)),
                 "expected ExtractorError, got {:?}",
@@ -245,7 +252,11 @@ fn store_raw_extractor_error_persists_quarantine_row() {
         other => panic!("expected Quarantined, got {:?}", other),
     }
 
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "extractor called exactly once");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "extractor called exactly once"
+    );
 
     // Row should be live and counted.
     assert_eq!(mem.count_quarantine().expect("count_quarantine ok"), 1);
@@ -260,7 +271,9 @@ fn store_raw_extractor_error_dedups_on_repeat() {
     mem.set_extractor(Box::new(extractor));
 
     let meta = StorageMeta::default();
-    let _ = mem.store_raw("dedupable failing content", meta.clone()).unwrap();
+    let _ = mem
+        .store_raw("dedupable failing content", meta.clone())
+        .unwrap();
     let _ = mem.store_raw("dedupable failing content", meta).unwrap();
 
     assert_eq!(
@@ -303,11 +316,7 @@ fn retry_quarantined_recovers_transient_failure() {
     // Retry pass — the extractor now succeeds on call #2.
     let report = mem.retry_quarantined(10).expect("retry ok");
     assert_eq!(report.attempted, 1);
-    assert_eq!(
-        report.recovered.len(),
-        1,
-        "one row promoted into memories"
-    );
+    assert_eq!(report.recovered.len(), 1, "one row promoted into memories");
     assert!(
         report.still_failing.is_empty(),
         "no rows should still be failing, got {:?}",

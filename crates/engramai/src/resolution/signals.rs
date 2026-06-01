@@ -113,7 +113,10 @@ fn clamp01(x: f64) -> f64 {
 ///  - either vector is empty,
 ///  - vectors have mismatched lengths,
 ///  - either vector has zero norm (would produce NaN).
-pub fn semantic_similarity(mention_emb: Option<&[f32]>, candidate_emb: Option<&[f32]>) -> Option<f64> {
+pub fn semantic_similarity(
+    mention_emb: Option<&[f32]>,
+    candidate_emb: Option<&[f32]>,
+) -> Option<f64> {
     let a = mention_emb?;
     let b = candidate_emb?;
     if a.is_empty() || a.len() != b.len() {
@@ -241,11 +244,7 @@ pub const DEFAULT_RECENCY_HALF_LIFE: Duration = Duration::days(30);
 /// Returns `None` only if `candidate.last_seen` is in the future relative to
 /// `now` (a clock skew or test-fixture problem) — we don't want to "pump up"
 /// the recency of future-dated entities silently.
-pub fn recency(
-    now: DateTime<Utc>,
-    candidate: &Entity,
-    half_life: Duration,
-) -> Option<f64> {
+pub fn recency(now: DateTime<Utc>, candidate: &Entity, half_life: Duration) -> Option<f64> {
     let dt = now.signed_duration_since(candidate.last_seen);
     if dt < Duration::zero() {
         return None;
@@ -596,7 +595,10 @@ mod tests {
         let a = SomaticFingerprint([0.0; 8]);
         let b = SomaticFingerprint([1.0; 8]);
         let s = somatic_match(Some(&a), Some(&b)).unwrap();
-        assert!(s < 1e-6, "max-distance fingerprints should score 0, got {s}");
+        assert!(
+            s < 1e-6,
+            "max-distance fingerprints should score 0, got {s}"
+        );
     }
 
     #[test]

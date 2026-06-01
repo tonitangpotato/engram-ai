@@ -85,7 +85,11 @@ fn t29_4_get_cross_namespace_neighbors_basic_match() {
     ] {
         // Query from the lower-tuple side (the canonical source).
         let neighbours = storage.get_cross_namespace_neighbors("hub").unwrap();
-        assert_eq!(neighbours.len(), 1, "{label}: hub finds 1 cross-NS neighbour");
+        assert_eq!(
+            neighbours.len(),
+            1,
+            "{label}: hub finds 1 cross-NS neighbour"
+        );
         let link = &neighbours[0];
         assert_eq!(link.source_id, "hub", "{label} source_id is caller");
         assert_eq!(link.source_ns, "ns_aaa", "{label} source_ns");
@@ -154,7 +158,9 @@ fn t29_4_get_cross_namespace_neighbors_excludes_same_ns() {
 
         // Same-NS link (within ns_hub).
         for _ in 0..3 {
-            storage.record_coactivation_ns("hub", "sibling", 3, "ns_hub").unwrap();
+            storage
+                .record_coactivation_ns("hub", "sibling", 3, "ns_hub")
+                .unwrap();
         }
         // Cross-NS link.
         for _ in 0..3 {
@@ -200,9 +206,7 @@ fn t29_4_get_cross_namespace_neighbors_multi_neighbours() {
         for neighbour in &["a", "b", "c"] {
             for _ in 0..3 {
                 storage
-                    .record_cross_namespace_coactivation(
-                        "hub", "ns_hub", neighbour, "ns_other", 3,
-                    )
+                    .record_cross_namespace_coactivation("hub", "ns_hub", neighbour, "ns_other", 3)
                     .unwrap();
             }
         }

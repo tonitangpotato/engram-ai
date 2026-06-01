@@ -72,13 +72,12 @@ use engramai::retrieval::classifier::llm_fallback::{
     run_llm_fallback, LlmClassifierError, LlmFallbackConfig, LlmIntentClassifier,
 };
 use engramai::retrieval::classifier::{
-    route_stage1, ClassifierMethod, HeuristicClassifier, Intent, SignalThresholds,
-    Stage1Outcome,
+    route_stage1, ClassifierMethod, HeuristicClassifier, Intent, SignalThresholds, Stage1Outcome,
 };
 use engramai::retrieval::fusion::combiner::{combine, fuse_and_rank, FusionConfig};
 use engramai::retrieval::plans::affective::{
-    AffectiveOutcome, AffectivePlan, AffectivePlanInputs, AffectiveSeedHit,
-    AffectiveSeedRecaller, AffectiveSeedStatus,
+    AffectiveOutcome, AffectivePlan, AffectivePlanInputs, AffectiveSeedHit, AffectiveSeedRecaller,
+    AffectiveSeedStatus,
 };
 use engramai::retrieval::plans::bitemporal::{project_edges, AsOfMode};
 use engramai::retrieval::{GraphQuery, ScoredResult};
@@ -167,11 +166,7 @@ impl OracleLlm {
 }
 
 impl LlmIntentClassifier for OracleLlm {
-    fn classify(
-        &self,
-        query: &str,
-        _signals: &SignalScores,
-    ) -> Result<Intent, LlmClassifierError> {
+    fn classify(&self, query: &str, _signals: &SignalScores) -> Result<Intent, LlmClassifierError> {
         match self.answers.get(query) {
             Some(intent) => Ok(*intent),
             None => Err(LlmClassifierError::Backend(
@@ -205,8 +200,18 @@ struct FixtureQuery {
 /// and Hybrid queries are written to mention at least one of these tokens
 /// so the heuristic entity scorer fires deterministically.
 const KNOWN_ENTITIES: &[&str] = &[
-    "alice", "bob", "carol", "dan", "engram", "rustclaw", "iss-021",
-    "monorepo", "openai", "anthropic", "potato", "sqlite",
+    "alice",
+    "bob",
+    "carol",
+    "dan",
+    "engram",
+    "rustclaw",
+    "iss-021",
+    "monorepo",
+    "openai",
+    "anthropic",
+    "potato",
+    "sqlite",
 ];
 
 /// Curated routing-accuracy fixture (60 queries: 12 per intent).
@@ -222,75 +227,251 @@ const KNOWN_ENTITIES: &[&str] = &[
 ///    (the heuristic tokenizer trims ASCII punctuation per `tokenize`).
 const FIXTURE: &[FixtureQuery] = &[
     // -- Factual (12) — entity-anchored, no temporal/abstract/affective --
-    FixtureQuery { text: "what does alice think about bob",       label: Intent::Factual },
-    FixtureQuery { text: "tell me about carol's address",         label: Intent::Factual },
-    FixtureQuery { text: "details on engram architecture",        label: Intent::Factual },
-    FixtureQuery { text: "rustclaw configuration values",         label: Intent::Factual },
-    FixtureQuery { text: "iss-021 status update",                 label: Intent::Factual },
-    FixtureQuery { text: "where does dan live",                   label: Intent::Factual },
-    FixtureQuery { text: "monorepo branch policy",                label: Intent::Factual },
-    FixtureQuery { text: "openai api rate limits",                label: Intent::Factual },
-    FixtureQuery { text: "anthropic billing details",             label: Intent::Factual },
-    FixtureQuery { text: "potato project list",                   label: Intent::Factual },
-    FixtureQuery { text: "sqlite pragma options",                 label: Intent::Factual },
-    FixtureQuery { text: "engram graph schema docs",              label: Intent::Factual },
-
+    FixtureQuery {
+        text: "what does alice think about bob",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "tell me about carol's address",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "details on engram architecture",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "rustclaw configuration values",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "iss-021 status update",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "where does dan live",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "monorepo branch policy",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "openai api rate limits",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "anthropic billing details",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "potato project list",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "sqlite pragma options",
+        label: Intent::Factual,
+    },
+    FixtureQuery {
+        text: "engram graph schema docs",
+        label: Intent::Factual,
+    },
     // -- Episodic (12) — temporal expressions per `temporal_regex` --
-    FixtureQuery { text: "what did i do yesterday",               label: Intent::Episodic },
-    FixtureQuery { text: "meetings last week",                    label: Intent::Episodic },
-    FixtureQuery { text: "events from last month",                label: Intent::Episodic },
-    FixtureQuery { text: "what happened on 2024-03-15",           label: Intent::Episodic },
-    FixtureQuery { text: "todos created last quarter",            label: Intent::Episodic },
-    FixtureQuery { text: "files i edited 3 days ago",             label: Intent::Episodic },
-    FixtureQuery { text: "commits from last year",                label: Intent::Episodic },
-    FixtureQuery { text: "messages from this morning",            label: Intent::Episodic },
-    FixtureQuery { text: "calls from last tuesday",               label: Intent::Episodic },
-    FixtureQuery { text: "posts dated 2023-12-01",                label: Intent::Episodic },
-    FixtureQuery { text: "deploys in the last hour",              label: Intent::Episodic },
-    FixtureQuery { text: "errors logged today",                   label: Intent::Episodic },
-
+    FixtureQuery {
+        text: "what did i do yesterday",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "meetings last week",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "events from last month",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "what happened on 2024-03-15",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "todos created last quarter",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "files i edited 3 days ago",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "commits from last year",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "messages from this morning",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "calls from last tuesday",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "posts dated 2023-12-01",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "deploys in the last hour",
+        label: Intent::Episodic,
+    },
+    FixtureQuery {
+        text: "errors logged today",
+        label: Intent::Episodic,
+    },
     // -- Abstract (12) — thematic/summary phrases per `abstract_regex` --
-    FixtureQuery { text: "summarize our work on retrieval",       label: Intent::Abstract },
-    FixtureQuery { text: "give me an overview of the codebase",   label: Intent::Abstract },
-    FixtureQuery { text: "what have i been working on",           label: Intent::Abstract },
-    FixtureQuery { text: "themes in recent journal entries",      label: Intent::Abstract },
-    FixtureQuery { text: "patterns in my reading habits",         label: Intent::Abstract },
-    FixtureQuery { text: "trends across the data set",            label: Intent::Abstract },
-    FixtureQuery { text: "what has been keeping me busy",         label: Intent::Abstract },
-    FixtureQuery { text: "high-level summary of the project",     label: Intent::Abstract },
-    FixtureQuery { text: "big picture of the migration plan",     label: Intent::Abstract },
-    FixtureQuery { text: "summarise findings from the review",    label: Intent::Abstract },
-    FixtureQuery { text: "overview of the architecture",          label: Intent::Abstract },
-    FixtureQuery { text: "what are recurring patterns",           label: Intent::Abstract },
-
+    FixtureQuery {
+        text: "summarize our work on retrieval",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "give me an overview of the codebase",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "what have i been working on",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "themes in recent journal entries",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "patterns in my reading habits",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "trends across the data set",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "what has been keeping me busy",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "high-level summary of the project",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "big picture of the migration plan",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "summarise findings from the review",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "overview of the architecture",
+        label: Intent::Abstract,
+    },
+    FixtureQuery {
+        text: "what are recurring patterns",
+        label: Intent::Abstract,
+    },
     // -- Affective (12) — affect vocabulary per `AFFECT_SEEDS` --
-    FixtureQuery { text: "memories that felt joyful",             label: Intent::Affective },
-    FixtureQuery { text: "moments where i was anxious",           label: Intent::Affective },
-    FixtureQuery { text: "times i felt proud",                    label: Intent::Affective },
-    FixtureQuery { text: "things that made me sad",               label: Intent::Affective },
-    FixtureQuery { text: "what makes me feel calm",               label: Intent::Affective },
-    FixtureQuery { text: "stressful situations from the journal", label: Intent::Affective },
-    FixtureQuery { text: "memories of frustration with tools",    label: Intent::Affective },
-    FixtureQuery { text: "moments of gratitude this season",      label: Intent::Affective },
-    FixtureQuery { text: "experiences of loneliness recorded",    label: Intent::Affective },
-    FixtureQuery { text: "afraid of the next deadline",           label: Intent::Affective },
-    FixtureQuery { text: "hopeful entries from the diary",        label: Intent::Affective },
-    FixtureQuery { text: "where i felt depressed",                label: Intent::Affective },
-
+    FixtureQuery {
+        text: "memories that felt joyful",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "moments where i was anxious",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "times i felt proud",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "things that made me sad",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "what makes me feel calm",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "stressful situations from the journal",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "memories of frustration with tools",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "moments of gratitude this season",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "experiences of loneliness recorded",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "afraid of the next deadline",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "hopeful entries from the diary",
+        label: Intent::Affective,
+    },
+    FixtureQuery {
+        text: "where i felt depressed",
+        label: Intent::Affective,
+    },
     // -- Hybrid (12) — ≥ 2 strong primary signals (entity + temporal,
     //    entity + abstract, temporal + affective, etc.) --
-    FixtureQuery { text: "what alice did yesterday",                  label: Intent::Hybrid },
-    FixtureQuery { text: "engram changes last week",                  label: Intent::Hybrid },
-    FixtureQuery { text: "summarize bob's work this month",           label: Intent::Hybrid },
-    FixtureQuery { text: "themes in carol's notes from last quarter", label: Intent::Hybrid },
-    FixtureQuery { text: "iss-021 commits last week",                 label: Intent::Hybrid },
-    FixtureQuery { text: "rustclaw deploys yesterday",                label: Intent::Hybrid },
-    FixtureQuery { text: "anxious notes about openai last month",     label: Intent::Hybrid },
-    FixtureQuery { text: "felt joyful working with anthropic last week", label: Intent::Hybrid },
-    FixtureQuery { text: "summarize stressful events from last year", label: Intent::Hybrid },
-    FixtureQuery { text: "patterns in monorepo activity last quarter", label: Intent::Hybrid },
-    FixtureQuery { text: "trends in dan's commits this year",         label: Intent::Hybrid },
-    FixtureQuery { text: "overview of potato projects updated last week", label: Intent::Hybrid },
+    FixtureQuery {
+        text: "what alice did yesterday",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "engram changes last week",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "summarize bob's work this month",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "themes in carol's notes from last quarter",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "iss-021 commits last week",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "rustclaw deploys yesterday",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "anxious notes about openai last month",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "felt joyful working with anthropic last week",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "summarize stressful events from last year",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "patterns in monorepo activity last quarter",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "trends in dan's commits this year",
+        label: Intent::Hybrid,
+    },
+    FixtureQuery {
+        text: "overview of potato projects updated last week",
+        label: Intent::Hybrid,
+    },
 ];
 
 /// Construct an `EntityLookup` that recognises the canonical entity tokens
@@ -522,7 +703,12 @@ fn fuse_and_rank_tie_break_is_memory_id_ascending() {
         .collect();
     assert_eq!(
         ids,
-        vec!["alpha".to_string(), "beta".into(), "mike".into(), "zeta".into()],
+        vec![
+            "alpha".to_string(),
+            "beta".into(),
+            "mike".into(),
+            "zeta".into()
+        ],
         "tie-break is not memory_id ascending — §5.4 invariant violated"
     );
 }
@@ -705,4 +891,3 @@ fn graph_query_with_entity_channel_stores_the_override() {
     assert_eq!(q3.limit, 10);
     assert_eq!(q3.namespace.as_deref(), Some("tenant-a"));
 }
-

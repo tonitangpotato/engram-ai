@@ -45,7 +45,9 @@ impl<'a> CandidateSelector<'a> {
         if !entities.is_empty() {
             let entity_query = entities.join(" OR ");
             // Use search_fts_ns which handles tokenization and FTS query building
-            let fts_results = self.storage.search_fts_ns(&entity_query, 20, Some("default"))?;
+            let fts_results = self
+                .storage
+                .search_fts_ns(&entity_query, 20, Some("default"))?;
             for record in fts_results {
                 candidate_ids.push(record.id);
             }
@@ -55,7 +57,10 @@ impl<'a> CandidateSelector<'a> {
         if let Some(emb) = embedding {
             // Get all embeddings and compute cosine similarity
             // Try the first available model
-            if let Ok(all_embeddings) = self.storage.get_embeddings_in_namespace(Some("default"), "*") {
+            if let Ok(all_embeddings) = self
+                .storage
+                .get_embeddings_in_namespace(Some("default"), "*")
+            {
                 // If wildcard didn't work, this will be empty, and that's fine
                 let mut scored: Vec<(String, f64)> = all_embeddings
                     .iter()

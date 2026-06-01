@@ -31,9 +31,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::clustering::{
-    cluster_with_infomap, ClusteringConfig, EdgeWeightStrategy,
-};
+use crate::clustering::{cluster_with_infomap, ClusteringConfig, EdgeWeightStrategy};
 use crate::knowledge_compile::candidates::CandidateMemory;
 
 /// One proto-cluster: a set of memory IDs the synthesizer will summarize
@@ -251,35 +249,27 @@ impl MutualKnnEdges {
         let mut per_node: Vec<Vec<(f64, usize)>> = vec![Vec::with_capacity(n - 1); n];
         for i in 0..n {
             for j in (i + 1)..n {
-                let sim = cosine_similarity(embeddings[i], embeddings[j])
-                    .ok_or_else(|| {
-                        ClusterError::InvalidInput(
-                            "cosine_similarity returned None during k-NN build"
-                                .to_string(),
-                        )
-                    })?;
+                let sim = cosine_similarity(embeddings[i], embeddings[j]).ok_or_else(|| {
+                    ClusterError::InvalidInput(
+                        "cosine_similarity returned None during k-NN build".to_string(),
+                    )
+                })?;
                 sims.insert((i, j), sim);
                 per_node[i].push((sim, j));
                 per_node[j].push((sim, i));
             }
         }
 
-        let mut top_k: Vec<std::collections::HashSet<usize>> =
-            Vec::with_capacity(n);
+        let mut top_k: Vec<std::collections::HashSet<usize>> = Vec::with_capacity(n);
         for mut neighbors in per_node {
             // Partial sort: we only need the top-k. select_nth_unstable
             // would be O(n) but the slice is already small and the
             // sort is over f64 which doesn't impl Ord — use partial_cmp
             // with a full sort_by for simplicity. n*log(n) per node is
             // O(n² log n) overall, dominated by the O(n²) sim pass.
-            neighbors.sort_by(|a, b| {
-                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            let set: std::collections::HashSet<usize> = neighbors
-                .into_iter()
-                .take(k)
-                .map(|(_, j)| j)
-                .collect();
+            neighbors.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            let set: std::collections::HashSet<usize> =
+                neighbors.into_iter().take(k).map(|(_, j)| j).collect();
             top_k.push(set);
         }
 
@@ -668,7 +658,10 @@ mod tests {
             total >= 40,
             "expected ≥40 of 50 candidates to land in some cluster, \
              got {total} (clusters: {:?})",
-            clusters.iter().map(|c| c.memory_ids.len()).collect::<Vec<_>>()
+            clusters
+                .iter()
+                .map(|c| c.memory_ids.len())
+                .collect::<Vec<_>>()
         );
     }
 }

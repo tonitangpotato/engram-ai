@@ -372,11 +372,8 @@ impl BackfillOrchestrator {
     ) where
         F: FnMut(&MigrationProgress),
     {
-        let mut p = MigrationProgress::new(
-            MigrationPhase::Backfill,
-            started_at,
-            total.unwrap_or(0),
-        );
+        let mut p =
+            MigrationProgress::new(MigrationPhase::Backfill, started_at, total.unwrap_or(0));
         p.records_processed = processed;
         p.records_succeeded = succeeded;
         p.records_failed = failed;
@@ -424,9 +421,7 @@ fn fetch_page(
              ORDER BY id ASC \
              LIMIT ?2",
         )
-        .map_err(|e| {
-            MigrationError::BackfillFatal(format!("prepare backfill cursor: {e}"))
-        })?;
+        .map_err(|e| MigrationError::BackfillFatal(format!("prepare backfill cursor: {e}")))?;
 
     let rows = stmt
         .query_map(params![after_id, limit as i64], |row| {
@@ -437,9 +432,7 @@ fn fetch_page(
                 created_at: row.get(3)?,
             })
         })
-        .map_err(|e| {
-            MigrationError::BackfillFatal(format!("execute backfill cursor: {e}"))
-        })?;
+        .map_err(|e| MigrationError::BackfillFatal(format!("execute backfill cursor: {e}")))?;
 
     let mut out = Vec::with_capacity(limit);
     for r in rows {
@@ -467,9 +460,7 @@ fn parse_started_at(s: &str) -> Result<chrono::DateTime<Utc>, MigrationError> {
 // need optional-row queries on this connection.
 #[allow(dead_code)]
 fn _keep_optional_extension_in_scope(conn: &Connection) {
-    let _ = conn
-        .query_row("SELECT 1", [], |_| Ok(()))
-        .optional();
+    let _ = conn.query_row("SELECT 1", [], |_| Ok(())).optional();
 }
 
 // ---------------------------------------------------------------------------
@@ -542,9 +533,9 @@ mod tests {
             self.seen.borrow_mut().push(record.id.clone());
             let succeeded = record.content.contains("ok");
             // Simulate the atomic processor txn: advance checkpoint here.
-            let tx = conn.transaction().map_err(|e| {
-                MigrationError::BackfillFatal(format!("test txn: {e}"))
-            })?;
+            let tx = conn
+                .transaction()
+                .map_err(|e| MigrationError::BackfillFatal(format!("test txn: {e}")))?;
             CheckpointStore::update_backfill_progress(
                 &tx,
                 &record.id,
@@ -553,9 +544,8 @@ mod tests {
                 if succeeded { 0 } else { 1 },
                 "2024-01-01T00:00:01Z",
             )?;
-            tx.commit().map_err(|e| {
-                MigrationError::BackfillFatal(format!("test commit: {e}"))
-            })?;
+            tx.commit()
+                .map_err(|e| MigrationError::BackfillFatal(format!("test commit: {e}")))?;
             Ok(if succeeded {
                 RecordOutcome::Succeeded {
                     entity_count: 1,
@@ -605,9 +595,7 @@ mod tests {
         let proc = FakeProcessor::new();
         let mut on_progress = |_: &MigrationProgress| {};
         let mut orch = BackfillOrchestrator::new(BackfillConfig::default());
-        let summary = orch
-            .run(&mut conn, &proc, None, &mut on_progress)
-            .unwrap();
+        let summary = orch.run(&mut conn, &proc, None, &mut on_progress).unwrap();
         assert_eq!(summary.records_processed, 3);
         assert_eq!(summary.records_succeeded, 2);
         assert_eq!(summary.records_failed, 1);
@@ -627,9 +615,7 @@ mod tests {
             on_record_failure: FailurePolicy::Stop,
             ..Default::default()
         });
-        let summary = orch
-            .run(&mut conn, &proc, None, &mut on_progress)
-            .unwrap();
+        let summary = orch.run(&mut conn, &proc, None, &mut on_progress).unwrap();
         assert_eq!(summary.records_processed, 2);
         assert_eq!(summary.records_succeeded, 1);
         assert_eq!(summary.records_failed, 1);
@@ -642,15 +628,8 @@ mod tests {
         let mut conn = fresh_db();
         init_state(&conn);
         // Pretend a previous run got through record 2.
-        CheckpointStore::update_backfill_progress(
-            &conn,
-            "m2",
-            2,
-            2,
-            0,
-            "2024-01-01T00:00:00Z",
-        )
-        .unwrap();
+        CheckpointStore::update_backfill_progress(&conn, "m2", 2, 2, 0, "2024-01-01T00:00:00Z")
+            .unwrap();
         insert_memory(&conn, "m1", "ok one"); // already done — skipped
         insert_memory(&conn, "m2", "ok two"); // already done — skipped
         insert_memory(&conn, "m3", "ok three"); // new
@@ -659,9 +638,7 @@ mod tests {
         let proc = FakeProcessor::new();
         let mut on_progress = |_: &MigrationProgress| {};
         let mut orch = BackfillOrchestrator::new(BackfillConfig::default());
-        let summary = orch
-            .run(&mut conn, &proc, None, &mut on_progress)
-            .unwrap();
+        let summary = orch.run(&mut conn, &proc, None, &mut on_progress).unwrap();
         // Only records 3 and 4 should be seen.
         assert_eq!(*proc.seen.borrow(), vec!["m3", "m4"]);
         // Counters accumulate across runs (GOAL-4.5).
@@ -677,9 +654,7 @@ mod tests {
         let proc = FakeProcessor::new();
         let mut on_progress = |_: &MigrationProgress| {};
         let mut orch = BackfillOrchestrator::new(BackfillConfig::default());
-        let summary = orch
-            .run(&mut conn, &proc, None, &mut on_progress)
-            .unwrap();
+        let summary = orch.run(&mut conn, &proc, None, &mut on_progress).unwrap();
         assert_eq!(summary.records_processed, 0);
         assert!(proc.seen.borrow().is_empty());
     }
@@ -714,10 +689,11 @@ mod tests {
             batch_size: 3,
             ..Default::default()
         });
-        let summary = orch
-            .run(&mut conn, &proc, None, &mut on_progress)
-            .unwrap();
+        let summary = orch.run(&mut conn, &proc, None, &mut on_progress).unwrap();
         assert_eq!(summary.records_processed, 7);
-        assert_eq!(*proc.seen.borrow(), vec!["m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
+        assert_eq!(
+            *proc.seen.borrow(),
+            vec!["m1", "m2", "m3", "m4", "m5", "m6", "m7"]
+        );
     }
 }

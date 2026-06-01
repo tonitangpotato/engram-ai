@@ -104,11 +104,7 @@ impl PrivacyGuard {
     pub fn new(audit_conn: Connection) -> Result<Self, KcError> {
         let guard = Self {
             audit_conn,
-            redact_entities: vec![
-                EntityType::Email,
-                EntityType::ApiKey,
-                EntityType::IpAddress,
-            ],
+            redact_entities: vec![EntityType::Email, EntityType::ApiKey, EntityType::IpAddress],
             redact_paths: true,
         };
         guard.init_audit_schema()?;
@@ -117,8 +113,7 @@ impl PrivacyGuard {
 
     /// Create for testing with in-memory DB.
     pub fn in_memory() -> Result<Self, KcError> {
-        let conn =
-            Connection::open_in_memory().map_err(|e| KcError::Storage(e.to_string()))?;
+        let conn = Connection::open_in_memory().map_err(|e| KcError::Storage(e.to_string()))?;
         Self::new(conn)
     }
 
@@ -186,11 +181,9 @@ impl PrivacyGuard {
         let mut count = 0;
 
         // Email pattern
-        let email_re =
-            Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap();
+        let email_re = Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap();
         // API key pattern (long hex/base64 strings)
-        let api_key_re =
-            Regex::new(r"(?:sk-|key-|api[_-]?key[=: ]+)[a-zA-Z0-9_-]{20,}").unwrap();
+        let api_key_re = Regex::new(r"(?:sk-|key-|api[_-]?key[=: ]+)[a-zA-Z0-9_-]{20,}").unwrap();
         // IP address pattern
         let ip_re = Regex::new(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b").unwrap();
         // File path pattern (Unix paths)
@@ -551,8 +544,14 @@ mod tests {
         let guard = PrivacyGuard::in_memory().unwrap();
         let topic_id = TopicId("multi-audit".to_owned());
 
-        for action in &[AuditAction::Query, AuditAction::Export, AuditAction::Inspect] {
-            guard.log_access(&topic_id, action, "user", &PrivacyLevel::Public, false).unwrap();
+        for action in &[
+            AuditAction::Query,
+            AuditAction::Export,
+            AuditAction::Inspect,
+        ] {
+            guard
+                .log_access(&topic_id, action, "user", &PrivacyLevel::Public, false)
+                .unwrap();
         }
 
         let entries = guard.query_audit_log(Some(&topic_id), 10).unwrap();
@@ -565,7 +564,15 @@ mod tests {
         let topic_id = TopicId("limit-audit".to_owned());
 
         for _ in 0..10 {
-            guard.log_access(&topic_id, &AuditAction::Query, "user", &PrivacyLevel::Public, false).unwrap();
+            guard
+                .log_access(
+                    &topic_id,
+                    &AuditAction::Query,
+                    "user",
+                    &PrivacyLevel::Public,
+                    false,
+                )
+                .unwrap();
         }
 
         let entries = guard.query_audit_log(Some(&topic_id), 3).unwrap();
@@ -576,8 +583,24 @@ mod tests {
     fn test_audit_log_no_topic_filter() {
         let guard = PrivacyGuard::in_memory().unwrap();
 
-        guard.log_access(&TopicId("a".into()), &AuditAction::Query, "user", &PrivacyLevel::Public, false).unwrap();
-        guard.log_access(&TopicId("b".into()), &AuditAction::Export, "user", &PrivacyLevel::Private, false).unwrap();
+        guard
+            .log_access(
+                &TopicId("a".into()),
+                &AuditAction::Query,
+                "user",
+                &PrivacyLevel::Public,
+                false,
+            )
+            .unwrap();
+        guard
+            .log_access(
+                &TopicId("b".into()),
+                &AuditAction::Export,
+                "user",
+                &PrivacyLevel::Private,
+                false,
+            )
+            .unwrap();
 
         // No topic filter → returns all
         let entries = guard.query_audit_log(None, 10).unwrap();

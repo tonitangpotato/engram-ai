@@ -125,8 +125,7 @@ pub fn init_graph_tables(conn: &Connection) -> Result<(), GraphError> {
     // NOT EXISTS` and `INSERT OR IGNORE`, so calling here AND from
     // `Storage::new` on the same connection is a no-op the second
     // time around.
-    crate::storage::Storage::migrate_v04_substrate(conn)
-        .map_err(GraphError::Sqlite)?;
+    crate::storage::Storage::migrate_v04_substrate(conn).map_err(GraphError::Sqlite)?;
 
     Ok(())
 }
@@ -142,10 +141,7 @@ const MEMORIES_ALTERS: &[(&str, &str)] = &[
         "entity_ids",
         "ALTER TABLE memories ADD COLUMN entity_ids TEXT",
     ),
-    (
-        "edge_ids",
-        "ALTER TABLE memories ADD COLUMN edge_ids TEXT",
-    ),
+    ("edge_ids", "ALTER TABLE memories ADD COLUMN edge_ids TEXT"),
 ];
 
 /// Additive columns on `graph_entities` added after the initial v0.3 schema.
@@ -634,10 +630,10 @@ mod tests {
         let cols: Vec<(String, String, i64, Option<String>)> = stmt
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, String>(1)?,                  // name
-                    row.get::<_, String>(2)?,                  // type
-                    row.get::<_, i64>(3)?,                     // notnull
-                    row.get::<_, Option<String>>(4)?,          // dflt_value
+                    row.get::<_, String>(1)?,         // name
+                    row.get::<_, String>(2)?,         // type
+                    row.get::<_, i64>(3)?,            // notnull
+                    row.get::<_, Option<String>>(4)?, // dflt_value
                 ))
             })
             .unwrap()
@@ -661,7 +657,10 @@ mod tests {
             .find(|c| c.0 == "merged_into")
             .expect("merged_into column missing");
         assert_eq!(merged.1, "BLOB", "merged_into must be BLOB (UUID)");
-        assert_eq!(merged.2, 0, "merged_into must be nullable (None on non-losers)");
+        assert_eq!(
+            merged.2, 0,
+            "merged_into must be nullable (None on non-losers)"
+        );
     }
 
     #[test]
@@ -821,10 +820,7 @@ mod tests {
                       1.0, 'manual', 1.0)",
             [],
         );
-        assert!(
-            res.is_err(),
-            "valid_from > valid_to should violate CHECK"
-        );
+        assert!(res.is_err(), "valid_from > valid_to should violate CHECK");
 
         // Good: valid_from <= valid_to (boundary equal is allowed).
         let ok = conn.execute(

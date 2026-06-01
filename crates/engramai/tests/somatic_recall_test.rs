@@ -1,4 +1,9 @@
-#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+#![allow(
+    deprecated,
+    clippy::field_reassign_with_default,
+    clippy::useless_vec,
+    clippy::redundant_closure
+)]
 
 //! Integration tests for Somatic Marker → Recall pipeline.
 //!
@@ -33,8 +38,14 @@ fn somatic_scores_silent_for_novel_situation() {
     let mut mem = memory_with_somatic(0.1);
 
     // Add a memory so recall has something to work with
-    mem.add("test memory about cats", MemoryType::Factual, Some(0.5), Some("test"), None)
-        .unwrap();
+    mem.add(
+        "test memory about cats",
+        MemoryType::Factual,
+        Some(0.5),
+        Some("test"),
+        None,
+    )
+    .unwrap();
 
     // The somatic cache is empty — no markers exist.
     // Recall should still work, somatic channel contributes 0.
@@ -67,8 +78,8 @@ fn somatic_marker_boosts_emotional_memories() {
     // Prime the somatic marker with a strong positive valence for "potato" queries.
     // We do this by directly accessing the interoceptive hub.
     {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         "potato".hash(&mut hasher);
         let hash = hasher.finish();
@@ -145,8 +156,8 @@ fn encounter_count_builds_somatic_confidence() {
 
     // Prime marker with repeated encounters to build confidence
     {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         "recurring event".hash(&mut hasher);
         let hash = hasher.finish();
@@ -193,8 +204,8 @@ fn zero_somatic_weight_disables_channel() {
 
     // Prime somatic marker with strong signal
     {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         "trust".hash(&mut hasher);
         let hash = hasher.finish();
@@ -259,10 +270,22 @@ fn somatic_marker_new_has_correct_defaults() {
 fn hub_somatic_cache_persists_across_recalls() {
     let mut mem = memory_with_somatic(0.1);
 
-    mem.add("emotional memory alpha", MemoryType::Emotional, Some(0.8), Some("test"), None)
-        .unwrap();
-    mem.add("factual memory beta", MemoryType::Factual, Some(0.4), Some("test"), None)
-        .unwrap();
+    mem.add(
+        "emotional memory alpha",
+        MemoryType::Emotional,
+        Some(0.8),
+        Some("test"),
+        None,
+    )
+    .unwrap();
+    mem.add(
+        "factual memory beta",
+        MemoryType::Factual,
+        Some(0.4),
+        Some("test"),
+        None,
+    )
+    .unwrap();
 
     // First recall creates somatic marker
     let _ = mem.recall("alpha beta", 5, None, None).unwrap();
@@ -283,10 +306,22 @@ fn hub_somatic_cache_persists_across_recalls() {
 fn different_queries_create_different_markers() {
     let mut mem = memory_with_somatic(0.1);
 
-    mem.add("memory about cats", MemoryType::Factual, Some(0.5), Some("test"), None)
-        .unwrap();
-    mem.add("memory about dogs", MemoryType::Factual, Some(0.5), Some("test"), None)
-        .unwrap();
+    mem.add(
+        "memory about cats",
+        MemoryType::Factual,
+        Some(0.5),
+        Some("test"),
+        None,
+    )
+    .unwrap();
+    mem.add(
+        "memory about dogs",
+        MemoryType::Factual,
+        Some(0.5),
+        Some("test"),
+        None,
+    )
+    .unwrap();
 
     let _ = mem.recall("cats", 5, None, None).unwrap();
     let cache_after_cats = mem.interoceptive_hub().marker_count();
@@ -330,8 +365,8 @@ fn high_importance_factual_gets_partial_somatic_boost() {
 
     // Prime somatic marker
     {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         "caching".hash(&mut hasher);
         let hash = hasher.finish();
@@ -357,8 +392,14 @@ fn high_importance_factual_gets_partial_somatic_boost() {
 fn recall_with_somatic_produces_valid_confidence() {
     let mut mem = memory_with_somatic(0.1);
 
-    mem.add("test memory for confidence check", MemoryType::Factual, Some(0.5), Some("test"), None)
-        .unwrap();
+    mem.add(
+        "test memory for confidence check",
+        MemoryType::Factual,
+        Some(0.5),
+        Some("test"),
+        None,
+    )
+    .unwrap();
 
     let results = mem.recall("test memory confidence", 5, None, None).unwrap();
     for r in &results {

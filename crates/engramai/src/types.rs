@@ -20,7 +20,10 @@ pub enum Permission {
 impl Permission {
     /// Check if this permission includes read access.
     pub fn can_read(&self) -> bool {
-        matches!(self, Permission::Read | Permission::Write | Permission::Admin)
+        matches!(
+            self,
+            Permission::Read | Permission::Write | Permission::Admin
+        )
     }
 
     /// Check if this permission includes write access.
@@ -168,7 +171,7 @@ pub struct MemoryRecord {
     pub memory_type: MemoryType,
     /// Current layer
     pub layer: MemoryLayer,
-    
+
     /// Creation timestamp — wall-clock time when this row entered the DB.
     /// **Drives lifecycle/decay** (Ebbinghaus age, recency scoring).
     /// Always `Utc::now()` at insert time. Never overridden by callers.
@@ -184,34 +187,34 @@ pub struct MemoryRecord {
     pub occurred_at: Option<DateTime<Utc>>,
     /// All access timestamps (for ACT-R base-level activation)
     pub access_times: Vec<DateTime<Utc>>,
-    
+
     /// Working memory strength (hippocampal trace, fast decay)
     pub working_strength: f64,
     /// Core memory strength (neocortical trace, slow decay)
     pub core_strength: f64,
-    
+
     /// Importance/emotional modulation (0-1)
     pub importance: f64,
     /// Pinned memories never decay
     pub pinned: bool,
-    
+
     /// Number of consolidation cycles
     pub consolidation_count: i32,
     /// Last consolidation timestamp
     pub last_consolidated: Option<DateTime<Utc>>,
-    
+
     /// Source identifier
     pub source: String,
-    
+
     /// Contradiction links (legacy, penalty-based)
     pub contradicts: Option<String>,
     pub contradicted_by: Option<String>,
-    
+
     /// Supersession link (filter-based).
     /// If set, this memory is excluded from all recall results.
     /// Contains the ID of the memory that replaced this one.
     pub superseded_by: Option<String>,
-    
+
     /// Optional structured metadata (JSON)
     pub metadata: Option<serde_json::Value>,
 }
@@ -466,7 +469,10 @@ mod derived_temporal_tests {
         let resolved = "~2020 (owned for 3 years as of 2023-03-27)";
         let mut dims = Dimensions::minimal("Audrey adopted Pepper, Precious and Panda").unwrap();
         dims.temporal = Some(TemporalMark::Vague(resolved.to_string()));
-        let rec = record_with(Some(v2_metadata(&dims)), "Audrey adopted Pepper, Precious and Panda");
+        let rec = record_with(
+            Some(v2_metadata(&dims)),
+            "Audrey adopted Pepper, Precious and Panda",
+        );
 
         match rec.derived_temporal_mark() {
             Some(TemporalMark::Vague(s)) => assert_eq!(s, resolved),
@@ -480,11 +486,15 @@ mod derived_temporal_tests {
     #[test]
     fn derived_mark_returns_typed_day_variant() {
         let mut dims = Dimensions::minimal("event content").unwrap();
-        dims.temporal = Some(TemporalMark::Day(NaiveDate::from_ymd_opt(2024, 1, 10).unwrap()));
+        dims.temporal = Some(TemporalMark::Day(
+            NaiveDate::from_ymd_opt(2024, 1, 10).unwrap(),
+        ));
         let rec = record_with(Some(v2_metadata(&dims)), "event content");
 
         match rec.derived_temporal_mark() {
-            Some(TemporalMark::Day(d)) => assert_eq!(d, NaiveDate::from_ymd_opt(2024, 1, 10).unwrap()),
+            Some(TemporalMark::Day(d)) => {
+                assert_eq!(d, NaiveDate::from_ymd_opt(2024, 1, 10).unwrap())
+            }
             other => panic!("expected Day, got {other:?}"),
         }
         // typed variants render as ISO dates, not provenance strings.

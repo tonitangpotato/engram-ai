@@ -44,7 +44,7 @@ impl EmpathyTrend {
     pub fn needs_soul_update(&self) -> bool {
         self.count >= MIN_EVENTS_FOR_SUGGESTION && self.valence < NEGATIVE_THRESHOLD
     }
-    
+
     /// Describe the trend in human-readable terms.
     pub fn describe(&self) -> String {
         let sentiment = if self.valence > 0.3 {
@@ -54,7 +54,7 @@ impl EmpathyTrend {
         } else {
             "neutral"
         };
-        
+
         format!(
             "{}: {} trend ({:.2} avg over {} events)",
             self.domain, sentiment, self.valence, self.count
@@ -73,7 +73,7 @@ impl<'a> EmpathyAccumulator<'a> {
         Self::ensure_table(conn)?;
         Ok(Self { conn })
     }
-    
+
     /// Ensure the emotional_trends table exists.
     fn ensure_table(conn: &Connection) -> Result<(), rusqlite::Error> {
         conn.execute_batch(
@@ -88,7 +88,7 @@ impl<'a> EmpathyAccumulator<'a> {
         )?;
         Ok(())
     }
-    
+
     /// Record an emotional event for a domain.
     ///
     /// Updates the running average valence for the domain.
@@ -96,22 +96,23 @@ impl<'a> EmpathyAccumulator<'a> {
     pub fn record_emotion(&self, domain: &str, valence: f64) -> Result<(), rusqlite::Error> {
         // Clamp valence to valid range
         let valence = valence.clamp(-1.0, 1.0);
-        
+
         // Try to get existing trend
-        let existing: Option<(f64, i32)> = self.conn
+        let existing: Option<(f64, i32)> = self
+            .conn
             .query_row(
                 "SELECT valence, count FROM emotional_trends WHERE domain = ?",
                 params![domain],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        
+
         match existing {
             Some((old_valence, count)) => {
                 // Update running average: new_avg = (old_avg * count + new_value) / (count + 1)
                 let new_count = count + 1;
                 let new_valence = (old_valence * count as f64 + valence) / new_count as f64;
-                
+
                 self.conn.execute(
                     "UPDATE emotional_trends SET valence = ?, count = ?, last_updated = ? WHERE domain = ?",
                     params![new_valence, new_count, now_f64(), domain],
@@ -125,10 +126,10 @@ impl<'a> EmpathyAccumulator<'a> {
                 )?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Get the emotional trend for a specific domain.
     pub fn get_trend(&self, domain: &str) -> Result<Option<EmpathyTrend>, rusqlite::Error> {
         self.conn
@@ -147,13 +148,13 @@ impl<'a> EmpathyAccumulator<'a> {
             )
             .optional()
     }
-    
+
     /// Get all empathy trends.
     pub fn get_all_trends(&self) -> Result<Vec<EmpathyTrend>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT domain, valence, count, last_updated FROM emotional_trends ORDER BY count DESC"
+            "SELECT domain, valence, count, last_updated FROM emotional_trends ORDER BY count DESC",
         )?;
-        
+
         let rows = stmt.query_map([], |row| {
             let last_updated_f64: f64 = row.get(3)?;
             Ok(EmpathyTrend {
@@ -163,16 +164,16 @@ impl<'a> EmpathyAccumulator<'a> {
                 last_updated: f64_to_datetime(last_updated_f64),
             })
         })?;
-        
+
         rows.collect()
     }
-    
+
     /// Get all trends that suggest SOUL updates.
     pub fn get_trends_needing_update(&self) -> Result<Vec<EmpathyTrend>, rusqlite::Error> {
         let all = self.get_all_trends()?;
         Ok(all.into_iter().filter(|t| t.needs_soul_update()).collect())
     }
-    
+
     /// Reset a domain's trend (after SOUL has been updated).
     pub fn reset_trend(&self, domain: &str) -> Result<(), rusqlite::Error> {
         self.conn.execute(
@@ -181,7 +182,7 @@ impl<'a> EmpathyAccumulator<'a> {
         )?;
         Ok(())
     }
-    
+
     /// Decay all trends by a factor (used during consolidation).
     /// This moves trends toward neutral over time.
     pub fn decay_trends(&self, factor: f64) -> Result<usize, rusqlite::Error> {
@@ -205,9 +206,8 @@ impl<'a> EmpathyAccumulator<'a> {
         let trend = self.get_trend(domain)?;
         Ok(trend.map(|t| {
             // Arousal based on how extreme the valence + how many events.
-            let arousal = (t.valence.abs() * 0.7
-                + (t.count as f64 / 20.0).min(1.0) * 0.3)
-                .clamp(0.0, 1.0);
+            let arousal =
+                (t.valence.abs() * 0.7 + (t.count as f64 / 20.0).min(1.0) * 0.3).clamp(0.0, 1.0);
 
             InteroceptiveSignal::new(
                 SignalSource::Accumulator,
@@ -222,73 +222,73 @@ impl<'a> EmpathyAccumulator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_record_and_get_emotion() {
         let conn = Connection::open_in_memory().unwrap();
         let acc = EmpathyAccumulator::new(&conn).unwrap();
-        
+
         // Record some emotions
         acc.record_emotion("coding", 0.8).unwrap();
         acc.record_emotion("coding", 0.6).unwrap();
         acc.record_emotion("coding", 0.4).unwrap();
-        
+
         let trend = acc.get_trend("coding").unwrap().unwrap();
         assert_eq!(trend.count, 3);
         // Average of 0.8, 0.6, 0.4 = 0.6
         assert!((trend.valence - 0.6).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_negative_trend_flags_update() {
         let conn = Connection::open_in_memory().unwrap();
         let acc = EmpathyAccumulator::new(&conn).unwrap();
-        
+
         // Record many negative emotions
         for _ in 0..12 {
             acc.record_emotion("debugging", -0.7).unwrap();
         }
-        
+
         let trend = acc.get_trend("debugging").unwrap().unwrap();
         assert!(trend.needs_soul_update());
         assert!(trend.valence < NEGATIVE_THRESHOLD);
     }
-    
+
     #[test]
     fn test_get_all_trends() {
         let conn = Connection::open_in_memory().unwrap();
         let acc = EmpathyAccumulator::new(&conn).unwrap();
-        
+
         acc.record_emotion("coding", 0.5).unwrap();
         acc.record_emotion("writing", -0.3).unwrap();
         acc.record_emotion("research", 0.8).unwrap();
-        
+
         let trends = acc.get_all_trends().unwrap();
         assert_eq!(trends.len(), 3);
     }
-    
+
     #[test]
     fn test_reset_trend() {
         let conn = Connection::open_in_memory().unwrap();
         let acc = EmpathyAccumulator::new(&conn).unwrap();
-        
+
         acc.record_emotion("test", 0.5).unwrap();
         assert!(acc.get_trend("test").unwrap().is_some());
-        
+
         acc.reset_trend("test").unwrap();
         assert!(acc.get_trend("test").unwrap().is_none());
     }
-    
+
     #[test]
     fn test_valence_clamping() {
         let conn = Connection::open_in_memory().unwrap();
         let acc = EmpathyAccumulator::new(&conn).unwrap();
-        
+
         // Values outside range should be clamped
         acc.record_emotion("extreme", 5.0).unwrap();
         let trend = acc.get_trend("extreme").unwrap().unwrap();
         assert_eq!(trend.valence, 1.0);
-        
+
         acc.record_emotion("extreme", -10.0).unwrap();
         let trend = acc.get_trend("extreme").unwrap().unwrap();
         // Average of 1.0 and -1.0 = 0.0
@@ -305,7 +305,10 @@ mod tests {
         }
 
         let sig = acc.to_signal("coding").unwrap().unwrap();
-        assert!(matches!(sig.source, crate::interoceptive::SignalSource::Accumulator));
+        assert!(matches!(
+            sig.source,
+            crate::interoceptive::SignalSource::Accumulator
+        ));
         assert_eq!(sig.domain.as_deref(), Some("coding"));
         assert!(sig.valence > 0.5, "valence was {}", sig.valence);
         assert!(sig.arousal > 0.0); // positive arousal from |valence| + event count

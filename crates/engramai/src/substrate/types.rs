@@ -119,9 +119,12 @@ pub struct UnknownEdgeKind(pub String);
 
 impl fmt::Display for UnknownEdgeKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown edge_kind {:?} (expected one of: structural, \
+        write!(
+            f,
+            "unknown edge_kind {:?} (expected one of: structural, \
                    associative, containment, provenance, temporal, supersession)",
-               self.0)
+            self.0
+        )
     }
 }
 
@@ -131,11 +134,11 @@ impl FromStr for EdgeKind {
     type Err = UnknownEdgeKind;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "structural"   => EdgeKind::Structural,
-            "associative"  => EdgeKind::Associative,
-            "containment"  => EdgeKind::Containment,
-            "provenance"   => EdgeKind::Provenance,
-            "temporal"     => EdgeKind::Temporal,
+            "structural" => EdgeKind::Structural,
+            "associative" => EdgeKind::Associative,
+            "containment" => EdgeKind::Containment,
+            "provenance" => EdgeKind::Provenance,
+            "temporal" => EdgeKind::Temporal,
             "supersession" => EdgeKind::Supersession,
             other => return Err(UnknownEdgeKind(other.to_string())),
         })
@@ -203,13 +206,13 @@ pub enum MemoryType {
 impl MemoryType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            MemoryType::Factual    => "factual",
-            MemoryType::Episodic   => "episodic",
+            MemoryType::Factual => "factual",
+            MemoryType::Episodic => "episodic",
             MemoryType::Relational => "relational",
-            MemoryType::Emotional  => "emotional",
+            MemoryType::Emotional => "emotional",
             MemoryType::Procedural => "procedural",
-            MemoryType::Opinion    => "opinion",
-            MemoryType::Causal     => "causal",
+            MemoryType::Opinion => "opinion",
+            MemoryType::Causal => "causal",
         }
     }
 }
@@ -218,13 +221,13 @@ impl FromStr for MemoryType {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "factual"    => MemoryType::Factual,
-            "episodic"   => MemoryType::Episodic,
+            "factual" => MemoryType::Factual,
+            "episodic" => MemoryType::Episodic,
             "relational" => MemoryType::Relational,
-            "emotional"  => MemoryType::Emotional,
+            "emotional" => MemoryType::Emotional,
             "procedural" => MemoryType::Procedural,
-            "opinion"    => MemoryType::Opinion,
-            "causal"     => MemoryType::Causal,
+            "opinion" => MemoryType::Opinion,
+            "causal" => MemoryType::Causal,
             other => return Err(format!("unknown memory_type {other:?}")),
         })
     }
@@ -267,17 +270,17 @@ pub struct Node {
     pub attributes: Value,
 
     // --- vector ---
-    pub embedding: Option<Vec<u8>>,        // raw bytes; encoding is the
-                                            // writer's contract
-    pub embedding_model: Option<String>,    // NULL iff embedding NULL
+    pub embedding: Option<Vec<u8>>, // raw bytes; encoding is the
+    // writer's contract
+    pub embedding_model: Option<String>, // NULL iff embedding NULL
 
     // --- temporal (bi-temporal) ---
-    pub occurred_at: Option<f64>,           // event time (memory)
-    pub valid_from: Option<f64>,            // truth window start
-    pub valid_to: Option<f64>,              // truth window end
-    pub created_at: f64,                    // ingest wall-clock
+    pub occurred_at: Option<f64>, // event time (memory)
+    pub valid_from: Option<f64>,  // truth window start
+    pub valid_to: Option<f64>,    // truth window end
+    pub created_at: f64,          // ingest wall-clock
     pub updated_at: f64,
-    pub first_seen: Option<f64>,            // entity observation window
+    pub first_seen: Option<f64>, // entity observation window
     pub last_seen: Option<f64>,
 
     // --- decay / activation / strength ---
@@ -286,12 +289,12 @@ pub struct Node {
     pub core_strength: f64,
 
     // --- supersession (lifecycle) ---
-    pub superseded_by: Option<String>,      // node id
+    pub superseded_by: Option<String>, // node id
     pub deleted_at: Option<f64>,
 
     // --- provenance / agent context ---
     pub agent_id: Option<String>,
-    pub source_run_id: Option<String>,      // pipeline_runs.id
+    pub source_run_id: Option<String>, // pipeline_runs.id
 
     // --- fts surrogate (§3.3) ---
     pub fts_rowid: i64,
@@ -311,9 +314,11 @@ impl Node {
     /// corrupt the row otherwise).
     pub fn set_typed_attributes(&mut self, typed: NodeAttributes) {
         assert_eq!(
-            typed.kind_str(), self.node_kind.as_str(),
+            typed.kind_str(),
+            self.node_kind.as_str(),
             "set_typed_attributes: typed view kind {:?} ≠ node_kind {:?}",
-            typed.kind_str(), self.node_kind.as_str()
+            typed.kind_str(),
+            self.node_kind.as_str()
         );
         self.attributes = typed.into_json();
     }
@@ -336,12 +341,12 @@ pub struct Edge {
     pub id: String,
     pub source_id: String,
     pub target_id: Option<String>,
-    pub target_literal: Option<Value>,      // JSON when present
+    pub target_literal: Option<Value>, // JSON when present
 
     // --- typing ---
     pub edge_kind: EdgeKind,
-    pub predicate_kind: String,             // 'canonical' | 'proposed'
-    pub predicate: String,                  // within-kind discriminator
+    pub predicate_kind: String, // 'canonical' | 'proposed'
+    pub predicate: String,      // within-kind discriminator
 
     // --- payload ---
     pub summary: String,
@@ -357,14 +362,14 @@ pub struct Edge {
 
     // --- supersession ---
     pub invalidated_at: Option<f64>,
-    pub invalidated_by: Option<String>,     // edge id
-    pub supersedes: Option<String>,         // edge id
+    pub invalidated_by: Option<String>, // edge id
+    pub supersedes: Option<String>,     // edge id
 
     // --- affect / provenance ---
     pub agent_affect: Option<String>,
     pub source_run_id: Option<String>,
-    pub source_memory_id: Option<String>,   // node id (memory)
-    pub resolution_method: String,          // 'direct' | …
+    pub source_memory_id: Option<String>, // node id (memory)
+    pub resolution_method: String,        // 'direct' | …
 
     // --- namespace + audit ---
     pub namespace: String,
@@ -390,9 +395,11 @@ impl Edge {
 
     pub fn set_typed_attributes(&mut self, typed: EdgeAttributes) {
         assert_eq!(
-            typed.kind_str(), self.edge_kind.as_str(),
+            typed.kind_str(),
+            self.edge_kind.as_str(),
             "set_typed_attributes: typed view kind {:?} ≠ edge_kind {:?}",
-            typed.kind_str(), self.edge_kind.as_str()
+            typed.kind_str(),
+            self.edge_kind.as_str()
         );
         self.attributes = typed.into_json();
     }
@@ -414,7 +421,10 @@ pub enum NodeAttributes {
     /// Round-trips unknown / not-yet-typed kinds as raw JSON. The string
     /// records the kind for round-tripping; the value is the verbatim
     /// `attributes` blob.
-    Unknown { kind: String, attributes: Value },
+    Unknown {
+        kind: String,
+        attributes: Value,
+    },
 }
 
 impl NodeAttributes {
@@ -423,18 +433,18 @@ impl NodeAttributes {
     /// preserving the JSON verbatim.
     pub fn from_json(kind: &NodeKind, attributes: &Value) -> Self {
         match kind {
-            NodeKind::Memory => match serde_json::from_value::<MemoryAttributes>(
-                attributes.clone(),
-            ) {
-                Ok(memory) => NodeAttributes::Memory(memory),
-                // Malformed memory attributes round-trip as Unknown rather
-                // than panicking — the writer is the layer that enforces
-                // attribute schemas (Phase B).
-                Err(_) => NodeAttributes::Unknown {
-                    kind: kind.as_str().to_string(),
-                    attributes: attributes.clone(),
-                },
-            },
+            NodeKind::Memory => {
+                match serde_json::from_value::<MemoryAttributes>(attributes.clone()) {
+                    Ok(memory) => NodeAttributes::Memory(memory),
+                    // Malformed memory attributes round-trip as Unknown rather
+                    // than panicking — the writer is the layer that enforces
+                    // attribute schemas (Phase B).
+                    Err(_) => NodeAttributes::Unknown {
+                        kind: kind.as_str().to_string(),
+                        attributes: attributes.clone(),
+                    },
+                }
+            }
             other => NodeAttributes::Unknown {
                 kind: other.as_str().to_string(),
                 attributes: attributes.clone(),
@@ -445,8 +455,9 @@ impl NodeAttributes {
     /// Serialize the typed view back to the JSON form stored in SQL.
     pub fn into_json(self) -> Value {
         match self {
-            NodeAttributes::Memory(m) => serde_json::to_value(m)
-                .expect("MemoryAttributes serializes to JSON"),
+            NodeAttributes::Memory(m) => {
+                serde_json::to_value(m).expect("MemoryAttributes serializes to JSON")
+            }
             NodeAttributes::Unknown { attributes, .. } => attributes,
         }
     }
@@ -545,8 +556,14 @@ mod tests {
 
     #[test]
     fn edge_kind_round_trips_all_six() {
-        for s in &["structural", "associative", "containment",
-                   "provenance", "temporal", "supersession"] {
+        for s in &[
+            "structural",
+            "associative",
+            "containment",
+            "provenance",
+            "temporal",
+            "supersession",
+        ] {
             let k: EdgeKind = s.parse().unwrap();
             assert_eq!(k.as_str(), *s);
         }
@@ -573,8 +590,15 @@ mod tests {
 
     #[test]
     fn memory_type_round_trips_all_seven() {
-        for s in &["factual", "episodic", "relational", "emotional",
-                   "procedural", "opinion", "causal"] {
+        for s in &[
+            "factual",
+            "episodic",
+            "relational",
+            "emotional",
+            "procedural",
+            "opinion",
+            "causal",
+        ] {
             let t: MemoryType = s.parse().unwrap();
             assert_eq!(t.as_str(), *s);
         }

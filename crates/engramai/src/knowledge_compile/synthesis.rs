@@ -230,7 +230,8 @@ where
         // Topic entity (mirror row required by `upsert_topic`'s FK).
         // Pass `topic_uuid` directly so the entity row's id matches the
         // topic row's id (ISS-076 hygiene: single mint site).
-        let mut topic_entity = Entity::new(topic_uuid, summary.title.clone(), EntityKind::Topic, now);
+        let mut topic_entity =
+            Entity::new(topic_uuid, summary.title.clone(), EntityKind::Topic, now);
         topic_entity.summary = summary.summary.clone();
         topic_entity.embedding = Some(embedding.clone());
 
@@ -299,8 +300,8 @@ where
             // via `list_failed_episodes`. If THIS write also fails we log
             // the secondary error and surface the original to the caller.
             let now = Utc::now();
-            let occurred_secs = now.timestamp() as f64
-                + (now.timestamp_subsec_nanos() as f64) / 1e9;
+            let occurred_secs =
+                now.timestamp() as f64 + (now.timestamp_subsec_nanos() as f64) / 1e9;
             let failure = ExtractionFailure {
                 id: Uuid::new_v4(),
                 // No episode anchor for compile-time failures (clusters

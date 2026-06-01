@@ -57,8 +57,7 @@ fn store_accepts_leading_dash_payload_via_content_flag() {
         .expect("spawn recall");
     assert!(recall.status.success());
 
-    let arr: serde_json::Value =
-        serde_json::from_slice(&recall.stdout).expect("json");
+    let arr: serde_json::Value = serde_json::from_slice(&recall.stdout).expect("json");
     let any_match = arr
         .as_array()
         .map(|a| {
@@ -151,12 +150,7 @@ fn store_requires_either_positional_or_flag() {
     let db = dir.path().join("iss082-missing.db");
 
     let out = Command::new(engram_bin())
-        .args([
-            "-d",
-            db.to_str().unwrap(),
-            "store",
-            "--no-graph",
-        ])
+        .args(["-d", db.to_str().unwrap(), "store", "--no-graph"])
         .output()
         .expect("spawn store");
 

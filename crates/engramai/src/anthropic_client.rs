@@ -3,8 +3,8 @@
 //! Centralizes header construction, static token provider, and API URL constant
 //! used by `extractor.rs`, `triple_extractor.rs`, and `HaikuIntentClassifier`.
 
-use reqwest::header::HeaderMap;
 use crate::extractor::TokenProvider;
+use reqwest::header::HeaderMap;
 
 /// Default Anthropic API URL.
 pub const DEFAULT_ANTHROPIC_API_URL: &str = "https://api.anthropic.com";

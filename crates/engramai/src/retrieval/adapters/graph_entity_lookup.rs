@@ -276,8 +276,7 @@ mod tests {
         // Build the store fresh, write each row in its own namespace,
         // re-targeting via `with_namespace` (which consumes self) and
         // collecting back via `std::mem::replace`-free chaining.
-        let mut store: SqliteGraphStore<'static> =
-            SqliteGraphStore::new(leaked);
+        let mut store: SqliteGraphStore<'static> = SqliteGraphStore::new(leaked);
         let now = Utc::now();
         for (ns, canonical, alias) in rows {
             // Switch namespace by consuming and rebinding. We do it
@@ -285,20 +284,11 @@ mod tests {
             // `self`. We never observe the store in an in-between
             // state because the rebind is single-statement.
             store = store.with_namespace((*ns).to_string());
-            let entity = Entity::new_random_id(
-                (*canonical).to_string(),
-                EntityKind::Person,
-                now,
-            );
+            let entity = Entity::new_random_id((*canonical).to_string(), EntityKind::Person, now);
             store.insert_entity(&entity).expect("insert_entity");
             if let Some(a) = alias {
                 store
-                    .upsert_alias(
-                        &normalize_alias(a),
-                        a,
-                        entity.id,
-                        None,
-                    )
+                    .upsert_alias(&normalize_alias(a), a, entity.id, None)
                     .expect("upsert_alias");
             }
         }
@@ -315,8 +305,7 @@ mod tests {
 
     #[test]
     fn unknown_token_returns_none() {
-        let store =
-            populated_store(&[("default", "Caroline", Some("caroline"))]);
+        let store = populated_store(&[("default", "Caroline", Some("caroline"))]);
         let lookup = GraphEntityLookup::new(store);
         assert_eq!(lookup.lookup("xyzzy"), EntityMatch::None);
     }
@@ -325,8 +314,7 @@ mod tests {
     fn exact_canonical_match_returns_exact() {
         // canonical_name = "caroline" so normalize(token) ==
         // normalize(canonical_name) → Exact.
-        let store =
-            populated_store(&[("default", "caroline", Some("caroline"))]);
+        let store = populated_store(&[("default", "caroline", Some("caroline"))]);
         let lookup = GraphEntityLookup::new(store);
         assert_eq!(lookup.lookup("caroline"), EntityMatch::Exact);
         // Case-insensitive normalization.
@@ -337,11 +325,7 @@ mod tests {
     fn alias_only_match_returns_alias() {
         // Token "caroline" matches the alias, but the canonical_name
         // "Caroline Doyle" doesn't normalize to "caroline" → Alias.
-        let store = populated_store(&[(
-            "default",
-            "Caroline Doyle",
-            Some("caroline"),
-        )]);
+        let store = populated_store(&[("default", "Caroline Doyle", Some("caroline"))]);
         let lookup = GraphEntityLookup::new(store);
         assert_eq!(lookup.lookup("caroline"), EntityMatch::Alias);
     }
@@ -350,11 +334,7 @@ mod tests {
     fn cross_namespace_match_is_found() {
         // Entity lives in conv-26, lookup runs across all namespaces.
         // canonical_name "Caroline" normalizes to "caroline" → Exact.
-        let store = populated_store(&[(
-            "conv-26",
-            "Caroline",
-            Some("caroline"),
-        )]);
+        let store = populated_store(&[("conv-26", "Caroline", Some("caroline"))]);
         let lookup = GraphEntityLookup::new(store);
         assert_eq!(lookup.lookup("caroline"), EntityMatch::Exact);
     }
@@ -375,13 +355,10 @@ mod tests {
     #[test]
     fn unicode_nfkc_normalization() {
         // NFKC: full-width "Ｃａｒｏｌｉｎｅ" normalizes to "caroline".
-        let store =
-            populated_store(&[("default", "Caroline", Some("caroline"))]);
+        let store = populated_store(&[("default", "Caroline", Some("caroline"))]);
         let lookup = GraphEntityLookup::new(store);
         assert_eq!(
-            lookup.lookup(
-                "\u{ff23}\u{ff41}\u{ff52}\u{ff4f}\u{ff4c}\u{ff49}\u{ff4e}\u{ff45}"
-            ),
+            lookup.lookup("\u{ff23}\u{ff41}\u{ff52}\u{ff4f}\u{ff4c}\u{ff49}\u{ff4e}\u{ff45}"),
             EntityMatch::Exact
         );
     }

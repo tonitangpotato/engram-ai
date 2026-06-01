@@ -107,8 +107,8 @@ fn add_with_emotion_shim_fires_empathy_bus() {
     // bound to the same connection — this is the exact storage
     // surface `process_interaction` writes to (see
     // `bus::accumulator::EmpathyAccumulator::record_emotion`).
-    let acc = EmpathyAccumulator::new(mem.connection())
-        .expect("accumulator binds to memory connection");
+    let acc =
+        EmpathyAccumulator::new(mem.connection()).expect("accumulator binds to memory connection");
     let trend = acc
         .get_trend("trading")
         .expect("trend lookup ok")

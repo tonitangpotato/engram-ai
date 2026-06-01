@@ -256,7 +256,10 @@ impl WorkerPool {
     /// Returns `Ok(())` even if the deadline expires — abandoned jobs are
     /// recoverable on next startup via the durable-status layer
     /// (§5.2, GUARD-2).
-    pub fn shutdown(mut self, deadline: Duration) -> Result<WorkerPoolStatsSnapshot, WorkerPoolError> {
+    pub fn shutdown(
+        mut self,
+        deadline: Duration,
+    ) -> Result<WorkerPoolStatsSnapshot, WorkerPoolError> {
         {
             let mut flag = self
                 .shut_down
@@ -317,11 +320,7 @@ impl Drop for WorkerPool {
     fn drop(&mut self) {
         // If the user dropped without calling `shutdown`, do a best-effort
         // stop. We cannot return errors from Drop, so failures are silent.
-        let already = self
-            .shut_down
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(true);
+        let already = self.shut_down.lock().map(|g| *g).unwrap_or(true);
         if already {
             return;
         }
@@ -564,7 +563,10 @@ mod tests {
                 thread::sleep(self.delay);
             }
             let tname = thread::current().name().unwrap_or("?").to_string();
-            self.seen.lock().unwrap().push((tname, job.memory_id.clone()));
+            self.seen
+                .lock()
+                .unwrap()
+                .push((tname, job.memory_id.clone()));
             self.processed.fetch_add(1, Ordering::Relaxed);
             if self.fail_on.as_deref() == Some(job.memory_id.as_str()) {
                 return Err(ProcessError::Stage("forced".into()));
@@ -757,7 +759,10 @@ mod tests {
 
         // Generous deadline — all should complete.
         let snap = pool.shutdown(Duration::from_secs(5)).unwrap();
-        assert_eq!(snap.jobs_processed, 30, "all jobs should drain within deadline");
+        assert_eq!(
+            snap.jobs_processed, 30,
+            "all jobs should drain within deadline"
+        );
         assert_eq!(snap.jobs_in_flight, 0);
     }
 

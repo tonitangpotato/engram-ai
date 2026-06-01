@@ -219,10 +219,7 @@ impl PipelineRecordProcessor {
     /// resolution pipeline holds, so candidate reads (during
     /// `resolve_for_backfill`) and entity/edge/mention writes target the
     /// same SQLite file. See struct-level docs and ISS-058.
-    pub fn with_graph_store(
-        mut self,
-        store: Arc<Mutex<dyn GraphWrite + Send>>,
-    ) -> Self {
+    pub fn with_graph_store(mut self, store: Arc<Mutex<dyn GraphWrite + Send>>) -> Self {
         self.graph_store = Some(store);
         self
     }
@@ -267,7 +264,10 @@ impl RecordProcessor for PipelineRecordProcessor {
         // ---- Run the resolution pipeline ----
         // resolve_for_backfill never invokes apply_graph_delta itself
         // (per v03-resolution §6.5) — we own the persist step below.
-        let delta = match self.resolver.resolve_for_backfill(&engramai_rec, &self.namespace) {
+        let delta = match self
+            .resolver
+            .resolve_for_backfill(&engramai_rec, &self.namespace)
+        {
             Ok(d) => d,
             Err(PipelineError::ExtractionFailure(msg)) => {
                 // Per design §5.3: surface as per-record failure.
@@ -481,11 +481,9 @@ fn apply_delta_through_shared_store(
     store: &Arc<Mutex<dyn GraphWrite + Send>>,
     delta: &GraphDelta,
 ) -> Result<ApplyReport, MigrationError> {
-    let mut guard = store.lock().map_err(|e| {
-        MigrationError::BackfillFatal(format!(
-            "graph_store mutex poisoned: {e}"
-        ))
-    })?;
+    let mut guard = store
+        .lock()
+        .map_err(|e| MigrationError::BackfillFatal(format!("graph_store mutex poisoned: {e}")))?;
     guard
         .apply_graph_delta(delta)
         .map_err(|e| MigrationError::BackfillFatal(format!("apply_graph_delta: {e}")))
@@ -524,7 +522,8 @@ fn advance_checkpoint_as_failed(
     }
 
     // ---- Checkpoint advance ----
-    CheckpointStore::update_backfill_progress(conn, record_id, 1, 0, 1, &now.to_rfc3339())?;    Ok(())
+    CheckpointStore::update_backfill_progress(conn, record_id, 1, 0, 1, &now.to_rfc3339())?;
+    Ok(())
 }
 
 /// Map a [`StageFailureRow`] stage tag into the migration's `STAGE_*`
@@ -645,7 +644,10 @@ mod tests {
             id: id.to_string(),
             content: format!("memory {id} content"),
             metadata: None,
-            created_at: Utc.with_ymd_and_hms(2026, 4, 26, 12, 0, 0).unwrap().to_rfc3339(),
+            created_at: Utc
+                .with_ymd_and_hms(2026, 4, 26, 12, 0, 0)
+                .unwrap()
+                .to_rfc3339(),
         }
     }
 
@@ -713,7 +715,10 @@ mod tests {
 
         let outcome = proc.process_one(&mut conn, fixture_record("m101")).unwrap();
         match outcome {
-            RecordOutcome::Succeeded { entity_count, edge_count } => {
+            RecordOutcome::Succeeded {
+                entity_count,
+                edge_count,
+            } => {
                 assert_eq!(entity_count, 0);
                 assert_eq!(edge_count, 0);
             }
@@ -747,7 +752,12 @@ mod tests {
 
         let outcome = proc.process_one(&mut conn, fixture_record("m202")).unwrap();
         match outcome {
-            RecordOutcome::Failed { record_id, kind, stage, .. } => {
+            RecordOutcome::Failed {
+                record_id,
+                kind,
+                stage,
+                ..
+            } => {
                 assert_eq!(record_id, "m202");
                 assert_eq!(kind, crate::failure::CATEGORY_LLM_TIMEOUT);
                 assert_eq!(stage, STAGE_ENTITY_EXTRACT);
@@ -763,13 +773,20 @@ mod tests {
 
         // graph_applied_deltas should have the row (delta did commit).
         let applied: i64 = conn
-            .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(applied, 1, "delta should still be persisted via apply_graph_delta");
+        assert_eq!(
+            applied, 1,
+            "delta should still be persisted via apply_graph_delta"
+        );
 
         // graph_extraction_failures should hold the stage_failure row.
         let failed_rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM graph_extraction_failures", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM graph_extraction_failures", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(failed_rows >= 1, "stage_failure must be persisted");
     }
@@ -793,7 +810,9 @@ mod tests {
         let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>)
             .with_namespace("default");
 
-        let outcome = proc.process_one(&mut conn, fixture_record("m_iss135")).unwrap();
+        let outcome = proc
+            .process_one(&mut conn, fixture_record("m_iss135"))
+            .unwrap();
         match outcome {
             RecordOutcome::Succeeded { .. } => {}
             other => panic!("tiebreak_fallback must be Succeeded, got {other:?}"),
@@ -801,13 +820,21 @@ mod tests {
 
         let state = CheckpointStore::load_state(&conn).unwrap().unwrap();
         assert_eq!(state.records_succeeded, 1);
-        assert_eq!(state.records_failed, 0, "tiebreak_fallback must not count as failure");
+        assert_eq!(
+            state.records_failed, 0,
+            "tiebreak_fallback must not count as failure"
+        );
 
         // The forensic row should still be persisted for audit.
         let failed_rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM graph_extraction_failures", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM graph_extraction_failures", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert!(failed_rows >= 1, "tiebreak_fallback audit row must be persisted");
+        assert!(
+            failed_rows >= 1,
+            "tiebreak_fallback audit row must be persisted"
+        );
     }
 
     #[test]
@@ -836,7 +863,9 @@ mod tests {
         let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>)
             .with_namespace("default");
 
-        let outcome = proc.process_one(&mut conn, fixture_record("m_mixed")).unwrap();
+        let outcome = proc
+            .process_one(&mut conn, fixture_record("m_mixed"))
+            .unwrap();
         match outcome {
             RecordOutcome::Failed { kind, stage, .. } => {
                 assert_eq!(kind, crate::failure::CATEGORY_LLM_TIMEOUT);
@@ -881,22 +910,28 @@ mod tests {
         // PipelineError::Fatal → MigrationError::BackfillFatal.
         // Checkpoint must NOT advance (caller preserves it).
         let mut conn = fresh_db();
-        let resolver = ScriptedResolver::new(vec![Err(PipelineError::Fatal(
-            "disk full".into(),
-        ))]);
+        let resolver = ScriptedResolver::new(vec![Err(PipelineError::Fatal("disk full".into()))]);
         let proc = PipelineRecordProcessor::new(resolver as Arc<dyn BackfillResolver>);
 
-        let err = proc.process_one(&mut conn, fixture_record("m404")).unwrap_err();
+        let err = proc
+            .process_one(&mut conn, fixture_record("m404"))
+            .unwrap_err();
         match err {
             MigrationError::BackfillFatal(msg) => {
                 assert!(msg.contains("disk full"), "msg: {msg}");
-                assert!(msg.contains("m404"), "fatal msg should reference record id: {msg}");
+                assert!(
+                    msg.contains("m404"),
+                    "fatal msg should reference record id: {msg}"
+                );
             }
             other => panic!("expected BackfillFatal, got {other:?}"),
         }
 
         let state = CheckpointStore::load_state(&conn).unwrap().unwrap();
-        assert_eq!(state.records_processed, 0, "checkpoint must not advance on fatal");
+        assert_eq!(
+            state.records_processed, 0,
+            "checkpoint must not advance on fatal"
+        );
         assert_eq!(state.last_processed_memory_id, "");
     }
 
@@ -913,7 +948,12 @@ mod tests {
 
         let outcome = proc.process_one(&mut conn, fixture_record("m505")).unwrap();
         match outcome {
-            RecordOutcome::Failed { record_id, kind, stage, .. } => {
+            RecordOutcome::Failed {
+                record_id,
+                kind,
+                stage,
+                ..
+            } => {
                 assert_eq!(record_id, "m505");
                 assert_eq!(kind, CATEGORY_INTERNAL);
                 assert_eq!(stage, STAGE_DEDUP);
@@ -944,11 +984,16 @@ mod tests {
         let _o2 = proc.process_one(&mut conn, fixture_record("m606")).unwrap();
 
         let applied: i64 = conn
-            .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM graph_applied_deltas", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(applied, 1, "duplicate apply should not insert a second row");
 
         let state = CheckpointStore::load_state(&conn).unwrap().unwrap();
-        assert_eq!(state.records_processed, 2, "checkpoint counts both attempts");
+        assert_eq!(
+            state.records_processed, 2,
+            "checkpoint counts both attempts"
+        );
     }
 }

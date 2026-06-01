@@ -62,10 +62,7 @@ impl HealthAuditor {
                         memory_id: memory_id.clone(),
                         topic_id: topic.id.clone(),
                         status: LinkStatus::Broken,
-                        details: format!(
-                            "Source memory '{}' not found in store refs",
-                            memory_id
-                        ),
+                        details: format!("Source memory '{}' not found in store refs", memory_id),
                     },
                     Some(r) if r.relevance_score < 0.1 => LinkAuditEntry {
                         memory_id: memory_id.clone(),
@@ -126,17 +123,14 @@ impl HealthAuditor {
 
         // 4. Access frequency: compilation_count / max(1, days_since_creation)
         let now = Utc::now();
-        let days_since_creation =
-            (now - topic.metadata.created_at).num_seconds() as f64 / 86400.0;
+        let days_since_creation = (now - topic.metadata.created_at).num_seconds() as f64 / 86400.0;
         let days_since_creation = days_since_creation.max(1.0);
         let access_frequency =
             (topic.metadata.compilation_count as f64 / days_since_creation).min(1.0);
 
         // 5. Overall weighted score
-        let overall = 0.4 * freshness
-            + 0.3 * link_health
-            + 0.2 * coherence
-            + 0.1 * access_frequency;
+        let overall =
+            0.4 * freshness + 0.3 * link_health + 0.2 * coherence + 0.1 * access_frequency;
 
         Ok(TopicHealthScore {
             topic_id: topic.id.clone(),
@@ -168,8 +162,8 @@ impl HealthAuditor {
             let mut collected = Vec::new();
             for i in 0..all_topics.len() {
                 let scope = ConflictScope::WithinTopic(all_topics[i].id.clone());
-                let mut conflicts = conflict_detector
-                    .detect_conflicts(&all_topics, &scope, None)?;
+                let mut conflicts =
+                    conflict_detector.detect_conflicts(&all_topics, &scope, None)?;
                 collected.append(&mut conflicts);
             }
             // Deduplicate by conflict id
@@ -198,12 +192,7 @@ impl HealthAuditor {
                 topic_conflicts.iter().map(|c| (*c).clone()).collect();
 
             // Compute health score
-            let score = self.topic_score(
-                topic,
-                store,
-                decay_engine,
-                &topic_conflict_records,
-            )?;
+            let score = self.topic_score(topic, store, decay_engine, &topic_conflict_records)?;
 
             // Collect stale topics
             if score.freshness < 0.3 {
@@ -236,10 +225,7 @@ impl HealthAuditor {
                     topic_id: topic.id.clone(),
                     action: "Consider archiving".to_string(),
                     priority: 1,
-                    reason: format!(
-                        "Freshness score is very low ({:.3})",
-                        score.freshness
-                    ),
+                    reason: format!("Freshness score is very low ({:.3})", score.freshness),
                 });
             }
 
@@ -260,10 +246,7 @@ impl HealthAuditor {
                     topic_id: topic.id.clone(),
                     action: "Review and resolve conflicts".to_string(),
                     priority: 3,
-                    reason: format!(
-                        "Topic has {} unresolved conflicts",
-                        topic_conflicts.len()
-                    ),
+                    reason: format!("Topic has {} unresolved conflicts", topic_conflicts.len()),
                 });
             }
         }
@@ -284,11 +267,7 @@ impl HealthAuditor {
     /// - Broken link as the last source → [`LinkRepairAction::MarkStale`]
     /// - Stale link → [`LinkRepairAction::MarkStale`]
     /// - Valid link → [`LinkRepairAction::MarkStale`] (should not happen)
-    pub fn suggest_repair(
-        &self,
-        entry: &LinkAuditEntry,
-        topic: &TopicPage,
-    ) -> LinkRepairAction {
+    pub fn suggest_repair(&self, entry: &LinkAuditEntry, topic: &TopicPage) -> LinkRepairAction {
         match entry.status {
             LinkStatus::Broken => {
                 // Count how many other source memory ids the topic has
@@ -483,7 +462,12 @@ mod tests {
 
         assert_eq!(entries.len(), 3);
         for entry in &entries {
-            assert_eq!(entry.status, LinkStatus::Valid, "Expected Valid for {}", entry.memory_id);
+            assert_eq!(
+                entry.status,
+                LinkStatus::Valid,
+                "Expected Valid for {}",
+                entry.memory_id
+            );
         }
     }
 
@@ -509,8 +493,14 @@ mod tests {
 
         assert_eq!(entries.len(), 3);
 
-        let valid_count = entries.iter().filter(|e| e.status == LinkStatus::Valid).count();
-        let broken_count = entries.iter().filter(|e| e.status == LinkStatus::Broken).count();
+        let valid_count = entries
+            .iter()
+            .filter(|e| e.status == LinkStatus::Valid)
+            .count();
+        let broken_count = entries
+            .iter()
+            .filter(|e| e.status == LinkStatus::Broken)
+            .count();
 
         assert_eq!(valid_count, 1, "Expected 1 valid link");
         assert_eq!(broken_count, 2, "Expected 2 broken links");
@@ -584,7 +574,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(score.topic_id, page.id);
-        assert!(score.freshness > 0.8, "Expected high freshness, got {}", score.freshness);
+        assert!(
+            score.freshness > 0.8,
+            "Expected high freshness, got {}",
+            score.freshness
+        );
         assert!(
             (score.link_health - 1.0).abs() < 1e-9,
             "Expected perfect link health, got {}",
@@ -595,7 +589,11 @@ mod tests {
             "Expected perfect coherence (no conflicts), got {}",
             score.coherence
         );
-        assert!(score.overall > 0.7, "Expected high overall score, got {}", score.overall);
+        assert!(
+            score.overall > 0.7,
+            "Expected high overall score, got {}",
+            score.overall
+        );
     }
 
     // ── test_topic_score_degraded ────────────────────────────────────────
@@ -653,7 +651,11 @@ mod tests {
             .unwrap();
 
         // Old source → low freshness
-        assert!(score.freshness < 0.3, "Expected low freshness, got {}", score.freshness);
+        assert!(
+            score.freshness < 0.3,
+            "Expected low freshness, got {}",
+            score.freshness
+        );
         // 1 valid out of 3 → link_health ≈ 0.333
         assert!(
             score.link_health < 0.5,
@@ -666,7 +668,11 @@ mod tests {
             "Expected coherence 0.6, got {}",
             score.coherence
         );
-        assert!(score.overall < 0.5, "Expected low overall score, got {}", score.overall);
+        assert!(
+            score.overall < 0.5,
+            "Expected low overall score, got {}",
+            score.overall
+        );
     }
 
     // ── test_health_report_empty_store ────────────────────────────────────
@@ -937,7 +943,10 @@ mod tests {
 
         // Verify the topic page in store is updated
         let stored_page = store.get_topic_page(&page.id).unwrap().unwrap();
-        assert!(!stored_page.metadata.source_memory_ids.contains(&"m2".to_string()));
+        assert!(!stored_page
+            .metadata
+            .source_memory_ids
+            .contains(&"m2".to_string()));
     }
 
     // ── test_repair_link_mark_stale ──────────────────────────────────────
@@ -1033,11 +1042,17 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
-        assert!(matches!(result.action_taken, LinkRepairAction::UpdateTarget(_)));
+        assert!(matches!(
+            result.action_taken,
+            LinkRepairAction::UpdateTarget(_)
+        ));
 
         // Verify source_memory_ids has new id, not old
         assert!(!page.metadata.source_memory_ids.contains(&"m2".to_string()));
-        assert!(page.metadata.source_memory_ids.contains(&"m2-replacement".to_string()));
+        assert!(page
+            .metadata
+            .source_memory_ids
+            .contains(&"m2-replacement".to_string()));
         assert_eq!(page.metadata.source_memory_ids.len(), 3);
 
         // Verify store source refs have the new id
@@ -1048,6 +1063,9 @@ mod tests {
 
         // Verify the topic page in store is updated
         let stored_page = store.get_topic_page(&page.id).unwrap().unwrap();
-        assert!(stored_page.metadata.source_memory_ids.contains(&"m2-replacement".to_string()));
+        assert!(stored_page
+            .metadata
+            .source_memory_ids
+            .contains(&"m2-replacement".to_string()));
     }
 }

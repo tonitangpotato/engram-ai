@@ -46,11 +46,11 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::graph::KnowledgeTopic;
 use crate::memory::Memory;
 use crate::retrieval::classifier::Intent;
-use crate::types::{MemoryRecord, RecallResult};
-use crate::graph::KnowledgeTopic;
 use crate::store_api::MemoryId;
+use crate::types::{MemoryRecord, RecallResult};
 
 /// Stable identifier for a graph entity (L3'). Mirrors the v0.3 graph
 /// layer's UUID-keyed entity rows; we re-export as a type alias so the
@@ -344,7 +344,10 @@ impl std::fmt::Debug for GraphQuery {
             // `Debug`. Surface presence/absence instead.
             .field(
                 "cross_encoder_override",
-                &self.cross_encoder_override.as_ref().map(|_| "<dyn Reranker>"),
+                &self
+                    .cross_encoder_override
+                    .as_ref()
+                    .map(|_| "<dyn Reranker>"),
             )
             .field("entity_channel_override", &self.entity_channel_override)
             .field("factual_reweight_override", &self.factual_reweight_override)
@@ -513,10 +516,7 @@ impl GraphQuery {
     /// for semantics. Pass `None` to fall back to
     /// `FusionConfig::locked().populate_embeddings_for_diversity`
     /// (currently `false` — locked v0.3.0-r3 byte-identity).
-    pub fn with_populate_embeddings_for_diversity(
-        mut self,
-        enabled: Option<bool>,
-    ) -> Self {
+    pub fn with_populate_embeddings_for_diversity(mut self, enabled: Option<bool>) -> Self {
         self.populate_embeddings_for_diversity_override = enabled;
         self
     }
@@ -749,9 +749,7 @@ impl Memory {
             Some(g) => {
                 let lookup: std::sync::Arc<
                     dyn crate::retrieval::classifier::heuristic::EntityLookup,
-                > = std::sync::Arc::new(
-                    crate::retrieval::adapters::GraphEntityLookup::new(g),
-                );
+                > = std::sync::Arc::new(crate::retrieval::adapters::GraphEntityLookup::new(g));
                 crate::retrieval::classifier::HeuristicClassifier::new(
                     lookup,
                     crate::retrieval::classifier::SignalThresholds::default(),
@@ -770,8 +768,7 @@ impl Memory {
         let populate_embeddings_for_diversity = query
             .populate_embeddings_for_diversity_override
             .unwrap_or_else(|| {
-                crate::retrieval::fusion::FusionConfig::locked()
-                    .populate_embeddings_for_diversity
+                crate::retrieval::fusion::FusionConfig::locked().populate_embeddings_for_diversity
             });
         let dispatched = crate::retrieval::dispatch::dispatch(query, &classifier);
         let plan_kind = dispatched.plan_kind;
@@ -799,8 +796,7 @@ impl Memory {
         //      the hub is empty (cold start), so the affective plan
         //      downgrades to associative routing per §6.2 instead of
         //      ranking against a synthetic neutral state.
-        let self_state =
-            self_state_override.or_else(|| self.current_self_state());
+        let self_state = self_state_override.or_else(|| self.current_self_state());
 
         // Phase-3 (ISS-049): construct the real graph/storage-backed
         // adapters. The five `Null*` stubs from Phase 2 are gone; each
@@ -817,9 +813,8 @@ impl Memory {
         // model id — the hybrid path still serves keyword-only signal.
         let storage = self.storage();
         let embedding = self.embedding_provider();
-        let embedding_model_owned: String = embedding
-            .map(|p| p.config().model_id())
-            .unwrap_or_default();
+        let embedding_model_owned: String =
+            embedding.map(|p| p.config().model_id()).unwrap_or_default();
         // ISS-056: namespace was extracted from `query` before dispatch
         // (see top of this fn). Re-borrow as `&str` for adapter ctors.
         let namespace: &str = namespace.as_str();
@@ -834,44 +829,40 @@ impl Memory {
         );
 
         let (candidates, outcome) = self.with_graph_read(|graph| {
-            let entity_resolver =
-                crate::retrieval::adapters::GraphEntityResolver::new(graph);
+            let entity_resolver = crate::retrieval::adapters::GraphEntityResolver::new(graph);
             let episodic_store =
                 crate::retrieval::adapters::StorageEpisodicStore::new(storage, graph);
-            let seed_recaller =
-                crate::retrieval::adapters::HybridSeedRecaller::new(
-                    storage,
-                    embedding,
-                    namespace,
-                    embedding_model_owned.as_str(),
-                );
+            let seed_recaller = crate::retrieval::adapters::HybridSeedRecaller::new(
+                storage,
+                embedding,
+                namespace,
+                embedding_model_owned.as_str(),
+            );
             let topic_searcher =
                 crate::retrieval::adapters::GraphTopicSearcher::new(graph, embedding);
-            let affective_recaller =
-                crate::retrieval::adapters::HybridAffectiveSeedRecaller::new(
-                    storage,
-                    embedding,
-                    namespace,
-                    embedding_model_owned.as_str(),
-                );
-            let collaborators =
-                crate::retrieval::orchestrator::PlanCollaborators {
-                    entity_resolver: &entity_resolver,
-                    episodic_store: &episodic_store,
-                    seed_recaller: &seed_recaller,
-                    topic_searcher: &topic_searcher,
-                    affective_recaller: &affective_recaller,
-                    // ISS-172: provide the embedder so Factual's
-                    // `factual_to_scored` can compute
-                    // `cosine(query_embedding, memory_embedding)` —
-                    // the semantic signal Factual was missing pre-
-                    // ISS-172 (graph_score + bm25 only, drowning gold
-                    // when a single anchor produced 100+ tied
-                    // candidates). `None` when no embedder is wired
-                    // (test fakes) → Factual degrades to legacy
-                    // graph + BM25 behaviour.
-                    embedding_provider: embedding,
-                };
+            let affective_recaller = crate::retrieval::adapters::HybridAffectiveSeedRecaller::new(
+                storage,
+                embedding,
+                namespace,
+                embedding_model_owned.as_str(),
+            );
+            let collaborators = crate::retrieval::orchestrator::PlanCollaborators {
+                entity_resolver: &entity_resolver,
+                episodic_store: &episodic_store,
+                seed_recaller: &seed_recaller,
+                topic_searcher: &topic_searcher,
+                affective_recaller: &affective_recaller,
+                // ISS-172: provide the embedder so Factual's
+                // `factual_to_scored` can compute
+                // `cosine(query_embedding, memory_embedding)` —
+                // the semantic signal Factual was missing pre-
+                // ISS-172 (graph_score + bm25 only, drowning gold
+                // when a single anchor produced 100+ tied
+                // candidates). `None` when no embedder is wired
+                // (test fakes) → Factual degrades to legacy
+                // graph + BM25 behaviour.
+                embedding_provider: embedding,
+            };
             crate::retrieval::orchestrator::execute_plan(
                 dispatched,
                 graph,
@@ -927,14 +918,11 @@ impl Memory {
         // When disabled (locked default), the candidate set reaches MMR
         // unchanged — byte-identical to the v0.3 path.
         if populate_embeddings_for_diversity {
-            crate::retrieval::fusion::mmr::populate_missing_embeddings(
-                &mut ranked,
-                |ids| {
-                    self.storage()
-                        .get_embeddings_for_ids(ids, embedding_model_owned.as_str())
-                        .unwrap_or_default()
-                },
-            );
+            crate::retrieval::fusion::mmr::populate_missing_embeddings(&mut ranked, |ids| {
+                self.storage()
+                    .get_embeddings_for_ids(ids, embedding_model_owned.as_str())
+                    .unwrap_or_default()
+            });
         }
 
         // Stage C.5a (ISS-159 weapon A): optional cross-encoder
@@ -1326,12 +1314,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("retrieval-api-warm-state.db");
         let mut mem = Memory::new(db_path.to_str().unwrap(), None).expect("memory init");
-        mem.interoceptive_hub_mut().process_signal(InteroceptiveSignal::new(
-            SignalSource::Feedback,
-            Some("coding".to_string()),
-            0.6,
-            0.4,
-        ));
+        mem.interoceptive_hub_mut()
+            .process_signal(InteroceptiveSignal::new(
+                SignalSource::Feedback,
+                Some("coding".to_string()),
+                0.6,
+                0.4,
+            ));
         let fp = mem
             .current_self_state()
             .expect("hub has signals, fingerprint should be Some");
@@ -1447,8 +1436,7 @@ mod tests {
             .with_graph_store(&graph_db)
             .expect("install graph store");
 
-        let q = GraphQuery::new("what did I work on")
-            .with_intent(Intent::Episodic);
+        let q = GraphQuery::new("what did I work on").with_intent(Intent::Episodic);
         let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
 
         assert_eq!(
@@ -1486,8 +1474,7 @@ mod tests {
             .with_graph_store(&graph_db)
             .expect("install graph store");
 
-        let q = GraphQuery::new("explain the architecture")
-            .with_intent(Intent::Abstract);
+        let q = GraphQuery::new("explain the architecture").with_intent(Intent::Abstract);
         let resp = block_on(mem.graph_query(q)).expect("orchestrator runs");
 
         assert_eq!(resp.plan_used, Intent::Abstract);
@@ -1702,15 +1689,10 @@ mod tests {
 
     #[test]
     fn graph_query_with_populate_embeddings_sets_field() {
-        let q_on = GraphQuery::new("hello")
-            .with_populate_embeddings_for_diversity(Some(true));
-        assert_eq!(
-            q_on.populate_embeddings_for_diversity_override,
-            Some(true)
-        );
+        let q_on = GraphQuery::new("hello").with_populate_embeddings_for_diversity(Some(true));
+        assert_eq!(q_on.populate_embeddings_for_diversity_override, Some(true));
 
-        let q_off = GraphQuery::new("hello")
-            .with_populate_embeddings_for_diversity(Some(false));
+        let q_off = GraphQuery::new("hello").with_populate_embeddings_for_diversity(Some(false));
         assert_eq!(
             q_off.populate_embeddings_for_diversity_override,
             Some(false)

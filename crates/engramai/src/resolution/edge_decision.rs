@@ -99,14 +99,18 @@ pub fn compute_edge_decision(
                     // Same fact. Bump only if new confidence beats prior
                     // by more than EPSILON.
                     if new_confidence > prior.confidence + EDGE_CONFIDENCE_EPSILON {
-                        EdgeDecision::Update { supersedes: prior.id }
+                        EdgeDecision::Update {
+                            supersedes: prior.id,
+                        }
                     } else {
                         EdgeDecision::None
                     }
                 } else {
                     // Fact changed (e.g. WorksAt: Acme → Beta).
                     // Supersede the prior — GOAL-2.10, GUARD-3.
-                    EdgeDecision::Update { supersedes: prior.id }
+                    EdgeDecision::Update {
+                        supersedes: prior.id,
+                    }
                 }
             }
 
@@ -130,7 +134,9 @@ pub fn compute_edge_decision(
                 None => EdgeDecision::Add,
                 Some(prior) => {
                     if new_confidence > prior.confidence + EDGE_CONFIDENCE_EPSILON {
-                        EdgeDecision::Update { supersedes: prior.id }
+                        EdgeDecision::Update {
+                            supersedes: prior.id,
+                        }
                     } else {
                         EdgeDecision::None
                     }
@@ -216,7 +222,12 @@ mod tests {
         let prior = fixture_edge(pred.clone(), obj.clone(), 0.80);
         let prior_id = prior.id;
         let decision = compute_edge_decision(&pred, &obj, 0.90, &[prior]);
-        assert_eq!(decision, EdgeDecision::Update { supersedes: prior_id });
+        assert_eq!(
+            decision,
+            EdgeDecision::Update {
+                supersedes: prior_id
+            }
+        );
     }
 
     #[test]
@@ -233,7 +244,9 @@ mod tests {
         let decision = compute_edge_decision(&pred, &beta, 0.85, &[prior]);
         assert_eq!(
             decision,
-            EdgeDecision::Update { supersedes: prior_id },
+            EdgeDecision::Update {
+                supersedes: prior_id
+            },
             "fact change must supersede, not Add"
         );
     }
@@ -293,7 +306,12 @@ mod tests {
         let prior = fixture_edge(pred.clone(), lib.clone(), 0.70);
         let prior_id = prior.id;
         let decision = compute_edge_decision(&pred, &lib, 0.90, &[prior]);
-        assert_eq!(decision, EdgeDecision::Update { supersedes: prior_id });
+        assert_eq!(
+            decision,
+            EdgeDecision::Update {
+                supersedes: prior_id
+            }
+        );
     }
 
     #[test]
@@ -349,12 +367,21 @@ mod tests {
         // object end is a string literal rather than an entity). The
         // decision logic should treat literal change as supersession too.
         let pred = Predicate::Canonical(CanonicalPredicate::CreatedBy);
-        let lit_old = EdgeEnd::Literal { value: serde_json::Value::String("Alice".to_string()) };
-        let lit_new = EdgeEnd::Literal { value: serde_json::Value::String("Bob".to_string()) };
+        let lit_old = EdgeEnd::Literal {
+            value: serde_json::Value::String("Alice".to_string()),
+        };
+        let lit_new = EdgeEnd::Literal {
+            value: serde_json::Value::String("Bob".to_string()),
+        };
         let prior = fixture_edge(pred.clone(), lit_old, 0.85);
         let prior_id = prior.id;
         let decision = compute_edge_decision(&pred, &lit_new, 0.85, &[prior]);
-        assert_eq!(decision, EdgeDecision::Update { supersedes: prior_id });
+        assert_eq!(
+            decision,
+            EdgeDecision::Update {
+                supersedes: prior_id
+            }
+        );
     }
 
     // ----- EdgeDecision serde -----

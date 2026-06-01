@@ -258,15 +258,16 @@ fn t21_malformed_metadata_does_not_fail_row() {
     );
 
     let run = backfill_entities_to_nodes(&mut storage, None).expect("backfill");
-    assert_eq!(run.rows_inserted, 1, "malformed metadata must not fail the row");
+    assert_eq!(
+        run.rows_inserted, 1,
+        "malformed metadata must not fail the row"
+    );
 
     let attrs: String = storage
         .conn()
-        .query_row(
-            "SELECT attributes FROM nodes WHERE id='ent-bad'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT attributes FROM nodes WHERE id='ent-bad'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
     assert_eq!(parsed["entity_type"], "person");
@@ -393,9 +394,11 @@ fn t21_null_metadata_lands_with_entity_type_only() {
 
     let attrs: String = storage
         .conn()
-        .query_row("SELECT attributes FROM nodes WHERE id='ent-null'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT attributes FROM nodes WHERE id='ent-null'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&attrs).unwrap();
     let obj = parsed.as_object().unwrap();
@@ -869,7 +872,10 @@ fn iss112_b_metadata_with_reserved_column_keys_does_not_corrupt_columns() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(col_id, "real-id", "id column must NOT be hijacked by metadata");
+    assert_eq!(
+        col_id, "real-id",
+        "id column must NOT be hijacked by metadata"
+    );
     assert_eq!(
         col_ns, "real-ns",
         "namespace column must NOT be hijacked by metadata"
@@ -891,11 +897,9 @@ fn iss112_b_metadata_with_reserved_column_keys_does_not_corrupt_columns() {
     // Verify a query by the REAL id finds exactly one node.
     let count_real: i64 = storage
         .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM nodes WHERE id='real-id'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM nodes WHERE id='real-id'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(count_real, 1);
 
@@ -935,7 +939,10 @@ fn iss112_b_empty_entity_type_string_lands_as_empty_attribute() {
     );
 
     let run = backfill_entities_to_nodes(&mut storage, None).expect("backfill");
-    assert_eq!(run.rows_inserted, 1, "empty entity_type does not block insert");
+    assert_eq!(
+        run.rows_inserted, 1,
+        "empty entity_type does not block insert"
+    );
 
     let attrs: String = storage
         .conn()

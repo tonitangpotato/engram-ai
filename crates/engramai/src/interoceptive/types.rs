@@ -98,12 +98,7 @@ pub struct InteroceptiveSignal {
 
 impl InteroceptiveSignal {
     /// Create a new signal with required fields; context defaults to None.
-    pub fn new(
-        source: SignalSource,
-        domain: Option<String>,
-        valence: f64,
-        arousal: f64,
-    ) -> Self {
+    pub fn new(source: SignalSource, domain: Option<String>, valence: f64, arousal: f64) -> Self {
         Self {
             source,
             domain,
@@ -145,9 +140,7 @@ pub enum SignalContext {
         baseline_mean: f64,
     },
     /// An emotional event was recorded.
-    EmotionalEvent {
-        event_description: String,
-    },
+    EmotionalEvent { event_description: String },
     /// An action outcome was logged.
     ActionOutcome {
         action: String,
@@ -155,10 +148,7 @@ pub enum SignalContext {
         cumulative_score: f64,
     },
     /// A recall operation returned results with a confidence assessment.
-    RecallConfidence {
-        query: String,
-        score: f64,
-    },
+    RecallConfidence { query: String, score: f64 },
     /// Content was evaluated against core drives.
     DriveAlignment {
         content_snippet: String,
@@ -166,7 +156,6 @@ pub enum SignalContext {
     },
 
     // ── Runtime signal contexts ──────────────────────────────────────
-
     /// Token budget pressure from host agent.
     TokenPressure {
         budget_used_pct: f64,
@@ -190,10 +179,7 @@ pub enum SignalContext {
     },
 
     /// Resource pressure from system metrics.
-    SystemPressure {
-        disk_free_gb: f64,
-        queue_depth: u32,
-    },
+    SystemPressure { disk_free_gb: f64, queue_depth: u32 },
 
     /// Voice emotion detected from audio (speech emotion recognition).
     VoiceEmotion {
@@ -314,19 +300,17 @@ impl DomainState {
         // Source-specific field updates.
         match signal.source {
             SignalSource::Anomaly => {
-                self.anomaly_level = alpha * signal.arousal * 3.0
-                    + (1.0 - alpha) * self.anomaly_level;
+                self.anomaly_level =
+                    alpha * signal.arousal * 3.0 + (1.0 - alpha) * self.anomaly_level;
             }
             SignalSource::Feedback => {
                 // Map valence [-1,1] back to success rate [0,1].
                 let rate = (signal.valence + 1.0) / 2.0;
-                self.action_success_rate =
-                    alpha * rate + (1.0 - alpha) * self.action_success_rate;
+                self.action_success_rate = alpha * rate + (1.0 - alpha) * self.action_success_rate;
             }
             SignalSource::Alignment => {
                 let score = (signal.valence + 1.0) / 2.0;
-                self.alignment_score =
-                    alpha * score + (1.0 - alpha) * self.alignment_score;
+                self.alignment_score = alpha * score + (1.0 - alpha) * self.alignment_score;
             }
             SignalSource::Confidence => {
                 let conf = (signal.valence + 1.0) / 2.0;
@@ -512,9 +496,7 @@ impl InteroceptiveState {
     /// drive-fit (alignment). When `valence` is negative the product is
     /// negative, which encodes "anti-flow" / friction states — the
     /// expected directional behavior under §3.7.
-    pub fn to_somatic_fingerprint(
-        &self,
-    ) -> Option<crate::graph::affect::SomaticFingerprint> {
+    pub fn to_somatic_fingerprint(&self) -> Option<crate::graph::affect::SomaticFingerprint> {
         if self.domain_states.is_empty() {
             return None;
         }
@@ -585,10 +567,7 @@ pub enum RegulationAction {
     },
 
     /// Suggest adjusting memory retrieval parameters.
-    RetrievalAdjustment {
-        expand_search: bool,
-        reason: String,
-    },
+    RetrievalAdjustment { expand_search: bool, reason: String },
 
     /// Suggest changing behavior for a specific action.
     BehaviorShift {
@@ -885,33 +864,26 @@ mod tests {
 
     #[test]
     fn signal_negative_and_urgent() {
-        let calm_positive = InteroceptiveSignal::new(
-            SignalSource::Accumulator,
-            Some("coding".into()),
-            0.5,
-            0.2,
-        );
+        let calm_positive =
+            InteroceptiveSignal::new(SignalSource::Accumulator, Some("coding".into()), 0.5, 0.2);
         assert!(!calm_positive.is_negative());
         assert!(!calm_positive.is_urgent());
 
-        let alarming = InteroceptiveSignal::new(
-            SignalSource::Anomaly,
-            Some("trading".into()),
-            -0.8,
-            0.9,
-        );
+        let alarming =
+            InteroceptiveSignal::new(SignalSource::Anomaly, Some("trading".into()), -0.8, 0.9);
         assert!(alarming.is_negative());
         assert!(alarming.is_urgent());
     }
 
     #[test]
     fn signal_with_context() {
-        let sig = InteroceptiveSignal::new(SignalSource::Anomaly, None, -0.5, 0.8)
-            .with_context(SignalContext::AnomalyDetected {
+        let sig = InteroceptiveSignal::new(SignalSource::Anomaly, None, -0.5, 0.8).with_context(
+            SignalContext::AnomalyDetected {
                 metric: "recall_latency".into(),
                 z_score: 2.5,
                 baseline_mean: 120.0,
-            });
+            },
+        );
         assert!(sig.context.is_some());
     }
 
@@ -929,7 +901,9 @@ mod tests {
             });
 
         match &sig.context {
-            Some(SignalContext::ContextPressure { ratio, severity, .. }) => {
+            Some(SignalContext::ContextPressure {
+                ratio, severity, ..
+            }) => {
                 assert!((ratio - 0.84).abs() < 1e-9);
                 assert_eq!(*severity, ContextPressureSeverity::Soft);
             }
@@ -963,7 +937,10 @@ mod tests {
         };
 
         match &action {
-            RegulationAction::PauseAndAsk { reason, suggested_options } => {
+            RegulationAction::PauseAndAsk {
+                reason,
+                suggested_options,
+            } => {
                 assert!(reason.contains("92%"));
                 assert_eq!(suggested_options.len(), 3);
             }
@@ -1015,12 +992,8 @@ mod tests {
         assert!((ds.action_success_rate - 0.65).abs() < 0.01);
 
         // Anomaly signal: high arousal → anomaly_level rises.
-        let anomaly = InteroceptiveSignal::new(
-            SignalSource::Anomaly,
-            Some("trading".into()),
-            -0.5,
-            0.9,
-        );
+        let anomaly =
+            InteroceptiveSignal::new(SignalSource::Anomaly, Some("trading".into()), -0.5, 0.9);
         ds.update(&anomaly, alpha);
         // anomaly_level: 0.5 * 0.9 * 3.0 + 0.5 * 0.0 = 1.35
         assert!((ds.anomaly_level - 1.35).abs() < 0.01);
@@ -1132,12 +1105,12 @@ mod tests {
         state.domain_states.insert(
             "coding".into(),
             domain_with(
-                "coding", 0.6, // valence_trend
-                0.8, // confidence
-                0.9, // alignment_score
-                0.4, // anomaly_level
+                "coding", 0.6,  // valence_trend
+                0.8,  // confidence
+                0.9,  // alignment_score
+                0.4,  // anomaly_level
                 0.75, // action_success_rate
-                10,  // signal_count
+                10,   // signal_count
             ),
         );
 
@@ -1153,11 +1126,7 @@ mod tests {
         // [3] alignment
         assert!((arr[3] - 0.9).abs() < 1e-5, "alignment = {}", arr[3]);
         // [4] operational_load = buffer_size / 100
-        assert!(
-            (arr[4] - 0.5).abs() < 1e-5,
-            "operational_load = {}",
-            arr[4]
-        );
+        assert!((arr[4] - 0.5).abs() < 1e-5, "operational_load = {}", arr[4]);
         // [5] cognitive_flow = valence * confidence * alignment
         let expected_flow = 0.6 * 0.8 * 0.9;
         assert!(
@@ -1169,11 +1138,7 @@ mod tests {
         // [6] anomaly_arousal
         assert!((arr[6] - 0.4).abs() < 1e-5, "anomaly_arousal = {}", arr[6]);
         // [7] feedback_recent
-        assert!(
-            (arr[7] - 0.75).abs() < 1e-5,
-            "feedback_recent = {}",
-            arr[7]
-        );
+        assert!((arr[7] - 0.75).abs() < 1e-5, "feedback_recent = {}", arr[7]);
     }
 
     #[test]
@@ -1293,7 +1258,11 @@ mod tests {
 
         // A value far from mean should have high σ
         let dev_far = bl.sigma_deviation(15.0).unwrap();
-        assert!(dev_far > 2.0, "5 units from mean should be >2σ, got {}", dev_far);
+        assert!(
+            dev_far > 2.0,
+            "5 units from mean should be >2σ, got {}",
+            dev_far
+        );
     }
 
     #[test]
@@ -1309,13 +1278,19 @@ mod tests {
         assert_eq!(bl.deviation_level(bl.mean), DeviationLevel::Normal);
 
         // 2σ → Elevated
-        assert_eq!(bl.deviation_level(bl.mean + 2.0 * sd), DeviationLevel::Elevated);
+        assert_eq!(
+            bl.deviation_level(bl.mean + 2.0 * sd),
+            DeviationLevel::Elevated
+        );
 
         // 3σ → High
         assert_eq!(bl.deviation_level(bl.mean + 3.0 * sd), DeviationLevel::High);
 
         // 4σ → Extreme
-        assert_eq!(bl.deviation_level(bl.mean + 4.0 * sd), DeviationLevel::Extreme);
+        assert_eq!(
+            bl.deviation_level(bl.mean + 4.0 * sd),
+            DeviationLevel::Extreme
+        );
     }
 
     #[test]
@@ -1346,8 +1321,11 @@ mod tests {
             bl.observe(20.0);
         }
         // Mean should have moved significantly toward 20
-        assert!(bl.mean > mean_before + 3.0,
-            "mean should drift toward 20 with decay, got {}", bl.mean);
+        assert!(
+            bl.mean > mean_before + 3.0,
+            "mean should drift toward 20 with decay, got {}",
+            bl.mean
+        );
     }
 
     #[test]

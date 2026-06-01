@@ -267,11 +267,11 @@ impl<'a> EntityResolver for GraphEntityResolver<'a> {
                     // `HybridSeedRecaller` for the embedding path).
                     let alias_boost: f32 = if m.alias_match { 0.7 } else { 0.0 };
                     let recency_score = m.recency_score; // [0.0, 1.0]
-                    // Final strength in [0.0, 1.0]: weight alias 70%,
-                    // recency 30%. Tuned to keep alias-only hits above
-                    // 0.5 (so the default `min_confidence` filter in
-                    // Factual keeps them) while letting recency break
-                    // ties between two equally alias-matched candidates.
+                                                         // Final strength in [0.0, 1.0]: weight alias 70%,
+                                                         // recency 30%. Tuned to keep alias-only hits above
+                                                         // 0.5 (so the default `min_confidence` filter in
+                                                         // Factual keeps them) while letting recency break
+                                                         // ties between two equally alias-matched candidates.
                     let match_strength = alias_boost + 0.3 * recency_score;
 
                     // Skip candidates with neither signal — they're an
@@ -313,12 +313,9 @@ mod tests {
     use crate::graph::test_helpers::fresh_conn;
     use crate::graph::{Entity, EntityKind};
 
-    fn write_entity(
-        store: &mut SqliteGraphStore,
-        canonical_name: &str,
-        ns: &str,
-    ) -> uuid::Uuid {
-        let mut e = Entity::new_random_id(canonical_name.to_string(), EntityKind::Person, Utc::now());
+    fn write_entity(store: &mut SqliteGraphStore, canonical_name: &str, ns: &str) -> uuid::Uuid {
+        let mut e =
+            Entity::new_random_id(canonical_name.to_string(), EntityKind::Person, Utc::now());
         let id = e.id;
         // The default identity_confidence is 0.0; bump to 1.0 so the
         // search_candidates path treats it as a high-confidence anchor.
@@ -329,12 +326,7 @@ mod tests {
         // requires a row in graph_entity_aliases (normalized form). Mirror
         // the production path by upserting a self-alias.
         store
-            .upsert_alias(
-                &canonical_name.to_lowercase(),
-                canonical_name,
-                id,
-                None,
-            )
+            .upsert_alias(&canonical_name.to_lowercase(), canonical_name, id, None)
             .expect("upsert alias");
         id
     }
@@ -560,9 +552,7 @@ mod tests {
     #[test]
     fn extract_mentions_respects_max_cap() {
         // Build a 200-token query; should cap at MAX_MENTIONS=64.
-        let q: String = (0..200)
-            .map(|i| format!("word{i} "))
-            .collect();
+        let q: String = (0..200).map(|i| format!("word{i} ")).collect();
         let m = extract_mentions(&q);
         assert!(
             m.len() <= MAX_MENTIONS,

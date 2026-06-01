@@ -136,9 +136,15 @@ fn t29_4_get_all_cross_links_filters_same_ns() {
         seed_memory_in_ns(&mut storage, "x2", "ns_alpha");
         seed_memory_in_ns(&mut storage, "x3", "ns_alpha");
         for _ in 0..3 {
-            storage.record_coactivation_ns("x1", "x2", 3, "ns_alpha").unwrap();
-            storage.record_coactivation_ns("x2", "x3", 3, "ns_alpha").unwrap();
-            storage.record_coactivation_ns("x1", "x3", 3, "ns_alpha").unwrap();
+            storage
+                .record_coactivation_ns("x1", "x2", 3, "ns_alpha")
+                .unwrap();
+            storage
+                .record_coactivation_ns("x2", "x3", 3, "ns_alpha")
+                .unwrap();
+            storage
+                .record_coactivation_ns("x1", "x3", 3, "ns_alpha")
+                .unwrap();
         }
         // Cross-NS pair with cross-axis ids.
         seed_memory_in_ns(&mut storage, "hub", "ns_aaa");
@@ -163,12 +169,9 @@ fn t29_4_get_all_cross_links_filters_same_ns() {
             1,
             "{label}: same-NS pairs must be filtered out"
         );
-        let endpoints: HashSet<&str> = [
-            links[0].source_id.as_str(),
-            links[0].target_id.as_str(),
-        ]
-        .into_iter()
-        .collect();
+        let endpoints: HashSet<&str> = [links[0].source_id.as_str(), links[0].target_id.as_str()]
+            .into_iter()
+            .collect();
         assert_eq!(
             endpoints,
             ["hub", "apple"].into_iter().collect::<HashSet<_>>(),
@@ -225,14 +228,17 @@ fn t29_4_get_all_cross_links_multi_pairs_sorted_by_strength() {
         ),
     ] {
         let links = storage.get_all_cross_links().unwrap();
-        let ids: HashSet<&str> = links.iter().map(|l| {
-            // Either side could be "hub" — pick the non-hub endpoint.
-            if l.source_id == "hub" {
-                l.target_id.as_str()
-            } else {
-                l.source_id.as_str()
-            }
-        }).collect();
+        let ids: HashSet<&str> = links
+            .iter()
+            .map(|l| {
+                // Either side could be "hub" — pick the non-hub endpoint.
+                if l.source_id == "hub" {
+                    l.target_id.as_str()
+                } else {
+                    l.source_id.as_str()
+                }
+            })
+            .collect();
         assert_eq!(
             ids,
             ["a", "b", "c"].into_iter().collect::<HashSet<_>>(),

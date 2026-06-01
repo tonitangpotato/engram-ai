@@ -124,19 +124,45 @@ impl EntityExtractor {
             ac_patterns.push(name.clone());
             known_index.push((EntityType::Technology, name.clone()));
         }
-        
+
         // Built-in common technology names (always matched unless already in user config)
         let builtin_technologies = [
-            "Rust", "Python", "TypeScript", "JavaScript", "Go", "Java", "C++",
-            "SQLite", "PostgreSQL", "Redis", "MongoDB",
-            "Supabase", "Docker", "Kubernetes", "Terraform",
-            "React", "Next.js", "Svelte", "Vue",
-            "Tokio", "Actix", "Axum", "Warp",
-            "PyTorch", "TensorFlow", "ONNX",
-            "WebSocket", "gRPC", "GraphQL", "REST",
-            "OAuth", "JWT", "WASM",
+            "Rust",
+            "Python",
+            "TypeScript",
+            "JavaScript",
+            "Go",
+            "Java",
+            "C++",
+            "SQLite",
+            "PostgreSQL",
+            "Redis",
+            "MongoDB",
+            "Supabase",
+            "Docker",
+            "Kubernetes",
+            "Terraform",
+            "React",
+            "Next.js",
+            "Svelte",
+            "Vue",
+            "Tokio",
+            "Actix",
+            "Axum",
+            "Warp",
+            "PyTorch",
+            "TensorFlow",
+            "ONNX",
+            "WebSocket",
+            "gRPC",
+            "GraphQL",
+            "REST",
+            "OAuth",
+            "JWT",
+            "WASM",
         ];
-        let existing_lower: HashSet<String> = config.known_technologies
+        let existing_lower: HashSet<String> = config
+            .known_technologies
             .iter()
             .map(|s| s.to_lowercase())
             .collect();
@@ -163,21 +189,18 @@ impl EntityExtractor {
                 name_group: 1,
             },
             EntityPattern {
-                regex: Regex::new(r"(src/\S+\.rs|\S+\.(rs|py|ts|md))")
-                    .expect("invalid file regex"),
+                regex: Regex::new(r"(src/\S+\.rs|\S+\.(rs|py|ts|md))").expect("invalid file regex"),
                 entity_type: EntityType::File,
                 name_group: 1,
             },
             EntityPattern {
-                regex: Regex::new(r"(https?://\S+)")
-                    .expect("invalid url regex"),
+                regex: Regex::new(r"(https?://\S+)").expect("invalid url regex"),
                 entity_type: EntityType::Url,
                 name_group: 1,
             },
             EntityPattern {
                 // @mentions: require 3+ alpha chars, no pure-digit handles
-                regex: Regex::new(r"(@[a-zA-Z]\w{2,})")
-                    .expect("invalid person regex"),
+                regex: Regex::new(r"(@[a-zA-Z]\w{2,})").expect("invalid person regex"),
                 entity_type: EntityType::Person,
                 name_group: 1,
             },
@@ -197,14 +220,12 @@ impl EntityExtractor {
                 // - LoCoMo / dialogue corpora ingest under this in their
                 //   canonical "<Speaker>: <utterance>" episode shape.
                 //   See engram ISS-144 for the data + root-cause analysis.
-                regex: Regex::new(r"(?m)^(\p{Lu}\p{L}+):")
-                    .expect("invalid speaker-prefix regex"),
+                regex: Regex::new(r"(?m)^(\p{Lu}\p{L}+):").expect("invalid speaker-prefix regex"),
                 entity_type: EntityType::Person,
                 name_group: 1,
             },
             EntityPattern {
-                regex: Regex::new(r"([a-z][a-z0-9_]*-rs)")
-                    .expect("invalid project-fallback regex"),
+                regex: Regex::new(r"([a-z][a-z0-9_]*-rs)").expect("invalid project-fallback regex"),
                 entity_type: EntityType::Project,
                 name_group: 1,
             },
@@ -231,7 +252,7 @@ impl EntityExtractor {
         for mat in self.known_matcher.find_iter(content) {
             let start = mat.start();
             let end = mat.end();
-            
+
             // Word boundary: char before start and after end must be non-alphanumeric
             // This prevents "Rust" matching inside "RustClaw"
             let before_ok = start == 0 || {
@@ -245,7 +266,7 @@ impl EntityExtractor {
             if !before_ok || !after_ok {
                 continue;
             }
-            
+
             let idx = mat.pattern().as_usize();
             let (ref entity_type, ref canonical_name) = self.known_index[idx];
             let matched_text = &content[start..end];
@@ -422,10 +443,7 @@ mod tests {
         let extractor = EntityExtractor::new(&config);
         let entities = extractor.extract("potato and potato again");
 
-        let potato_count = entities
-            .iter()
-            .filter(|e| e.normalized == "potato")
-            .count();
+        let potato_count = entities.iter().filter(|e| e.normalized == "potato").count();
         assert_eq!(potato_count, 1);
     }
 
@@ -520,7 +538,10 @@ mod tests {
         // LoCoMo-style single-turn episode.
         let extractor = EntityExtractor::new(&EntityConfig::default());
         let ents = extractor.extract("Caroline: Hey Mel, I'm off to do some research.");
-        let people: Vec<_> = ents.iter().filter(|e| e.entity_type == EntityType::Person).collect();
+        let people: Vec<_> = ents
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
         assert_eq!(people.len(), 1, "expected exactly Caroline, got: {ents:?}");
         assert_eq!(people[0].name, "Caroline");
         assert_eq!(people[0].normalized, "caroline");
@@ -532,13 +553,17 @@ mod tests {
         let extractor = EntityExtractor::new(&EntityConfig::default());
         let txt = "Caroline: Hi there\nMelanie: Hey Caroline\nCaroline: How are you?";
         let ents = extractor.extract(txt);
-        let mut people: Vec<_> = ents.iter()
+        let mut people: Vec<_> = ents
+            .iter()
             .filter(|e| e.entity_type == EntityType::Person)
             .map(|e| e.name.clone())
             .collect();
         people.sort();
-        assert_eq!(people, vec!["Caroline".to_string(), "Melanie".to_string()],
-            "expected Caroline + Melanie, got: {ents:?}");
+        assert_eq!(
+            people,
+            vec!["Caroline".to_string(), "Melanie".to_string()],
+            "expected Caroline + Melanie, got: {ents:?}"
+        );
     }
 
     #[test]
@@ -547,11 +572,14 @@ mod tests {
         // the trailing colon requirement prevents this false positive.
         let extractor = EntityExtractor::new(&EntityConfig::default());
         let ents = extractor.extract("Earlier today Caroline went home.");
-        let people: Vec<_> = ents.iter()
+        let people: Vec<_> = ents
+            .iter()
             .filter(|e| e.entity_type == EntityType::Person)
             .collect();
-        assert!(people.is_empty(),
-            "no person should be extracted from 'Caroline went home.'; got: {ents:?}");
+        assert!(
+            people.is_empty(),
+            "no person should be extracted from 'Caroline went home.'; got: {ents:?}"
+        );
     }
 
     #[test]
@@ -560,10 +588,14 @@ mod tests {
         // at least 2 letters total (one upper + one more).
         let extractor = EntityExtractor::new(&EntityConfig::default());
         let ents = extractor.extract("X: short");
-        let people: Vec<_> = ents.iter()
+        let people: Vec<_> = ents
+            .iter()
             .filter(|e| e.entity_type == EntityType::Person)
             .collect();
-        assert!(people.is_empty(), "single-letter speaker rejected; got: {ents:?}");
+        assert!(
+            people.is_empty(),
+            "single-letter speaker rejected; got: {ents:?}"
+        );
     }
 
     #[test]
@@ -619,7 +651,10 @@ mod tests {
             .iter()
             .filter(|e| e.normalized == "gid-rs" && e.entity_type == EntityType::Project)
             .count();
-        assert_eq!(gid_count, 1, "gid-rs should appear only once even if matched by both known and regex");
+        assert_eq!(
+            gid_count, 1,
+            "gid-rs should appear only once even if matched by both known and regex"
+        );
     }
 
     #[test]
@@ -635,7 +670,10 @@ mod tests {
             .iter()
             .filter(|e| e.normalized == "rustclaw" && e.entity_type == EntityType::Project)
             .count();
-        assert_eq!(rustclaw_count, 1, "RustClaw and rustclaw should both match known project and dedup to one");
+        assert_eq!(
+            rustclaw_count, 1,
+            "RustClaw and rustclaw should both match known project and dedup to one"
+        );
     }
 
     #[test]
@@ -669,42 +707,64 @@ mod tests {
             "guard-5"
         );
     }
-    
+
     #[test]
     fn test_at_mention_rejects_short_and_numeric() {
         let config = EntityConfig::default();
         let extractor = EntityExtractor::new(&config);
-        
+
         // Should NOT match: too short or pure digits
         let entities = extractor.extract("@0 @1 @ab test");
-        let persons: Vec<&str> = entities.iter()
+        let persons: Vec<&str> = entities
+            .iter()
             .filter(|e| e.entity_type == EntityType::Person)
             .map(|e| e.normalized.as_str())
             .collect();
-        assert!(persons.is_empty(), "Short @mentions should not be extracted: {:?}", persons);
-        
+        assert!(
+            persons.is_empty(),
+            "Short @mentions should not be extracted: {:?}",
+            persons
+        );
+
         // Should match: 3+ chars starting with alpha
         let entities = extractor.extract("Thanks @alice and @bob123");
-        let persons: Vec<&str> = entities.iter()
+        let persons: Vec<&str> = entities
+            .iter()
             .filter(|e| e.entity_type == EntityType::Person)
             .map(|e| e.normalized.as_str())
             .collect();
-        assert!(persons.contains(&"alice"), "Valid @mention should be extracted");
-        assert!(persons.contains(&"bob123"), "Valid @mention should be extracted");
+        assert!(
+            persons.contains(&"alice"),
+            "Valid @mention should be extracted"
+        );
+        assert!(
+            persons.contains(&"bob123"),
+            "Valid @mention should be extracted"
+        );
     }
-    
+
     #[test]
     fn test_builtin_technologies() {
         let config = EntityConfig::default();
         let extractor = EntityExtractor::new(&config);
-        
+
         let entities = extractor.extract("Building with Rust and PostgreSQL, deployed on Docker");
-        let techs: Vec<&str> = entities.iter()
+        let techs: Vec<&str> = entities
+            .iter()
             .filter(|e| e.entity_type == EntityType::Technology)
             .map(|e| e.name.as_str())
             .collect();
-        assert!(techs.contains(&"Rust"), "Builtin tech 'Rust' should be extracted");
-        assert!(techs.contains(&"PostgreSQL"), "Builtin tech 'PostgreSQL' should be extracted");
-        assert!(techs.contains(&"Docker"), "Builtin tech 'Docker' should be extracted");
+        assert!(
+            techs.contains(&"Rust"),
+            "Builtin tech 'Rust' should be extracted"
+        );
+        assert!(
+            techs.contains(&"PostgreSQL"),
+            "Builtin tech 'PostgreSQL' should be extracted"
+        );
+        assert!(
+            techs.contains(&"Docker"),
+            "Builtin tech 'Docker' should be extracted"
+        );
     }
 }

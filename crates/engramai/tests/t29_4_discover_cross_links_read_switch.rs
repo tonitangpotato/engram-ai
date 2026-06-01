@@ -89,10 +89,9 @@ fn t29_4_discover_cross_links_single_pair_matches_on_both_substrates() {
             "{label} endpoints"
         );
 
-        let namespaces: HashSet<Option<String>> =
-            [link.source_ns.clone(), link.target_ns.clone()]
-                .into_iter()
-                .collect();
+        let namespaces: HashSet<Option<String>> = [link.source_ns.clone(), link.target_ns.clone()]
+            .into_iter()
+            .collect();
         assert_eq!(
             namespaces,
             [Some("ns_a".to_string()), Some("ns_b".to_string())]
@@ -140,10 +139,9 @@ fn t29_4_discover_cross_links_excludes_same_namespace_pairs() {
         // Search for the actual cross-NS pair: returns only p-q.
         let links = storage.discover_cross_links("left", "right").unwrap();
         assert_eq!(links.len(), 1, "{label} cross-NS only");
-        let endpoints: HashSet<&str> =
-            [links[0].source_id.as_str(), links[0].target_id.as_str()]
-                .into_iter()
-                .collect();
+        let endpoints: HashSet<&str> = [links[0].source_id.as_str(), links[0].target_id.as_str()]
+            .into_iter()
+            .collect();
         assert_eq!(
             endpoints,
             ["p", "q"].into_iter().collect::<HashSet<_>>(),

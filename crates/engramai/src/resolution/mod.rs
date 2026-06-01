@@ -90,10 +90,10 @@ pub mod decision;
 pub mod edge_decision;
 pub mod episode;
 pub mod fusion;
-pub mod reextract;
 pub mod memory_reader;
 pub mod pipeline;
 pub mod queue;
+pub mod reextract;
 pub mod signals;
 pub mod stage_edge_extract;
 pub mod stage_extract;
@@ -111,10 +111,10 @@ pub use context::{DraftEdge, DraftEntity, PipelineContext, PipelineStage, StageF
 pub use decision::{decide, Decision, DecisionThresholds, ResolutionOutcome};
 pub use episode::Episode;
 pub use fusion::{fuse, FusionResult, Measurement, SignalWeights};
-pub use reextract::ReextractReport;
 pub use memory_reader::SqliteMemoryReader;
 pub use pipeline::OnTiebreakFailure;
 pub use queue::{BoundedJobQueue, EnqueueError, JobMode, JobQueue, PipelineJob};
+pub use reextract::ReextractReport;
 pub use signals::{
     affective_continuity, cooccurrence, graph_context, identity_hint, name_match, recency,
     semantic_similarity, somatic_match, Signal, DEFAULT_RECENCY_HALF_LIFE,

@@ -68,11 +68,13 @@ impl ManualEditManager {
             return None;
         }
 
-        let mut lines = vec![
-            "FIXED SECTIONS (do not modify these — user has edited them):".to_string(),
-        ];
+        let mut lines =
+            vec!["FIXED SECTIONS (do not modify these — user has edited them):".to_string()];
         for section in &edited {
-            lines.push(format!("- Section \"{}\": {}", section.heading, section.body));
+            lines.push(format!(
+                "- Section \"{}\": {}",
+                section.heading, section.body
+            ));
         }
         lines.push(String::new());
         lines.push(
@@ -240,9 +242,8 @@ mod tests {
 
     #[test]
     fn test_build_fixed_sections_prompt_with_edits() {
-        let mut sections = ManualEditManager::content_to_sections(
-            "Overview.\n\n## Details\n\nSome details.",
-        );
+        let mut sections =
+            ManualEditManager::content_to_sections("Overview.\n\n## Details\n\nSome details.");
         sections[1].user_edited = true;
 
         let prompt = ManualEditManager::build_fixed_sections_prompt(&sections);
@@ -267,7 +268,10 @@ mod tests {
         let sections = ManualEditManager::content_to_sections(content);
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].heading, "Overview");
-        assert_eq!(sections[0].body, "Just a flat paragraph\nwith multiple lines.");
+        assert_eq!(
+            sections[0].body,
+            "Just a flat paragraph\nwith multiple lines."
+        );
     }
 
     #[test]

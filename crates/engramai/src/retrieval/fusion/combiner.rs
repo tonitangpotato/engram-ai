@@ -523,9 +523,9 @@ pub fn fuse_and_rank(
         let sa = score_of(a);
         let sb = score_of(b);
         // f64 comparison: NaN treated as smallest.
-        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal).then_with(|| {
-            id_of(a).cmp(&id_of(b))
-        })
+        sb.partial_cmp(&sa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| id_of(a).cmp(&id_of(b)))
     });
 
     // ISS-175 diagnostic dump (env-gated, default no-op).
@@ -576,7 +576,11 @@ pub fn reciprocal_rank_fusion(
     if sub_plan_outputs.is_empty() {
         return Vec::new();
     }
-    let k = if k.is_finite() && k > 0.0 { k } else { RRF_DEFAULT_K };
+    let k = if k.is_finite() && k > 0.0 {
+        k
+    } else {
+        RRF_DEFAULT_K
+    };
 
     // Map: id -> (rrf_score, representative ScoredResult).
     let mut acc: HashMap<String, (f64, ScoredResult)> = HashMap::new();
@@ -1019,12 +1023,14 @@ mod tests {
             superseded_by: None,
             metadata: None,
         };
-        let make_cand = || vec![ScoredResult::Memory {
-            record: mk_record(),
-            score: 0.0,
-            sub_scores: sub_gold.clone(),
-            embedding: None,
-        }];
+        let make_cand = || {
+            vec![ScoredResult::Memory {
+                record: mk_record(),
+                score: 0.0,
+                sub_scores: sub_gold.clone(),
+                embedding: None,
+            }]
+        };
 
         let mut cfg_off = FusionConfig::locked();
         cfg_off.factual_reweight = false;
@@ -1083,12 +1089,14 @@ mod tests {
             superseded_by: None,
             metadata: None,
         };
-        let make_cand = || vec![ScoredResult::Memory {
-            record: mk_record(),
-            score: 0.0,
-            sub_scores: sub.clone(),
-            embedding: None,
-        }];
+        let make_cand = || {
+            vec![ScoredResult::Memory {
+                record: mk_record(),
+                score: 0.0,
+                sub_scores: sub.clone(),
+                embedding: None,
+            }]
+        };
 
         let mut cfg_off = FusionConfig::locked();
         cfg_off.factual_reweight = false;

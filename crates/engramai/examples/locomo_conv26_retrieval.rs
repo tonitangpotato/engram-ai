@@ -27,8 +27,8 @@
 //!   --ns conv26
 //! ```
 
-use engramai::Memory;
 use engramai::retrieval::api::{GraphQuery, ScoredResult};
+use engramai::Memory;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -63,14 +63,14 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             "--graph-db" => {
                 graph_db = Some(PathBuf::from(iter.next().ok_or("--graph-db needs value")?))
             }
-            "--dataset" => dataset = Some(PathBuf::from(iter.next().ok_or("--dataset needs value")?)),
+            "--dataset" => {
+                dataset = Some(PathBuf::from(iter.next().ok_or("--dataset needs value")?))
+            }
             "--max-session" => {
                 max_session = iter.next().ok_or("--max-session needs value")?.parse()?
             }
             "--limit" => limit = iter.next().ok_or("--limit needs value")?.parse()?,
-            "--ns" | "--namespace" => {
-                namespace = Some(iter.next().ok_or("--ns needs value")?)
-            }
+            "--ns" | "--namespace" => namespace = Some(iter.next().ok_or("--ns needs value")?),
             other => return Err(format!("unknown arg: {other}").into()),
         }
     }
@@ -107,13 +107,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load dataset, extract conv-26 + filter QAs
     let raw = std::fs::read_to_string(&args.dataset)?;
     let data: Value = serde_json::from_str(&raw)?;
-    let conv = data.as_array().ok_or("dataset not an array")?
+    let conv = data
+        .as_array()
+        .ok_or("dataset not an array")?
         .iter()
         .find(|c| c["sample_id"].as_str() == Some("conv-26"))
         .ok_or("conv-26 not found")?;
 
     let qa_all = conv["qa"].as_array().ok_or("qa missing")?;
-    let qas: Vec<&Value> = qa_all.iter()
+    let qas: Vec<&Value> = qa_all
+        .iter()
         .filter(|q| {
             let evidence = q["evidence"].as_array();
             match evidence {
@@ -127,12 +130,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .collect();
-    println!("Loaded {} QAs (out of {}) with evidence in sessions 1..={}",
-             qas.len(), qa_all.len(), args.max_session);
+    println!(
+        "Loaded {} QAs (out of {}) with evidence in sessions 1..={}",
+        qas.len(),
+        qa_all.len(),
+        args.max_session
+    );
 
     // 2. Open Memory + install graph store (creates fresh graph layer if missing)
-    let mem = Memory::new(args.db.to_str().unwrap(), None)?
-        .with_graph_store(&args.graph_db)?;
+    let mem = Memory::new(args.db.to_str().unwrap(), None)?.with_graph_store(&args.graph_db)?;
     println!("Opened memory + installed graph store");
     println!();
 
@@ -186,8 +192,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (idx, q) in qas.iter().enumerate() {
         let question = q["question"].as_str().unwrap_or("");
         let gold_answer = q["answer"].as_str().unwrap_or("");
-        let evidence: HashSet<String> = q["evidence"].as_array()
-            .map(|arr| arr.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+        let evidence: HashSet<String> = q["evidence"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let category = q["category"].as_u64().unwrap_or(0);
 
@@ -222,7 +233,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Print compact result row
         let q_short: String = question.chars().take(70).collect();
-        let mark = if hit { "✓" } else if resp.results.is_empty() { "∅" } else { "✗" };
+        let mark = if hit {
+            "✓"
+        } else if resp.results.is_empty() {
+            "∅"
+        } else {
+            "✗"
+        };
         let plan_label = format!("{:?}", resp.plan_used);
         let outcome_label = resp.outcome.slug().to_string();
 
@@ -242,8 +259,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!(
             "[{:>2}/{}] {} cat={} hit={} plan={} outcome={} got={} | gold={:?} top={:?}",
-            idx + 1, qas.len(), mark, category, hit, plan_label, outcome_label, resp.results.len(),
-            evidence.iter().take(2).collect::<Vec<_>>(), top_sources.iter().take(2).collect::<Vec<_>>(),
+            idx + 1,
+            qas.len(),
+            mark,
+            category,
+            hit,
+            plan_label,
+            outcome_label,
+            resp.results.len(),
+            evidence.iter().take(2).collect::<Vec<_>>(),
+            top_sources.iter().take(2).collect::<Vec<_>>(),
         );
         let _ = gold_answer;
         let _ = q_short;
@@ -252,8 +277,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("=== Summary ===");
     println!("  Total queries:    {}", total);
-    println!("  Hits @ {}:         {} ({:.1}%)", args.limit, hits, 100.0 * hits as f64 / total.max(1) as f64);
-    println!("  Empty results:    {} ({:.1}%)", empty_results, 100.0 * empty_results as f64 / total.max(1) as f64);
+    println!(
+        "  Hits @ {}:         {} ({:.1}%)",
+        args.limit,
+        hits,
+        100.0 * hits as f64 / total.max(1) as f64
+    );
+    println!(
+        "  Empty results:    {} ({:.1}%)",
+        empty_results,
+        100.0 * empty_results as f64 / total.max(1) as f64
+    );
 
     // Phase-2 per-category breakdown. Cat=5 (Adversarial) is reported separately
     // because retrieval-hit ≠ correctness for adversarial questions: the "right"
@@ -281,8 +315,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             ""
         };
-        println!("  cat={} {:<12} n={:<3} hits={:<3} ({:>5.1}%){}",
-                 cat, cat_label(*cat), n, h, pct, note);
+        println!(
+            "  cat={} {:<12} n={:<3} hits={:<3} ({:>5.1}%){}",
+            cat,
+            cat_label(*cat),
+            n,
+            h,
+            pct,
+            note
+        );
         if *cat != 5 {
             headline_total += n;
             headline_hits += h;
@@ -291,8 +332,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if per_cat_total.contains_key(&5) {
         let pct = 100.0 * headline_hits as f64 / headline_total.max(1) as f64;
         println!();
-        println!("  Headline hit@{} (cat 1-4 only): {}/{} = {:.1}%",
-                 args.limit, headline_hits, headline_total, pct);
+        println!(
+            "  Headline hit@{} (cat 1-4 only): {}/{} = {:.1}%",
+            args.limit, headline_hits, headline_total, pct
+        );
     }
 
     println!();
@@ -301,7 +344,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (plan, n) in &per_plan_total {
         let h = per_plan_hits.get(plan).copied().unwrap_or(0);
         let e = per_plan_empty.get(plan).copied().unwrap_or(0);
-        let pct = if *n > 0 { 100.0 * h as f64 / *n as f64 } else { 0.0 };
+        let pct = if *n > 0 {
+            100.0 * h as f64 / *n as f64
+        } else {
+            0.0
+        };
         println!(
             "  {:<14} n={:<3} hits={:<3} ({:>5.1}%) empty={}",
             plan, n, h, pct, e,
@@ -310,7 +357,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     println!("=== Per-outcome breakdown ===");
-    println!("  (RetrievalOutcome slug; non-Ok values indicate plan downgrades or missing substrate)");
+    println!(
+        "  (RetrievalOutcome slug; non-Ok values indicate plan downgrades or missing substrate)"
+    );
     for (oc, n) in &per_outcome {
         println!("  {:<28} n={}", oc, n);
     }

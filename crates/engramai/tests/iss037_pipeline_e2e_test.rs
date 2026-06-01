@@ -58,10 +58,7 @@ impl MockTripleExtractor {
 }
 
 impl TripleExtractor for MockTripleExtractor {
-    fn extract_triples(
-        &self,
-        _content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, _content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         Ok(vec![Triple::new(
             "Alice".to_string(),
@@ -125,9 +122,7 @@ fn pipeline_pool_drains_queue_after_store_raw() {
     // invocation counter — that flips when the worker actually invokes
     // the pipeline.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while mock_for_assert.invocation_count() == 0
-        && std::time::Instant::now() < deadline
-    {
+    while mock_for_assert.invocation_count() == 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -149,10 +144,7 @@ fn pipeline_pool_drains_queue_after_store_raw() {
     // The pool stats should show at least one job processed.
     // (Field naming may vary; we assert via Debug for resilience.)
     let dbg = format!("{stats:?}");
-    assert!(
-        !dbg.is_empty(),
-        "expected non-empty stats debug output"
-    );
+    assert!(!dbg.is_empty(), "expected non-empty stats debug output");
 }
 
 #[test]

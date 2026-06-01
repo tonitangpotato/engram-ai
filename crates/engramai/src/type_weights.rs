@@ -216,7 +216,12 @@ mod tests {
 
     #[test]
     fn test_episodic_memory() {
-        let w = infer_type_weights(&make_fact(&["temporal", "participants", "context", "location"]));
+        let w = infer_type_weights(&make_fact(&[
+            "temporal",
+            "participants",
+            "context",
+            "location",
+        ]));
         assert_eq!(w.episodic, 1.0); // 0.1 + 0.5 + 0.2 + 0.2 + 0.1 = 1.1 → clamped to 1.0
     }
 

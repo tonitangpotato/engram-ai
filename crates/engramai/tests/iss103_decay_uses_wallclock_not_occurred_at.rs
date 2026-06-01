@@ -51,10 +51,12 @@ fn store_with_old_occurred_at(mem: &mut Memory, ns: &str) -> String {
         .expect("store_raw ok");
 
     match out {
-        RawStoreOutcome::Stored(outcomes) => match outcomes.first().expect("at least one outcome") {
-            StoreOutcome::Inserted { id } => id.clone(),
-            StoreOutcome::Merged { id, .. } => id.clone(),
-        },
+        RawStoreOutcome::Stored(outcomes) => {
+            match outcomes.first().expect("at least one outcome") {
+                StoreOutcome::Inserted { id } => id.clone(),
+                StoreOutcome::Merged { id, .. } => id.clone(),
+            }
+        }
         other => panic!("expected Stored, got {:?}", other),
     }
 }
@@ -83,9 +85,7 @@ fn iss103_old_occurred_at_does_not_trigger_decay_softdelete() {
     );
 
     // Run the exact lifecycle pass that bulk-deleted RUN-0017's DB.
-    let report = mem
-        .check_decay_and_flag(Some(ns))
-        .expect("decay pass ok");
+    let report = mem.check_decay_and_flag(Some(ns)).expect("decay pass ok");
 
     assert_eq!(
         report.flagged_for_forget, 0,
@@ -113,9 +113,7 @@ fn iss103_bulk_ingest_with_old_occurred_at_all_survive_decay() {
 
     let mut ids = Vec::with_capacity(50);
     for i in 0..50 {
-        let event_time = chrono::Utc
-            .with_ymd_and_hms(2023, 5, 8, 12, 0, 0)
-            .unwrap()
+        let event_time = chrono::Utc.with_ymd_and_hms(2023, 5, 8, 12, 0, 0).unwrap()
             + chrono::Duration::seconds(i as i64 * 60);
         let meta = StorageMeta {
             importance_hint: Some(0.6),
@@ -140,9 +138,7 @@ fn iss103_bulk_ingest_with_old_occurred_at_all_survive_decay() {
     }
     assert_eq!(ids.len(), 50, "all 50 inserts should land");
 
-    let report = mem
-        .check_decay_and_flag(Some(ns))
-        .expect("decay pass ok");
+    let report = mem.check_decay_and_flag(Some(ns)).expect("decay pass ok");
 
     assert_eq!(
         report.flagged_for_forget, 0,
@@ -178,9 +174,7 @@ fn iss103_decay_still_works_on_actually_aged_memory() {
     let _id = store_with_old_occurred_at(&mut mem, ns);
 
     // Precondition: one memory in the namespace.
-    let report = mem
-        .check_decay_and_flag(Some(ns))
-        .expect("decay pass ok");
+    let report = mem.check_decay_and_flag(Some(ns)).expect("decay pass ok");
 
     // We just iterated one record. The function ran end-to-end.
     // (If ISS-103 fix accidentally returned early, below_threshold

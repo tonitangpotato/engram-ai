@@ -34,31 +34,164 @@ fn stop_words() -> &'static HashSet<&'static str> {
     STOP_WORDS.get_or_init(|| {
         [
             // Markdown headers / formatting
-            "#", "##", "###", "---", "|", "*", "**",
+            "#",
+            "##",
+            "###",
+            "---",
+            "|",
+            "*",
+            "**",
             // Template labels
-            "Topic", "Summary", "Compiled", "compiled", "from", "memories",
-            "Key", "Points", "Details", "Memory", "Memory:", "Type", "Type:",
-            "Importance", "Importance:", "Date", "Date:",
+            "Topic",
+            "Summary",
+            "Compiled",
+            "compiled",
+            "from",
+            "memories",
+            "Key",
+            "Points",
+            "Details",
+            "Memory",
+            "Memory:",
+            "Type",
+            "Type:",
+            "Importance",
+            "Importance:",
+            "Date",
+            "Date:",
             // Memory type labels
-            "factual", "procedural", "episodic", "relational", "emotional",
-            "opinion", "causal",
+            "factual",
+            "procedural",
+            "episodic",
+            "relational",
+            "emotional",
+            "opinion",
+            "causal",
             // Common English stop words
-            "the", "a", "an", "is", "are", "was", "were", "be", "been",
-            "being", "have", "has", "had", "do", "does", "did", "will",
-            "would", "could", "should", "may", "might", "shall", "can",
-            "need", "must", "to", "of", "in", "for", "on", "with", "at",
-            "by", "as", "into", "through", "during", "before", "after",
-            "above", "below", "between", "and", "but", "or", "nor", "not",
-            "no", "so", "if", "then", "than", "that", "this", "these",
-            "those", "it", "its", "they", "them", "their", "we", "our",
-            "you", "your", "he", "she", "his", "her",
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "could",
+            "should",
+            "may",
+            "might",
+            "shall",
+            "can",
+            "need",
+            "must",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "as",
+            "into",
+            "through",
+            "during",
+            "before",
+            "after",
+            "above",
+            "below",
+            "between",
+            "and",
+            "but",
+            "or",
+            "nor",
+            "not",
+            "no",
+            "so",
+            "if",
+            "then",
+            "than",
+            "that",
+            "this",
+            "these",
+            "those",
+            "it",
+            "its",
+            "they",
+            "them",
+            "their",
+            "we",
+            "our",
+            "you",
+            "your",
+            "he",
+            "she",
+            "his",
+            "her",
             // Common Chinese stop words
-            "的", "了", "在", "是", "和", "有", "我", "不", "也", "就",
-            "人", "都", "一", "这", "中", "上", "大", "会", "到", "来",
-            "用", "要", "可以", "他", "她", "它", "个", "把", "被", "让",
-            "给", "从", "对", "向", "与", "而", "但", "还", "又", "或",
-            "如", "很", "更", "最", "那", "着", "过", "能", "时", "等",
-            "所", "之", "以",
+            "的",
+            "了",
+            "在",
+            "是",
+            "和",
+            "有",
+            "我",
+            "不",
+            "也",
+            "就",
+            "人",
+            "都",
+            "一",
+            "这",
+            "中",
+            "上",
+            "大",
+            "会",
+            "到",
+            "来",
+            "用",
+            "要",
+            "可以",
+            "他",
+            "她",
+            "它",
+            "个",
+            "把",
+            "被",
+            "让",
+            "给",
+            "从",
+            "对",
+            "向",
+            "与",
+            "而",
+            "但",
+            "还",
+            "又",
+            "或",
+            "如",
+            "很",
+            "更",
+            "最",
+            "那",
+            "着",
+            "过",
+            "能",
+            "时",
+            "等",
+            "所",
+            "之",
+            "以",
         ]
         .into_iter()
         .collect()
@@ -83,8 +216,18 @@ fn is_noise_token(token: &str) -> bool {
 
 /// Compute Jaccard similarity of source_memory_ids for two topics.
 fn source_overlap(a: &TopicPage, b: &TopicPage) -> f64 {
-    let set_a: HashSet<&str> = a.metadata.source_memory_ids.iter().map(|s| s.as_str()).collect();
-    let set_b: HashSet<&str> = b.metadata.source_memory_ids.iter().map(|s| s.as_str()).collect();
+    let set_a: HashSet<&str> = a
+        .metadata
+        .source_memory_ids
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let set_b: HashSet<&str> = b
+        .metadata
+        .source_memory_ids
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     jaccard_similarity(&set_a, &set_b)
 }
 
@@ -650,7 +793,6 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
-
     fn make_topic(id: &str, title: &str, sources: &[&str]) -> TopicPage {
         TopicPage {
             id: TopicId(id.to_string()),
@@ -704,7 +846,11 @@ mod tests {
         // Two topics with 50% source overlap (5 shared out of 10 union)
         // Topic A: m1..m7, Topic B: m3..m10 → shared m3..m7 = 5, union m1..m10 = 10
         let topic_a = make_topic("a", "Topic A", &["m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
-        let topic_b = make_topic("b", "Topic B", &["m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"]);
+        let topic_b = make_topic(
+            "b",
+            "Topic B",
+            &["m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
+        );
         let topics = vec![topic_a, topic_b];
 
         let detector = ConflictDetector::new();
@@ -747,8 +893,16 @@ mod tests {
     #[test]
     fn test_detect_duplicates_basic() {
         // Two topics with 80% overlap: 8 shared out of 10 union
-        let topic_a = make_topic("a", "Topic A", &["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"]);
-        let topic_b = make_topic("b", "Topic B", &["m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"]);
+        let topic_a = make_topic(
+            "a",
+            "Topic A",
+            &["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"],
+        );
+        let topic_b = make_topic(
+            "b",
+            "Topic B",
+            &["m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
+        );
         // shared: m2..m9 = 8, union: m1..m10 = 10 → jaccard = 0.8
         let topics = vec![topic_a, topic_b];
 
@@ -809,7 +963,8 @@ mod tests {
                     assert!(
                         a.0 == "b" || b.0 == "b",
                         "Expected conflict to involve topic 'b', got ({}, {})",
-                        a, b
+                        a,
+                        b
                     );
                 }
                 _ => panic!("Expected BetweenTopics scope"),
@@ -841,7 +996,8 @@ mod tests {
                     assert!(
                         pair == ("a", "c") || pair == ("c", "a"),
                         "Expected conflict between 'a' and 'c', got ({}, {})",
-                        a, b
+                        a,
+                        b
                     );
                 }
                 _ => panic!("Expected BetweenTopics scope"),
@@ -1059,7 +1215,10 @@ mod tests {
         );
 
         let sim = content_similarity(&topic_a, &topic_b);
-        assert_eq!(sim, 0.0, "Topics sharing only template vocabulary should have 0.0 similarity");
+        assert_eq!(
+            sim, 0.0,
+            "Topics sharing only template vocabulary should have 0.0 similarity"
+        );
     }
 
     #[test]
@@ -1174,7 +1333,8 @@ mod tests {
         // accept either classification — the important thing is that SOMETHING was flagged.
         assert!(matches!(
             c.kind,
-            DimensionalConflictKind::StanceContradiction | DimensionalConflictKind::EvolutionCandidate
+            DimensionalConflictKind::StanceContradiction
+                | DimensionalConflictKind::EvolutionCandidate
         ));
         assert_eq!(c.domain, "coding");
     }
@@ -1297,12 +1457,7 @@ mod tests {
             Some("coding"),
             Some("2026-01-01"),
         );
-        let trading = mk_dim(
-            Some("bullish ETH"),
-            Some("potato"),
-            Some("trading"),
-            None,
-        );
+        let trading = mk_dim(Some("bullish ETH"), Some("potato"), Some("trading"), None);
         let mems = vec![
             MemorySnapshot::test_with_dimensions("m1", "c1", c_rust_2025),
             MemorySnapshot::test_with_dimensions("m2", "c2", c_go_2026),
@@ -1312,6 +1467,9 @@ mod tests {
         assert_eq!(conflicts.len(), 1, "only m1↔m2 (coding) should flag");
         assert_eq!(conflicts[0].memory_a, "m1");
         assert_eq!(conflicts[0].memory_b, "m2");
-        assert_eq!(conflicts[0].kind, DimensionalConflictKind::EvolutionCandidate);
+        assert_eq!(
+            conflicts[0].kind,
+            DimensionalConflictKind::EvolutionCandidate
+        );
     }
 }

@@ -224,9 +224,7 @@ impl Summarizer for AnthropicSummarizer {
         // (optional) entity names. Numbering helps the model attribute
         // claims back to specific memories in the summary.
         let mut user_content = String::with_capacity(
-            K3_PROMPT_PREFIX.len()
-                + memory_contents.iter().map(|s| s.len()).sum::<usize>()
-                + 64,
+            K3_PROMPT_PREFIX.len() + memory_contents.iter().map(|s| s.len()).sum::<usize>() + 64,
         );
         user_content.push_str(K3_PROMPT_PREFIX);
         for (i, m) in memory_contents.iter().enumerate() {
@@ -278,9 +276,9 @@ impl Summarizer for AnthropicSummarizer {
             });
         }
 
-        let response_json: serde_json::Value = response.json().map_err(|e| {
-            SummarizeError::Permanent(Box::new(e) as Box<dyn Error + Send + Sync>)
-        })?;
+        let response_json: serde_json::Value = response
+            .json()
+            .map_err(|e| SummarizeError::Permanent(Box::new(e) as Box<dyn Error + Send + Sync>))?;
 
         let content_text = response_json
             .get("content")
@@ -336,10 +334,7 @@ fn strip_code_fences(s: &str) -> &str {
         .strip_prefix("```json")
         .or_else(|| t.strip_prefix("```"))
         .unwrap_or(t);
-    stripped
-        .strip_suffix("```")
-        .unwrap_or(stripped)
-        .trim()
+    stripped.strip_suffix("```").unwrap_or(stripped).trim()
 }
 
 #[cfg(test)]

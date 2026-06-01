@@ -10,10 +10,10 @@
 //! - Migration awareness
 //! - Namespace + model filtering
 
-use engramai::storage::Storage;
-use engramai::types::{MemoryRecord, MemoryType, MemoryLayer};
-use engramai::embeddings::EmbeddingConfig;
 use chrono::Utc;
+use engramai::embeddings::EmbeddingConfig;
+use engramai::storage::Storage;
+use engramai::types::{MemoryLayer, MemoryRecord, MemoryType};
 
 /// Helper: create a test memory record.
 fn make_memory(id: &str, content: &str) -> MemoryRecord {
@@ -54,7 +54,9 @@ fn test_embedding_round_trip() {
     let model = "ollama/nomic-embed-text";
 
     // Store
-    storage.store_embedding("rt-1", &embedding, model, 768).unwrap();
+    storage
+        .store_embedding("rt-1", &embedding, model, 768)
+        .unwrap();
 
     // Read back
     let retrieved = storage.get_embedding("rt-1", model).unwrap();
@@ -88,8 +90,12 @@ fn test_multi_model_storage() {
     let model_b = "openai/text-embedding-3-small";
 
     // Store two different models for the same memory
-    storage.store_embedding("mm-1", &emb_a, model_a, 768).unwrap();
-    storage.store_embedding("mm-1", &emb_b, model_b, 1536).unwrap();
+    storage
+        .store_embedding("mm-1", &emb_a, model_a, 768)
+        .unwrap();
+    storage
+        .store_embedding("mm-1", &emb_b, model_b, 1536)
+        .unwrap();
 
     // Both should exist
     let ret_a = storage.get_embedding("mm-1", model_a).unwrap();
@@ -115,9 +121,15 @@ fn test_model_scoped_query() {
     let model_b = "openai/text-embedding-3-small";
 
     // Store: mem1 has both models, mem2 has only model_a
-    storage.store_embedding("ms-1", &make_embedding(768, 1.0), model_a, 768).unwrap();
-    storage.store_embedding("ms-1", &make_embedding(1536, 2.0), model_b, 1536).unwrap();
-    storage.store_embedding("ms-2", &make_embedding(768, 3.0), model_a, 768).unwrap();
+    storage
+        .store_embedding("ms-1", &make_embedding(768, 1.0), model_a, 768)
+        .unwrap();
+    storage
+        .store_embedding("ms-1", &make_embedding(1536, 2.0), model_b, 1536)
+        .unwrap();
+    storage
+        .store_embedding("ms-2", &make_embedding(768, 3.0), model_a, 768)
+        .unwrap();
 
     // Query model_a: should return 2 results
     let all_a = storage.get_all_embeddings(model_a).unwrap();
@@ -126,7 +138,10 @@ fn test_model_scoped_query() {
     // Query model_b: should return 1 result
     let all_b = storage.get_all_embeddings(model_b).unwrap();
     assert_eq!(all_b.len(), 1, "Model B should have 1 embedding");
-    assert_eq!(all_b[0].0, "ms-1", "Model B's only embedding should be ms-1");
+    assert_eq!(
+        all_b[0].0, "ms-1",
+        "Model B's only embedding should be ms-1"
+    );
 }
 
 #[test]
@@ -180,19 +195,27 @@ fn test_delete_embedding_by_model() {
     let model_a = "ollama/nomic-embed-text";
     let model_b = "openai/text-embedding-3-small";
 
-    storage.store_embedding("del-1", &make_embedding(768, 1.0), model_a, 768).unwrap();
-    storage.store_embedding("del-1", &make_embedding(1536, 2.0), model_b, 1536).unwrap();
+    storage
+        .store_embedding("del-1", &make_embedding(768, 1.0), model_a, 768)
+        .unwrap();
+    storage
+        .store_embedding("del-1", &make_embedding(1536, 2.0), model_b, 1536)
+        .unwrap();
 
     // Delete only model_a
     storage.delete_embedding("del-1", model_a).unwrap();
 
     // model_a should be gone
-    assert!(storage.get_embedding("del-1", model_a).unwrap().is_none(),
-        "Model A should be deleted");
+    assert!(
+        storage.get_embedding("del-1", model_a).unwrap().is_none(),
+        "Model A should be deleted"
+    );
 
     // model_b should still exist
-    assert!(storage.get_embedding("del-1", model_b).unwrap().is_some(),
-        "Model B should still exist");
+    assert!(
+        storage.get_embedding("del-1", model_b).unwrap().is_some(),
+        "Model B should still exist"
+    );
 }
 
 #[test]
@@ -201,13 +224,23 @@ fn test_delete_all_embeddings() {
     let mem = make_memory("delall-1", "delete all test");
     storage.add(&mem, "default").unwrap();
 
-    storage.store_embedding("delall-1", &make_embedding(768, 1.0), "model/a", 768).unwrap();
-    storage.store_embedding("delall-1", &make_embedding(768, 2.0), "model/b", 768).unwrap();
+    storage
+        .store_embedding("delall-1", &make_embedding(768, 1.0), "model/a", 768)
+        .unwrap();
+    storage
+        .store_embedding("delall-1", &make_embedding(768, 2.0), "model/b", 768)
+        .unwrap();
 
     storage.delete_all_embeddings("delall-1").unwrap();
 
-    assert!(storage.get_embedding("delall-1", "model/a").unwrap().is_none());
-    assert!(storage.get_embedding("delall-1", "model/b").unwrap().is_none());
+    assert!(storage
+        .get_embedding("delall-1", "model/a")
+        .unwrap()
+        .is_none());
+    assert!(storage
+        .get_embedding("delall-1", "model/b")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -222,10 +255,16 @@ fn test_get_memories_without_embeddings() {
     storage.add(&mem3, "default").unwrap();
 
     let model = "ollama/nomic-embed-text";
-    storage.store_embedding("miss-1", &make_embedding(768, 1.0), model, 768).unwrap();
+    storage
+        .store_embedding("miss-1", &make_embedding(768, 1.0), model, 768)
+        .unwrap();
 
     let missing = storage.get_memories_without_embeddings(model).unwrap();
-    assert_eq!(missing.len(), 2, "Should find 2 memories without embeddings");
+    assert_eq!(
+        missing.len(),
+        2,
+        "Should find 2 memories without embeddings"
+    );
     assert!(missing.contains(&"miss-2".to_string()));
     assert!(missing.contains(&"miss-3".to_string()));
     assert!(!missing.contains(&"miss-1".to_string()));
@@ -243,9 +282,15 @@ fn test_get_memories_without_embeddings_model_specific() {
     let model_a = "ollama/nomic-embed-text";
     let model_b = "openai/text-embedding-3-small";
 
-    storage.store_embedding("mms-1", &make_embedding(768, 1.0), model_a, 768).unwrap();
-    storage.store_embedding("mms-1", &make_embedding(1536, 2.0), model_b, 1536).unwrap();
-    storage.store_embedding("mms-2", &make_embedding(768, 3.0), model_a, 768).unwrap();
+    storage
+        .store_embedding("mms-1", &make_embedding(768, 1.0), model_a, 768)
+        .unwrap();
+    storage
+        .store_embedding("mms-1", &make_embedding(1536, 2.0), model_b, 1536)
+        .unwrap();
+    storage
+        .store_embedding("mms-2", &make_embedding(768, 3.0), model_a, 768)
+        .unwrap();
 
     // model_a: both have it, so 0 missing
     let missing_a = storage.get_memories_without_embeddings(model_a).unwrap();
@@ -315,7 +360,9 @@ fn test_embedding_dimensions_stored_correctly() {
 
     let embedding = make_embedding(384, 1.0);
     let model = "local/minilm-l6-v2";
-    storage.store_embedding("dim-1", &embedding, model, 384).unwrap();
+    storage
+        .store_embedding("dim-1", &embedding, model, 384)
+        .unwrap();
 
     // Check stored dimensions via raw SQL
     let conn = storage.connection();
@@ -329,7 +376,11 @@ fn test_embedding_dimensions_stored_correctly() {
 
     assert_eq!(stored_dims, 384, "Stored dimensions should be 384");
     assert_eq!(blob_len, 384 * 4, "Blob length should be dims * 4");
-    assert_eq!(blob_len as i64 / 4, stored_dims, "Blob size / 4 must equal dimensions");
+    assert_eq!(
+        blob_len as i64 / 4,
+        stored_dims,
+        "Blob size / 4 must equal dimensions"
+    );
 }
 
 #[test]
@@ -343,21 +394,39 @@ fn test_embeddings_in_namespace() {
     storage.add(&mem2, "other").unwrap();
 
     let model = "ollama/nomic-embed-text";
-    storage.store_embedding("ns-1", &make_embedding(768, 1.0), model, 768).unwrap();
-    storage.store_embedding("ns-2", &make_embedding(768, 2.0), model, 768).unwrap();
+    storage
+        .store_embedding("ns-1", &make_embedding(768, 1.0), model, 768)
+        .unwrap();
+    storage
+        .store_embedding("ns-2", &make_embedding(768, 2.0), model, 768)
+        .unwrap();
 
     // Query default namespace
-    let default_embs = storage.get_embeddings_in_namespace(Some("default"), model).unwrap();
-    assert_eq!(default_embs.len(), 1, "Default namespace should have 1 embedding");
+    let default_embs = storage
+        .get_embeddings_in_namespace(Some("default"), model)
+        .unwrap();
+    assert_eq!(
+        default_embs.len(),
+        1,
+        "Default namespace should have 1 embedding"
+    );
     assert_eq!(default_embs[0].0, "ns-1");
 
     // Query other namespace
-    let other_embs = storage.get_embeddings_in_namespace(Some("other"), model).unwrap();
-    assert_eq!(other_embs.len(), 1, "Other namespace should have 1 embedding");
+    let other_embs = storage
+        .get_embeddings_in_namespace(Some("other"), model)
+        .unwrap();
+    assert_eq!(
+        other_embs.len(),
+        1,
+        "Other namespace should have 1 embedding"
+    );
     assert_eq!(other_embs[0].0, "ns-2");
 
     // Query wildcard namespace (all)
-    let all_embs = storage.get_embeddings_in_namespace(Some("*"), model).unwrap();
+    let all_embs = storage
+        .get_embeddings_in_namespace(Some("*"), model)
+        .unwrap();
     assert_eq!(all_embs.len(), 2, "Wildcard should return all embeddings");
 }
 
@@ -375,27 +444,41 @@ fn test_embeddings_namespace_model_intersection() {
     let model_a = "ollama/nomic-embed-text";
     let model_b = "openai/text-embedding-3-small";
 
-    storage.store_embedding("nmi-1", &make_embedding(768, 1.0), model_a, 768).unwrap();
-    storage.store_embedding("nmi-2", &make_embedding(1536, 2.0), model_b, 1536).unwrap();
-    storage.store_embedding("nmi-3", &make_embedding(768, 3.0), model_a, 768).unwrap();
+    storage
+        .store_embedding("nmi-1", &make_embedding(768, 1.0), model_a, 768)
+        .unwrap();
+    storage
+        .store_embedding("nmi-2", &make_embedding(1536, 2.0), model_b, 1536)
+        .unwrap();
+    storage
+        .store_embedding("nmi-3", &make_embedding(768, 3.0), model_a, 768)
+        .unwrap();
 
     // default + model_a: only nmi-1
-    let results = storage.get_embeddings_in_namespace(Some("default"), model_a).unwrap();
+    let results = storage
+        .get_embeddings_in_namespace(Some("default"), model_a)
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "nmi-1");
 
     // default + model_b: only nmi-2
-    let results = storage.get_embeddings_in_namespace(Some("default"), model_b).unwrap();
+    let results = storage
+        .get_embeddings_in_namespace(Some("default"), model_b)
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "nmi-2");
 
     // other + model_a: only nmi-3
-    let results = storage.get_embeddings_in_namespace(Some("other"), model_a).unwrap();
+    let results = storage
+        .get_embeddings_in_namespace(Some("other"), model_a)
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "nmi-3");
 
     // other + model_b: none
-    let results = storage.get_embeddings_in_namespace(Some("other"), model_b).unwrap();
+    let results = storage
+        .get_embeddings_in_namespace(Some("other"), model_b)
+        .unwrap();
     assert_eq!(results.len(), 0);
 }
 
@@ -410,19 +493,35 @@ fn test_embedding_overwrite_same_model() {
     let emb_v2 = make_embedding(768, 99.0);
 
     // Store v1
-    storage.store_embedding("ow-1", &emb_v1, model, 768).unwrap();
+    storage
+        .store_embedding("ow-1", &emb_v1, model, 768)
+        .unwrap();
     let ret1 = storage.get_embedding("ow-1", model).unwrap().unwrap();
     assert_eq!(ret1[0].to_bits(), emb_v1[0].to_bits());
 
     // Overwrite with v2 (INSERT OR REPLACE)
-    storage.store_embedding("ow-1", &emb_v2, model, 768).unwrap();
+    storage
+        .store_embedding("ow-1", &emb_v2, model, 768)
+        .unwrap();
     let ret2 = storage.get_embedding("ow-1", model).unwrap().unwrap();
-    assert_eq!(ret2[0].to_bits(), emb_v2[0].to_bits(), "Should be overwritten with v2");
-    assert_ne!(ret2[0].to_bits(), emb_v1[0].to_bits(), "Should NOT be v1 anymore");
+    assert_eq!(
+        ret2[0].to_bits(),
+        emb_v2[0].to_bits(),
+        "Should be overwritten with v2"
+    );
+    assert_ne!(
+        ret2[0].to_bits(),
+        emb_v1[0].to_bits(),
+        "Should NOT be v1 anymore"
+    );
 
     // Should still be only 1 row
     let all = storage.get_all_embeddings(model).unwrap();
-    assert_eq!(all.len(), 1, "Should have exactly 1 embedding after overwrite");
+    assert_eq!(
+        all.len(),
+        1,
+        "Should have exactly 1 embedding after overwrite"
+    );
 }
 
 #[test]
@@ -437,8 +536,12 @@ fn test_embedding_stats() {
     storage.add(&mem3, "default").unwrap();
 
     let model = "ollama/nomic-embed-text";
-    storage.store_embedding("st-1", &make_embedding(768, 1.0), model, 768).unwrap();
-    storage.store_embedding("st-2", &make_embedding(768, 2.0), model, 768).unwrap();
+    storage
+        .store_embedding("st-1", &make_embedding(768, 1.0), model, 768)
+        .unwrap();
+    storage
+        .store_embedding("st-2", &make_embedding(768, 2.0), model, 768)
+        .unwrap();
 
     let stats = storage.embedding_stats().unwrap();
     assert_eq!(stats.total_memories, 3);
@@ -451,8 +554,12 @@ fn test_cascade_delete_memory_removes_embeddings() {
     let mem = make_memory("cas-1", "cascade test");
     storage.add(&mem, "default").unwrap();
 
-    storage.store_embedding("cas-1", &make_embedding(768, 1.0), "model/a", 768).unwrap();
-    storage.store_embedding("cas-1", &make_embedding(768, 2.0), "model/b", 768).unwrap();
+    storage
+        .store_embedding("cas-1", &make_embedding(768, 1.0), "model/a", 768)
+        .unwrap();
+    storage
+        .store_embedding("cas-1", &make_embedding(768, 2.0), "model/b", 768)
+        .unwrap();
 
     // Delete the memory itself
     storage.delete("cas-1").unwrap();
@@ -466,8 +573,13 @@ fn test_cascade_delete_memory_removes_embeddings() {
 fn test_nonexistent_embedding_returns_none() {
     let storage = Storage::new(":memory:").unwrap();
 
-    let result = storage.get_embedding("does-not-exist", "ollama/nomic-embed-text").unwrap();
-    assert!(result.is_none(), "Should return None for nonexistent memory");
+    let result = storage
+        .get_embedding("does-not-exist", "ollama/nomic-embed-text")
+        .unwrap();
+    assert!(
+        result.is_none(),
+        "Should return None for nonexistent memory"
+    );
 }
 
 #[test]
@@ -485,8 +597,12 @@ fn test_cross_model_isolation() {
     let emb_a: Vec<f32> = vec![1.0; 768];
     let emb_b: Vec<f32> = vec![2.0; 1536];
 
-    storage.store_embedding("iso-1", &emb_a, model_a, 768).unwrap();
-    storage.store_embedding("iso-1", &emb_b, model_b, 1536).unwrap();
+    storage
+        .store_embedding("iso-1", &emb_a, model_a, 768)
+        .unwrap();
+    storage
+        .store_embedding("iso-1", &emb_b, model_b, 1536)
+        .unwrap();
 
     // Model A returns 768-dim with all 1.0
     let ret_a = storage.get_embedding("iso-1", model_a).unwrap().unwrap();

@@ -7,18 +7,23 @@ use std::io::Write;
 use uuid::Uuid;
 
 use crate::bus::EmpathyBus;
+use crate::bus::{Notification, Subscription, SubscriptionManager};
 use crate::config::MemoryConfig;
-use crate::embeddings::{EmbeddingConfig, EmbeddingProvider, EmbeddingError};
+use crate::embeddings::{EmbeddingConfig, EmbeddingError, EmbeddingProvider};
 use crate::entities::EntityExtractor;
 use crate::extractor::MemoryExtractor;
+use crate::lifecycle::{
+    DecayReport, ForgetReport, LifecycleError, PhaseReport, ReconcileCandidate, ReconcileReport,
+};
+use crate::models::hebbian::{record_cross_namespace_coactivation, MemoryWithNamespace};
 use crate::models::{effective_strength, retrieval_activation, run_consolidation_cycle};
-use crate::storage::{Storage, EmbeddingStats};
-use crate::bus::{SubscriptionManager, Subscription, Notification};
-use crate::models::hebbian::{MemoryWithNamespace, record_cross_namespace_coactivation};
 use crate::session_wm::{ActiveContext, SessionRecallResult};
+use crate::storage::{EmbeddingStats, Storage};
 use crate::synthesis::types::SynthesisEngine;
-use crate::lifecycle::{DecayReport, ForgetReport, LifecycleError, ReconcileCandidate, ReconcileReport, PhaseReport};
-use crate::types::{AclEntry, CrossLink, HebbianLink, LayerStats, MemoryLayer, MemoryRecord, MemoryStats, MemoryType, Permission, RecallResult, RecallWithAssociationsResult, TypeStats};
+use crate::types::{
+    AclEntry, CrossLink, HebbianLink, LayerStats, MemoryLayer, MemoryRecord, MemoryStats,
+    MemoryType, Permission, RecallResult, RecallWithAssociationsResult, TypeStats,
+};
 
 /// Report from a unified sleep cycle (consolidation + synthesis).
 #[derive(Debug)]
@@ -188,7 +193,8 @@ pub struct Memory {
     ///   `&mut Connection` for any operation (read or write), so the
     ///   inner `Mutex` serializes plan execution against ingestion
     ///   workers that share the same `Arc` via the resolution pipeline.
-    graph_store: Option<std::sync::Arc<std::sync::Mutex<crate::graph::store::SqliteGraphStore<'static>>>>,
+    graph_store:
+        Option<std::sync::Arc<std::sync::Mutex<crate::graph::store::SqliteGraphStore<'static>>>>,
 }
 
 impl Memory {
@@ -252,7 +258,10 @@ impl Memory {
 
     /// Builder-style variant of [`Memory::set_job_queue`]. Returns
     /// `self` so test/setup code can chain.
-    pub fn with_job_queue(mut self, queue: std::sync::Arc<dyn crate::resolution::JobQueue>) -> Self {
+    pub fn with_job_queue(
+        mut self,
+        queue: std::sync::Arc<dyn crate::resolution::JobQueue>,
+    ) -> Self {
         self.set_job_queue(queue);
         self
     }
@@ -317,11 +326,11 @@ impl Memory {
         triple_extractor: std::sync::Arc<dyn crate::triple_extractor::TripleExtractor>,
         config: crate::resolution::ResolutionConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        use std::sync::{Arc, Mutex};
         use crate::graph::store::SqliteGraphStore;
         use crate::resolution::pipeline::{PipelineConfig, ResolutionPipeline};
         use crate::resolution::worker::{JobProcessor, WorkerPool};
         use crate::resolution::{BoundedJobQueue, JobQueue, SqliteMemoryReader};
+        use std::sync::{Arc, Mutex};
 
         let db_path_ref = db_path.as_ref();
 
@@ -507,8 +516,8 @@ impl Memory {
         mut self,
         db_path: impl AsRef<std::path::Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        use std::sync::{Arc, Mutex};
         use crate::graph::store::SqliteGraphStore;
+        use std::sync::{Arc, Mutex};
 
         let graph_conn: &'static mut rusqlite::Connection = {
             let conn = rusqlite::Connection::open(db_path.as_ref())?;
@@ -556,9 +565,8 @@ impl Memory {
     /// on the same inner `Mutex`.
     pub fn graph_store_arc(
         &self,
-    ) -> Option<
-        std::sync::Arc<std::sync::Mutex<crate::graph::store::SqliteGraphStore<'static>>>,
-    > {
+    ) -> Option<std::sync::Arc<std::sync::Mutex<crate::graph::store::SqliteGraphStore<'static>>>>
+    {
         self.graph_store.as_ref().map(std::sync::Arc::clone)
     }
 
@@ -732,7 +740,9 @@ impl Memory {
     ) -> Result<Option<crate::graph::Entity>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
         let dim = self.config.embedding.dimensions;
-        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim).with_unified_substrate(self.config.unified_substrate);
+        let store = SqliteGraphStore::new(self.storage.connection_mut())
+            .with_embedding_dim(dim)
+            .with_unified_substrate(self.config.unified_substrate);
         store.get_entity(id)
     }
 
@@ -750,7 +760,9 @@ impl Memory {
     ) -> Result<Option<uuid::Uuid>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
         let dim = self.config.embedding.dimensions;
-        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim).with_unified_substrate(self.config.unified_substrate);
+        let store = SqliteGraphStore::new(self.storage.connection_mut())
+            .with_embedding_dim(dim)
+            .with_unified_substrate(self.config.unified_substrate);
         store.resolve_alias(name)
     }
 
@@ -775,7 +787,9 @@ impl Memory {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
         const DEFAULT_NEIGHBORS_CAP: usize = 10_000;
         let dim = self.config.embedding.dimensions;
-        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim).with_unified_substrate(self.config.unified_substrate);
+        let store = SqliteGraphStore::new(self.storage.connection_mut())
+            .with_embedding_dim(dim)
+            .with_unified_substrate(self.config.unified_substrate);
         store.traverse(entity, max_depth, DEFAULT_NEIGHBORS_CAP, &[])
     }
 
@@ -794,7 +808,9 @@ impl Memory {
     ) -> Result<Vec<crate::graph::Edge>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
         let dim = self.config.embedding.dimensions;
-        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim).with_unified_substrate(self.config.unified_substrate);
+        let store = SqliteGraphStore::new(self.storage.connection_mut())
+            .with_embedding_dim(dim)
+            .with_unified_substrate(self.config.unified_substrate);
         store.edges_as_of(entity, at)
     }
 
@@ -808,12 +824,12 @@ impl Memory {
     /// ISS-042 / `task:res-impl-memory-api`).
     ///
     /// Takes `&mut self`: see module-level note on ISS-040.
-    pub fn list_failed_episodes(
-        &mut self,
-    ) -> Result<Vec<uuid::Uuid>, crate::graph::GraphError> {
+    pub fn list_failed_episodes(&mut self) -> Result<Vec<uuid::Uuid>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
         let dim = self.config.embedding.dimensions;
-        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim).with_unified_substrate(self.config.unified_substrate);
+        let store = SqliteGraphStore::new(self.storage.connection_mut())
+            .with_embedding_dim(dim)
+            .with_unified_substrate(self.config.unified_substrate);
         store.list_failed_episodes(/* unresolved_only = */ true)
     }
 
@@ -852,7 +868,9 @@ impl Memory {
     ) -> Result<Vec<crate::graph::store::ProposedPredicateStats>, crate::graph::GraphError> {
         use crate::graph::store::{GraphRead, SqliteGraphStore};
         let dim = self.config.embedding.dimensions;
-        let store = SqliteGraphStore::new(self.storage.connection_mut()).with_embedding_dim(dim).with_unified_substrate(self.config.unified_substrate);
+        let store = SqliteGraphStore::new(self.storage.connection_mut())
+            .with_embedding_dim(dim)
+            .with_unified_substrate(self.config.unified_substrate);
         store.list_proposed_predicates(min_usage)
     }
 
@@ -999,9 +1017,10 @@ impl Memory {
         // fallback, Path A multi-fact loop's first iteration, or Path B
         // single-write).
         let outcome = self.store_raw(&ep.text, meta).map_err(|e| match e {
-            StoreError::Quarantined { id, reason } => Box::<dyn std::error::Error>::from(
-                format!("add_episode: quarantined: {reason:?} (id={})", id.as_str()),
-            ),
+            StoreError::Quarantined { id, reason } => Box::<dyn std::error::Error>::from(format!(
+                "add_episode: quarantined: {reason:?} (id={})",
+                id.as_str()
+            )),
             other => Box::<dyn std::error::Error>::from(other.to_string()),
         })?;
 
@@ -1032,7 +1051,10 @@ impl Memory {
                         "add_episode: store_raw returned Stored with empty outcomes".into()
                     })?
             }
-            RawStoreOutcome::Skipped { reason, content_hash } => {
+            RawStoreOutcome::Skipped {
+                reason,
+                content_hash,
+            } => {
                 return Err(format!(
                     "add_episode: content skipped at write time ({:?}, hash={})",
                     reason,
@@ -1063,12 +1085,12 @@ impl Memory {
             episode_uuid
         } else {
             // admitted_id is 8 lowercase hex chars (see add_raw).
-            let parsed = u32::from_str_radix(&admitted_id, 16).map_err(|e| -> Box<dyn std::error::Error> {
-                format!(
-                    "add_episode: unexpected admitted id format {admitted_id:?}: {e}"
-                )
-                .into()
-            })?;
+            let parsed = u32::from_str_radix(&admitted_id, 16).map_err(
+                |e| -> Box<dyn std::error::Error> {
+                    format!("add_episode: unexpected admitted id format {admitted_id:?}: {e}")
+                        .into()
+                },
+            )?;
             uuid::Uuid::from_u128(parsed as u128)
         };
 
@@ -1235,7 +1257,7 @@ impl Memory {
     /// plumbing being healthy (GUARD-1).
     fn record_no_facts_extraction_failure(&self, memory_id: &str) {
         use crate::graph::audit::{
-            CATEGORY_NO_FACTS_EXTRACTED, ExtractionFailure, STAGE_ENTITY_EXTRACT,
+            ExtractionFailure, CATEGORY_NO_FACTS_EXTRACTED, STAGE_ENTITY_EXTRACT,
         };
         use crate::graph::store::GraphWrite;
         let Some(store_arc) = self.graph_store.as_ref() else {
@@ -1244,8 +1266,8 @@ impl Memory {
             return;
         };
         let now = chrono::Utc::now();
-        let occurred_at = now.timestamp() as f64
-            + (now.timestamp_subsec_nanos() as f64) / 1_000_000_000.0;
+        let occurred_at =
+            now.timestamp() as f64 + (now.timestamp_subsec_nanos() as f64) / 1_000_000_000.0;
         let failure = ExtractionFailure {
             id: uuid::Uuid::new_v4(),
             // The memory id is an 8-char prefix string (not a full
@@ -1277,7 +1299,6 @@ impl Memory {
             );
         }
     }
-
 
     /// Snapshot the current write-path counters.
     ///
@@ -1328,18 +1349,27 @@ impl Memory {
     ///
     /// If Ollama is available, embeddings will be used for semantic search.
     /// Otherwise, falls back to FTS5 keyword matching.
-    pub fn new(path: &str, config: Option<MemoryConfig>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        path: &str,
+        config: Option<MemoryConfig>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let config = config.unwrap_or_default();
         let storage = Storage::with_unified_substrate(path, config.unified_substrate)?;
         let created_at = Utc::now();
-        
+
         // Create embedding provider (optional - check if Ollama is available)
         let embedding_provider = EmbeddingProvider::new(config.embedding.clone());
         let embedding = if embedding_provider.is_available() {
-            log::info!("Ollama available at {}, embedding enabled", config.embedding.host);
+            log::info!(
+                "Ollama available at {}, embedding enabled",
+                config.embedding.host
+            );
             Some(embedding_provider)
         } else {
-            log::warn!("Ollama not available at {}, falling back to FTS", config.embedding.host);
+            log::warn!(
+                "Ollama not available at {}, falling back to FTS",
+                config.embedding.host
+            );
             None
         };
 
@@ -1377,17 +1407,17 @@ impl Memory {
         // handle. See `Memory::set_event_sink` for the custom-sink
         // alternative.
         mem.install_default_counting_sink();
-        
+
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
         mem.auto_configure_intent_classifier();
 
         // Initialize meta-cognition tracker if enabled
         mem.init_metacognition_if_enabled();
-        
+
         Ok(mem)
     }
-    
+
     /// Initialize Engram memory system requiring embeddings.
     ///
     /// Returns an error if Ollama is not available. Use this when embedding
@@ -1404,12 +1434,12 @@ impl Memory {
         let config = config.unwrap_or_default();
         let storage = Storage::with_unified_substrate(path, config.unified_substrate)?;
         let created_at = Utc::now();
-        
+
         // Create embedding provider and validate Ollama is available
         let embedding = EmbeddingProvider::new(config.embedding.clone());
         if !embedding.is_available() {
             return Err(Box::new(EmbeddingError::OllamaNotAvailable(
-                config.embedding.host.clone()
+                config.embedding.host.clone(),
             )));
         }
 
@@ -1447,14 +1477,14 @@ impl Memory {
         // handle. See `Memory::set_event_sink` for the custom-sink
         // alternative.
         mem.install_default_counting_sink();
-        
+
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
         mem.auto_configure_intent_classifier();
-        
+
         Ok(mem)
     }
-    
+
     /// Initialize Engram memory system with custom embedding config.
     ///
     /// # Arguments
@@ -1471,13 +1501,16 @@ impl Memory {
         config.embedding = embedding_config;
         let storage = Storage::with_unified_substrate(path, config.unified_substrate)?;
         let created_at = Utc::now();
-        
+
         // Create embedding provider (optional - check if Ollama is available)
         let embedding_provider = EmbeddingProvider::new(config.embedding.clone());
         let embedding = if embedding_provider.is_available() {
             Some(embedding_provider)
         } else {
-            log::warn!("Ollama not available at {}, falling back to FTS", config.embedding.host);
+            log::warn!(
+                "Ollama not available at {}, falling back to FTS",
+                config.embedding.host
+            );
             None
         };
 
@@ -1515,14 +1548,14 @@ impl Memory {
         // handle. See `Memory::set_event_sink` for the custom-sink
         // alternative.
         mem.install_default_counting_sink();
-        
+
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
         mem.auto_configure_intent_classifier();
-        
+
         Ok(mem)
     }
-    
+
     /// Create a Memory instance with an Empathy Bus attached.
     ///
     /// The Empathy Bus connects memory to workspace files (SOUL.md, HEARTBEAT.md)
@@ -1541,19 +1574,22 @@ impl Memory {
         let config = config.unwrap_or_default();
         let storage = Storage::with_unified_substrate(path, config.unified_substrate)?;
         let created_at = Utc::now();
-        
+
         // Create Empathy Bus using storage's connection
         let empathy_bus = Some(EmpathyBus::new(workspace_dir, storage.connection())?);
-        
+
         // Create embedding provider (optional - check if Ollama is available)
         let embedding_provider = EmbeddingProvider::new(config.embedding.clone());
         let embedding = if embedding_provider.is_available() {
             Some(embedding_provider)
         } else {
-            log::warn!("Ollama not available at {}, falling back to FTS", config.embedding.host);
+            log::warn!(
+                "Ollama not available at {}, falling back to FTS",
+                config.embedding.host
+            );
             None
         };
-        
+
         let entity_extractor = EntityExtractor::new(&config.entity_config);
 
         let mut mem = Self {
@@ -1588,11 +1624,11 @@ impl Memory {
         // handle. See `Memory::set_event_sink` for the custom-sink
         // alternative.
         mem.install_default_counting_sink();
-        
+
         // Auto-configure extractor from environment/config
         mem.auto_configure_extractor();
         mem.auto_configure_intent_classifier();
-        
+
         Ok(mem)
     }
 
@@ -1633,21 +1669,26 @@ impl Memory {
     ///
     /// Returns None if metacognition is not enabled.
     pub fn parameter_suggestions(&self) -> Option<Vec<crate::metacognition::ParameterSuggestion>> {
-        self.metacognition.as_ref().map(|t| t.parameter_suggestions(&self.config))
+        self.metacognition
+            .as_ref()
+            .map(|t| t.parameter_suggestions(&self.config))
     }
 
     /// Submit external feedback for the most recent recall.
     ///
     /// `score`: 0.0 (useless) to 1.0 (perfect). Returns Ok(true) if feedback
     /// was attached, Ok(false) if no pending recall event, None if metacognition disabled.
-    pub fn feedback_recall(&mut self, score: f64) -> Option<Result<bool, Box<dyn std::error::Error>>> {
+    pub fn feedback_recall(
+        &mut self,
+        score: f64,
+    ) -> Option<Result<bool, Box<dyn std::error::Error>>> {
         if let Some(ref mut tracker) = self.metacognition {
             Some(tracker.feedback_event(self.storage.conn(), score))
         } else {
             None
         }
     }
-    
+
     /// Get a reference to the Empathy Bus, if attached.
     pub fn empathy_bus(&self) -> Option<&EmpathyBus> {
         self.empathy_bus.as_ref()
@@ -1655,8 +1696,10 @@ impl Memory {
 
     /// Backward-compat alias.
     #[inline]
-    pub fn emotional_bus(&self) -> Option<&EmpathyBus> { self.empathy_bus() }
-    
+    pub fn emotional_bus(&self) -> Option<&EmpathyBus> {
+        self.empathy_bus()
+    }
+
     /// Get a mutable reference to the Empathy Bus, if attached.
     pub fn empathy_bus_mut(&mut self) -> Option<&mut EmpathyBus> {
         self.empathy_bus.as_mut()
@@ -1664,7 +1707,9 @@ impl Memory {
 
     /// Backward-compat alias.
     #[inline]
-    pub fn emotional_bus_mut(&mut self) -> Option<&mut EmpathyBus> { self.empathy_bus_mut() }
+    pub fn emotional_bus_mut(&mut self) -> Option<&mut EmpathyBus> {
+        self.empathy_bus_mut()
+    }
 
     // ── Interoceptive Hub API ─────────────────────────────────────────
 
@@ -1699,9 +1744,7 @@ impl Memory {
     /// See
     /// [`InteroceptiveState::to_somatic_fingerprint`](crate::interoceptive::InteroceptiveState::to_somatic_fingerprint)
     /// for the locked dimension mapping (GUARD-7).
-    pub fn current_self_state(
-        &self,
-    ) -> Option<crate::graph::affect::SomaticFingerprint> {
+    pub fn current_self_state(&self) -> Option<crate::graph::affect::SomaticFingerprint> {
         self.interoceptive_hub
             .current_state()
             .to_somatic_fingerprint()
@@ -1858,7 +1901,7 @@ impl Memory {
 
         neighbor_ids
     }
-    
+
     /// Get the last add result (Created or Merged).
     pub fn last_add_result(&self) -> Option<&crate::lifecycle::AddResult> {
         self.last_add_result.as_ref()
@@ -1910,40 +1953,55 @@ impl Memory {
         let model_id = self.config.embedding.model_id();
 
         // Load embeddings (bounded)
-        let embeddings = self.storage.get_embeddings_in_namespace(
-            Some(namespace), &model_id,
-        ).map_err(LifecycleError::Storage)?;
+        let embeddings = self
+            .storage
+            .get_embeddings_in_namespace(Some(namespace), &model_id)
+            .map_err(LifecycleError::Storage)?;
 
         // Bound by max_scan
         let embeddings: Vec<_> = embeddings.into_iter().take(max_scan).collect();
 
         let mut candidates: Vec<ReconcileCandidate> = Vec::new();
-        let mut seen_pairs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut seen_pairs: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
 
         for (id_a, emb_a) in &embeddings {
-            let matches = self.storage.find_all_above_threshold(
-                emb_a, &model_id, Some(namespace), 0.85,
-            ).map_err(LifecycleError::Storage)?;
+            let matches = self
+                .storage
+                .find_all_above_threshold(emb_a, &model_id, Some(namespace), 0.85)
+                .map_err(LifecycleError::Storage)?;
 
             for (id_b, score) in matches {
-                if id_a == &id_b { continue; }
+                if id_a == &id_b {
+                    continue;
+                }
                 let pair = if id_a < &id_b {
                     (id_a.clone(), id_b.clone())
                 } else {
                     (id_b.clone(), id_a.clone())
                 };
-                if seen_pairs.contains(&pair) { continue; }
+                if seen_pairs.contains(&pair) {
+                    continue;
+                }
                 seen_pairs.insert(pair);
 
-                let entities_a = self.storage.get_entities_for_memory(id_a)
+                let entities_a = self
+                    .storage
+                    .get_entities_for_memory(id_a)
                     .map_err(LifecycleError::Storage)?;
-                let entities_b = self.storage.get_entities_for_memory(&id_b)
+                let entities_b = self
+                    .storage
+                    .get_entities_for_memory(&id_b)
                     .map_err(LifecycleError::Storage)?;
                 let jaccard = jaccard_similarity_strings(&entities_a, &entities_b);
 
-                let preview_a = self.storage.get_memory_content_preview(id_a, 100)
+                let preview_a = self
+                    .storage
+                    .get_memory_content_preview(id_a, 100)
                     .map_err(LifecycleError::Storage)?;
-                let preview_b = self.storage.get_memory_content_preview(&id_b, 100)
+                let preview_b = self
+                    .storage
+                    .get_memory_content_preview(&id_b, 100)
                     .map_err(LifecycleError::Storage)?;
 
                 candidates.push(ReconcileCandidate {
@@ -1961,7 +2019,9 @@ impl Memory {
         candidates.sort_by(|a, b| {
             let score_a = 0.7 * a.similarity as f64 + 0.3 * a.entity_overlap;
             let score_b = 0.7 * b.similarity as f64 + 0.3 * b.entity_overlap;
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         Ok(candidates)
@@ -1980,7 +2040,9 @@ impl Memory {
             dry_run,
         };
 
-        if dry_run { return Ok(report); }
+        if dry_run {
+            return Ok(report);
+        }
 
         let mut merged_away: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -1991,8 +2053,14 @@ impl Memory {
 
             // Keep the older memory, merge newer into it
             let (keep_id, donor_id) = {
-                let a = self.storage.get(&candidate.id_a).map_err(LifecycleError::Storage)?;
-                let b = self.storage.get(&candidate.id_b).map_err(LifecycleError::Storage)?;
+                let a = self
+                    .storage
+                    .get(&candidate.id_a)
+                    .map_err(LifecycleError::Storage)?;
+                let b = self
+                    .storage
+                    .get(&candidate.id_b)
+                    .map_err(LifecycleError::Storage)?;
                 match (a, b) {
                     (Some(a), Some(b)) => {
                         if a.created_at <= b.created_at {
@@ -2006,7 +2074,9 @@ impl Memory {
             };
 
             // Get donor content for merge
-            let donor_content = self.storage.get_memory_content_preview(&donor_id, 10000)
+            let donor_content = self
+                .storage
+                .get_memory_content_preview(&donor_id, 10000)
                 .map_err(LifecycleError::Storage)?;
 
             // ISS-019 Step 5.5: route through merge_enriched_into.
@@ -2022,11 +2092,13 @@ impl Memory {
                 None,
                 None,
             )
-            .map_err(|e| LifecycleError::Storage(rusqlite::Error::InvalidColumnType(
-                0,
-                format!("EnrichedMemory::minimal failed in lifecycle merge: {}", e),
-                rusqlite::types::Type::Text,
-            )))?;
+            .map_err(|e| {
+                LifecycleError::Storage(rusqlite::Error::InvalidColumnType(
+                    0,
+                    format!("EnrichedMemory::minimal failed in lifecycle merge: {}", e),
+                    rusqlite::types::Type::Text,
+                ))
+            })?;
             self.storage
                 .merge_enriched_into(&keep_id, &donor_em, candidate.similarity)
                 .map_err(LifecycleError::Storage)?;
@@ -2036,11 +2108,15 @@ impl Memory {
 
             // Record provenance
             let _ = self.storage.append_merge_provenance(
-                &keep_id, &donor_id, candidate.similarity, false,
+                &keep_id,
+                &donor_id,
+                candidate.similarity,
+                false,
             );
 
             // Delete donor
-            self.storage.hard_delete_cascade(&donor_id)
+            self.storage
+                .hard_delete_cascade(&donor_id)
                 .map_err(LifecycleError::Storage)?;
 
             merged_away.insert(donor_id);
@@ -2060,7 +2136,9 @@ impl Memory {
     ) -> Result<DecayReport, LifecycleError> {
         use crate::models::ebbinghaus;
 
-        let memories = self.storage.all_in_namespace(namespace)
+        let memories = self
+            .storage
+            .all_in_namespace(namespace)
             .map_err(LifecycleError::Storage)?;
         let now = Utc::now();
         let mut report = DecayReport::default();
@@ -2074,7 +2152,8 @@ impl Memory {
                 report.below_threshold += 1;
                 // Only auto-flag if rarely accessed (< 2 accesses)
                 if record.access_times.len() < 2 {
-                    self.storage.soft_delete(&record.id)
+                    self.storage
+                        .soft_delete(&record.id)
                         .map_err(LifecycleError::Storage)?;
                     report.flagged_for_forget += 1;
                     log::debug!(
@@ -2091,17 +2170,15 @@ impl Memory {
     }
 
     /// Targeted forget: soft or hard delete a specific memory.
-    pub fn forget_targeted(
-        &mut self,
-        memory_id: &str,
-        soft: bool,
-    ) -> Result<(), LifecycleError> {
+    pub fn forget_targeted(&mut self, memory_id: &str, soft: bool) -> Result<(), LifecycleError> {
         if soft {
-            self.storage.soft_delete(memory_id)
+            self.storage
+                .soft_delete(memory_id)
                 .map_err(LifecycleError::Storage)?;
             log::info!("soft-deleted memory {}", memory_id);
         } else {
-            self.storage.hard_delete_cascade(memory_id)
+            self.storage
+                .hard_delete_cascade(memory_id)
                 .map_err(LifecycleError::Storage)?;
             log::info!("hard-deleted memory {} with cascade", memory_id);
         }
@@ -2114,32 +2191,42 @@ impl Memory {
         let now = Utc::now();
 
         // Phase A: soft-delete weak memories (that aren't already soft-deleted)
-        let all = self.storage.all_in_namespace(None)  // active memories only
+        let all = self
+            .storage
+            .all_in_namespace(None) // active memories only
             .map_err(LifecycleError::Storage)?;
         report.scanned = all.len();
 
         for record in &all {
-            if record.pinned { continue; }
+            if record.pinned {
+                continue;
+            }
             let effective = crate::models::ebbinghaus::effective_strength(record, now);
             if effective < self.config.forget_threshold {
-                self.storage.soft_delete(&record.id)
+                self.storage
+                    .soft_delete(&record.id)
                     .map_err(LifecycleError::Storage)?;
                 report.soft_deleted += 1;
             }
         }
 
         // Phase B: hard-delete memories that were soft-deleted > 30 days ago
-        let deleted = self.storage.list_deleted(Some("*"))
+        let deleted = self
+            .storage
+            .list_deleted(Some("*"))
             .map_err(LifecycleError::Storage)?;
         for record in &deleted {
             // Parse deleted_at from DB column
-            if let Some(deleted_at_str) = self.storage.get_deleted_at(&record.id)
+            if let Some(deleted_at_str) = self
+                .storage
+                .get_deleted_at(&record.id)
                 .map_err(LifecycleError::Storage)?
             {
                 if let Ok(deleted_at) = chrono::DateTime::parse_from_rfc3339(&deleted_at_str) {
                     let days_deleted = (now - deleted_at.with_timezone(&Utc)).num_days();
                     if days_deleted > 30 {
-                        self.storage.hard_delete_cascade(&record.id)
+                        self.storage
+                            .hard_delete_cascade(&record.id)
                             .map_err(LifecycleError::Storage)?;
                         report.hard_deleted += 1;
                     }
@@ -2154,31 +2241,49 @@ impl Memory {
     pub fn health(&self) -> Result<crate::lifecycle::HealthReport, LifecycleError> {
         use crate::lifecycle::HealthReport;
 
-        let total = self.storage.count_memories_in_namespace(None)
+        let total = self
+            .storage
+            .count_memories_in_namespace(None)
             .map_err(LifecycleError::Storage)?;
-        let namespaces = self.storage.list_namespaces()
+        let namespaces = self
+            .storage
+            .list_namespaces()
             .map_err(LifecycleError::Storage)?;
         let mut per_ns = std::collections::HashMap::new();
         for ns in &namespaces {
-            let count = self.storage.count_memories_in_namespace(Some(ns))
+            let count = self
+                .storage
+                .count_memories_in_namespace(Some(ns))
                 .map_err(LifecycleError::Storage)?;
             per_ns.insert(ns.clone(), count);
         }
-        let orphans = self.storage.count_orphan_memories()
+        let orphans = self
+            .storage
+            .count_orphan_memories()
             .map_err(LifecycleError::Storage)?;
-        let dangling = self.storage.count_dangling_hebbian()
+        let dangling = self
+            .storage
+            .count_dangling_hebbian()
             .map_err(LifecycleError::Storage)?;
-        let soft_del = self.storage.count_soft_deleted()
+        let soft_del = self
+            .storage
+            .count_soft_deleted()
             .map_err(LifecycleError::Storage)?;
 
         // Count memories below decay threshold
-        let all = self.storage.all_in_namespace(None).map_err(LifecycleError::Storage)?;
+        let all = self
+            .storage
+            .all_in_namespace(None)
+            .map_err(LifecycleError::Storage)?;
         let now = Utc::now();
-        let below = all.iter()
+        let below = all
+            .iter()
             .filter(|r| crate::models::ebbinghaus::effective_strength(r, now) < 0.1)
             .count();
 
-        let stale = self.storage.count_stale_clusters()
+        let stale = self
+            .storage
+            .count_stale_clusters()
             .map_err(LifecycleError::Storage)?;
 
         Ok(HealthReport {
@@ -2201,23 +2306,28 @@ impl Memory {
         let mut report = crate::lifecycle::RebalanceReport::default();
 
         // 1. Remove orphaned access_log entries
-        report.access_log_cleaned = self.storage.cleanup_orphaned_access_log()
+        report.access_log_cleaned = self
+            .storage
+            .cleanup_orphaned_access_log()
             .map_err(LifecycleError::Storage)?;
 
         // 2. Repair dangling Hebbian links
-        report.hebbian_repaired = self.storage.cleanup_dangling_hebbian()
+        report.hebbian_repaired = self
+            .storage
+            .cleanup_dangling_hebbian()
             .map_err(LifecycleError::Storage)?;
 
         // 3. Cleanup entity_links for deleted memories
-        report.entity_links_cleaned = self.storage.cleanup_orphaned_entity_links()
+        report.entity_links_cleaned = self
+            .storage
+            .cleanup_orphaned_entity_links()
             .map_err(LifecycleError::Storage)?;
 
         // Note: embedding rebuilding requires EmbeddingProvider which is optional.
         // Skip for now — embeddings are rebuilt on next recall if missing.
 
-        report.repairs = report.access_log_cleaned
-            + report.hebbian_repaired
-            + report.entity_links_cleaned;
+        report.repairs =
+            report.access_log_cleaned + report.hebbian_repaired + report.entity_links_cleaned;
 
         Ok(report)
     }
@@ -2240,7 +2350,9 @@ impl Memory {
         memory_type_override: Option<MemoryType>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         // 1. Fetch old memory
-        let old = self.storage.get(old_id)?
+        let old = self
+            .storage
+            .get(old_id)?
             .ok_or_else(|| format!("Memory not found: {}", old_id))?;
 
         // 2. Determine type and importance
@@ -2263,10 +2375,16 @@ impl Memory {
         )?;
 
         // 5. Supersede old → new
-        self.storage.supersede(old_id, &new_id)
+        self.storage
+            .supersede(old_id, &new_id)
             .map_err(|e| format!("Supersession failed after storing new memory: {}", e))?;
 
-        log::info!("Corrected memory {} → {} in namespace {:?}", old_id, new_id, ns_ref);
+        log::info!(
+            "Corrected memory {} → {} in namespace {:?}",
+            old_id,
+            new_id,
+            ns_ref
+        );
         Ok(new_id)
     }
 
@@ -2308,10 +2426,17 @@ impl Memory {
         // 4. Supersede all matching memories
         let ids: Vec<String> = matches.iter().map(|r| r.record.id.clone()).collect();
         let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
-        let count = self.storage.supersede_bulk(&id_refs, &new_id)
+        let count = self
+            .storage
+            .supersede_bulk(&id_refs, &new_id)
             .map_err(|e| format!("Bulk supersession failed: {}", e))?;
 
-        log::info!("Bulk corrected {} memories → {} (query: '{}')", count, new_id, query);
+        log::info!(
+            "Bulk corrected {} memories → {} (query: '{}')",
+            count,
+            new_id,
+            query
+        );
 
         Ok(crate::types::BulkCorrectionResult {
             new_id,
@@ -2342,25 +2467,26 @@ impl Memory {
 
     /// Undo a supersession, restoring a memory to active recall.
     pub fn unsupersede(&mut self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        self.storage.unsupersede(id)
+        self.storage
+            .unsupersede(id)
             .map_err(|e| format!("Unsupersede failed: {}", e))?;
         log::info!("Restored memory {} to active recall", id);
         Ok(())
     }
 
     /// Set the agent ID for this memory instance.
-    /// 
+    ///
     /// This is used for ACL checks when storing and recalling memories.
     /// Each agent should identify itself before performing operations.
     pub fn set_agent_id(&mut self, id: &str) {
         self.agent_id = Some(id.to_string());
     }
-    
+
     /// Get the current agent ID.
     pub fn agent_id(&self) -> Option<&str> {
         self.agent_id.as_deref()
     }
-    
+
     /// Set a memory extractor for LLM-based fact extraction.
     ///
     /// When an extractor is set, `add()` and `add_to_namespace()` will
@@ -2421,7 +2547,6 @@ impl Memory {
         self.extractor = original_extractor;
         result
     }
-
 }
 
 /// One-shot extractor that returns a pre-computed extraction result.
@@ -2436,8 +2561,13 @@ impl MemoryExtractor for PrecomputedExtractor {
         &self,
         _text: &str,
         _reference: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Vec<crate::extractor::ExtractedFact>, Box<dyn std::error::Error + Send + Sync>> {
-        let result = self.0.lock().unwrap().take()
+    ) -> Result<Vec<crate::extractor::ExtractedFact>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let result = self
+            .0
+            .lock()
+            .unwrap()
+            .take()
             .expect("PrecomputedExtractor::extract called more than once");
         result.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })
     }
@@ -2456,25 +2586,31 @@ impl Memory {
     ///
     /// Without a provider, synthesis still discovers clusters and runs the gate check,
     /// but skips LLM insight generation (graceful degradation).
-    pub fn set_synthesis_llm_provider(&mut self, provider: Box<dyn crate::synthesis::types::SynthesisLlmProvider>) {
+    pub fn set_synthesis_llm_provider(
+        &mut self,
+        provider: Box<dyn crate::synthesis::types::SynthesisLlmProvider>,
+    ) {
         self.synthesis_llm_provider = Some(provider);
     }
 
     /// Set the LLM triple extractor for knowledge graph enrichment during consolidation.
-    pub fn set_triple_extractor(&mut self, extractor: Box<dyn crate::triple_extractor::TripleExtractor>) {
+    pub fn set_triple_extractor(
+        &mut self,
+        extractor: Box<dyn crate::triple_extractor::TripleExtractor>,
+    ) {
         self.triple_extractor = Some(extractor);
     }
-    
+
     /// Remove the memory extractor (revert to storing raw content).
     pub fn clear_extractor(&mut self) {
         self.extractor = None;
     }
-    
+
     /// Check if an extractor is configured.
     pub fn has_extractor(&self) -> bool {
         self.extractor.is_some()
     }
-    
+
     /// Auto-configure extractor from environment and config file.
     ///
     /// Called during Memory::new() if no extractor is explicitly set.
@@ -2489,7 +2625,7 @@ impl Memory {
     /// Model can be overridden via ENGRAM_EXTRACTOR_MODEL env var.
     pub fn auto_configure_extractor(&mut self) {
         use crate::extractor::{AnthropicExtractor, AnthropicExtractorConfig};
-        
+
         // Check ANTHROPIC_AUTH_TOKEN first (OAuth mode)
         if let Ok(token) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
             let model = std::env::var("ENGRAM_EXTRACTOR_MODEL")
@@ -2498,11 +2634,13 @@ impl Memory {
                 model,
                 ..Default::default()
             };
-            self.extractor = Some(Box::new(AnthropicExtractor::with_config(&token, true, config)));
+            self.extractor = Some(Box::new(AnthropicExtractor::with_config(
+                &token, true, config,
+            )));
             log::info!("Extractor: Anthropic (OAuth) from ANTHROPIC_AUTH_TOKEN");
             return;
         }
-        
+
         // Check ANTHROPIC_API_KEY (API key mode)
         if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
             let model = std::env::var("ENGRAM_EXTRACTOR_MODEL")
@@ -2511,17 +2649,19 @@ impl Memory {
                 model,
                 ..Default::default()
             };
-            self.extractor = Some(Box::new(AnthropicExtractor::with_config(&key, false, config)));
+            self.extractor = Some(Box::new(AnthropicExtractor::with_config(
+                &key, false, config,
+            )));
             log::info!("Extractor: Anthropic (API key) from ANTHROPIC_API_KEY");
             return;
         }
-        
+
         // Check config file
         if let Some(extractor) = self.load_extractor_from_config() {
             self.extractor = Some(extractor);
             return;
         }
-        
+
         // No extractor configured - that's fine, backward compatible
         log::debug!("No extractor configured, storing raw text");
     }
@@ -2536,8 +2676,8 @@ impl Memory {
         if !config.haiku_l2_enabled {
             return;
         }
-        if let Ok(token) = std::env::var("ANTHROPIC_AUTH_TOKEN")
-            .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        if let Ok(token) =
+            std::env::var("ANTHROPIC_AUTH_TOKEN").or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
         {
             let is_oauth = std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok();
             self.intent_classifier = Some(crate::query_classifier::HaikuIntentClassifier::new(
@@ -2550,7 +2690,7 @@ impl Memory {
             log::info!("HaikuIntentClassifier: configured (oauth={})", is_oauth);
         }
     }
-    
+
     /// Load extractor configuration from ~/.config/engram/config.json.
     ///
     /// The config file stores non-sensitive settings (provider, model, host).
@@ -2567,21 +2707,21 @@ impl Memory {
     /// ```
     fn load_extractor_from_config(&self) -> Option<Box<dyn MemoryExtractor>> {
         use crate::extractor::{AnthropicExtractor, AnthropicExtractorConfig, OllamaExtractor};
-        
+
         // Get config directory
         let config_path = dirs::config_dir()?.join("engram/config.json");
         if !config_path.exists() {
             return None;
         }
-        
+
         // Read and parse config file
         let content = std::fs::read_to_string(&config_path).ok()?;
         let config: serde_json::Value = serde_json::from_str(&content).ok()?;
-        
+
         // Get extractor section
         let extractor_config = config.get("extractor")?;
         let provider = extractor_config.get("provider")?.as_str()?;
-        
+
         match provider {
             "anthropic" => {
                 // Still need env var for auth - config file NEVER stores tokens
@@ -2589,20 +2729,22 @@ impl Memory {
                     .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
                     .ok()?;
                 let is_oauth = std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok();
-                
+
                 let model = extractor_config
                     .get("model")
                     .and_then(|v| v.as_str())
                     .unwrap_or("claude-haiku-4-5-20251001")
                     .to_string();
-                
+
                 let api_config = AnthropicExtractorConfig {
                     model: model.clone(),
                     ..Default::default()
                 };
-                
+
                 log::info!("Extractor: Anthropic ({}) from config file", model);
-                Some(Box::new(AnthropicExtractor::with_config(&token, is_oauth, api_config)))
+                Some(Box::new(AnthropicExtractor::with_config(
+                    &token, is_oauth, api_config,
+                )))
             }
             "ollama" => {
                 let model = extractor_config
@@ -2615,7 +2757,7 @@ impl Memory {
                     .and_then(|v| v.as_str())
                     .unwrap_or("http://localhost:11434")
                     .to_string();
-                
+
                 log::info!("Extractor: Ollama ({}) from config file", model);
                 Some(Box::new(OllamaExtractor::with_host(&model, &host)))
             }
@@ -2654,7 +2796,7 @@ impl Memory {
         #[allow(deprecated)]
         self.add_to_namespace(content, memory_type, importance, source, metadata, None)
     }
-    
+
     /// Store a new memory in a specific namespace. Returns memory ID.
     ///
     /// **Deprecated (ISS-019 Step 4.5):** use [`Memory::store_raw`] for
@@ -2738,7 +2880,10 @@ impl Memory {
                     .unwrap_or_default();
                 Ok(id)
             }
-            RawStoreOutcome::Skipped { content_hash, reason } => {
+            RawStoreOutcome::Skipped {
+                content_hash,
+                reason,
+            } => {
                 // ISS-019 Step 8: demoted to debug!. The shim's
                 // caller sees "skipped:<hash>" in the return value,
                 // and `Memory::write_stats()` already captures the
@@ -2754,15 +2899,11 @@ impl Memory {
                 // converts Quarantined StoreError into an Err, and the
                 // Quarantined outcome variant is only produced via the
                 // Ok path. Keep a safety net.
-                Err(format!(
-                    "content quarantined: {reason:?} (id={})",
-                    id.as_str()
-                )
-                .into())
+                Err(format!("content quarantined: {reason:?} (id={})", id.as_str()).into())
             }
         }
     }
-    
+
     /// Parse a memory type string into MemoryType enum.
     #[allow(dead_code)] // Kept for potential future use (e.g., legacy migration)
     fn parse_memory_type(s: &str) -> Option<MemoryType> {
@@ -2777,7 +2918,7 @@ impl Memory {
             _ => None,
         }
     }
-    
+
     /// Store a memory directly without extraction (internal method).
     ///
     /// This is the raw storage path used when no extractor is configured
@@ -2824,7 +2965,7 @@ impl Memory {
             None => format!("{}", Uuid::new_v4())[..8].to_string(),
         };
         let base_importance = importance.unwrap_or_else(|| memory_type.default_importance());
-        
+
         // Apply drive alignment boost if Empathy Bus is attached
         let importance = if let Some(ref bus) = self.empathy_bus {
             let boost = bus.align_importance(content);
@@ -2852,19 +2993,23 @@ impl Memory {
             // Phase A: entity Jaccard pre-check (if entities are available)
             if self.config.entity_config.enabled {
                 let entities = self.entity_extractor.extract(content);
-                let entity_names: Vec<String> = entities.iter()
-                    .map(|e| e.normalized.clone())
-                    .collect();
-                
+                let entity_names: Vec<String> =
+                    entities.iter().map(|e| e.normalized.clone()).collect();
+
                 if !entity_names.is_empty() {
-                    if let Ok(Some((candidate_id, _jaccard))) = 
-                        self.storage.find_entity_overlap(&entity_names, ns, 0.5) 
+                    if let Ok(Some((candidate_id, _jaccard))) =
+                        self.storage.find_entity_overlap(&entity_names, ns, 0.5)
                     {
                         // Entity overlap found — confirm with embedding similarity
                         if let Some(ref embedding) = pre_embedding {
                             // Check similarity specifically against the candidate
-                            if let Ok(Some(candidate_emb)) = self.storage.get_embedding_for_memory(&candidate_id) {
-                                let sim = crate::embeddings::EmbeddingProvider::cosine_similarity(embedding, &candidate_emb);
+                            if let Ok(Some(candidate_emb)) =
+                                self.storage.get_embedding_for_memory(&candidate_id)
+                            {
+                                let sim = crate::embeddings::EmbeddingProvider::cosine_similarity(
+                                    embedding,
+                                    &candidate_emb,
+                                );
                                 if sim as f64 >= self.config.dedup_threshold {
                                     log::info!(
                                         "Dedup (entity+embedding): merging into {} (jaccard={:.3}, sim={:.4})",
@@ -2883,25 +3028,37 @@ impl Memory {
                                     )
                                     .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("EnrichedMemory::minimal failed in dedup entity path: {}", e))) })?;
                                     let outcome = self.storage.merge_enriched_into(
-                                        &candidate_id, &incoming_em, sim,
+                                        &candidate_id,
+                                        &incoming_em,
+                                        sim,
                                     )?;
                                     if outcome.content_updated {
                                         log::info!(
                                             "Dedup: content updated for {} (merge_count={})",
-                                            candidate_id, outcome.merge_count,
+                                            candidate_id,
+                                            outcome.merge_count,
                                         );
                                     }
                                     // Update entity links for the merged memory
                                     for entity in &entities {
                                         if let Ok(eid) = self.storage.upsert_entity(
-                                            &entity.normalized, entity.entity_type.as_str(), ns, None,
+                                            &entity.normalized,
+                                            entity.entity_type.as_str(),
+                                            ns,
+                                            None,
                                         ) {
-                                            let _ = self.storage.link_memory_entity(&candidate_id, &eid, "mention");
+                                            let _ = self.storage.link_memory_entity(
+                                                &candidate_id,
+                                                &eid,
+                                                "mention",
+                                            );
                                         }
                                     }
-                                    self.last_add_result = Some(crate::lifecycle::AddResult::Merged { 
-                                        into: candidate_id.clone(), similarity: sim 
-                                    });
+                                    self.last_add_result =
+                                        Some(crate::lifecycle::AddResult::Merged {
+                                            into: candidate_id.clone(),
+                                            similarity: sim,
+                                        });
                                     self.dedup_merge_count += 1;
                                     return Ok(candidate_id);
                                 }
@@ -2910,16 +3067,20 @@ impl Memory {
                     }
                 }
             }
-            
+
             // Phase B: embedding-only dedup (existing logic, catches cases without entities)
             if let Some(ref embedding) = pre_embedding {
                 let model_id = self.config.embedding.model_id();
                 if let Ok(Some((existing_id, similarity))) = self.storage.find_nearest_embedding(
-                    embedding, &model_id, Some(ns), self.config.dedup_threshold,
+                    embedding,
+                    &model_id,
+                    Some(ns),
+                    self.config.dedup_threshold,
                 ) {
                     log::info!(
                         "Dedup: merging into existing memory {} (similarity: {:.4})",
-                        existing_id, similarity
+                        existing_id,
+                        similarity
                     );
                     // ISS-019 Step 5.5: same minimal-EnrichedMemory
                     // construction as the entity-phase merge above.
@@ -2929,28 +3090,43 @@ impl Memory {
                         source.map(str::to_string),
                         Some(ns.to_string()),
                     )
-                    .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("EnrichedMemory::minimal failed in dedup embedding path: {}", e))) })?;
-                    let outcome = self.storage.merge_enriched_into(
-                        &existing_id, &incoming_em, similarity,
-                    )?;
+                    .map_err(|e| -> Box<dyn std::error::Error> {
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "EnrichedMemory::minimal failed in dedup embedding path: {}",
+                                e
+                            ),
+                        ))
+                    })?;
+                    let outcome =
+                        self.storage
+                            .merge_enriched_into(&existing_id, &incoming_em, similarity)?;
                     if outcome.content_updated {
                         log::info!(
                             "Dedup: content updated for {} (merge_count={})",
-                            existing_id, outcome.merge_count,
+                            existing_id,
+                            outcome.merge_count,
                         );
                     }
                     if self.config.entity_config.enabled {
                         let entities = self.entity_extractor.extract(content);
                         for entity in &entities {
                             if let Ok(eid) = self.storage.upsert_entity(
-                                &entity.normalized, entity.entity_type.as_str(), ns, None,
+                                &entity.normalized,
+                                entity.entity_type.as_str(),
+                                ns,
+                                None,
                             ) {
-                                let _ = self.storage.link_memory_entity(&existing_id, &eid, "mention");
+                                let _ =
+                                    self.storage
+                                        .link_memory_entity(&existing_id, &eid, "mention");
                             }
                         }
                     }
-                    self.last_add_result = Some(crate::lifecycle::AddResult::Merged { 
-                        into: existing_id.clone(), similarity 
+                    self.last_add_result = Some(crate::lifecycle::AddResult::Merged {
+                        into: existing_id.clone(),
+                        similarity,
                     });
                     self.dedup_merge_count += 1;
                     return Ok(existing_id);
@@ -2998,7 +3174,7 @@ impl Memory {
         self.storage.add(&record, ns)?;
         self.last_add_result = Some(crate::lifecycle::AddResult::Created { id: id.clone() });
         self.dedup_write_count += 1;
-        
+
         // Step 4: Store pre-computed embedding (avoid double-embed)
         // Keep a reference for Step 6 (association discovery) before consuming
         let embedding_for_assoc: Option<Vec<f32>> = if self.config.association.enabled {
@@ -3014,12 +3190,12 @@ impl Memory {
                 self.config.embedding.dimensions,
             )?;
         }
-        
+
         // Step 5: Entity extraction
         if self.config.entity_config.enabled {
             let entities = self.entity_extractor.extract(content);
             let mut entity_ids = Vec::new();
-            
+
             for entity in &entities {
                 match self.storage.upsert_entity(
                     &entity.normalized,
@@ -3038,7 +3214,7 @@ impl Memory {
                     }
                 }
             }
-            
+
             // Co-occurrence relations (capped at 10 to avoid O(n²))
             let cap = entity_ids.len().min(10);
             for i in 0..cap {
@@ -3061,7 +3237,8 @@ impl Memory {
 
             // Collect entity names for signal computation
             let entity_names: Vec<String> = if self.config.entity_config.enabled {
-                self.entity_extractor.extract(content)
+                self.entity_extractor
+                    .extract(content)
                     .into_iter()
                     .map(|e| e.normalized)
                     .collect()
@@ -3096,7 +3273,8 @@ impl Memory {
                             if n > 0 {
                                 log::debug!(
                                     "Association discovery: created {} links for memory {}",
-                                    n, &id
+                                    n,
+                                    &id
                                 );
                             }
                         }
@@ -3119,10 +3297,10 @@ impl Memory {
                 );
             }
         }
-        
+
         Ok(id)
     }
-    
+
     /// Store a new memory with emotional tracking.
     ///
     /// This method both stores the memory and records the empathy valence
@@ -3177,8 +3355,15 @@ impl Memory {
     ) -> Result<String, Box<dyn std::error::Error>> {
         #[allow(deprecated)]
         self.add_with_emotion_at(
-            content, memory_type, importance, source, metadata, namespace,
-            emotion, domain, None,
+            content,
+            memory_type,
+            importance,
+            source,
+            metadata,
+            namespace,
+            emotion,
+            domain,
+            None,
         )
     }
 
@@ -3241,14 +3426,13 @@ impl Memory {
             domain: Some(domain.to_string()),
         };
 
-        let outcome = self.store_raw(content, meta).map_err(|e| match e {
-            StoreError::Quarantined { id, reason } => {
-                Box::<dyn std::error::Error>::from(format!(
-                    "store_raw quarantined: {:?} (qid={})", reason, id.as_str()
-                ))
-            }
-            other => Box::<dyn std::error::Error>::from(other.to_string()),
-        })?;
+        let outcome =
+            self.store_raw(content, meta).map_err(|e| match e {
+                StoreError::Quarantined { id, reason } => Box::<dyn std::error::Error>::from(
+                    format!("store_raw quarantined: {:?} (qid={})", reason, id.as_str()),
+                ),
+                other => Box::<dyn std::error::Error>::from(other.to_string()),
+            })?;
 
         let id = match outcome {
             RawStoreOutcome::Stored(outcomes) => outcomes
@@ -3310,7 +3494,10 @@ impl Memory {
     ) -> Result<crate::store_api::StoreOutcome, crate::store_api::StoreError> {
         // Debug-time sanity: constructor guarantees this, but a caller
         // that built the struct literally could violate it.
-        debug_assert!(mem.invariants_hold(), "EnrichedMemory::content must equal dimensions.core_fact");
+        debug_assert!(
+            mem.invariants_hold(),
+            "EnrichedMemory::content must equal dimensions.core_fact"
+        );
 
         let memory_type = mem.dimensions.type_weights.primary_type();
         let importance_hint = Some(mem.importance.get());
@@ -3335,7 +3522,10 @@ impl Memory {
         // Translate `last_add_result` into the typed outcome.
         match self.last_add_result.clone() {
             Some(crate::lifecycle::AddResult::Merged { into, similarity }) => {
-                Ok(crate::store_api::StoreOutcome::Merged { id: into, similarity })
+                Ok(crate::store_api::StoreOutcome::Merged {
+                    id: into,
+                    similarity,
+                })
             }
             Some(crate::lifecycle::AddResult::Created { id: created_id }) => {
                 Ok(crate::store_api::StoreOutcome::Inserted { id: created_id })
@@ -3383,7 +3573,9 @@ impl Memory {
         content: &str,
         meta: crate::store_api::StorageMeta,
     ) -> Result<crate::store_api::RawStoreOutcome, crate::store_api::StoreError> {
-        use crate::store_api::{ContentHash, QuarantineId, QuarantineReason, RawStoreOutcome, SkipReason};
+        use crate::store_api::{
+            ContentHash, QuarantineId, QuarantineReason, RawStoreOutcome, SkipReason,
+        };
         use crate::write_stats::{duration_to_ms, StoreEvent};
 
         // ISS-019 Step 8: wall-clock timer for the whole call. Every
@@ -3536,18 +3728,15 @@ impl Memory {
                     // (replay/backfill), else wall-clock now.
                     let mut facts = facts;
                     let ref_time = meta.occurred_at.unwrap_or_else(chrono::Utc::now);
-                    let grounding_results: Vec<crate::temporal_grounding::GroundingResult> =
-                        facts
-                            .iter_mut()
-                            .map(|f| crate::temporal_grounding::ground_fact(f, ref_time))
-                            .collect();
+                    let grounding_results: Vec<crate::temporal_grounding::GroundingResult> = facts
+                        .iter_mut()
+                        .map(|f| crate::temporal_grounding::ground_fact(f, ref_time))
+                        .collect();
 
                     for (fact_idx, fact) in facts.into_iter().enumerate() {
                         // Cap auto-extracted importance to prevent noise from
                         // dominating recall — same rule as the legacy path.
-                        let capped = fact
-                            .importance
-                            .min(self.config.auto_extract_importance_cap);
+                        let capped = fact.importance.min(self.config.auto_extract_importance_cap);
 
                         let mut fact_adj = fact;
                         fact_adj.importance = capped;
@@ -3633,16 +3822,10 @@ impl Memory {
                         // batch size (fact_count) and merge count so
                         // `WriteStats.merged_count` tracks dedup rate
                         // without parsing outcome vectors.
-                        let first_id = outcomes
-                            .first()
-                            .map(|o| o.id().clone())
-                            .unwrap_or_default();
+                        let first_id = outcomes.first().map(|o| o.id().clone()).unwrap_or_default();
                         let merged_count = outcomes
                             .iter()
-                            .filter(|o| matches!(
-                                o,
-                                crate::store_api::StoreOutcome::Merged { .. }
-                            ))
+                            .filter(|o| matches!(o, crate::store_api::StoreOutcome::Merged { .. }))
                             .count();
                         self.emit_store_event(StoreEvent::Stored {
                             id: first_id,
@@ -3679,19 +3862,16 @@ impl Memory {
                         reason
                     );
                     // ISS-019 Step 6: persist quarantine row.
-                    let persisted_id = self.persist_quarantine_row(
-                        &qid_str, content, &reason, &meta,
-                    ).map_err(crate::store_api::StoreError::DbError)?;
+                    let persisted_id = self
+                        .persist_quarantine_row(&qid_str, content, &reason, &meta)
+                        .map_err(crate::store_api::StoreError::DbError)?;
                     let qid = QuarantineId::new(persisted_id);
                     self.emit_store_event(StoreEvent::Quarantined {
                         id: qid.clone(),
                         reason: reason.clone(),
                         ms_elapsed: duration_to_ms(t0.elapsed()),
                     });
-                    return Ok(RawStoreOutcome::Quarantined {
-                        id: qid,
-                        reason,
-                    });
+                    return Ok(RawStoreOutcome::Quarantined { id: qid, reason });
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
@@ -3699,19 +3879,16 @@ impl Memory {
                     let qid_str = format!("q-{}", short_hash(content));
                     let reason = QuarantineReason::ExtractorError(err_msg);
                     // ISS-019 Step 6: persist quarantine row.
-                    let persisted_id = self.persist_quarantine_row(
-                        &qid_str, content, &reason, &meta,
-                    ).map_err(crate::store_api::StoreError::DbError)?;
+                    let persisted_id = self
+                        .persist_quarantine_row(&qid_str, content, &reason, &meta)
+                        .map_err(crate::store_api::StoreError::DbError)?;
                     let qid = QuarantineId::new(persisted_id);
                     self.emit_store_event(StoreEvent::Quarantined {
                         id: qid.clone(),
                         reason: reason.clone(),
                         ms_elapsed: duration_to_ms(t0.elapsed()),
                     });
-                    return Ok(RawStoreOutcome::Quarantined {
-                        id: qid,
-                        reason,
-                    });
+                    return Ok(RawStoreOutcome::Quarantined { id: qid, reason });
                 }
             }
         }
@@ -3818,16 +3995,14 @@ impl Memory {
     ) -> Result<String, rusqlite::Error> {
         use crate::store_api::QuarantineReason as QR;
         let (kind, detail): (&str, Option<String>) = match reason {
-            QR::ExtractorTimeout          => ("extractor_timeout", None),
-            QR::ExtractorError(s)         => ("extractor_error", Some(s.clone())),
-            QR::ExtractorPanic            => ("extractor_panic", None),
-            QR::AllFactsInvalid(s)        => ("all_facts_invalid", Some(s.clone())),
-            QR::PipelineError(s)          => ("pipeline_error", Some(s.clone())),
+            QR::ExtractorTimeout => ("extractor_timeout", None),
+            QR::ExtractorError(s) => ("extractor_error", Some(s.clone())),
+            QR::ExtractorPanic => ("extractor_panic", None),
+            QR::AllFactsInvalid(s) => ("all_facts_invalid", Some(s.clone())),
+            QR::PipelineError(s) => ("pipeline_error", Some(s.clone())),
         };
         let content_hash = short_hash(content);
-        let memory_type_hint = meta
-            .memory_type_hint
-            .map(|mt| mt.to_string());
+        let memory_type_hint = meta.memory_type_hint.map(|mt| mt.to_string());
         let user_meta_json = if meta.user_metadata.is_null() {
             None
         } else {
@@ -3883,9 +4058,12 @@ impl Memory {
         &mut self,
         max_items: usize,
     ) -> Result<crate::store_api::RetryReport, crate::store_api::StoreError> {
-        use crate::store_api::{RawStoreOutcome, RetryReport, StorageMeta, StoreError, QuarantineId};
+        use crate::store_api::{
+            QuarantineId, RawStoreOutcome, RetryReport, StorageMeta, StoreError,
+        };
 
-        let rows = self.storage
+        let rows = self
+            .storage
             .list_quarantine_for_retry_batch(max_items)
             .map_err(StoreError::DbError)?;
 
@@ -3896,14 +4074,13 @@ impl Memory {
 
         for row in rows {
             // Reconstruct StorageMeta from the preserved hints.
-            let memory_type_hint = row.memory_type_hint
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<crate::types::MemoryType>(
-                    &format!("\"{}\"", s)
-                ).ok());
+            let memory_type_hint = row.memory_type_hint.as_deref().and_then(|s| {
+                serde_json::from_str::<crate::types::MemoryType>(&format!("\"{}\"", s)).ok()
+            });
             let user_metadata = match row.user_metadata.as_deref() {
-                Some(s) => serde_json::from_str::<serde_json::Value>(s)
-                    .unwrap_or(serde_json::Value::Null),
+                Some(s) => {
+                    serde_json::from_str::<serde_json::Value>(s).unwrap_or(serde_json::Value::Null)
+                }
                 None => serde_json::Value::Null,
             };
             let meta = StorageMeta {
@@ -3935,7 +4112,9 @@ impl Memory {
                     // Record as recovered with a synthetic marker so
                     // callers can distinguish in logs. No main-table
                     // id exists, so we use a `skipped:<hash>` form.
-                    report.recovered.push(format!("skipped:{}", row.content_hash));
+                    report
+                        .recovered
+                        .push(format!("skipped:{}", row.content_hash));
                 }
                 Ok(RawStoreOutcome::Quarantined { reason, .. }) => {
                     // Another failure — increment attempts and, if
@@ -3946,17 +4125,18 @@ impl Memory {
                     // updated or deduplicated — either way, we update
                     // our current row's attempts for bookkeeping).
                     let err_msg = format!("{:?}", reason);
-                    let _ = self.storage.record_quarantine_attempt(
-                        &row.id, Some(&err_msg),
-                    );
+                    let _ = self
+                        .storage
+                        .record_quarantine_attempt(&row.id, Some(&err_msg));
                     let new_attempts = row.attempts + 1;
                     if new_attempts >= Self::QUARANTINE_MAX_ATTEMPTS {
-                        let _ = self.storage
-                            .mark_quarantine_permanently_rejected(&row.id);
-                        report.permanently_rejected
+                        let _ = self.storage.mark_quarantine_permanently_rejected(&row.id);
+                        report
+                            .permanently_rejected
                             .push(QuarantineId::new(row.id.clone()));
                     } else {
-                        report.still_failing
+                        report
+                            .still_failing
                             .push((QuarantineId::new(row.id.clone()), err_msg));
                     }
                 }
@@ -3965,10 +4145,11 @@ impl Memory {
                     // attempts with the error message; do not mark
                     // rejected (the error is not about the content).
                     let err_msg = e.to_string();
-                    let _ = self.storage.record_quarantine_attempt(
-                        &row.id, Some(&err_msg),
-                    );
-                    report.still_failing
+                    let _ = self
+                        .storage
+                        .record_quarantine_attempt(&row.id, Some(&err_msg));
+                    report
+                        .still_failing
                         .push((QuarantineId::new(row.id.clone()), err_msg));
                 }
             }
@@ -4077,10 +4258,7 @@ impl Memory {
                     Some(LegacyClassification::UnparseableLegacy { error }) => {
                         // Short content / non-object metadata — not
                         // worth re-extracting. Skip, record for stats.
-                        log::debug!(
-                            "scan_and_enqueue_backfill: skipping id={} ({})",
-                            id, error
-                        );
+                        log::debug!("scan_and_enqueue_backfill: skipping id={} ({})", id, error);
                         report.unparseable += 1;
                     }
                 }
@@ -4149,10 +4327,7 @@ impl Memory {
             };
 
             // If the row has already been rewritten to v2, nothing to do.
-            let metadata_val = record
-                .metadata
-                .clone()
-                .unwrap_or(serde_json::Value::Null);
+            let metadata_val = record.metadata.clone().unwrap_or(serde_json::Value::Null);
             if classify_stored_metadata(&metadata_val, record.content.len()).is_none() {
                 let _ = self.storage.delete_backfill_row(&row.memory_id);
                 report.unchanged += 1;
@@ -4197,11 +4372,7 @@ impl Memory {
                             serde_json::Value::Null, // preserve user metadata via merge
                         ) {
                             Ok(em) => {
-                                match self.storage.merge_enriched_into(
-                                    &row.memory_id,
-                                    &em,
-                                    1.0,
-                                ) {
+                                match self.storage.merge_enriched_into(&row.memory_id, &em, 1.0) {
                                     Ok(_) => {
                                         merged_any = true;
                                     }
@@ -4268,7 +4439,6 @@ impl Memory {
             .map_err(crate::store_api::StoreError::DbError)
     }
 
-
     ///
     /// Unlike simple cosine similarity, this uses:
     /// - Base-level activation (frequency × recency, power law)
@@ -4293,7 +4463,7 @@ impl Memory {
     ) -> Result<Vec<RecallResult>, Box<dyn std::error::Error>> {
         self.recall_from_namespace(query, limit, context, min_confidence, None)
     }
-    
+
     /// Retrieve relevant memories from a specific namespace.
     ///
     /// Uses hybrid search: FTS + embedding + ACT-R activation.
@@ -4322,47 +4492,57 @@ impl Memory {
         let context = context.unwrap_or_default();
         let min_conf = min_confidence.unwrap_or(0.0);
         let ns = namespace.unwrap_or("default");
-        
+
         // If embedding provider is available, use embedding-based recall
         if let Some(ref embedding_provider) = self.embedding {
             // Generate embedding for query
             let query_embedding = match embedding_provider.embed(query) {
                 Ok(emb) => emb,
                 Err(e) => {
-                    log::warn!("Failed to generate query embedding, falling back to FTS: {}", e);
+                    log::warn!(
+                        "Failed to generate query embedding, falling back to FTS: {}",
+                        e
+                    );
                     return self.recall_fts(query, limit, &context, min_conf, ns, now);
                 }
             };
-            
+
             // Get all embeddings for namespace and current model
             let model_id = self.config.embedding.model_id();
-            let stored_embeddings = self.storage.get_embeddings_in_namespace(Some(ns), &model_id)?;
-            
+            let stored_embeddings = self
+                .storage
+                .get_embeddings_in_namespace(Some(ns), &model_id)?;
+
             // If no embedded memories, fall back to FTS
             if stored_embeddings.is_empty() {
-                log::debug!("No embedded memories in namespace '{}', falling back to FTS", ns);
+                log::debug!(
+                    "No embedded memories in namespace '{}', falling back to FTS",
+                    ns
+                );
                 return self.recall_fts(query, limit, &context, min_conf, ns, now);
             }
-            
+
             // Build a map of memory_id -> embedding similarity
             let mut similarity_map: HashMap<String, f32> = HashMap::new();
             for (memory_id, stored_emb) in &stored_embeddings {
                 let sim = EmbeddingProvider::cosine_similarity(&query_embedding, stored_emb);
                 similarity_map.insert(memory_id.clone(), sim);
             }
-            
+
             // Also get FTS results for exact term matching
-            let fts_results = self.storage.search_fts_ns(query, limit * 3, Some(ns))
+            let fts_results = self
+                .storage
+                .search_fts_ns(query, limit * 3, Some(ns))
                 .unwrap_or_default();
             let fts_count = fts_results.len();
-            
+
             // Build FTS score map (rank-based normalization)
             let mut fts_score_map: HashMap<String, f64> = HashMap::new();
             for (rank, record) in fts_results.iter().enumerate() {
                 let score = 1.0 - (rank as f64 / (fts_count.max(1)) as f64);
                 fts_score_map.insert(record.id.clone(), score);
             }
-            
+
             // Entity-based recall (4th channel)
             let (entity_scores, entity_w) = if self.config.entity_config.enabled {
                 let es = self.entity_recall(query, Some(ns), limit * 3)?;
@@ -4370,7 +4550,7 @@ impl Memory {
             } else {
                 (HashMap::new(), 0.0)
             };
-            
+
             // Query-type adaptive weight adjustment (C7: Multi-Retrieval Fusion)
             // + Query intent classification (Level 1 regex + Level 2 Haiku LLM)
             let query_analysis = if self.config.adaptive_weights {
@@ -4381,16 +4561,17 @@ impl Memory {
             } else {
                 crate::query_classifier::QueryAnalysis::neutral()
             };
-            
+
             // Merge candidate IDs from embedding, FTS, and entity recall
-            let mut all_ids: std::collections::HashSet<String> = similarity_map.keys().cloned().collect();
+            let mut all_ids: std::collections::HashSet<String> =
+                similarity_map.keys().cloned().collect();
             for record in &fts_results {
                 all_ids.insert(record.id.clone());
             }
             for id in entity_scores.keys() {
                 all_ids.insert(id.clone());
             }
-            
+
             // Get candidate memories
             let mut candidates: Vec<MemoryRecord> = Vec::new();
             for id in &all_ids {
@@ -4398,10 +4579,10 @@ impl Memory {
                     candidates.push(record);
                 }
             }
-            
+
             // Defense-in-depth: filter out any superseded memories that slipped through SQL filter
             candidates.retain(|r| r.superseded_by.is_none());
-            
+
             // Hebbian channel (6th channel): score candidates by Hebbian connectivity
             let candidate_ids: Vec<String> = candidates.iter().map(|r| r.id.clone()).collect();
             let hebbian_scores = if self.config.hebbian_enabled {
@@ -4414,11 +4595,11 @@ impl Memory {
             } else {
                 0.0
             };
-            
+
             // Somatic channel (7th) — emotional memory bias
             let somatic_scores = self.somatic_scores(query, &candidates);
             let raw_somatic_weight = self.config.somatic_weight;
-            
+
             // Base weights (from config)
             let raw_fts_weight = self.config.fts_weight;
             let raw_emb_weight = self.config.embedding_weight;
@@ -4426,7 +4607,7 @@ impl Memory {
             let raw_entity_weight = entity_w;
             let raw_temporal_weight = self.config.temporal_weight;
             let raw_hebbian_weight = hebbian_w;
-            
+
             // Apply query-type modifiers (C7 adaptive weights)
             let adj_fts = raw_fts_weight * query_analysis.weight_modifiers.fts;
             let adj_emb = raw_emb_weight * query_analysis.weight_modifiers.embedding;
@@ -4435,10 +4616,24 @@ impl Memory {
             let adj_temporal = raw_temporal_weight * query_analysis.weight_modifiers.temporal;
             let adj_hebbian = raw_hebbian_weight * query_analysis.weight_modifiers.hebbian;
             let adj_somatic = raw_somatic_weight * query_analysis.weight_modifiers.somatic;
-            
+
             // Runtime normalization — always divide by sum
-            let total_weight = adj_fts + adj_emb + adj_actr + adj_entity + adj_temporal + adj_hebbian + adj_somatic;
-            let (fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight, som_weight) = if total_weight > 0.0 {
+            let total_weight = adj_fts
+                + adj_emb
+                + adj_actr
+                + adj_entity
+                + adj_temporal
+                + adj_hebbian
+                + adj_somatic;
+            let (
+                fts_weight,
+                emb_weight,
+                actr_weight,
+                ent_weight,
+                temp_weight,
+                hebb_weight,
+                som_weight,
+            ) = if total_weight > 0.0 {
                 (
                     adj_fts / total_weight,
                     adj_emb / total_weight,
@@ -4452,29 +4647,26 @@ impl Memory {
                 let n = 1.0 / 7.0;
                 (n, n, n, n, n, n, n)
             };
-            
+
             log::debug!(
                 "C7 recall weights: fts={:.3} emb={:.3} actr={:.3} entity={:.3} temporal={:.3} hebbian={:.3} somatic={:.3} (query_type={:?})",
                 fts_weight, emb_weight, actr_weight, ent_weight, temp_weight, hebb_weight, som_weight,
                 query_analysis.query_type,
             );
-            
+
             let mut scored: Vec<_> = candidates
                 .into_iter()
                 .map(|record| {
                     // Get embedding similarity (already normalized to -1..1, convert to 0..1)
-                    let embedding_sim = similarity_map
-                        .get(&record.id)
-                        .copied()
-                        .unwrap_or(0.0);
+                    let embedding_sim = similarity_map.get(&record.id).copied().unwrap_or(0.0);
                     let embedding_score = (embedding_sim + 1.0) / 2.0; // Normalize to 0..1
-                    
+
                     // Get FTS score (0 if not in FTS results)
                     let fts_score = fts_score_map.get(&record.id).copied().unwrap_or(0.0);
-                    
+
                     // Get entity score (0 if not in entity results)
                     let entity_score = entity_scores.get(&record.id).copied().unwrap_or(0.0);
-                    
+
                     // Get ACT-R activation
                     let activation = retrieval_activation(
                         &record,
@@ -4485,23 +4677,24 @@ impl Memory {
                         self.config.importance_weight,
                         self.config.contradiction_penalty,
                     );
-                    
+
                     // Normalize activation to 0..1 range (sigmoid — much better discrimination than linear)
                     let activation_normalized = crate::models::actr::normalize_activation(
                         activation,
                         self.config.actr_sigmoid_center,
                         self.config.actr_sigmoid_scale,
                     );
-                    
+
                     // Temporal channel (5th) — time-range proximity
-                    let temporal_score = Self::temporal_score(&record, &query_analysis.time_range, now);
-                    
+                    let temporal_score =
+                        Self::temporal_score(&record, &query_analysis.time_range, now);
+
                     // Hebbian channel (6th) — graph connectivity
                     let hebbian_score = hebbian_scores.get(&record.id).copied().unwrap_or(0.0);
-                    
+
                     // Somatic channel (7th) — emotional memory bias (Damasio)
                     let somatic_score = somatic_scores.get(&record.id).copied().unwrap_or(0.0);
-                    
+
                     // Combined: 7-channel fusion
                     let combined_score = (fts_weight * fts_score)
                         + (emb_weight * embedding_score as f64)
@@ -4510,25 +4703,26 @@ impl Memory {
                         + (temp_weight * temporal_score)
                         + (hebb_weight * hebbian_score)
                         + (som_weight * somatic_score);
-                    
+
                     // Type-affinity modulation: weighted max over type_weights × affinity.
                     // For old memories (no type_weights in metadata), TypeWeights::default() (all 1.0)
                     // gives: max(1.0 × affinity_i) = max(affinity_i), equivalent to old behavior.
-                    let type_weights = crate::type_weights::TypeWeights::from_metadata(&record.metadata);
+                    let type_weights =
+                        crate::type_weights::TypeWeights::from_metadata(&record.metadata);
                     let affinity_multiplier = [
-                        type_weights.factual    * query_analysis.type_affinity.factual,
-                        type_weights.episodic   * query_analysis.type_affinity.episodic,
+                        type_weights.factual * query_analysis.type_affinity.factual,
+                        type_weights.episodic * query_analysis.type_affinity.episodic,
                         type_weights.relational * query_analysis.type_affinity.relational,
-                        type_weights.emotional  * query_analysis.type_affinity.emotional,
+                        type_weights.emotional * query_analysis.type_affinity.emotional,
                         type_weights.procedural * query_analysis.type_affinity.procedural,
-                        type_weights.opinion    * query_analysis.type_affinity.opinion,
-                        type_weights.causal     * query_analysis.type_affinity.causal,
+                        type_weights.opinion * query_analysis.type_affinity.opinion,
+                        type_weights.causal * query_analysis.type_affinity.causal,
                     ]
                     .iter()
                     .cloned()
                     .fold(f64::NEG_INFINITY, f64::max);
                     let final_score = combined_score * affinity_multiplier;
-                    
+
                     (record, final_score, activation)
                 })
                 .collect();
@@ -4542,12 +4736,14 @@ impl Memory {
             let top_candidates: Vec<_> = scored.into_iter().take(expanded_limit).collect();
 
             // Build pairwise embedding lookup for dedup
-            let embedding_lookup: HashMap<&str, &Vec<f32>> = stored_embeddings.iter()
+            let embedding_lookup: HashMap<&str, &Vec<f32>> = stored_embeddings
+                .iter()
                 .map(|(id, emb)| (id.as_str(), emb))
                 .collect();
 
             // Convert to RecallResults with confidence
-            let mut all_results: Vec<RecallResult> = top_candidates.iter()
+            let mut all_results: Vec<RecallResult> = top_candidates
+                .iter()
                 .map(|(record, _combined_score, activation)| {
                     // Compute confidence from individual signals (not combined_score)
                     let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
@@ -4608,8 +4804,12 @@ impl Memory {
                 for result in &results {
                     // Check against previously recalled memories within 30s window
                     for (prev_id, prev_time) in &self.recent_recalls {
-                        if prev_id == &result.record.id { continue; }
-                        if now_instant.duration_since(*prev_time) <= std::time::Duration::from_secs(30) {
+                        if prev_id == &result.record.id {
+                            continue;
+                        }
+                        if now_instant.duration_since(*prev_time)
+                            <= std::time::Duration::from_secs(30)
+                        {
                             // Within 30s window → record co-activation
                             let _ = self.storage.record_coactivation_ns(
                                 prev_id,
@@ -4620,7 +4820,8 @@ impl Memory {
                         }
                     }
                     // Add this result to the ring buffer
-                    self.recent_recalls.push_back((result.record.id.clone(), now_instant));
+                    self.recent_recalls
+                        .push_back((result.record.id.clone(), now_instant));
                     if self.recent_recalls.len() > 50 {
                         self.recent_recalls.pop_front();
                     }
@@ -4662,7 +4863,7 @@ impl Memory {
         records.retain(|r| r.superseded_by.is_none());
         Ok(records)
     }
-    
+
     /// Record a recall event to the meta-cognition tracker (if enabled).
     fn record_metacognition_recall(
         &mut self,
@@ -4677,10 +4878,7 @@ impl Memory {
             } else {
                 results.iter().map(|r| r.confidence).sum::<f64>() / results.len() as f64
             };
-            let max_conf = results
-                .iter()
-                .map(|r| r.confidence)
-                .fold(0.0_f64, f64::max);
+            let max_conf = results.iter().map(|r| r.confidence).fold(0.0_f64, f64::max);
             let event = crate::metacognition::RecallEvent {
                 timestamp: chrono::Utc::now().timestamp(),
                 query: query.to_string(),
@@ -4711,7 +4909,7 @@ impl Memory {
         let _ = limit; // limit is implicit via the number of entity matches
         let query_entities = self.entity_extractor.extract(query);
         let mut memory_scores: HashMap<String, f64> = HashMap::new();
-        
+
         for qe in &query_entities {
             // Direct entity match (exact name)
             let matches = self.storage.find_entities(&qe.normalized, namespace, 5)?;
@@ -4720,7 +4918,7 @@ impl Memory {
                 for mid in memory_ids {
                     *memory_scores.entry(mid).or_insert(0.0) += 1.0;
                 }
-                
+
                 // 1-hop related entities (weaker signal)
                 let related = self.storage.get_related_entities(&entity.id, 10)?;
                 for (rel_id, _relation) in related {
@@ -4731,19 +4929,22 @@ impl Memory {
                 }
             }
         }
-        
+
         // Normalize scores to 0.0-1.0
-        if let Some(&max_score) = memory_scores.values().max_by(|a, b| a.partial_cmp(b).unwrap()) {
+        if let Some(&max_score) = memory_scores
+            .values()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+        {
             if max_score > 0.0 {
                 for score in memory_scores.values_mut() {
                     *score /= max_score;
                 }
             }
         }
-        
+
         Ok(memory_scores)
     }
-    
+
     /// Compute the memory's temporal extent `[start, end]` for interval
     /// scoring (ISS-191 AC-3).
     ///
@@ -4773,9 +4974,7 @@ impl Memory {
                 let e = end.map(at_midnight).unwrap_or_else(|| s.max(point));
                 (s.min(e), s.max(e))
             }
-            Some(TemporalMark::Range { start, end }) => {
-                (at_midnight(start), at_midnight(end))
-            }
+            Some(TemporalMark::Range { start, end }) => (at_midnight(start), at_midnight(end)),
             Some(TemporalMark::Day(d)) => {
                 let dt = at_midnight(d);
                 (dt, dt)
@@ -4855,7 +5054,7 @@ impl Memory {
             }
         }
     }
-    
+
     /// Somatic marker channel scoring (7th channel — Damasio's somatic marker hypothesis).
     ///
     /// For each candidate memory, computes how much the current situation's emotional
@@ -4871,87 +5070,81 @@ impl Memory {
     /// - Encounter count adds confidence: min(encounter_count / 5, 1.0) scaling
     ///
     /// Returns scores normalized to 0.0-1.0 for each candidate.
-    fn somatic_scores(
-        &mut self,
-        query: &str,
-        candidates: &[MemoryRecord],
-    ) -> HashMap<String, f64> {
-        use std::hash::{Hash, Hasher};
+    fn somatic_scores(&mut self, query: &str, candidates: &[MemoryRecord]) -> HashMap<String, f64> {
         use std::collections::hash_map::DefaultHasher;
-        
+        use std::hash::{Hash, Hasher};
+
         // Hash the query to create a situation identifier
         let mut hasher = DefaultHasher::new();
         query.hash(&mut hasher);
         let situation_hash = hasher.finish();
-        
+
         // Look up or create the somatic marker for this query situation.
         // We use 0.0 as current valence for new situations — neutral until
         // emotional memories are actually recalled and processed.
         let marker = self.interoceptive_hub.somatic_lookup(situation_hash, 0.0);
         let marker_intensity = marker.valence.abs();
         let encounter_confidence = (marker.encounter_count as f64 / 5.0).min(1.0);
-        
+
         // If the marker has no emotional charge (new situation with 0 valence),
         // return empty scores — somatic channel is silent for novel situations.
         if marker_intensity < 0.01 {
             return HashMap::new();
         }
-        
+
         let mut scores = HashMap::new();
-        
+
         for record in candidates {
             // Determine emotional relevance of this memory
             let emotional_relevance = match record.memory_type {
-                crate::types::MemoryType::Emotional => 1.0,  // Full somatic boost
-                _ if record.importance >= 0.7 => 0.7,        // High-importance: notable
-                _ => 0.3,                                      // Faint background signal
+                crate::types::MemoryType::Emotional => 1.0, // Full somatic boost
+                _ if record.importance >= 0.7 => 0.7,       // High-importance: notable
+                _ => 0.3,                                   // Faint background signal
             };
-            
+
             // Somatic score: intensity × relevance × confidence
             let score = marker_intensity * emotional_relevance * encounter_confidence;
             scores.insert(record.id.clone(), score.min(1.0));
         }
-        
+
         scores
     }
-    
+
     /// Update somatic markers after recall completes.
     ///
     /// When emotional memories are successfully recalled, their valence
     /// feeds back into the somatic marker for this situation — reinforcing
     /// the emotional association (Damasio's "as-if body loop").
-    fn update_somatic_after_recall(
-        &mut self,
-        query: &str,
-        results: &[RecallResult],
-    ) {
-        use std::hash::{Hash, Hasher};
+    fn update_somatic_after_recall(&mut self, query: &str, results: &[RecallResult]) {
         use std::collections::hash_map::DefaultHasher;
-        
+        use std::hash::{Hash, Hasher};
+
         // Only update if any recalled memories are emotional
-        let emotional_valences: Vec<f64> = results.iter()
+        let emotional_valences: Vec<f64> = results
+            .iter()
             .filter(|r| r.record.memory_type == crate::types::MemoryType::Emotional)
             .map(|r| {
                 // Use importance as a proxy for valence direction:
                 // High importance (>0.5) → positive valence, low → negative
                 // This is a heuristic — memories don't store explicit valence yet
-                (r.record.importance - 0.5) * 2.0  // Maps [0,1] → [-1,1]
+                (r.record.importance - 0.5) * 2.0 // Maps [0,1] → [-1,1]
             })
             .collect();
-        
+
         if emotional_valences.is_empty() {
             return;
         }
-        
+
         // Average emotional valence from recalled memories
         let avg_valence = emotional_valences.iter().sum::<f64>() / emotional_valences.len() as f64;
-        
+
         let mut hasher = DefaultHasher::new();
         query.hash(&mut hasher);
         let situation_hash = hasher.finish();
-        
+
         // Feed this emotional signal back into the somatic marker
-        self.interoceptive_hub.somatic_lookup(situation_hash, avg_valence);
+        self.interoceptive_hub
+            .somatic_lookup(situation_hash, avg_valence);
     }
 
     /// Hebbian channel scoring for C7 Multi-Retrieval Fusion.
@@ -4967,7 +5160,7 @@ impl Memory {
     ) -> Result<HashMap<String, f64>, Box<dyn std::error::Error>> {
         let mut scores: HashMap<String, f64> = HashMap::new();
         let candidate_set: std::collections::HashSet<&String> = candidate_ids.iter().collect();
-        
+
         for id in candidate_ids {
             let links = storage.get_hebbian_links_weighted(id)?;
             let mut link_score = 0.0;
@@ -4981,7 +5174,7 @@ impl Memory {
                 scores.insert(id.clone(), link_score);
             }
         }
-        
+
         // Normalize to 0.0-1.0
         if let Some(&max) = scores.values().max_by(|a, b| a.partial_cmp(b).unwrap()) {
             if max > 0.0 {
@@ -4990,10 +5183,10 @@ impl Memory {
                 }
             }
         }
-        
+
         Ok(scores)
     }
-    
+
     /// Remove near-duplicate recall results based on pairwise embedding similarity.
     /// Greedy: iterate in score order, skip any result too similar to an already-kept one.
     /// Backfills from the expanded candidate pool to maintain the requested limit.
@@ -5046,16 +5239,17 @@ impl Memory {
         now: chrono::DateTime<Utc>,
     ) -> Result<Vec<RecallResult>, Box<dyn std::error::Error>> {
         let fts_candidates = self.storage.search_fts_ns(query, limit * 3, Some(ns))?;
-        
+
         // Defense-in-depth: filter out any superseded memories that slipped through SQL filter
-        let fts_candidates: Vec<_> = fts_candidates.into_iter()
+        let fts_candidates: Vec<_> = fts_candidates
+            .into_iter()
             .filter(|r| r.superseded_by.is_none())
             .collect();
-        
+
         // Somatic channel scoring (also active in FTS-only path)
         let somatic_scores = self.somatic_scores(query, &fts_candidates);
         let somatic_w = self.config.somatic_weight;
-        
+
         let mut scored: Vec<_> = fts_candidates
             .into_iter()
             .map(|record| {
@@ -5068,11 +5262,12 @@ impl Memory {
                     self.config.importance_weight,
                     self.config.contradiction_penalty,
                 );
-                
+
                 // Add somatic boost to activation score
-                let somatic_boost = somatic_scores.get(&record.id).copied().unwrap_or(0.0) * somatic_w;
+                let somatic_boost =
+                    somatic_scores.get(&record.id).copied().unwrap_or(0.0) * somatic_w;
                 let boosted_activation = activation + somatic_boost;
-                
+
                 (record, boosted_activation)
             })
             .filter(|(_, act)| *act > f64::NEG_INFINITY)
@@ -5086,9 +5281,9 @@ impl Memory {
             .map(|(record, activation)| {
                 let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
                 let confidence = compute_query_confidence(
-                    None,       // no embedding available in FTS path
-                    true,       // it's an FTS result by definition
-                    0.0,        // no entity score in FTS path
+                    None, // no embedding available in FTS path
+                    true, // it's an FTS result by definition
+                    0.0,  // no entity score in FTS path
                     age_hours,
                 );
                 let confidence_label = confidence_label(confidence);
@@ -5127,8 +5322,11 @@ impl Memory {
             for result in &results {
                 // Check against previously recalled memories within 30s window
                 for (prev_id, prev_time) in &self.recent_recalls {
-                    if prev_id == &result.record.id { continue; }
-                    if now_instant.duration_since(*prev_time) <= std::time::Duration::from_secs(30) {
+                    if prev_id == &result.record.id {
+                        continue;
+                    }
+                    if now_instant.duration_since(*prev_time) <= std::time::Duration::from_secs(30)
+                    {
                         // Within 30s window → record co-activation
                         let _ = self.storage.record_coactivation_ns(
                             prev_id,
@@ -5139,7 +5337,8 @@ impl Memory {
                     }
                 }
                 // Add this result to the ring buffer
-                self.recent_recalls.push_back((result.record.id.clone(), now_instant));
+                self.recent_recalls
+                    .push_back((result.record.id.clone(), now_instant));
                 if self.recent_recalls.len() > 50 {
                     self.recent_recalls.pop_front();
                 }
@@ -5190,7 +5389,8 @@ impl Memory {
                     self.config.association.decay_single,
                 )?;
             } else {
-                self.storage.decay_hebbian_links(self.config.hebbian_decay)?;
+                self.storage
+                    .decay_hebbian_links(self.config.hebbian_decay)?;
             }
         }
 
@@ -5235,7 +5435,8 @@ impl Memory {
                     self.config.association.decay_single,
                 )?;
             } else {
-                self.storage.decay_hebbian_links(self.config.hebbian_decay)?;
+                self.storage
+                    .decay_hebbian_links(self.config.hebbian_decay)?;
             }
         }
 
@@ -5266,12 +5467,11 @@ impl Memory {
         }
 
         // [ISS-016] Triple extraction phase (cold path, no DB lock during LLM calls)
-        if self.config.triple.enabled
-            && self.triple_extractor.is_some() {
-                if let Err(e) = self.run_triple_extraction() {
-                    log::warn!("Triple extraction failed (non-fatal): {e}");
-                }
+        if self.config.triple.enabled && self.triple_extractor.is_some() {
+            if let Err(e) = self.run_triple_extraction() {
+                log::warn!("Triple extraction failed (non-fatal): {e}");
             }
+        }
 
         // [ISS-008] Promotion detection phase
         if self.config.promotion.enabled {
@@ -5300,7 +5500,9 @@ impl Memory {
         let max_retries = self.config.triple.max_retries;
 
         // Step 1: Query un-enriched memories
-        let memory_ids = self.storage.get_unenriched_memory_ids(batch_size, max_retries)?;
+        let memory_ids = self
+            .storage
+            .get_unenriched_memory_ids(batch_size, max_retries)?;
         if memory_ids.is_empty() {
             return Ok(());
         }
@@ -5315,7 +5517,10 @@ impl Memory {
 
         // Step 3: LLM extraction — NO DB lock held
         let extractor = self.triple_extractor.as_ref().unwrap(); // caller checks this
-        type TripleResult = Vec<(String, Result<Vec<crate::triple::Triple>, Box<dyn std::error::Error + Send + Sync>>)>;
+        type TripleResult = Vec<(
+            String,
+            Result<Vec<crate::triple::Triple>, Box<dyn std::error::Error + Send + Sync>>,
+        )>;
         let mut results: TripleResult = Vec::new();
         for (id, content) in &memory_texts {
             let result = extractor.extract_triples(content);
@@ -5360,17 +5565,25 @@ impl Memory {
     // === [ISS-008] Knowledge Promotion API ===
 
     /// Detect knowledge clusters ready for promotion to persistent documents.
-    pub fn detect_promotion_candidates(&self) -> Result<Vec<crate::promotion::PromotionCandidate>, Box<dyn std::error::Error>> {
+    pub fn detect_promotion_candidates(
+        &self,
+    ) -> Result<Vec<crate::promotion::PromotionCandidate>, Box<dyn std::error::Error>> {
         crate::promotion::detect_promotable_clusters(&self.storage, &self.config.promotion)
     }
 
     /// Get pending promotion suggestions.
-    pub fn pending_promotions(&self) -> Result<Vec<crate::promotion::PromotionCandidate>, Box<dyn std::error::Error>> {
+    pub fn pending_promotions(
+        &self,
+    ) -> Result<Vec<crate::promotion::PromotionCandidate>, Box<dyn std::error::Error>> {
         Ok(self.storage.get_pending_promotions()?)
     }
 
     /// Approve or dismiss a promotion candidate.
-    pub fn resolve_promotion(&self, id: &str, status: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn resolve_promotion(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         Ok(self.storage.resolve_promotion(id, status)?)
     }
 
@@ -5393,12 +5606,14 @@ impl Memory {
             let now = Utc::now();
             let all = self.storage.all()?;
             for record in all {
-                if !record.pinned && effective_strength(&record, now) < threshold
-                    && record.layer != MemoryLayer::Archive {
-                        let mut updated = record;
-                        updated.layer = MemoryLayer::Archive;
-                        self.storage.update(&updated)?;
-                    }
+                if !record.pinned
+                    && effective_strength(&record, now) < threshold
+                    && record.layer != MemoryLayer::Archive
+                {
+                    let mut updated = record;
+                    updated.layer = MemoryLayer::Archive;
+                    self.storage.update(&updated)?;
+                }
             }
         }
 
@@ -5409,7 +5624,11 @@ impl Memory {
     ///
     /// Detects positive/negative sentiment and applies reward modulation
     /// to recently accessed memories.
-    pub fn reward(&mut self, feedback: &str, recent_n: usize) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn reward(
+        &mut self,
+        feedback: &str,
+        recent_n: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let polarity = detect_feedback_polarity(feedback);
 
         if polarity == 0.0 {
@@ -5494,7 +5713,8 @@ impl Memory {
                     .map(|r| effective_strength(r, now))
                     .sum::<f64>()
                     / count as f64;
-                let avg_importance = records.iter().map(|r| r.importance).sum::<f64>() / count as f64;
+                let avg_importance =
+                    records.iter().map(|r| r.importance).sum::<f64>() / count as f64;
 
                 (
                     type_name,
@@ -5511,7 +5731,8 @@ impl Memory {
             .into_iter()
             .map(|(layer_name, records)| {
                 let count = records.len();
-                let avg_working = records.iter().map(|r| r.working_strength).sum::<f64>() / count as f64;
+                let avg_working =
+                    records.iter().map(|r| r.working_strength).sum::<f64>() / count as f64;
                 let avg_core = records.iter().map(|r| r.core_strength).sum::<f64>() / count as f64;
 
                 (
@@ -5553,9 +5774,9 @@ impl Memory {
         }
         Ok(())
     }
-    
+
     // === Update Memory ===
-    
+
     /// Update an existing memory's content.
     ///
     /// Stores the old content in metadata for audit trail and regenerates
@@ -5591,7 +5812,9 @@ impl Memory {
         use crate::enriched::EnrichedMemory;
 
         // Fetch existing record (v1 or v2 layout, both accepted).
-        let record = self.storage.get(memory_id)?
+        let record = self
+            .storage
+            .get(memory_id)?
             .ok_or_else(|| format!("Memory {} not found", memory_id))?;
 
         let previous_content = record.content.clone();
@@ -5664,14 +5887,16 @@ impl Memory {
         }
 
         // Persist — single UPDATE on content + metadata.
-        self.storage.update_content(memory_id, new_content, Some(metadata))?;
-        
+        self.storage
+            .update_content(memory_id, new_content, Some(metadata))?;
+
         // Regenerate embedding if provider is available
         if let Some(ref embedding_provider) = self.embedding {
             match embedding_provider.embed(new_content) {
                 Ok(embedding) => {
                     // Delete old embedding for this model and store new one
-                    self.storage.delete_embedding(memory_id, &self.config.embedding.model_id())?;
+                    self.storage
+                        .delete_embedding(memory_id, &self.config.embedding.model_id())?;
                     self.storage.store_embedding(
                         memory_id,
                         &embedding,
@@ -5684,12 +5909,12 @@ impl Memory {
                 }
             }
         }
-        
+
         Ok(memory_id.to_string())
     }
-    
+
     // === Export ===
-    
+
     /// Export all memories to a JSON file.
     ///
     /// # Arguments
@@ -5702,7 +5927,7 @@ impl Memory {
     pub fn export(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
         self.export_namespace(path, None)
     }
-    
+
     /// Export memories from a specific namespace to a JSON file.
     ///
     /// # Arguments
@@ -5720,21 +5945,21 @@ impl Memory {
     ) -> Result<usize, Box<dyn std::error::Error>> {
         let memories = self.storage.all_in_namespace(namespace)?;
         let count = memories.len();
-        
+
         // Serialize to JSON
         let json = serde_json::to_string_pretty(&memories)?;
-        
+
         // Write to file
         let mut file = File::create(path)?;
         file.write_all(json.as_bytes())?;
-        
+
         log::info!("Exported {} memories to {}", count, path);
-        
+
         Ok(count)
     }
-    
+
     // === Recall Causal ===
-    
+
     /// Recall associated memories (type=causal, created by STDP during consolidation).
     ///
     /// # Arguments
@@ -5747,7 +5972,7 @@ impl Memory {
     ///
     /// Matching associated memories sorted by importance.
     /// Hybrid recall combining FTS + embedding + ACT-R activation.
-    /// 
+    ///
     /// Unlike `recall()` which uses embedding+ACT-R only, this also includes
     /// FTS exact matching. Better for queries with specific names/terms.
     pub fn hybrid_recall(
@@ -5757,20 +5982,20 @@ impl Memory {
         namespace: Option<&str>,
     ) -> Result<Vec<RecallResult>, Box<dyn std::error::Error>> {
         use crate::hybrid_search::{hybrid_search, HybridSearchOpts};
-        
+
         // Generate query embedding if available
         let query_vector = if let Some(ref embedding) = self.embedding {
             embedding.embed(query).ok()
         } else {
             None
         };
-        
+
         let opts = HybridSearchOpts {
             limit,
             namespace: namespace.map(String::from),
             ..Default::default()
         };
-        
+
         let results = hybrid_search(
             &self.storage,
             query_vector.as_deref(),
@@ -5778,9 +6003,10 @@ impl Memory {
             opts,
             &self.config.embedding.model_id(),
         )?;
-        
+
         // Convert HybridSearchResult to RecallResult
-        let recall_results: Vec<RecallResult> = results.into_iter()
+        let recall_results: Vec<RecallResult> = results
+            .into_iter()
             .filter_map(|hr| {
                 let record = hr.record?; // Skip if no record
                 let score = hr.score;
@@ -5799,14 +6025,15 @@ impl Memory {
                 })
             })
             .collect();
-        
+
         // Defense-in-depth: filter out any superseded memories that slipped through
-        let recall_results: Vec<_> = recall_results.into_iter()
+        let recall_results: Vec<_> = recall_results
+            .into_iter()
             .filter(|r| r.record.superseded_by.is_none())
             .collect();
-        
+
         Ok(recall_results)
-    }    
+    }
     /// Uses Hebbian links to find memories that frequently co-occur.
     /// Note: this finds *associations*, not true causal relationships.
     /// LLMs can infer causality from the associated context.
@@ -5818,7 +6045,7 @@ impl Memory {
     ) -> Result<Vec<RecallResult>, Box<dyn std::error::Error>> {
         self.recall_associated_ns(cause_query, limit, min_confidence, None)
     }
-    
+
     /// Recall associated memories from a specific namespace.
     pub fn recall_associated_ns(
         &mut self,
@@ -5828,7 +6055,7 @@ impl Memory {
         namespace: Option<&str>,
     ) -> Result<Vec<RecallResult>, Box<dyn std::error::Error>> {
         let now = Utc::now();
-        
+
         if let Some(query) = cause_query {
             // Do normal recall but filter to causal type
             let results = self.recall_from_namespace(
@@ -5838,23 +6065,21 @@ impl Memory {
                 Some(min_confidence),
                 namespace,
             )?;
-            
+
             // Filter to causal type
             let filtered: Vec<_> = results
                 .into_iter()
                 .filter(|r| r.record.memory_type == MemoryType::Causal)
                 .take(limit)
                 .collect();
-            
+
             Ok(filtered)
         } else {
             // Get all causal memories sorted by importance
-            let causal_memories = self.storage.search_by_type_ns(
-                MemoryType::Causal,
-                namespace,
-                limit * 2,
-            )?;
-            
+            let causal_memories =
+                self.storage
+                    .search_by_type_ns(MemoryType::Causal, namespace, limit * 2)?;
+
             // Score and filter
             let mut scored: Vec<_> = causal_memories
                 .into_iter()
@@ -5875,33 +6100,32 @@ impl Memory {
                 })
                 .filter(|(_, _, conf)| *conf >= min_confidence)
                 .collect();
-            
+
             // Sort by importance then activation
             scored.sort_by(|a, b| {
-                b.0.importance.partial_cmp(&a.0.importance)
+                b.0.importance
+                    .partial_cmp(&a.0.importance)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            
+
             // Take top-k
             let results: Vec<_> = scored
                 .into_iter()
                 .take(limit)
-                .map(|(record, activation, confidence)| {
-                    RecallResult {
-                        record,
-                        activation,
-                        confidence,
-                        confidence_label: confidence_label(confidence),
-                    }
+                .map(|(record, activation, confidence)| RecallResult {
+                    record,
+                    activation,
+                    confidence,
+                    confidence_label: confidence_label(confidence),
                 })
                 .collect();
-            
+
             Ok(results)
         }
     }
-    
+
     // === Session Recall ===
-    
+
     /// Session-aware recall using working memory to avoid redundant searches.
     ///
     /// If the topic is continuous (high overlap with previous recall), returns
@@ -5928,7 +6152,7 @@ impl Memory {
     ) -> Result<SessionRecallResult, Box<dyn std::error::Error>> {
         self.session_recall_ns(query, session_wm, limit, context, min_confidence, None)
     }
-    
+
     /// Session-aware recall from a specific namespace.
     pub fn session_recall_ns(
         &mut self,
@@ -5940,44 +6164,35 @@ impl Memory {
         namespace: Option<&str>,
     ) -> Result<SessionRecallResult, Box<dyn std::error::Error>> {
         const CONTINUITY_THRESHOLD: f64 = 0.6;
-        
+
         // Get active IDs from working memory
         let active_ids = session_wm.get_active_ids();
-        
+
         // Check if we need full recall, capturing the initial probe ratio
         let (need_full_recall, initial_ratio) = if active_ids.is_empty() {
             (true, 0.0)
         } else {
             // Do lightweight probe (3 results) to check topic continuity
-            let probe = self.recall_from_namespace(
-                query,
-                3,
-                context.clone(),
-                min_confidence,
-                namespace,
-            )?;
-            
+            let probe =
+                self.recall_from_namespace(query, 3, context.clone(), min_confidence, namespace)?;
+
             let probe_ids: Vec<String> = probe.iter().map(|r| r.record.id.clone()).collect();
             let (_, ratio) = session_wm.overlap(&probe_ids);
             if ratio >= CONTINUITY_THRESHOLD {
-                (false, ratio)  // topic continuous
+                (false, ratio) // topic continuous
             } else {
-                (true, ratio)   // topic changed
+                (true, ratio) // topic changed
             }
         };
-        
+
         if need_full_recall {
             // Topic changed or WM empty → full recall
-            let results = self.recall_from_namespace(
-                query,
-                limit,
-                context,
-                min_confidence,
-                namespace,
-            )?;
-            
+            let results =
+                self.recall_from_namespace(query, limit, context, min_confidence, namespace)?;
+
             // Update working memory with scores for future cached path
-            let entries: Vec<(String, f64, f64)> = results.iter()
+            let entries: Vec<(String, f64, f64)> = results
+                .iter()
                 .map(|r| (r.record.id.clone(), r.confidence, r.activation))
                 .collect();
             session_wm.activate_with_scores(&entries);
@@ -5986,7 +6201,7 @@ impl Memory {
             // GWT broadcast: admitted memories → interoceptive hub + Hebbian spreading.
             let admitted_ids: Vec<String> = results.iter().map(|r| r.record.id.clone()).collect();
             self.broadcast_admission(&admitted_ids, session_wm);
-            
+
             Ok(SessionRecallResult {
                 results,
                 full_recall: true,
@@ -5997,7 +6212,7 @@ impl Memory {
             // Topic continuous → return cached WM items with preserved scores
             let mut cached_results = Vec::new();
             let now = Utc::now();
-            
+
             for id in &active_ids {
                 if let Some(record) = self.storage.get(id)? {
                     // Reuse cached scores from the original full recall
@@ -6018,7 +6233,7 @@ impl Memory {
                         let confidence = compute_association_confidence(activation, age_hours);
                         (activation, confidence)
                     };
-                    
+
                     if min_confidence.map(|mc| confidence >= mc).unwrap_or(true) {
                         cached_results.push(RecallResult {
                             record,
@@ -6029,45 +6244,51 @@ impl Memory {
                     }
                 }
             }
-            
+
             // Sort by activation
             cached_results.sort_by(|a, b| {
-                b.activation.partial_cmp(&a.activation).unwrap_or(std::cmp::Ordering::Equal)
+                b.activation
+                    .partial_cmp(&a.activation)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
             cached_results.truncate(limit);
-            
+
             // Refresh activation timestamps (reuse existing scores)
-            let result_ids: Vec<String> = cached_results.iter().map(|r| r.record.id.clone()).collect();
+            let result_ids: Vec<String> =
+                cached_results.iter().map(|r| r.record.id.clone()).collect();
             session_wm.activate(&result_ids);
             session_wm.set_query(query);
 
             // GWT broadcast on cached path too — re-activation reinforces the hub state.
             // (Lighter than full-recall broadcast: same memories, but keeps hub current.)
             self.broadcast_admission(&result_ids, session_wm);
-            
+
             Ok(SessionRecallResult {
                 results: cached_results,
                 full_recall: false,
                 wm_size: session_wm.len(),
-                continuity_ratio: initial_ratio,  // reuse from initial probe
+                continuity_ratio: initial_ratio, // reuse from initial probe
             })
         }
     }
-    
+
     /// Get a memory by ID.
     pub fn get(&self, memory_id: &str) -> Result<Option<MemoryRecord>, Box<dyn std::error::Error>> {
         Ok(self.storage.get(memory_id)?)
     }
-    
+
     /// List all memories (with optional limit).
-    pub fn list(&self, limit: Option<usize>) -> Result<Vec<MemoryRecord>, Box<dyn std::error::Error>> {
+    pub fn list(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<MemoryRecord>, Box<dyn std::error::Error>> {
         let all = self.storage.all()?;
         match limit {
             Some(l) => Ok(all.into_iter().take(l).collect()),
             None => Ok(all),
         }
     }
-    
+
     /// List all memories in a namespace.
     pub fn list_ns(
         &self,
@@ -6082,34 +6303,42 @@ impl Memory {
     }
 
     /// Get Hebbian links for a specific memory.
-    pub fn hebbian_links(&self, memory_id: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    pub fn hebbian_links(
+        &self,
+        memory_id: &str,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         Ok(self.storage.get_hebbian_neighbors(memory_id)?)
     }
-    
+
     /// Get Hebbian links for a specific memory, filtered by namespace.
     pub fn hebbian_links_ns(
         &self,
         memory_id: &str,
         namespace: Option<&str>,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        Ok(self.storage.get_hebbian_neighbors_ns(memory_id, namespace)?)
+        Ok(self
+            .storage
+            .get_hebbian_neighbors_ns(memory_id, namespace)?)
     }
-    
+
     // === Embedding Methods ===
-    
+
     /// Get embedding statistics.
     pub fn embedding_stats(&self) -> Result<EmbeddingStats, Box<dyn std::error::Error>> {
         Ok(self.storage.embedding_stats()?)
     }
-    
+
     /// Get the embedding configuration.
     pub fn embedding_config(&self) -> &EmbeddingConfig {
         &self.config.embedding
     }
-    
+
     /// Check if the embedding provider is available.
     pub fn is_embedding_available(&self) -> bool {
-        self.embedding.as_ref().map(|e| e.is_available()).unwrap_or(false)
+        self.embedding
+            .as_ref()
+            .map(|e| e.is_available())
+            .unwrap_or(false)
     }
 
     /// Get a reference to the embedding provider (if available).
@@ -6135,12 +6364,12 @@ impl Memory {
     pub fn clear_embedding_provider_for_test(&mut self) {
         self.embedding = None;
     }
-    
+
     /// Check if embedding support is enabled (provider was created).
     pub fn has_embedding_support(&self) -> bool {
         self.embedding.is_some()
     }
-    
+
     /// Reindex embeddings for all memories without embeddings.
     ///
     /// Useful after migration or model change. Iterates all memories
@@ -6150,20 +6379,25 @@ impl Memory {
     /// Returns an error if embedding provider is not available.
     pub fn reindex_embeddings(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
         let embedding_provider = self.embedding.as_ref().ok_or_else(|| {
-            Box::new(EmbeddingError::OllamaNotAvailable(self.config.embedding.host.clone()))
-                as Box<dyn std::error::Error>
+            Box::new(EmbeddingError::OllamaNotAvailable(
+                self.config.embedding.host.clone(),
+            )) as Box<dyn std::error::Error>
         })?;
-        
+
         let model_id = self.config.embedding.model_id();
         let missing_ids = self.storage.get_memories_without_embeddings(&model_id)?;
         let total = missing_ids.len();
-        
+
         if total == 0 {
             return Ok(0);
         }
-        
-        log::info!("Reindexing {} memories without embeddings for model {}", total, model_id);
-        
+
+        log::info!(
+            "Reindexing {} memories without embeddings for model {}",
+            total,
+            model_id
+        );
+
         let mut reindexed = 0;
         for id in missing_ids {
             if let Some(record) = self.storage.get(&id)? {
@@ -6183,11 +6417,11 @@ impl Memory {
                 }
             }
         }
-        
+
         log::info!("Reindexed {}/{} memories", reindexed, total);
         Ok(reindexed)
     }
-    
+
     /// Reindex embeddings with progress callback.
     ///
     /// The callback receives (current, total) progress updates.
@@ -6200,22 +6434,23 @@ impl Memory {
         F: FnMut(usize, usize),
     {
         let embedding_provider = self.embedding.as_ref().ok_or_else(|| {
-            Box::new(EmbeddingError::OllamaNotAvailable(self.config.embedding.host.clone()))
-                as Box<dyn std::error::Error>
+            Box::new(EmbeddingError::OllamaNotAvailable(
+                self.config.embedding.host.clone(),
+            )) as Box<dyn std::error::Error>
         })?;
-        
+
         let model_id = self.config.embedding.model_id();
         let missing_ids = self.storage.get_memories_without_embeddings(&model_id)?;
         let total = missing_ids.len();
-        
+
         if total == 0 {
             return Ok(0);
         }
-        
+
         let mut reindexed = 0;
         for (i, id) in missing_ids.into_iter().enumerate() {
             progress(i + 1, total);
-            
+
             if let Some(record) = self.storage.get(&id)? {
                 match embedding_provider.embed(&record.content) {
                     Ok(embedding) => {
@@ -6233,14 +6468,14 @@ impl Memory {
                 }
             }
         }
-        
+
         Ok(reindexed)
     }
-    
+
     // === ACL Methods ===
-    
+
     /// Grant a permission to an agent for a namespace.
-    /// 
+    ///
     /// Only agents with admin permission on the namespace (or wildcard admin)
     /// can grant permissions. If no agent_id is set, uses "system" as grantor.
     pub fn grant(
@@ -6249,17 +6484,25 @@ impl Memory {
         namespace: &str,
         permission: Permission,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let grantor = self.agent_id.clone().unwrap_or_else(|| "system".to_string());
-        self.storage.grant_permission(agent_id, namespace, permission, &grantor)?;
+        let grantor = self
+            .agent_id
+            .clone()
+            .unwrap_or_else(|| "system".to_string());
+        self.storage
+            .grant_permission(agent_id, namespace, permission, &grantor)?;
         Ok(())
     }
-    
+
     /// Revoke a permission from an agent for a namespace.
-    pub fn revoke(&mut self, agent_id: &str, namespace: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn revoke(
+        &mut self,
+        agent_id: &str,
+        namespace: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.storage.revoke_permission(agent_id, namespace)?;
         Ok(())
     }
-    
+
     /// Check if an agent has a specific permission for a namespace.
     pub fn check_permission(
         &self,
@@ -6267,16 +6510,24 @@ impl Memory {
         namespace: &str,
         permission: Permission,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        Ok(self.storage.check_permission(agent_id, namespace, permission)?)
+        Ok(self
+            .storage
+            .check_permission(agent_id, namespace, permission)?)
     }
-    
+
     /// List all permissions for an agent.
-    pub fn list_permissions(&self, agent_id: &str) -> Result<Vec<AclEntry>, Box<dyn std::error::Error>> {
+    pub fn list_permissions(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<AclEntry>, Box<dyn std::error::Error>> {
         Ok(self.storage.list_permissions(agent_id)?)
     }
-    
+
     /// Get statistics for a specific namespace.
-    pub fn stats_ns(&self, namespace: Option<&str>) -> Result<MemoryStats, Box<dyn std::error::Error>> {
+    pub fn stats_ns(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<MemoryStats, Box<dyn std::error::Error>> {
         let all = self.storage.all_in_namespace(namespace)?;
         let now = Utc::now();
 
@@ -6307,7 +6558,8 @@ impl Memory {
                     .map(|r| effective_strength(r, now))
                     .sum::<f64>()
                     / count as f64;
-                let avg_importance = records.iter().map(|r| r.importance).sum::<f64>() / count as f64;
+                let avg_importance =
+                    records.iter().map(|r| r.importance).sum::<f64>() / count as f64;
 
                 (
                     type_name,
@@ -6324,7 +6576,8 @@ impl Memory {
             .into_iter()
             .map(|(layer_name, records)| {
                 let count = records.len();
-                let avg_working = records.iter().map(|r| r.working_strength).sum::<f64>() / count as f64;
+                let avg_working =
+                    records.iter().map(|r| r.working_strength).sum::<f64>() / count as f64;
                 let avg_core = records.iter().map(|r| r.core_strength).sum::<f64>() / count as f64;
 
                 (
@@ -6348,9 +6601,9 @@ impl Memory {
             uptime_hours,
         })
     }
-    
+
     // === Phase 3: Cross-Agent Intelligence ===
-    
+
     /// Recall memories with cross-namespace associations.
     ///
     /// When using namespace="*", this also returns Hebbian links that span
@@ -6369,10 +6622,10 @@ impl Memory {
     ) -> Result<RecallWithAssociationsResult, Box<dyn std::error::Error>> {
         let now = Utc::now();
         let ns = namespace.unwrap_or("default");
-        
+
         // Get candidate memories via FTS
         let candidates = self.storage.search_fts_ns(query, limit * 3, Some(ns))?;
-        
+
         // Score each candidate with ACT-R activation
         let mut scored: Vec<_> = candidates
             .into_iter()
@@ -6391,9 +6644,9 @@ impl Memory {
             })
             .filter(|(_, act)| *act > f64::NEG_INFINITY)
             .collect();
-        
+
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        
+
         // Take top-k
         let results: Vec<_> = scored
             .into_iter()
@@ -6402,7 +6655,7 @@ impl Memory {
                 let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
                 let confidence = compute_association_confidence(activation, age_hours);
                 let confidence_label = confidence_label(confidence);
-                
+
                 RecallResult {
                     record,
                     activation,
@@ -6411,20 +6664,20 @@ impl Memory {
                 }
             })
             .collect();
-        
+
         // Record access for all retrieved memories
         for result in &results {
             self.storage.record_access(&result.record.id)?;
         }
-        
+
         // Collect cross-namespace associations
         let mut cross_links = Vec::new();
-        
+
         // For wildcard namespace queries, also collect cross-namespace Hebbian neighbors
         if ns == "*" && results.len() >= 2 {
             // Get namespaces for all retrieved memories
             let mut memories_with_ns: Vec<MemoryWithNamespace> = Vec::new();
-            
+
             for result in &results {
                 if let Some(mem_ns) = self.storage.get_namespace(&result.record.id)? {
                     memories_with_ns.push(MemoryWithNamespace {
@@ -6433,7 +6686,7 @@ impl Memory {
                     });
                 }
             }
-            
+
             // Record cross-namespace co-activation
             if self.config.hebbian_enabled {
                 record_cross_namespace_coactivation(
@@ -6442,29 +6695,30 @@ impl Memory {
                     self.config.hebbian_threshold,
                 )?;
             }
-            
+
             // Collect cross-links from all retrieved memories
             for result in &results {
-                let links = self.storage.get_cross_namespace_neighbors(&result.record.id)?;
+                let links = self
+                    .storage
+                    .get_cross_namespace_neighbors(&result.record.id)?;
                 cross_links.extend(links);
             }
-            
+
             // Deduplicate by (source_id, target_id)
-            cross_links.sort_by(|a, b| {
-                (&a.source_id, &a.target_id).cmp(&(&b.source_id, &b.target_id))
-            });
+            cross_links
+                .sort_by(|a, b| (&a.source_id, &a.target_id).cmp(&(&b.source_id, &b.target_id)));
             cross_links.dedup_by(|a, b| a.source_id == b.source_id && a.target_id == b.target_id);
-            
+
             // Sort by strength descending
             cross_links.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap());
         }
-        
+
         Ok(RecallWithAssociationsResult {
             memories: results,
             cross_links,
         })
     }
-    
+
     /// Discover cross-namespace Hebbian links between two namespaces.
     ///
     /// Returns all Hebbian associations that span across the given namespaces.
@@ -6476,17 +6730,23 @@ impl Memory {
     ) -> Result<Vec<HebbianLink>, Box<dyn std::error::Error>> {
         // ACL check if agent_id is set
         if let Some(ref agent_id) = self.agent_id {
-            let can_read_a = self.storage.check_permission(agent_id, namespace_a, Permission::Read)?;
-            let can_read_b = self.storage.check_permission(agent_id, namespace_b, Permission::Read)?;
-            
+            let can_read_a =
+                self.storage
+                    .check_permission(agent_id, namespace_a, Permission::Read)?;
+            let can_read_b =
+                self.storage
+                    .check_permission(agent_id, namespace_b, Permission::Read)?;
+
             if !can_read_a || !can_read_b {
                 return Ok(vec![]); // No access to one or both namespaces
             }
         }
-        
-        Ok(self.storage.discover_cross_links(namespace_a, namespace_b)?)
+
+        Ok(self
+            .storage
+            .discover_cross_links(namespace_a, namespace_b)?)
     }
-    
+
     /// Get all cross-namespace associations for a memory.
     pub fn get_cross_associations(
         &self,
@@ -6494,9 +6754,9 @@ impl Memory {
     ) -> Result<Vec<CrossLink>, Box<dyn std::error::Error>> {
         Ok(self.storage.get_cross_namespace_neighbors(memory_id)?)
     }
-    
+
     // === Subscription/Notification Methods ===
-    
+
     /// Subscribe to notifications for a namespace.
     ///
     /// The agent will receive notifications when new memories are stored
@@ -6507,30 +6767,33 @@ impl Memory {
         namespace: &str,
         min_importance: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
+        let mgr =
+            SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.subscribe(agent_id, namespace, min_importance)?;
         Ok(())
     }
-    
+
     /// Unsubscribe from a namespace.
     pub fn unsubscribe(
         &self,
         agent_id: &str,
         namespace: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
+        let mgr =
+            SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.unsubscribe(agent_id, namespace)
     }
-    
+
     /// List subscriptions for an agent.
     pub fn list_subscriptions(
         &self,
         agent_id: &str,
     ) -> Result<Vec<Subscription>, Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
+        let mgr =
+            SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.list_subscriptions(agent_id)
     }
-    
+
     /// Check for notifications since last check.
     ///
     /// Returns new memories that exceed the subscription thresholds.
@@ -6539,22 +6802,27 @@ impl Memory {
         &self,
         agent_id: &str,
     ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
+        let mgr =
+            SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.check_notifications(agent_id)
     }
-    
+
     /// Peek at notifications without updating cursor.
     pub fn peek_notifications(
         &self,
         agent_id: &str,
     ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
-        let mgr = SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
+        let mgr =
+            SubscriptionManager::new(self.storage.connection(), self.config.unified_substrate)?;
         mgr.peek_notifications(agent_id)
     }
 
     /// Extract entities from existing memories that don't have entity links yet.
     /// Returns (processed_count, entity_count, relation_count).
-    pub fn backfill_entities(&self, batch_size: usize) -> Result<(usize, usize, usize), Box<dyn std::error::Error>> {
+    pub fn backfill_entities(
+        &self,
+        batch_size: usize,
+    ) -> Result<(usize, usize, usize), Box<dyn std::error::Error>> {
         let unlinked = self.storage.get_memories_without_entities(batch_size)?;
         let mut entity_count = 0;
         let mut relation_count = 0;
@@ -6604,7 +6872,7 @@ impl Memory {
     pub fn entity_stats(&self) -> Result<(usize, usize, usize), Box<dyn std::error::Error>> {
         Ok(self.storage.entity_stats()?)
     }
-    
+
     /// Purge garbage entities created by regex false positives.
     /// Removes:
     /// - Person entities that are 1-2 chars or pure digits (e.g., "0", "1", "types")
@@ -6613,18 +6881,20 @@ impl Memory {
     /// Returns count of entities deleted.
     pub fn purge_garbage_entities(&self) -> Result<usize, Box<dyn std::error::Error>> {
         let mut total_deleted = 0;
-        
+
         // Phase 1: Delete short/numeric person entities that are clearly false positives
         let garbage_persons: Vec<String> = {
             let conn = self.storage.connection();
-            let mut stmt = conn.prepare(
-                "SELECT id, name FROM entities WHERE entity_type = 'person'"
-            )?;
-            let rows: Vec<(String, String)> = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?.filter_map(|r| r.ok()).collect();
+            let mut stmt =
+                conn.prepare("SELECT id, name FROM entities WHERE entity_type = 'person'")?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
             drop(stmt);
-            
+
             rows.into_iter()
                 .filter(|(_, name)| {
                     let n = name.trim();
@@ -6636,36 +6906,40 @@ impl Memory {
                 .map(|(id, _)| id)
                 .collect()
         };
-        
+
         for id in &garbage_persons {
             if self.storage.delete_entity(id)? {
                 total_deleted += 1;
             }
         }
-        
+
         // Phase 2: Delete orphaned entities (no memory_entities links)
         let orphans: Vec<String> = {
             let conn = self.storage.connection();
             let mut stmt = conn.prepare(
                 "SELECT e.id FROM entities e
                  LEFT JOIN memory_entities me ON e.id = me.entity_id
-                 WHERE me.entity_id IS NULL"
+                 WHERE me.entity_id IS NULL",
             )?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             rows.filter_map(|r| r.ok()).collect()
         };
-        
+
         for id in &orphans {
             if self.storage.delete_entity(id)? {
                 total_deleted += 1;
             }
         }
-        
+
         if total_deleted > 0 {
-            log::info!("Purged {} garbage entities ({} false-positive persons, {} orphans)",
-                total_deleted, garbage_persons.len(), orphans.len());
+            log::info!(
+                "Purged {} garbage entities ({} false-positive persons, {} orphans)",
+                total_deleted,
+                garbage_persons.len(),
+                orphans.len()
+            );
         }
-        
+
         Ok(total_deleted)
     }
 
@@ -6764,8 +7038,24 @@ impl Memory {
             clusters_found: clusters.len(),
             clusters_synthesized: 0,
             clusters_auto_updated: 0,
-            clusters_deferred: gate_results.iter().filter(|g| matches!(g.decision, crate::synthesis::types::GateDecision::Defer { .. })).count(),
-            clusters_skipped: gate_results.iter().filter(|g| matches!(g.decision, crate::synthesis::types::GateDecision::Skip { .. })).count(),
+            clusters_deferred: gate_results
+                .iter()
+                .filter(|g| {
+                    matches!(
+                        g.decision,
+                        crate::synthesis::types::GateDecision::Defer { .. }
+                    )
+                })
+                .count(),
+            clusters_skipped: gate_results
+                .iter()
+                .filter(|g| {
+                    matches!(
+                        g.decision,
+                        crate::synthesis::types::GateDecision::Skip { .. }
+                    )
+                })
+                .count(),
             synthesis_runs_full: 0,
             synthesis_runs_incremental: 0,
             insights_created: Vec::new(),
@@ -6862,7 +7152,10 @@ impl Memory {
             let event = crate::metacognition::SynthesisEvent {
                 timestamp: chrono::Utc::now().timestamp(),
                 clusters_found: synth_ref.as_ref().map(|s| s.clusters_found).unwrap_or(0),
-                insights_created: synth_ref.as_ref().map(|s| s.insights_created.len()).unwrap_or(0),
+                insights_created: synth_ref
+                    .as_ref()
+                    .map(|s| s.insights_created.len())
+                    .unwrap_or(0),
                 duration_ms: cycle_start.elapsed().as_millis() as u64,
                 error_count: synth_ref.as_ref().map(|s| s.errors.len()).unwrap_or(0),
             };
@@ -6890,10 +7183,7 @@ impl Memory {
         limit: Option<usize>,
     ) -> Result<Vec<MemoryRecord>, Box<dyn std::error::Error>> {
         let all = self.storage.all()?;
-        let mut insights: Vec<MemoryRecord> = all
-            .into_iter()
-            .filter(is_insight)
-            .collect();
+        let mut insights: Vec<MemoryRecord> = all.into_iter().filter(is_insight).collect();
         insights.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         if let Some(l) = limit {
             insights.truncate(l);
@@ -6955,7 +7245,10 @@ impl Memory {
     }
 
     /// Restore the LLM provider after engine use (engine returns it via `into_provider()`).
-    pub fn restore_llm_provider(&mut self, provider: Option<Box<dyn crate::synthesis::types::SynthesisLlmProvider>>) {
+    pub fn restore_llm_provider(
+        &mut self,
+        provider: Option<Box<dyn crate::synthesis::types::SynthesisLlmProvider>>,
+    ) {
         self.synthesis_llm_provider = provider;
     }
 
@@ -7100,9 +7393,7 @@ impl Memory {
                 Ok(_) => enqueued += 1,
                 Err(e) => {
                     // Per §6.2: best-effort. Log and continue.
-                    log::warn!(
-                        "reextract_failed: skipping {memory_id} due to enqueue error: {e}"
-                    );
+                    log::warn!("reextract_failed: skipping {memory_id} due to enqueue error: {e}");
                 }
             }
         }
@@ -7168,9 +7459,11 @@ impl Memory {
             log::info!("compile_knowledge: AnthropicSummarizer (API key) from ANTHROPIC_API_KEY");
             AnthropicSummarizer::with_config(&key, false, cfg)
         } else {
-            return Err("compile_knowledge: no Anthropic credentials in environment \
+            return Err(
+                "compile_knowledge: no Anthropic credentials in environment \
                         (set ANTHROPIC_AUTH_TOKEN for OAuth or ANTHROPIC_API_KEY for API key)"
-                .into());
+                    .into(),
+            );
         };
 
         self.compile_knowledge_with(namespace, &summarizer)
@@ -7212,14 +7505,13 @@ impl Memory {
         // duration of the call so the rest of `Memory` (storage, etc.)
         // can be borrowed mutably by the compile pipeline. The provider
         // is unconditionally restored in the `finally`-style block below.
-        let embedding_provider = self
-            .embedding
-            .take()
-            .ok_or_else(|| -> Box<dyn std::error::Error> {
+        let embedding_provider = self.embedding.take().ok_or_else(
+            || -> Box<dyn std::error::Error> {
                 "compile_knowledge: no embedding provider configured (Memory::embedding is None); \
                  K3 needs an embedder to vectorize topic summaries (design §5bis.4 step 3)"
                     .into()
-            })?;
+            },
+        )?;
 
         let result = (|| -> Result<CompileReport, Box<dyn std::error::Error>> {
             let embedder = EmbeddingProviderAdapter::new(&embedding_provider);
@@ -7228,13 +7520,7 @@ impl Memory {
             let metrics = CompileMetrics::default();
 
             crate::knowledge_compile::compile(
-                self,
-                namespace,
-                &config,
-                &clusterer,
-                summarizer,
-                &embedder,
-                &metrics,
+                self, namespace, &config, &clusterer, summarizer, &embedder, &metrics,
             )
         })();
 
@@ -7331,7 +7617,10 @@ impl Memory {
         &mut self,
         content: &str,
     ) -> Result<
-        (crate::store_api::MemoryId, crate::resolution::ResolutionStats),
+        (
+            crate::store_api::MemoryId,
+            crate::resolution::ResolutionStats,
+        ),
         Box<dyn std::error::Error>,
     > {
         self.ingest_with_stats_at(content, None)
@@ -7360,7 +7649,10 @@ impl Memory {
         content: &str,
         occurred_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<
-        (crate::store_api::MemoryId, crate::resolution::ResolutionStats),
+        (
+            crate::store_api::MemoryId,
+            crate::resolution::ResolutionStats,
+        ),
         Box<dyn std::error::Error>,
     > {
         use crate::store_api::{RawStoreOutcome, StorageMeta};
@@ -7379,17 +7671,17 @@ impl Memory {
                 let id = outcomes
                     .first()
                     .ok_or_else(|| -> Box<dyn std::error::Error> {
-                        "ingest_with_stats_at: store_raw returned Stored([]) — invariant violated".into()
+                        "ingest_with_stats_at: store_raw returned Stored([]) — invariant violated"
+                            .into()
                     })?
                     .id()
                     .clone();
                 let stats = crate::resolution::ResolutionStats::default();
                 Ok((id, stats))
             }
-            RawStoreOutcome::Skipped { reason, .. } => Err(format!(
-                "ingest_with_stats_at: store_raw returned Skipped({reason:?})"
-            )
-            .into()),
+            RawStoreOutcome::Skipped { reason, .. } => {
+                Err(format!("ingest_with_stats_at: store_raw returned Skipped({reason:?})").into())
+            }
             RawStoreOutcome::Quarantined { reason, .. } => Err(format!(
                 "ingest_with_stats_at: store_raw returned Quarantined({reason:?})"
             )
@@ -7461,9 +7753,9 @@ impl Drop for Memory {
 /// - entity_score: entity overlap score 0-1 (topical relevance)
 /// - age_hours: memory age in hours (mild recency boost for very recent memories)
 fn compute_query_confidence(
-    embedding_similarity: Option<f32>,  // None if no embedding available
+    embedding_similarity: Option<f32>, // None if no embedding available
     in_fts_results: bool,
-    entity_score: f64,  // 0.0 if no entity match or entity disabled
+    entity_score: f64, // 0.0 if no entity match or entity disabled
     age_hours: f64,
 ) -> f64 {
     let mut confidence = 0.0;
@@ -7533,10 +7825,7 @@ fn compute_query_confidence(
 /// let age_hours = (now - record.created_at).num_seconds() as f64 / 3600.0;
 /// let confidence = compute_association_confidence(activation, age_hours);
 /// ```
-fn compute_association_confidence(
-    activation: f64,
-    age_hours: f64,
-) -> f64 {
+fn compute_association_confidence(activation: f64, age_hours: f64) -> f64 {
     // Activation is the primary signal. ACT-R activation can range widely:
     // - Strong associations: 0.0 to 2.0+
     // - Weak associations: -1.0 to 0.0
@@ -7572,8 +7861,25 @@ fn confidence_label(confidence: f64) -> String {
 
 fn detect_feedback_polarity(feedback: &str) -> f64 {
     let lower = feedback.to_lowercase();
-    let positive = ["good", "great", "excellent", "correct", "right", "yes", "nice", "perfect"];
-    let negative = ["bad", "wrong", "incorrect", "no", "error", "mistake", "poor"];
+    let positive = [
+        "good",
+        "great",
+        "excellent",
+        "correct",
+        "right",
+        "yes",
+        "nice",
+        "perfect",
+    ];
+    let negative = [
+        "bad",
+        "wrong",
+        "incorrect",
+        "no",
+        "error",
+        "mistake",
+        "poor",
+    ];
 
     let pos_count = positive.iter().filter(|&w| lower.contains(w)).count();
     let neg_count = negative.iter().filter(|&w| lower.contains(w)).count();
@@ -7666,9 +7972,7 @@ fn domain_to_loose_str(d: &crate::dimensions::Domain) -> String {
 /// the new API. The only error kind we actually expect through this
 /// path is a `rusqlite::Error` (DB write failure); anything else is
 /// treated as a pipeline error and surfaces as `InvalidState`.
-fn boxed_err_to_store_error(
-    e: Box<dyn std::error::Error>,
-) -> crate::store_api::StoreError {
+fn boxed_err_to_store_error(e: Box<dyn std::error::Error>) -> crate::store_api::StoreError {
     // Attempt to downcast to rusqlite::Error first — the common case.
     match e.downcast::<rusqlite::Error>() {
         Ok(db_err) => crate::store_api::StoreError::DbError(*db_err),
@@ -7714,7 +8018,13 @@ fn type_weights_favoring(mt: crate::types::MemoryType) -> crate::type_weights::T
 }
 
 #[cfg(test)]
-#[allow(deprecated, clippy::field_reassign_with_default, clippy::manual_range_contains, clippy::cloned_ref_to_slice_refs, clippy::items_after_test_module)]
+#[allow(
+    deprecated,
+    clippy::field_reassign_with_default,
+    clippy::manual_range_contains,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::items_after_test_module
+)]
 mod confidence_tests {
     use super::*;
 
@@ -7745,7 +8055,10 @@ mod confidence_tests {
         // No embedding available, FTS=true, some entity match
         let c = compute_query_confidence(None, true, 0.5, 2.0);
         // Without embedding, max_possible = 0.45, confidence comes from FTS + entity + recency
-        assert!(c > 0.3, "expected reasonable confidence without embedding, got {c}");
+        assert!(
+            c > 0.3,
+            "expected reasonable confidence without embedding, got {c}"
+        );
         assert!(c < 1.0);
     }
 
@@ -7754,7 +8067,10 @@ mod confidence_tests {
         // No embedding, FTS only, no entity
         let c_fts = compute_query_confidence(None, true, 0.0, 24.0);
         let c_none = compute_query_confidence(None, false, 0.0, 24.0);
-        assert!(c_fts > c_none, "FTS should boost confidence: {c_fts} > {c_none}");
+        assert!(
+            c_fts > c_none,
+            "FTS should boost confidence: {c_fts} > {c_none}"
+        );
     }
 
     #[test]
@@ -7762,7 +8078,10 @@ mod confidence_tests {
         // Same embedding sim, but different entity scores
         let c_entity = compute_query_confidence(Some(0.5), false, 0.9, 48.0);
         let c_no_entity = compute_query_confidence(Some(0.5), false, 0.0, 48.0);
-        assert!(c_entity > c_no_entity, "entity should boost confidence: {c_entity} > {c_no_entity}");
+        assert!(
+            c_entity > c_no_entity,
+            "entity should boost confidence: {c_entity} > {c_no_entity}"
+        );
     }
 
     #[test]
@@ -7770,23 +8089,35 @@ mod confidence_tests {
         // Recent (1h) vs old (30 days = 720h) — same other signals
         let c_recent = compute_query_confidence(Some(0.6), true, 0.0, 1.0);
         let c_old = compute_query_confidence(Some(0.6), true, 0.0, 720.0);
-        assert!(c_recent > c_old, "recent should have slightly higher confidence: {c_recent} > {c_old}");
+        assert!(
+            c_recent > c_old,
+            "recent should have slightly higher confidence: {c_recent} > {c_old}"
+        );
         // But the difference should be small (recency weight is only 0.05)
-        assert!((c_recent - c_old).abs() < 0.1, "recency difference should be small");
+        assert!(
+            (c_recent - c_old).abs() < 0.1,
+            "recency difference should be small"
+        );
     }
 
     #[test]
     fn test_confidence_all_zero() {
         // All signals at worst values
         let c = compute_query_confidence(Some(0.0), false, 0.0, 8760.0); // 1 year old
-        assert!(c < 0.1, "all-zero signals should give near-zero confidence, got {c}");
+        assert!(
+            c < 0.1,
+            "all-zero signals should give near-zero confidence, got {c}"
+        );
     }
 
     #[test]
     fn test_confidence_all_max() {
         // All signals at best values
         let c = compute_query_confidence(Some(0.99), true, 1.0, 0.1);
-        assert!(c > 0.9, "all-max signals should give high confidence, got {c}");
+        assert!(
+            c > 0.9,
+            "all-max signals should give high confidence, got {c}"
+        );
     }
 
     #[test]
@@ -7807,7 +8138,10 @@ mod confidence_tests {
         let c_high = compute_query_confidence(Some(0.8), false, 0.0, 100.0);
         let c_low = compute_query_confidence(Some(0.3), false, 0.0, 100.0);
         let gap = c_high - c_low;
-        assert!(gap > 0.3, "sigmoid should create large gap between 0.8 and 0.3 sim: gap={gap}");
+        assert!(
+            gap > 0.3,
+            "sigmoid should create large gap between 0.8 and 0.3 sim: gap={gap}"
+        );
     }
 
     // ISS-039: Tests for compute_association_confidence
@@ -7815,7 +8149,10 @@ mod confidence_tests {
     fn test_association_confidence_strong_activation_fresh() {
         // Strong activation (1.5) + fresh memory (1 hour) → high confidence
         let c = compute_association_confidence(1.5, 1.0);
-        assert!(c >= 0.8, "strong activation + fresh should yield high confidence, got {c}");
+        assert!(
+            c >= 0.8,
+            "strong activation + fresh should yield high confidence, got {c}"
+        );
         assert_eq!(confidence_label(c), "high");
     }
 
@@ -7824,7 +8161,10 @@ mod confidence_tests {
         // Strong activation (1.5) + old memory (30 days = 720 hours) → still high
         // Activation is primary signal, recency is secondary (only 5% weight)
         let c = compute_association_confidence(1.5, 720.0);
-        assert!(c >= 0.75, "strong activation + old should still be high confidence, got {c}");
+        assert!(
+            c >= 0.75,
+            "strong activation + old should still be high confidence, got {c}"
+        );
         assert_eq!(confidence_label(c), "high");
     }
 
@@ -7832,14 +8172,20 @@ mod confidence_tests {
     fn test_association_confidence_weak_activation_fresh() {
         // Weak activation (-0.5) + fresh memory (1 hour) → low confidence
         let c = compute_association_confidence(-0.5, 1.0);
-        assert!(c < 0.5, "weak activation + fresh should yield low-medium confidence, got {c}");
+        assert!(
+            c < 0.5,
+            "weak activation + fresh should yield low-medium confidence, got {c}"
+        );
     }
 
     #[test]
     fn test_association_confidence_weak_activation_old() {
         // Weak activation (-0.5) + old memory (30 days) → very low confidence
         let c = compute_association_confidence(-0.5, 720.0);
-        assert!(c < 0.4, "weak activation + old should yield low confidence, got {c}");
+        assert!(
+            c < 0.4,
+            "weak activation + old should yield low confidence, got {c}"
+        );
     }
 
     #[test]
@@ -7848,7 +8194,10 @@ mod confidence_tests {
         let c_strong = compute_association_confidence(1.0, 100.0);
         let c_weak = compute_association_confidence(-1.0, 100.0);
         let gap = c_strong - c_weak;
-        assert!(gap > 0.5, "activation should dominate confidence: gap={gap}");
+        assert!(
+            gap > 0.5,
+            "activation should dominate confidence: gap={gap}"
+        );
     }
 
     #[test]
@@ -7867,24 +8216,27 @@ mod confidence_tests {
         // Activation = 0.0 is the ACT-R retrieval threshold
         // Should map to ~0.5 confidence (sigmoid midpoint)
         let c = compute_association_confidence(0.0, 24.0);
-        assert!((c - 0.5).abs() < 0.1, "zero activation should map near 0.5 confidence, got {c}");
+        assert!(
+            (c - 0.5).abs() < 0.1,
+            "zero activation should map near 0.5 confidence, got {c}"
+        );
     }
 
     #[test]
     fn test_auto_extract_importance_cap() {
         let mut config = MemoryConfig::default();
         config.auto_extract_importance_cap = 0.7;
-        
+
         // Test capping logic directly
         let extracted_importance: f64 = 0.95;
         let capped = extracted_importance.min(config.auto_extract_importance_cap);
         assert_eq!(capped, 0.7);
-        
+
         // Below cap — no change
         let low_importance: f64 = 0.3;
         let not_capped = low_importance.min(config.auto_extract_importance_cap);
         assert_eq!(not_capped, 0.3);
-        
+
         // Exactly at cap — no change
         let at_cap: f64 = 0.7;
         let stays = at_cap.min(config.auto_extract_importance_cap);
@@ -7927,7 +8279,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
-            superseded_by: None,
+                superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -7984,7 +8336,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
-            superseded_by: None,
+                superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -7998,12 +8350,8 @@ mod confidence_tests {
             make_result("id-c", 0.7),
         ];
 
-        let result = Memory::dedup_recall_results_by_embedding(
-            candidates,
-            &embeddings_map,
-            0.85,
-            3,
-        );
+        let result =
+            Memory::dedup_recall_results_by_embedding(candidates, &embeddings_map, 0.85, 3);
 
         // All three should be kept
         assert_eq!(result.len(), 3);
@@ -8039,7 +8387,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
-            superseded_by: None,
+                superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -8092,7 +8440,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
-            superseded_by: None,
+                superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -8105,12 +8453,8 @@ mod confidence_tests {
             make_result("id-b"), // No embedding
         ];
 
-        let result = Memory::dedup_recall_results_by_embedding(
-            candidates,
-            &embeddings_map,
-            0.85,
-            5,
-        );
+        let result =
+            Memory::dedup_recall_results_by_embedding(candidates, &embeddings_map, 0.85, 5);
 
         // Both should be kept (id-b has no embedding, so can't be deduped)
         assert_eq!(result.len(), 2);
@@ -8146,7 +8490,7 @@ mod confidence_tests {
                 source: "test".to_string(),
                 contradicts: None,
                 contradicted_by: None,
-            superseded_by: None,
+                superseded_by: None,
                 metadata: None,
             },
             activation: 0.5,
@@ -8181,7 +8525,11 @@ mod confidence_tests {
 
     // ── C7 Multi-Retrieval Fusion tests ────────────────────────────
 
-    fn make_test_record(id: &str, content: &str, created_at: chrono::DateTime<Utc>) -> MemoryRecord {
+    fn make_test_record(
+        id: &str,
+        content: &str,
+        created_at: chrono::DateTime<Utc>,
+    ) -> MemoryRecord {
         MemoryRecord {
             id: id.to_string(),
             content: content.to_string(),
@@ -8208,15 +8556,15 @@ mod confidence_tests {
     fn test_temporal_score_within_range() {
         use crate::query_classifier::TimeRange;
         let now = Utc::now();
-        
+
         // Memory at the center of a 24-hour range
         let range = TimeRange {
             start: now - chrono::Duration::hours(24),
             end: now,
         };
-        
+
         let record = make_test_record("t1", "test", now - chrono::Duration::hours(12));
-        
+
         let score = Memory::temporal_score(&record, &Some(range), now);
         assert!(score > 0.9, "Center of range should score high: {}", score);
     }
@@ -8225,14 +8573,14 @@ mod confidence_tests {
     fn test_temporal_score_outside_range() {
         use crate::query_classifier::TimeRange;
         let now = Utc::now();
-        
+
         let range = TimeRange {
             start: now - chrono::Duration::hours(24),
             end: now - chrono::Duration::hours(12),
         };
-        
+
         let record = make_test_record("t2", "test", now - chrono::Duration::hours(1));
-        
+
         let score = Memory::temporal_score(&record, &Some(range), now);
         assert!(score < 0.01, "Outside range should score ~0: {}", score);
     }
@@ -8240,13 +8588,16 @@ mod confidence_tests {
     #[test]
     fn test_temporal_score_no_range() {
         let now = Utc::now();
-        
+
         let record = make_test_record("t3", "test", now - chrono::Duration::hours(1));
-        
+
         let score = Memory::temporal_score(&record, &None, now);
         // Should be in neutral range (0.25-0.75)
-        assert!(score >= 0.25 && score <= 0.75,
-            "No range: score should be neutral-ish: {}", score);
+        assert!(
+            score >= 0.25 && score <= 0.75,
+            "No range: score should be neutral-ish: {}",
+            score
+        );
     }
 
     /// Attach a v2 metadata blob carrying the given derived TemporalMark so
@@ -8279,7 +8630,10 @@ mod confidence_tests {
 
         let q_start = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
         let q_end = Utc.with_ymd_and_hms(2020, 12, 31, 0, 0, 0).unwrap();
-        let range = Some(TimeRange { start: q_start, end: q_end });
+        let range = Some(TimeRange {
+            start: q_start,
+            end: q_end,
+        });
 
         let occurred_2023 = Utc.with_ymd_and_hms(2023, 3, 27, 0, 0, 0).unwrap();
         let approx_2020 = TemporalMark::Approx {
@@ -8292,13 +8646,19 @@ mod confidence_tests {
         // With the derived ~2020 mark → in-range hit.
         let with_mark = record_with_temporal("ac3-hit", occurred_2023, approx_2020);
         let score = Memory::temporal_score(&with_mark, &range, Utc::now());
-        assert!(score >= 0.5, "approx ~2020 should match 2020 query: {score}");
+        assert!(
+            score >= 0.5,
+            "approx ~2020 should match 2020 query: {score}"
+        );
 
         // Same 2023 event time, NO derived mark → point is outside 2020 range.
         let mut without = make_test_record("ac3-miss", "content", Utc::now());
         without.occurred_at = Some(occurred_2023);
         let miss = Memory::temporal_score(&without, &range, Utc::now());
-        assert!(miss < 0.01, "no mark, 2023 point should miss 2020 query: {miss}");
+        assert!(
+            miss < 0.01,
+            "no mark, 2023 point should miss 2020 query: {miss}"
+        );
     }
 
     #[test]
@@ -8323,7 +8683,10 @@ mod confidence_tests {
             end: Utc.with_ymd_and_hms(2022, 12, 31, 0, 0, 0).unwrap(),
         });
         let score = Memory::temporal_score(&rec, &range, Utc::now());
-        assert!(score >= 0.5, "ongoing 2020→2023 should overlap 2022: {score}");
+        assert!(
+            score >= 0.5,
+            "ongoing 2020→2023 should overlap 2022: {score}"
+        );
     }
 
     #[test]
@@ -8331,7 +8694,7 @@ mod confidence_tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("test.db");
         let mut storage = crate::storage::Storage::new(db.to_str().unwrap()).unwrap();
-        
+
         let now = Utc::now();
         let rec_a = make_test_record("a", "memory A", now);
         let rec_b = make_test_record("b", "memory B", now);
@@ -8339,19 +8702,28 @@ mod confidence_tests {
         storage.add(&rec_a, "default").unwrap();
         storage.add(&rec_b, "default").unwrap();
         storage.add(&rec_c, "default").unwrap();
-        
+
         // Create Hebbian link between A and B
         // First call creates tracking record, second call forms the link (threshold=1)
         storage.record_coactivation("a", "b", 1).unwrap();
         storage.record_coactivation("a", "b", 1).unwrap();
-        
+
         let candidate_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let scores = Memory::hebbian_channel_scores(&storage, &candidate_ids).unwrap();
-        
+
         // A and B should have scores (linked to each other), C should not
-        assert!(scores.get("a").copied().unwrap_or(0.0) > 0.0, "A should have hebbian score");
-        assert!(scores.get("b").copied().unwrap_or(0.0) > 0.0, "B should have hebbian score");
-        assert!(scores.get("c").copied().unwrap_or(0.0) < 0.01, "C should have no hebbian score");
+        assert!(
+            scores.get("a").copied().unwrap_or(0.0) > 0.0,
+            "A should have hebbian score"
+        );
+        assert!(
+            scores.get("b").copied().unwrap_or(0.0) > 0.0,
+            "B should have hebbian score"
+        );
+        assert!(
+            scores.get("c").copied().unwrap_or(0.0) < 0.01,
+            "C should have no hebbian score"
+        );
     }
 
     #[test]
@@ -8382,7 +8754,13 @@ mod confidence_tests {
 
         // Store a memory so we have something to broadcast.
         let id = mem
-            .add("Rust is a systems programming language", MemoryType::Factual, Some(0.5), None, None)
+            .add(
+                "Rust is a systems programming language",
+                MemoryType::Factual,
+                Some(0.5),
+                None,
+                None,
+            )
             .unwrap();
 
         // Hub should be empty before broadcast.
@@ -8406,13 +8784,31 @@ mod confidence_tests {
         let mut wm = ActiveContext::default();
 
         let id1 = mem
-            .add("First memory about coding", MemoryType::Factual, Some(0.5), None, None)
+            .add(
+                "First memory about coding",
+                MemoryType::Factual,
+                Some(0.5),
+                None,
+                None,
+            )
             .unwrap();
         let id2 = mem
-            .add("Second memory about trading", MemoryType::Factual, Some(0.6), None, None)
+            .add(
+                "Second memory about trading",
+                MemoryType::Factual,
+                Some(0.6),
+                None,
+                None,
+            )
             .unwrap();
         let id3 = mem
-            .add("Third memory about research", MemoryType::Factual, Some(0.7), None, None)
+            .add(
+                "Third memory about research",
+                MemoryType::Factual,
+                Some(0.7),
+                None,
+                None,
+            )
             .unwrap();
 
         mem.broadcast_admission(&[id1, id2, id3], &mut wm);
@@ -8443,10 +8839,22 @@ mod confidence_tests {
 
         // Store multiple memories and broadcast them.
         let id1 = mem
-            .add("Important fact about Rust", MemoryType::Factual, Some(0.8), None, None)
+            .add(
+                "Important fact about Rust",
+                MemoryType::Factual,
+                Some(0.8),
+                None,
+                None,
+            )
             .unwrap();
         let id2 = mem
-            .add("Another fact about memory", MemoryType::Factual, Some(0.3), None, None)
+            .add(
+                "Another fact about memory",
+                MemoryType::Factual,
+                Some(0.3),
+                None,
+                None,
+            )
             .unwrap();
 
         mem.broadcast_admission(&[id1, id2], &mut wm);
@@ -8467,10 +8875,22 @@ mod confidence_tests {
 
         // Store two memories.
         let id_a = mem
-            .add("Memory A about Rust", MemoryType::Factual, Some(0.5), None, None)
+            .add(
+                "Memory A about Rust",
+                MemoryType::Factual,
+                Some(0.5),
+                None,
+                None,
+            )
             .unwrap();
         let id_b = mem
-            .add("Memory B about Rust compilers", MemoryType::Factual, Some(0.5), None, None)
+            .add(
+                "Memory B about Rust compilers",
+                MemoryType::Factual,
+                Some(0.5),
+                None,
+                None,
+            )
             .unwrap();
 
         // Create a Hebbian link via the canonical API so dual-write to
@@ -8544,10 +8964,7 @@ mod confidence_tests {
         // Mirror the exact write-path logic from Memory::remember().
         let mut dimensions = serde_json::Map::new();
         if let Some(ref v) = fact.participants {
-            dimensions.insert(
-                "participants".into(),
-                serde_json::Value::String(v.clone()),
-            );
+            dimensions.insert("participants".into(), serde_json::Value::String(v.clone()));
         }
         if let Some(ref v) = fact.temporal {
             dimensions.insert("temporal".into(), serde_json::Value::String(v.clone()));
@@ -8638,10 +9055,16 @@ mod confidence_tests {
 
 /// Jaccard similarity between two string sets.
 fn jaccard_similarity_strings(a: &[String], b: &[String]) -> f64 {
-    if a.is_empty() && b.is_empty() { return 0.0; }
+    if a.is_empty() && b.is_empty() {
+        return 0.0;
+    }
     let set_a: std::collections::HashSet<&str> = a.iter().map(|s| s.as_str()).collect();
     let set_b: std::collections::HashSet<&str> = b.iter().map(|s| s.as_str()).collect();
     let intersection = set_a.intersection(&set_b).count();
     let union = set_a.union(&set_b).count();
-    if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
 }

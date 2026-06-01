@@ -1,4 +1,9 @@
-#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+#![allow(
+    deprecated,
+    clippy::field_reassign_with_default,
+    clippy::useless_vec,
+    clippy::redundant_closure
+)]
 
 //! Integration test: Dimensional Memory Extraction end-to-end.
 //!
@@ -8,9 +13,9 @@
 //! 3. Old memories (no type_weights) still work identically (backward compat)
 //! 4. infer_type_weights produces correct weights for real content
 
-use engramai::{MemoryConfig, Memory, MemoryType};
-use engramai::type_weights::{infer_type_weights, TypeWeights};
 use engramai::extractor::ExtractedFact;
+use engramai::type_weights::{infer_type_weights, TypeWeights};
+use engramai::{Memory, MemoryConfig, MemoryType};
 use tempfile::NamedTempFile;
 
 fn make_system(db_path: &str) -> Memory {
@@ -32,13 +37,15 @@ fn test_type_weights_stored_and_read_back() {
         }
     });
 
-    let id = mem.add(
-        "RustClaw uses engram for memory because ACT-R activation provides principled recall",
-        MemoryType::Causal,
-        Some(0.7),
-        Some("test"),
-        Some(tw_json.clone()),
-    ).unwrap();
+    let id = mem
+        .add(
+            "RustClaw uses engram for memory because ACT-R activation provides principled recall",
+            MemoryType::Causal,
+            Some(0.7),
+            Some("test"),
+            Some(tw_json.clone()),
+        )
+        .unwrap();
 
     assert!(!id.is_empty());
 
@@ -47,14 +54,26 @@ fn test_type_weights_stored_and_read_back() {
     assert!(!results.is_empty(), "Should recall at least one memory");
 
     let first = &results[0];
-    let meta = first.record.metadata.as_ref().expect("should have metadata");
+    let meta = first
+        .record
+        .metadata
+        .as_ref()
+        .expect("should have metadata");
     // v2 layout: caller-supplied metadata lives under `user.*`
     let tw = meta
         .get("user")
         .and_then(|u| u.get("type_weights"))
         .expect("should have user.type_weights in metadata");
-    assert_eq!(tw.get("causal").and_then(|v: &serde_json::Value| v.as_f64()), Some(0.9));
-    assert_eq!(tw.get("factual").and_then(|v: &serde_json::Value| v.as_f64()), Some(0.5));
+    assert_eq!(
+        tw.get("causal")
+            .and_then(|v: &serde_json::Value| v.as_f64()),
+        Some(0.9)
+    );
+    assert_eq!(
+        tw.get("factual")
+            .and_then(|v: &serde_json::Value| v.as_f64()),
+        Some(0.5)
+    );
 
     println!("✅ type_weights stored and recalled correctly");
 }
@@ -66,17 +85,24 @@ fn test_old_memories_backward_compat() {
     let mut mem = make_system(db_path);
 
     // Store WITHOUT metadata (simulates pre-dimensional memories)
-    let _id = mem.add(
-        "potato prefers Rust over Python for systems programming",
-        MemoryType::Opinion,
-        Some(0.6),
-        Some("test"),
-        None,
-    ).unwrap();
+    let _id = mem
+        .add(
+            "potato prefers Rust over Python for systems programming",
+            MemoryType::Opinion,
+            Some(0.6),
+            Some("test"),
+            None,
+        )
+        .unwrap();
 
     // Should recall fine — TypeWeights::default() (all 1.0) acts as passthrough
-    let results = mem.recall("potato programming language preference", 5, None, None).unwrap();
-    assert!(!results.is_empty(), "Old memories without type_weights should still be recallable");
+    let results = mem
+        .recall("potato programming language preference", 5, None, None)
+        .unwrap();
+    assert!(
+        !results.is_empty(),
+        "Old memories without type_weights should still be recallable"
+    );
 
     // Verify TypeWeights::from_metadata returns default for missing metadata
     let tw = TypeWeights::from_metadata(&results[0].record.metadata);
@@ -97,9 +123,17 @@ fn test_type_weights_inference_from_extracted_fact() {
     let tw = infer_type_weights(&fact);
 
     // Strong causal signal
-    assert!(tw.causal > 0.8, "causal should be high (causation + outcome), got {}", tw.causal);
+    assert!(
+        tw.causal > 0.8,
+        "causal should be high (causation + outcome), got {}",
+        tw.causal
+    );
     // Moderate relational (participants present)
-    assert!(tw.relational > 0.3, "relational should be moderate, got {}", tw.relational);
+    assert!(
+        tw.relational > 0.3,
+        "relational should be moderate, got {}",
+        tw.relational
+    );
     // Primary type should be causal
     assert_eq!(tw.primary_type(), MemoryType::Causal);
 
@@ -108,7 +142,12 @@ fn test_type_weights_inference_from_extracted_fact() {
     let tw2 = TypeWeights::from_metadata(&Some(serde_json::json!({"type_weights": json})));
     assert_eq!(tw, tw2);
 
-    println!("✅ infer_type_weights: causal={:.1}, relational={:.1}, primary={:?}", tw.causal, tw.relational, tw.primary_type());
+    println!(
+        "✅ infer_type_weights: causal={:.1}, relational={:.1}, primary={:?}",
+        tw.causal,
+        tw.relational,
+        tw.primary_type()
+    );
 }
 
 #[test]
@@ -123,13 +162,17 @@ fn test_episodic_inference() {
     let tw = infer_type_weights(&fact);
     assert_eq!(tw.primary_type(), MemoryType::Episodic);
     assert_eq!(tw.episodic, 1.0); // 0.1 + 0.5 + 0.2 + 0.2 + 0.1 = 1.1 → clamped to 1.0
-    println!("✅ episodic inference: episodic={:.1}, relational={:.1}", tw.episodic, tw.relational);
+    println!(
+        "✅ episodic inference: episodic={:.1}, relational={:.1}",
+        tw.episodic, tw.relational
+    );
 }
 
 #[test]
 fn test_procedural_inference() {
     let mut fact = ExtractedFact::default();
-    fact.core_fact = "to deploy RustClaw, run cargo build --release then copy the binary".to_string();
+    fact.core_fact =
+        "to deploy RustClaw, run cargo build --release then copy the binary".to_string();
     fact.method = Some("cargo build --release, copy binary to target".to_string());
 
     let tw = infer_type_weights(&fact);
@@ -174,18 +217,29 @@ fn test_type_affinity_modulation_ordering() {
         Some(0.7),
         Some("test"),
         Some(episodic_tw),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Recall both
-    let results = mem.recall("why did we switch to Rust", 5, None, None).unwrap();
-    assert!(results.len() >= 2, "Should recall both memories, got {}", results.len());
+    let results = mem
+        .recall("why did we switch to Rust", 5, None, None)
+        .unwrap();
+    assert!(
+        results.len() >= 2,
+        "Should recall both memories, got {}",
+        results.len()
+    );
 
     println!("✅ affinity modulation: recalled {} results", results.len());
     for (i, r) in results.iter().enumerate() {
         let tw = TypeWeights::from_metadata(&r.record.metadata);
-        println!("  #{}: causal={:.1} episodic={:.1} | {}", 
-            i+1, tw.causal, tw.episodic, 
-            r.record.content.chars().take(70).collect::<String>());
+        println!(
+            "  #{}: causal={:.1} episodic={:.1} | {}",
+            i + 1,
+            tw.causal,
+            tw.episodic,
+            r.record.content.chars().take(70).collect::<String>()
+        );
     }
 }
 
@@ -203,7 +257,8 @@ fn test_mixed_old_and_new_memories() {
         Some(0.6),
         Some("test"),
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     // New-style memory (with type_weights)
     let tw = serde_json::json!({
@@ -218,10 +273,17 @@ fn test_mixed_old_and_new_memories() {
         Some(0.7),
         Some("test"),
         Some(tw),
-    ).unwrap();
+    )
+    .unwrap();
 
-    let results = mem.recall("engram search capabilities", 5, None, None).unwrap();
-    assert!(results.len() >= 2, "Should recall both old and new memories, got {}", results.len());
+    let results = mem
+        .recall("engram search capabilities", 5, None, None)
+        .unwrap();
+    assert!(
+        results.len() >= 2,
+        "Should recall both old and new memories, got {}",
+        results.len()
+    );
 
     // Both memories should be recallable. Post-ISS-019 Step 7a, even
     // memories written without caller-supplied `type_weights` get
@@ -229,8 +291,8 @@ fn test_mixed_old_and_new_memories() {
     // so we can no longer detect "old style" by `TypeWeights::default()`.
     // The test's real intent is "both memories coexist and are
     // recallable" — verify that directly.
-    let mut has_fts_only = false;   // first memory: no caller tw
-    let mut has_hybrid = false;     // second memory: explicit tw with factual=0.8
+    let mut has_fts_only = false; // first memory: no caller tw
+    let mut has_hybrid = false; // second memory: explicit tw with factual=0.8
     for r in &results {
         if r.record.content.contains("FTS5 for full-text search") {
             has_fts_only = true;
@@ -243,8 +305,14 @@ fn test_mixed_old_and_new_memories() {
             }
         }
     }
-    assert!(has_fts_only, "Should have recalled memory without caller type_weights");
-    assert!(has_hybrid, "Should have recalled new-style memory with explicit type_weights");
+    assert!(
+        has_fts_only,
+        "Should have recalled memory without caller type_weights"
+    );
+    assert!(
+        has_hybrid,
+        "Should have recalled new-style memory with explicit type_weights"
+    );
 
     println!("✅ mixed old+new memories coexist correctly");
 }
@@ -274,10 +342,17 @@ fn test_default_type_weights_neutral_behavior() {
         default_tw.emotional * affinity[4],
         default_tw.opinion * affinity[5],
         default_tw.causal * affinity[6],
-    ].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    ]
+    .iter()
+    .cloned()
+    .fold(f64::NEG_INFINITY, f64::max);
 
-    assert!((modulated - max_affinity).abs() < 1e-10, 
-        "Default TypeWeights should give max(affinity), got {} vs {}", modulated, max_affinity);
+    assert!(
+        (modulated - max_affinity).abs() < 1e-10,
+        "Default TypeWeights should give max(affinity), got {} vs {}",
+        modulated,
+        max_affinity
+    );
 
     println!("✅ default TypeWeights mathematically neutral");
 }

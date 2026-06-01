@@ -15,42 +15,40 @@
 //! - [`affective`] — Affective / mood-congruent plan (`task:retr-impl-affective`).
 //! - [`hybrid`] — Hybrid / multi-intent fusion plan (`task:retr-impl-hybrid`).
 
+pub mod abstract_l5;
+pub mod affective;
+pub mod associative;
 pub mod bitemporal;
 pub mod episodic;
 pub mod factual;
-pub mod associative;
-pub mod abstract_l5;
-pub mod affective;
 pub mod hybrid;
 
-pub use bitemporal::{project_edges, AsOfMode, ProjectedEdge};
-pub use episodic::{
-    EpisodicMemoryStore, EpisodicOutcome, EpisodicPlan, EpisodicPlanInputs,
-    EpisodicPlanResult, KnowledgeCutoff, NullEpisodicStore, ResolvedWindow,
-};
-pub use factual::{
-    EntityResolver, FactualOutcome, FactualPlan, FactualPlanInputs,
-    FactualPlanResult, NullEntityResolver, ResolvedAnchor,
-};
-pub use associative::{
-    AssociativeCandidate, AssociativeOutcome, AssociativePlan,
-    AssociativePlanInputs, AssociativePlanResult, NullSeedRecaller,
-    SeedHit, SeedRecallStatus, SeedRecaller,
-    DEFAULT_K_POOL, DEFAULT_K_SEED,
-};
 pub use abstract_l5::{
-    AbstractCandidate, AbstractOutcome, AbstractPlan, AbstractPlanInputs,
-    AbstractPlanResult, NullTopicSearcher, TopicHit, TopicSearchStatus,
-    TopicSearcher, DEFAULT_K_TOPICS, DEFAULT_L5_MIN_TOPIC_SCORE,
+    AbstractCandidate, AbstractOutcome, AbstractPlan, AbstractPlanInputs, AbstractPlanResult,
+    NullTopicSearcher, TopicHit, TopicSearchStatus, TopicSearcher, DEFAULT_K_TOPICS,
+    DEFAULT_L5_MIN_TOPIC_SCORE,
 };
 pub use affective::{
-    AffectDivergence, AffectiveCandidate, AffectiveOutcome, AffectivePlan,
-    AffectivePlanInputs, AffectivePlanResult, AffectiveSeedHit,
-    AffectiveSeedRecaller, AffectiveSeedStatus, NullAffectiveSeedRecaller,
-    W_AFFECT, W_RECENCY, W_TEXT,
+    AffectDivergence, AffectiveCandidate, AffectiveOutcome, AffectivePlan, AffectivePlanInputs,
+    AffectivePlanResult, AffectiveSeedHit, AffectiveSeedRecaller, AffectiveSeedStatus,
+    NullAffectiveSeedRecaller, W_AFFECT, W_RECENCY, W_TEXT,
+};
+pub use associative::{
+    AssociativeCandidate, AssociativeOutcome, AssociativePlan, AssociativePlanInputs,
+    AssociativePlanResult, NullSeedRecaller, SeedHit, SeedRecallStatus, SeedRecaller,
+    DEFAULT_K_POOL, DEFAULT_K_SEED,
+};
+pub use bitemporal::{project_edges, AsOfMode, ProjectedEdge};
+pub use episodic::{
+    EpisodicMemoryStore, EpisodicOutcome, EpisodicPlan, EpisodicPlanInputs, EpisodicPlanResult,
+    KnowledgeCutoff, NullEpisodicStore, ResolvedWindow,
+};
+pub use factual::{
+    EntityResolver, FactualOutcome, FactualPlan, FactualPlanInputs, FactualPlanResult,
+    NullEntityResolver, ResolvedAnchor,
 };
 pub use hybrid::{
-    DroppedSignal, HybridItem, HybridItemId, HybridPlan, HybridPlanInputs,
-    HybridPlanResult, HybridSubPlanExecutor, RankedHybridItem, StubExecutor,
-    SubPlanKind, SubPlanResult, DEFAULT_RRF_K, HYBRID_SUBPLAN_CAP,
+    DroppedSignal, HybridItem, HybridItemId, HybridPlan, HybridPlanInputs, HybridPlanResult,
+    HybridSubPlanExecutor, RankedHybridItem, StubExecutor, SubPlanKind, SubPlanResult,
+    DEFAULT_RRF_K, HYBRID_SUBPLAN_CAP,
 };

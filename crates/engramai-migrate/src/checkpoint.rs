@@ -147,9 +147,7 @@ impl CheckpointStore {
     }
 
     /// Fetch the singleton row, if it exists.
-    pub fn load_state(
-        conn: &Connection,
-    ) -> Result<Option<MigrationStateRow>, MigrationError> {
+    pub fn load_state(conn: &Connection) -> Result<Option<MigrationStateRow>, MigrationError> {
         conn.query_row(
             "SELECT id, current_phase, last_processed_memory_id, \
                     records_processed, records_succeeded, records_failed, \
@@ -218,10 +216,7 @@ impl CheckpointStore {
     }
 
     /// Mark migration as complete (post-Phase 5 gate).
-    pub fn mark_complete(
-        conn: &Connection,
-        now_rfc3339: &str,
-    ) -> Result<(), MigrationError> {
+    pub fn mark_complete(conn: &Connection, now_rfc3339: &str) -> Result<(), MigrationError> {
         let n = conn
             .execute(
                 "UPDATE migration_state \
@@ -238,10 +233,7 @@ impl CheckpointStore {
 
     /// Insert (or replace) a phase-digest row. The same phase running twice
     /// (e.g., re-verify after a fix) is allowed; the latest write wins.
-    pub fn put_phase_digest(
-        conn: &Connection,
-        row: &PhaseDigestRow,
-    ) -> Result<(), MigrationError> {
+    pub fn put_phase_digest(conn: &Connection, row: &PhaseDigestRow) -> Result<(), MigrationError> {
         conn.execute(
             "INSERT INTO migration_phase_digest \
              (phase, completed_at, row_counts, content_hash) \
@@ -250,7 +242,12 @@ impl CheckpointStore {
                 completed_at = excluded.completed_at, \
                 row_counts   = excluded.row_counts, \
                 content_hash = excluded.content_hash",
-            params![row.phase, row.completed_at, row.row_counts, row.content_hash],
+            params![
+                row.phase,
+                row.completed_at,
+                row.row_counts,
+                row.content_hash
+            ],
         )
         .map_err(map_sqlite)?;
         Ok(())
@@ -272,9 +269,7 @@ impl CheckpointStore {
     }
 
     /// All recorded phase digests, ordered by phase tag for stability.
-    pub fn list_phase_digests(
-        conn: &Connection,
-    ) -> Result<Vec<PhaseDigestRow>, MigrationError> {
+    pub fn list_phase_digests(conn: &Connection) -> Result<Vec<PhaseDigestRow>, MigrationError> {
         let mut stmt = conn
             .prepare(
                 "SELECT phase, completed_at, row_counts, content_hash \
@@ -557,12 +552,9 @@ mod tests {
     fn verify_phase_digest_mismatch_returns_error_with_tag() {
         let c = fresh();
         CheckpointStore::put_phase_digest(&c, &mk_digest("Phase2", "stored")).unwrap();
-        let err = CheckpointStore::verify_phase_digest(
-            &c,
-            MigrationPhase::SchemaTransition,
-            "different",
-        )
-        .unwrap_err();
+        let err =
+            CheckpointStore::verify_phase_digest(&c, MigrationPhase::SchemaTransition, "different")
+                .unwrap_err();
         match err {
             MigrationError::CheckpointDigestMismatch { phase } => {
                 assert_eq!(phase, "Phase2");

@@ -289,9 +289,11 @@ pub fn backfill_memories_to_nodes(
             Ok((record, ns, attrs))
         };
         let iter = if let Some(ns) = namespace {
-            stmt.query_map(params![ns], map_row)?.collect::<Result<Vec<_>, _>>()?
+            stmt.query_map(params![ns], map_row)?
+                .collect::<Result<Vec<_>, _>>()?
         } else {
-            stmt.query_map([], map_row)?.collect::<Result<Vec<_>, _>>()?
+            stmt.query_map([], map_row)?
+                .collect::<Result<Vec<_>, _>>()?
         };
         iter
     };
@@ -322,9 +324,7 @@ pub fn backfill_memories_to_nodes(
     // **only safe use** is from a dedicated test binary that runs
     // no other backfill calls — see
     // `tests/v04_phase_c_backfill_atomicity.rs`.
-    if test_hooks::FAULT_INJECT_BETWEEN_PASSES
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
+    if test_hooks::FAULT_INJECT_BETWEEN_PASSES.load(std::sync::atomic::Ordering::SeqCst) {
         drop(tx);
         return Err(rusqlite::Error::ExecuteReturnedResults);
     }
@@ -631,18 +631,16 @@ pub fn backfill_embeddings_to_node_embeddings(
 
         // Parse RFC3339 created_at → epoch f64. Fallback to now() on
         // parse failure (rare for valid legacy data).
-        let created_at_epoch: f64 =
-            match chrono::DateTime::parse_from_rfc3339(created_at_text) {
-                Ok(dt) => {
-                    let dt_utc = dt.with_timezone(&chrono::Utc);
-                    dt_utc.timestamp() as f64
-                        + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9)
-                }
-                Err(_) => {
-                    rows_failed_parse += 1;
-                    utc_now_f64()
-                }
-            };
+        let created_at_epoch: f64 = match chrono::DateTime::parse_from_rfc3339(created_at_text) {
+            Ok(dt) => {
+                let dt_utc = dt.with_timezone(&chrono::Utc);
+                dt_utc.timestamp() as f64 + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9)
+            }
+            Err(_) => {
+                rows_failed_parse += 1;
+                utc_now_f64()
+            }
+        };
 
         let inserted = Storage::insert_node_embedding_row(
             &tx,
@@ -737,10 +735,7 @@ enum MergeOutcome {
     NewNotObject,
 }
 
-fn merge_attributes_existing_wins(
-    existing: &str,
-    new_keys: &str,
-) -> MergeOutcome {
+fn merge_attributes_existing_wins(existing: &str, new_keys: &str) -> MergeOutcome {
     let mut existing_val: serde_json::Value = match serde_json::from_str(existing) {
         Ok(serde_json::Value::Object(m)) => serde_json::Value::Object(m),
         _ => return MergeOutcome::ExistingNotObject,
@@ -972,10 +967,7 @@ pub fn backfill_entities_to_nodes(
                 .ok();
             if let Some((existing_kind, existing_attrs)) = existing {
                 if existing_kind == "entity" {
-                    match merge_attributes_existing_wins(
-                        &existing_attrs,
-                        &projected_attrs_json,
-                    ) {
+                    match merge_attributes_existing_wins(&existing_attrs, &projected_attrs_json) {
                         MergeOutcome::Merged(merged) => {
                             // ISS-112 §D: skip the UPDATE if the merge result
                             // is byte-identical to existing. Otherwise every
@@ -1210,8 +1202,17 @@ pub fn backfill_entity_relations_to_edges(
     let conn = storage.conn();
     let tx = conn.unchecked_transaction()?;
 
-    for (id, source_id, target_id, relation, confidence, source_text, ns, created_at, metadata_text)
-        in &rows
+    for (
+        id,
+        source_id,
+        target_id,
+        relation,
+        confidence,
+        source_text,
+        ns,
+        created_at,
+        metadata_text,
+    ) in &rows
     {
         rows_read += 1;
 
@@ -1244,10 +1245,7 @@ pub fn backfill_entity_relations_to_edges(
         // ---------------------------------------------------------
         let mut projected_attrs = serde_json::Map::new();
         if let Some(src) = source_text.as_deref() {
-            projected_attrs.insert(
-                "source".into(),
-                serde_json::Value::String(src.to_string()),
-            );
+            projected_attrs.insert("source".into(), serde_json::Value::String(src.to_string()));
         }
         if let Some(meta_str) = metadata_text.as_deref() {
             match serde_json::from_str::<serde_json::Value>(meta_str) {
@@ -1297,10 +1295,7 @@ pub fn backfill_entity_relations_to_edges(
                 .ok();
             if let Some((existing_kind, existing_attrs)) = existing {
                 if existing_kind == "structural" {
-                    match merge_attributes_existing_wins(
-                        &existing_attrs,
-                        &projected_attrs_json,
-                    ) {
+                    match merge_attributes_existing_wins(&existing_attrs, &projected_attrs_json) {
                         MergeOutcome::Merged(merged) => {
                             // ISS-112 §D applies here too: only
                             // UPDATE if the merge actually changes
@@ -1377,7 +1372,6 @@ pub fn backfill_entity_relations_to_edges(
     run.assert_counter_invariant();
     Ok(run)
 }
-
 
 // =====================================================================
 // T23 — backfill memory_entities → edges
@@ -1666,9 +1660,7 @@ pub fn backfill_memory_entities_to_edges(
                 &namespace,
                 created_at,
             )?,
-            _ => unreachable!(
-                "role_to_kind_predicate only emits 'structural' or 'provenance'"
-            ),
+            _ => unreachable!("role_to_kind_predicate only emits 'structural' or 'provenance'"),
         };
 
         if inserted {
@@ -1746,10 +1738,22 @@ mod t23_helpers_tests {
 
     #[test]
     fn role_to_kind_predicate_canonical_roles() {
-        assert_eq!(role_to_kind_predicate("mention"), ("provenance", "mentions", false));
-        assert_eq!(role_to_kind_predicate(""), ("provenance", "mentions", false));
-        assert_eq!(role_to_kind_predicate("subject"), ("structural", "subject_of", false));
-        assert_eq!(role_to_kind_predicate("object"), ("structural", "object_of", false));
+        assert_eq!(
+            role_to_kind_predicate("mention"),
+            ("provenance", "mentions", false)
+        );
+        assert_eq!(
+            role_to_kind_predicate(""),
+            ("provenance", "mentions", false)
+        );
+        assert_eq!(
+            role_to_kind_predicate("subject"),
+            ("structural", "subject_of", false)
+        );
+        assert_eq!(
+            role_to_kind_predicate("object"),
+            ("structural", "object_of", false)
+        );
     }
 
     #[test]
@@ -2062,8 +2066,20 @@ pub fn backfill_hebbian_links_to_edges(
 
     let tx = storage.conn().unchecked_transaction()?;
 
-    for (lo, hi, ns_val, sig_src, weight_sum, coact_sum, tfwd_sum, tbwd_sum, min_created, dirs_csv, details_csv, legacy_count)
-        in groups
+    for (
+        lo,
+        hi,
+        ns_val,
+        sig_src,
+        weight_sum,
+        coact_sum,
+        tfwd_sum,
+        tbwd_sum,
+        min_created,
+        dirs_csv,
+        details_csv,
+        legacy_count,
+    ) in groups
     {
         groups_processed += 1;
 
@@ -2079,8 +2095,7 @@ pub fn backfill_hebbian_links_to_edges(
         // signal_source is in the hash even though §5.3's amended
         // template doesn't list it (future-proofing for multi-
         // signal-source production data).
-        let hash_input =
-            backfill_hebbian_links_to_edges_hash_input(&lo, &hi, &ns_val, &sig_src);
+        let hash_input = backfill_hebbian_links_to_edges_hash_input(&lo, &hi, &ns_val, &sig_src);
         let id = uuid_from_hash(&hash_input);
 
         // FK pre-check.
@@ -2249,7 +2264,11 @@ mod t24_helpers_tests {
         // After canonicalization at the call site, both directions
         // produce the same hash:
         let canon = |s: &str, t: &str| -> (String, String) {
-            if s < t { (s.into(), t.into()) } else { (t.into(), s.into()) }
+            if s < t {
+                (s.into(), t.into())
+            } else {
+                (t.into(), s.into())
+            }
         };
         let (lo1, hi1) = canon("mem-A", "mem-B");
         let (lo2, hi2) = canon("mem-B", "mem-A");
@@ -2367,7 +2386,9 @@ pub fn backfill_synthesis_provenance_to_edges(
     } else {
         storage
             .conn()
-            .query_row("SELECT COUNT(*) FROM synthesis_provenance", [], |r| r.get(0))?
+            .query_row("SELECT COUNT(*) FROM synthesis_provenance", [], |r| {
+                r.get(0)
+            })?
     };
     let rows_read = rows_read as u64;
 
@@ -2486,8 +2507,7 @@ pub fn backfill_synthesis_provenance_to_edges(
         let ts_unix: f64 = match chrono::DateTime::parse_from_rfc3339(synthesis_timestamp) {
             Ok(dt) => {
                 let dt_utc = dt.with_timezone(&chrono::Utc);
-                dt_utc.timestamp() as f64
-                    + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9)
+                dt_utc.timestamp() as f64 + (dt_utc.timestamp_subsec_nanos() as f64 / 1e9)
             }
             Err(_) => utc_now_f64(),
         };
@@ -2707,8 +2727,7 @@ pub fn backfill_soft_delete_into_nodes(
                 }
             };
             // Match the f64 encoding used by datetime_to_f64 in storage.rs.
-            let epoch = parsed.timestamp() as f64
-                + (parsed.timestamp_subsec_nanos() as f64) / 1e9;
+            let epoch = parsed.timestamp() as f64 + (parsed.timestamp_subsec_nanos() as f64) / 1e9;
 
             let updated = tx.execute(
                 "UPDATE nodes SET deleted_at = ?1, updated_at = ?1 \
@@ -2721,11 +2740,13 @@ pub fn backfill_soft_delete_into_nodes(
                 // updated == 0 means either (a) no matching node row
                 // (dangling — node never written; pre-T12 ingest) or
                 // (b) already set (idempotent re-run). Distinguish:
-                let exists: bool = tx.query_row(
-                    "SELECT 1 FROM nodes WHERE id = ? AND node_kind = 'memory'",
-                    params![id],
-                    |_| Ok(()),
-                ).is_ok();
+                let exists: bool = tx
+                    .query_row(
+                        "SELECT 1 FROM nodes WHERE id = ? AND node_kind = 'memory'",
+                        params![id],
+                        |_| Ok(()),
+                    )
+                    .is_ok();
                 if exists {
                     rows_skipped_existing += 1;
                 } else {

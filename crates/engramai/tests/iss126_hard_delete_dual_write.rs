@@ -38,11 +38,13 @@ fn rec(id: &str, content: &str) -> MemoryRecord {
 }
 
 fn nodes_count(s: &Storage, id: &str) -> i64 {
-    s.conn().query_row(
-        "SELECT COUNT(*) FROM nodes WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    ).unwrap()
+    s.conn()
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 
 #[test]
@@ -65,11 +67,14 @@ fn iss126_delete_clears_nodes_row() {
     );
 
     // Legacy side also clean.
-    let legacy_count: i64 = s.conn().query_row(
-        "SELECT COUNT(*) FROM memories WHERE id = ?1",
-        params!["m-1"],
-        |row| row.get(0),
-    ).unwrap();
+    let legacy_count: i64 = s
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE id = ?1",
+            params!["m-1"],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(legacy_count, 0);
 }
 
@@ -79,11 +84,13 @@ fn iss126_delete_clears_unified_fts_search() {
     let path = dir.path().join("b.db");
     let mut s = Storage::new(&path).unwrap();
 
-    s.add(&rec("m-2", "uniqueterm content"), "default").expect("add");
+    s.add(&rec("m-2", "uniqueterm content"), "default")
+        .expect("add");
     s.delete("m-2").expect("hard delete");
 
     let unified = Storage::with_unified_substrate(&path, true).unwrap();
-    let hits: Vec<String> = unified.search_fts("uniqueterm", 10)
+    let hits: Vec<String> = unified
+        .search_fts("uniqueterm", 10)
         .expect("search")
         .into_iter()
         .map(|r| r.id)
@@ -106,22 +113,22 @@ fn iss126_delete_cascades_through_edges() {
     // deleting the memory must cascade through that edge or the
     // ON DELETE RESTRICT FK will fail.
     s.add(&rec("m-3", "linked memory"), "default").expect("add");
-    let ent_id = s.upsert_entity(
-        "Alice",
-        "person",
-        "default",
-        Some("{}"),
-    ).expect("upsert entity");
+    let ent_id = s
+        .upsert_entity("Alice", "person", "default", Some("{}"))
+        .expect("upsert entity");
 
     s.link_memory_entity("m-3", &ent_id, "mention")
         .expect("link");
 
     // Precondition: an edge exists pointing at m-3.
-    let edge_count: i64 = s.conn().query_row(
-        "SELECT COUNT(*) FROM edges WHERE source_id = ?1 OR target_id = ?1",
-        params!["m-3"],
-        |row| row.get(0),
-    ).unwrap();
+    let edge_count: i64 = s
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_id = ?1 OR target_id = ?1",
+            params!["m-3"],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert!(edge_count >= 1, "ISS-126 precondition: edge must exist");
 
     // Hard delete should succeed (will fail without cascade due to RESTRICT FK).
@@ -131,22 +138,28 @@ fn iss126_delete_cascades_through_edges() {
     assert_eq!(nodes_count(&s, "m-3"), 0);
 
     // No dangling edges pointing at m-3.
-    let after_edge_count: i64 = s.conn().query_row(
-        "SELECT COUNT(*) FROM edges WHERE source_id = ?1 OR target_id = ?1",
-        params!["m-3"],
-        |row| row.get(0),
-    ).unwrap();
+    let after_edge_count: i64 = s
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_id = ?1 OR target_id = ?1",
+            params!["m-3"],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
         after_edge_count, 0,
         "ISS-126: hard delete must cascade through edges referencing the deleted memory"
     );
 
     // Entity should still exist (independent node).
-    let ent_count: i64 = s.conn().query_row(
-        "SELECT COUNT(*) FROM nodes WHERE id = ?1",
-        params![&ent_id],
-        |row| row.get(0),
-    ).unwrap();
+    let ent_count: i64 = s
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id = ?1",
+            params![&ent_id],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
         ent_count, 1,
         "ISS-126: deleting a memory must NOT take down linked entities"
@@ -164,20 +177,26 @@ fn iss126_delete_clears_node_embeddings() {
         .expect("store embedding");
 
     // Precondition.
-    let emb_count: i64 = s.conn().query_row(
-        "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?1",
-        params!["m-4"],
-        |row| row.get(0),
-    ).unwrap();
+    let emb_count: i64 = s
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?1",
+            params!["m-4"],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(emb_count, 1);
 
     s.delete("m-4").expect("hard delete");
 
-    let after: i64 = s.conn().query_row(
-        "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?1",
-        params!["m-4"],
-        |row| row.get(0),
-    ).unwrap();
+    let after: i64 = s
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM node_embeddings WHERE node_id = ?1",
+            params!["m-4"],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
         after, 0,
         "ISS-126: hard delete must purge node_embeddings rows for the deleted memory"

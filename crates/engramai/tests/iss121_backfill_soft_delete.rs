@@ -111,10 +111,9 @@ fn iss121_backfill_patches_legacy_soft_deletes_into_nodes() {
     assert_eq!(count_memories_deleted(&storage), 2);
 
     // Backfill.
-    let run = backfill_soft_delete_into_nodes(&mut storage, None)
-        .expect("backfill ok");
+    let run = backfill_soft_delete_into_nodes(&mut storage, None).expect("backfill ok");
     assert_eq!(run.rows_read, 2);
-    assert_eq!(run.rows_inserted, 2,   "both legacy rows projected");
+    assert_eq!(run.rows_inserted, 2, "both legacy rows projected");
     assert_eq!(run.rows_skipped_existing, 0);
     assert_eq!(run.rows_failed, 0);
 
@@ -125,18 +124,25 @@ fn iss121_backfill_patches_legacy_soft_deletes_into_nodes() {
 #[test]
 fn iss121_backfill_is_idempotent() {
     let (_d, mut storage) = fresh_storage();
-    storage.add(&make_record("x", "default"), "default").unwrap();
+    storage
+        .add(&make_record("x", "default"), "default")
+        .unwrap();
     storage.soft_delete("x").unwrap();
     // Blank nodes side to give the backfill something to do.
-    storage.conn().execute("UPDATE nodes SET deleted_at = NULL", []).unwrap();
+    storage
+        .conn()
+        .execute("UPDATE nodes SET deleted_at = NULL", [])
+        .unwrap();
 
     let r1 = backfill_soft_delete_into_nodes(&mut storage, None).unwrap();
     assert_eq!(r1.rows_inserted, 1, "first run patches the row");
 
     let r2 = backfill_soft_delete_into_nodes(&mut storage, None).unwrap();
     assert_eq!(r2.rows_inserted, 0, "second run is a no-op");
-    assert_eq!(r2.rows_skipped_existing, 1,
-               "row already has deleted_at set → counted as skipped");
+    assert_eq!(
+        r2.rows_skipped_existing, 1,
+        "row already has deleted_at set → counted as skipped"
+    );
 }
 
 #[test]
@@ -146,19 +152,22 @@ fn iss121_backfill_namespace_filter() {
     storage.add(&make_record("b", "ns_b"), "ns_b").unwrap();
     storage.soft_delete("a").unwrap();
     storage.soft_delete("b").unwrap();
-    storage.conn().execute("UPDATE nodes SET deleted_at = NULL", []).unwrap();
+    storage
+        .conn()
+        .execute("UPDATE nodes SET deleted_at = NULL", [])
+        .unwrap();
 
     let r = backfill_soft_delete_into_nodes(&mut storage, Some("ns_a")).unwrap();
     assert_eq!(r.rows_read, 1, "only ns_a row read");
     assert_eq!(r.rows_inserted, 1);
 
     // ns_b row should still be NULL on nodes side.
-    let ns_b_state: Option<f64> = storage.conn()
-        .query_row(
-            "SELECT deleted_at FROM nodes WHERE id = 'b'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+    let ns_b_state: Option<f64> = storage
+        .conn()
+        .query_row("SELECT deleted_at FROM nodes WHERE id = 'b'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert!(ns_b_state.is_none(), "ns_b row untouched by ns_a filter");
 }
 
@@ -168,10 +177,15 @@ fn iss121_backfill_skips_dangling_legacy_row() {
     // corresponding nodes row at all. The backfill should NOT insert
     // a synthetic nodes row — that's T19's job. Skip and count.
     let (_d, mut storage) = fresh_storage();
-    storage.add(&make_record("orphan", "default"), "default").unwrap();
+    storage
+        .add(&make_record("orphan", "default"), "default")
+        .unwrap();
     storage.soft_delete("orphan").unwrap();
     // Delete the nodes mirror to simulate dangling.
-    storage.conn().execute("DELETE FROM nodes WHERE id = 'orphan'", []).unwrap();
+    storage
+        .conn()
+        .execute("DELETE FROM nodes WHERE id = 'orphan'", [])
+        .unwrap();
 
     let r = backfill_soft_delete_into_nodes(&mut storage, None).unwrap();
     assert_eq!(r.rows_read, 1);
@@ -185,19 +199,34 @@ fn iss121_backfill_counter_invariant_holds() {
     // is asserted internally by run.assert_counter_invariant. This
     // test just covers a mixed run that exercises all three buckets.
     let (_d, mut storage) = fresh_storage();
-    storage.add(&make_record("normal",  "default"), "default").unwrap();
-    storage.add(&make_record("orphan",  "default"), "default").unwrap();
+    storage
+        .add(&make_record("normal", "default"), "default")
+        .unwrap();
+    storage
+        .add(&make_record("orphan", "default"), "default")
+        .unwrap();
     storage.soft_delete("normal").unwrap();
     storage.soft_delete("orphan").unwrap();
-    storage.conn().execute("DELETE FROM nodes WHERE id = 'orphan'", []).unwrap();
-    storage.conn().execute("UPDATE nodes SET deleted_at = NULL WHERE id = 'normal'", []).unwrap();
+    storage
+        .conn()
+        .execute("DELETE FROM nodes WHERE id = 'orphan'", [])
+        .unwrap();
+    storage
+        .conn()
+        .execute("UPDATE nodes SET deleted_at = NULL WHERE id = 'normal'", [])
+        .unwrap();
 
     // Corrupt one row's RFC3339.
-    storage.add(&make_record("corrupt", "default"), "default").unwrap();
-    storage.conn().execute(
-        "UPDATE memories SET deleted_at = 'not-a-date' WHERE id = 'corrupt'",
-        [],
-    ).unwrap();
+    storage
+        .add(&make_record("corrupt", "default"), "default")
+        .unwrap();
+    storage
+        .conn()
+        .execute(
+            "UPDATE memories SET deleted_at = 'not-a-date' WHERE id = 'corrupt'",
+            [],
+        )
+        .unwrap();
 
     let r = backfill_soft_delete_into_nodes(&mut storage, None).unwrap();
     assert_eq!(r.rows_read, 3, "normal + orphan + corrupt");

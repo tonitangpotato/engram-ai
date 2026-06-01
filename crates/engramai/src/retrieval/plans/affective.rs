@@ -211,11 +211,7 @@ where
 pub struct NullAffectiveSeedRecaller;
 
 impl AffectiveSeedRecaller for NullAffectiveSeedRecaller {
-    fn recall(
-        &self,
-        _q: &GraphQuery,
-        _k: usize,
-    ) -> (Vec<AffectiveSeedHit>, AffectiveSeedStatus) {
+    fn recall(&self, _q: &GraphQuery, _k: usize) -> (Vec<AffectiveSeedHit>, AffectiveSeedStatus) {
         (Vec::new(), AffectiveSeedStatus::Ok)
     }
 }
@@ -504,10 +500,8 @@ where
                     .then_with(|| a.0.cmp(&b.0))
             });
 
-            let now_order: Vec<MemoryId> =
-                candidates.iter().map(|c| c.memory_id.clone()).collect();
-            let neutral_order: Vec<MemoryId> =
-                neutral.into_iter().map(|(id, _)| id).collect();
+            let now_order: Vec<MemoryId> = candidates.iter().map(|c| c.memory_id.clone()).collect();
+            let neutral_order: Vec<MemoryId> = neutral.into_iter().map(|(id, _)| id).collect();
             let tau = kendall_tau(&now_order, &neutral_order);
             Some(AffectDivergence {
                 kendall_tau: tau,
@@ -579,11 +573,8 @@ fn kendall_tau(order_a: &[MemoryId], order_b: &[MemoryId]) -> f64 {
         return 0.0;
     }
     // Build rank-of-item lookup for `order_b`.
-    let rank_b: std::collections::HashMap<&MemoryId, usize> = order_b
-        .iter()
-        .enumerate()
-        .map(|(i, id)| (id, i))
-        .collect();
+    let rank_b: std::collections::HashMap<&MemoryId, usize> =
+        order_b.iter().enumerate().map(|(i, id)| (id, i)).collect();
 
     let mut concordant: i64 = 0;
     let mut discordant: i64 = 0;
@@ -659,7 +650,12 @@ mod tests {
         }
     }
 
-    fn hit(id: &str, text: f64, recency: f64, snap: Option<SomaticFingerprint>) -> AffectiveSeedHit {
+    fn hit(
+        id: &str,
+        text: f64,
+        recency: f64,
+        snap: Option<SomaticFingerprint>,
+    ) -> AffectiveSeedHit {
         AffectiveSeedHit {
             memory_id: id.to_string(),
             text_score: text,
@@ -782,11 +778,19 @@ mod tests {
         });
         assert_eq!(res.candidates.len(), 2);
         // Both rows survive (never gated).
-        let ids: Vec<_> = res.candidates.iter().map(|c| c.memory_id.as_str()).collect();
+        let ids: Vec<_> = res
+            .candidates
+            .iter()
+            .map(|c| c.memory_id.as_str())
+            .collect();
         assert!(ids.contains(&"m_match"));
         assert!(ids.contains(&"m_unknown"));
         // Unknown gets affect_similarity = 0.
-        let unknown = res.candidates.iter().find(|c| c.memory_id == "m_unknown").unwrap();
+        let unknown = res
+            .candidates
+            .iter()
+            .find(|c| c.memory_id == "m_unknown")
+            .unwrap();
         assert_eq!(unknown.affect_similarity, 0.0);
         assert!(unknown.affect_snapshot.is_none());
     }
@@ -845,8 +849,16 @@ mod tests {
             divergence_roll: 0.5,
         });
 
-        let mut ids_pos: Vec<_> = res_pos.candidates.iter().map(|c| c.memory_id.clone()).collect();
-        let mut ids_neg: Vec<_> = res_neg.candidates.iter().map(|c| c.memory_id.clone()).collect();
+        let mut ids_pos: Vec<_> = res_pos
+            .candidates
+            .iter()
+            .map(|c| c.memory_id.clone())
+            .collect();
+        let mut ids_neg: Vec<_> = res_neg
+            .candidates
+            .iter()
+            .map(|c| c.memory_id.clone())
+            .collect();
         ids_pos.sort();
         ids_neg.sort();
         assert_eq!(ids_pos, ids_neg);

@@ -82,10 +82,7 @@ fn block_on<F: std::future::Future>(mut fut: F) -> F::Output {
 struct AliceBobExtractor;
 
 impl TripleExtractor for AliceBobExtractor {
-    fn extract_triples(
-        &self,
-        _content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, _content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         Ok(vec![Triple::new(
             "Alice".to_string(),
             Predicate::RelatedTo,

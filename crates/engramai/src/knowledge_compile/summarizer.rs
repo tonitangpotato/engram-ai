@@ -123,7 +123,10 @@ impl Summarizer for FirstSentenceSummarizer {
         if body.is_empty() {
             return Err(SummarizeError::EmptyOutput);
         }
-        Ok(Summary { title, summary: body })
+        Ok(Summary {
+            title,
+            summary: body,
+        })
     }
 }
 
@@ -153,7 +156,10 @@ pub enum EmbedError {
     Transient(Box<dyn Error + Send + Sync>),
     Permanent(Box<dyn Error + Send + Sync>),
     /// Returned vector did not match the embedder's reported dimension.
-    DimMismatch { expected: usize, got: usize },
+    DimMismatch {
+        expected: usize,
+        got: usize,
+    },
 }
 
 impl fmt::Display for EmbedError {
@@ -222,7 +228,10 @@ mod tests {
         let s = FirstSentenceSummarizer;
         let out = s
             .summarize(
-                &["Alice met Bob in Paris. They had coffee.", "Bob is a pianist."],
+                &[
+                    "Alice met Bob in Paris. They had coffee.",
+                    "Bob is a pianist.",
+                ],
                 &[],
             )
             .unwrap();

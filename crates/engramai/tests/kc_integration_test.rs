@@ -1,5 +1,9 @@
-#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
-
+#![allow(
+    deprecated,
+    clippy::field_reassign_with_default,
+    clippy::useless_vec,
+    clippy::redundant_closure
+)]
 
 //! End-to-end integration tests for the Knowledge Compiler (KC).
 //!
@@ -11,12 +15,6 @@ use std::io::Write;
 use tempfile::TempDir;
 
 use engramai::compiler::{
-    // types (re-exported via mod.rs)
-    CompilationRecord, DecayConfig, DuplicateStrategy, ExportFilter, ExportFormat, ImportConfig,
-    ImportPolicy, IntakeConfig, KcConfig, LifecycleConfig, LlmConfig, RecompileStrategy,
-    SourceMemoryRef, SplitStrategy, TopicCandidate, TopicId, TopicMetadata, TopicPage, TopicStatus,
-    // storage
-    KnowledgeStore, SqliteKnowledgeStore,
     // compilation
     compilation::{ChangeDetector, CompilationPipeline, MemorySnapshot, TriggerEvaluator},
     // conflict
@@ -33,6 +31,29 @@ use engramai::compiler::{
     llm::NoopProvider,
     // privacy
     privacy::{AccessContext, PrivacyGuard},
+    // types (re-exported via mod.rs)
+    CompilationRecord,
+    DecayConfig,
+    DuplicateStrategy,
+    ExportFilter,
+    ExportFormat,
+    ImportConfig,
+    ImportPolicy,
+    IntakeConfig,
+    KcConfig,
+    // storage
+    KnowledgeStore,
+    LifecycleConfig,
+    LlmConfig,
+    RecompileStrategy,
+    SourceMemoryRef,
+    SplitStrategy,
+    SqliteKnowledgeStore,
+    TopicCandidate,
+    TopicId,
+    TopicMetadata,
+    TopicPage,
+    TopicStatus,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -119,10 +140,22 @@ fn test_memories_to_compiled_topic_with_provenance() {
     let config = make_config();
 
     // Create several memory snapshots
-    let m1 = make_memory("m1", "Rust is a systems programming language focused on safety");
-    let m2 = make_memory("m2", "Rust uses a borrow checker to enforce memory safety at compile time");
-    let m3 = make_memory("m3", "Rust was first released in 2015 and is maintained by the Rust Foundation");
-    let m4 = make_memory("m4", "Rust supports zero-cost abstractions and fearless concurrency");
+    let m1 = make_memory(
+        "m1",
+        "Rust is a systems programming language focused on safety",
+    );
+    let m2 = make_memory(
+        "m2",
+        "Rust uses a borrow checker to enforce memory safety at compile time",
+    );
+    let m3 = make_memory(
+        "m3",
+        "Rust was first released in 2015 and is maintained by the Rust Foundation",
+    );
+    let m4 = make_memory(
+        "m4",
+        "Rust supports zero-cost abstractions and fearless concurrency",
+    );
     let memories = vec![m1, m2, m3, m4];
 
     // Use TopicDiscovery with fake embeddings (4 dimensions, all similar → one cluster)
@@ -157,10 +190,15 @@ fn test_memories_to_compiled_topic_with_provenance() {
     let pipeline: CompilationPipeline<SqliteKnowledgeStore, NoopProvider> =
         CompilationPipeline::new(store, None, config.clone());
 
-    let page = pipeline.compile_new(candidate, &candidate_memories).unwrap();
+    let page = pipeline
+        .compile_new(candidate, &candidate_memories)
+        .unwrap();
 
     // Assert: topic page created with content
-    assert!(!page.content.is_empty(), "Compiled page should have content");
+    assert!(
+        !page.content.is_empty(),
+        "Compiled page should have content"
+    );
     assert!(!page.title.is_empty(), "Compiled page should have a title");
     assert_eq!(page.version, 1);
     assert_eq!(page.status, TopicStatus::Active);
@@ -191,7 +229,9 @@ fn test_memories_to_compiled_topic_with_provenance() {
     let store2 = make_store();
     let pipeline2: CompilationPipeline<SqliteKnowledgeStore, NoopProvider> =
         CompilationPipeline::new(store2, None, config);
-    let page2 = pipeline2.compile_new(candidate, &candidate_memories).unwrap();
+    let page2 = pipeline2
+        .compile_new(candidate, &candidate_memories)
+        .unwrap();
 
     // We can't directly access the store inside pipeline2, but compile_new
     // persists both the page and the record. Let's verify by creating a store,
@@ -305,11 +345,17 @@ fn test_incremental_recompilation_on_memory_change() {
 
     // Assert: source_memory_ids updated to include new memories
     assert!(
-        updated_page.metadata.source_memory_ids.contains(&"m3".to_string()),
+        updated_page
+            .metadata
+            .source_memory_ids
+            .contains(&"m3".to_string()),
         "source_memory_ids should include m3 after recompilation"
     );
     assert!(
-        updated_page.metadata.source_memory_ids.contains(&"m4".to_string()),
+        updated_page
+            .metadata
+            .source_memory_ids
+            .contains(&"m4".to_string()),
         "source_memory_ids should include m4 after recompilation"
     );
     assert_eq!(
@@ -371,10 +417,7 @@ fn test_import_compile_export_roundtrip() {
 
     // --- List imported pages ---
     let pages = store.list_topic_pages().unwrap();
-    assert!(
-        !pages.is_empty(),
-        "Store should contain imported pages"
-    );
+    assert!(!pages.is_empty(), "Store should contain imported pages");
     assert_eq!(
         pages.len(),
         report.imported,
@@ -400,10 +443,7 @@ fn test_import_compile_export_roundtrip() {
 
     match output {
         ExportOutput::Markdown(files) => {
-            assert!(
-                !files.is_empty(),
-                "Export should produce markdown files"
-            );
+            assert!(!files.is_empty(), "Export should produce markdown files");
             assert_eq!(
                 files.len(),
                 pages.len(),
@@ -411,8 +451,11 @@ fn test_import_compile_export_roundtrip() {
             );
 
             // Check that exported markdown contains original content
-            let all_export_content: String =
-                files.iter().map(|f| f.content.as_str()).collect::<Vec<_>>().join("\n");
+            let all_export_content: String = files
+                .iter()
+                .map(|f| f.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
 
             // The original content should appear in the export
             assert!(
@@ -422,7 +465,10 @@ fn test_import_compile_export_roundtrip() {
                 "Exported markdown should contain original content about Rust"
             );
         }
-        other => panic!("Expected Markdown export, got: {:?}", std::mem::discriminant(&other)),
+        other => panic!(
+            "Expected Markdown export, got: {:?}",
+            std::mem::discriminant(&other)
+        ),
     }
 }
 
@@ -456,9 +502,7 @@ fn test_decay_and_archive_lifecycle() {
             added_at: old_date,
         },
     ];
-    store
-        .save_source_refs(&old_topic.id, &refs)
-        .unwrap();
+    store.save_source_refs(&old_topic.id, &refs).unwrap();
 
     // Use DecayEngine to evaluate the topic
     let decay_config = DecayConfig {
@@ -488,7 +532,9 @@ fn test_decay_and_archive_lifecycle() {
     }
 
     // Apply the decay action (mark archived via store)
-    engine.apply_decay(&result.recommended_action, &store).unwrap();
+    engine
+        .apply_decay(&result.recommended_action, &store)
+        .unwrap();
 
     // Assert: page status is Archived (if Archive action) or quality reduced (if MarkStale)
     let updated = store.get_topic_page(&old_topic.id).unwrap().unwrap();
@@ -579,7 +625,8 @@ fn test_conflict_detection_between_topics() {
     );
 
     // Also test detect_conflicts for cross-validation
-    let scope = engramai::compiler::ConflictScope::BetweenTopics(topic_a.id.clone(), topic_b.id.clone());
+    let scope =
+        engramai::compiler::ConflictScope::BetweenTopics(topic_a.id.clone(), topic_b.id.clone());
     let conflicts = detector.detect_conflicts(&topics, &scope, None).unwrap();
 
     assert!(

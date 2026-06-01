@@ -151,7 +151,10 @@ fn build_delta_empty_inputs_yields_empty_delta() {
     assert!(delta.stage_failures.is_empty());
     // memory_id is derived deterministically from the string id.
     let again = build_delta(&fixture_ctx("mem-empty"), &[], &[]).memory_id;
-    assert_eq!(delta.memory_id, again, "memory_id derivation must be stable");
+    assert_eq!(
+        delta.memory_id, again,
+        "memory_id derivation must be stable"
+    );
 }
 
 #[test]
@@ -179,11 +182,17 @@ fn build_delta_merge_into_emits_updated_canonical_and_mention() {
     let res = EntityResolution::for_test(
         0,
         draft,
-        Decision::MergeInto { candidate_id: canonical_id },
+        Decision::MergeInto {
+            candidate_id: canonical_id,
+        },
         Some(canonical),
     );
     let delta = build_delta(&ctx, &[res], &[]);
-    assert_eq!(delta.entities.len(), 1, "MergeInto upserts the canonical row");
+    assert_eq!(
+        delta.entities.len(),
+        1,
+        "MergeInto upserts the canonical row"
+    );
     assert_eq!(delta.entities[0].id, canonical_id);
     assert_eq!(delta.entities[0].canonical_name, "Alice");
     assert!(
@@ -202,7 +211,9 @@ fn build_delta_merge_into_without_canonical_records_failure_skips_mention() {
     let res = EntityResolution::for_test(
         0,
         draft,
-        Decision::MergeInto { candidate_id: Uuid::new_v4() },
+        Decision::MergeInto {
+            candidate_id: Uuid::new_v4(),
+        },
         None, // bug: caller forgot to load it
     );
     let delta = build_delta(&ctx, &[res], &[]);
@@ -223,7 +234,9 @@ fn build_delta_defer_to_llm_under_default_conservative_emits_entity_and_tiebreak
     let res = EntityResolution::for_test(
         0,
         draft,
-        Decision::DeferToLlm { candidate_id: Uuid::new_v4() },
+        Decision::DeferToLlm {
+            candidate_id: Uuid::new_v4(),
+        },
         None,
     );
     let delta = build_delta(&ctx, &[res], &[]);
@@ -240,12 +253,7 @@ fn build_delta_create_new_carries_subtype_hint_into_attributes() {
     let ctx = fixture_ctx("mem-5");
     let mut draft = fixture_draft("README.md", EntityKind::Artifact);
     draft.subtype_hint = Some("file".into());
-    let res = EntityResolution::for_test(
-        0,
-        draft,
-        Decision::CreateNew,
-        None,
-    );
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
     let delta = build_delta(&ctx, &[res], &[]);
     let attrs = &delta.entities[0].attributes;
     let hint = attrs.get("subtype_hint").and_then(|v| v.as_str());
@@ -261,12 +269,7 @@ fn build_delta_create_new_persists_kind_source_via_serde() {
     let ctx = fixture_ctx("mem-7");
     let mut draft = fixture_draft("Caroline", EntityKind::Person);
     draft.kind_source = crate::resolution::context::KindSource::TripleHint;
-    let res = EntityResolution::for_test(
-        0,
-        draft,
-        Decision::CreateNew,
-        None,
-    );
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
     let delta = build_delta(&ctx, &[res], &[]);
     let attrs = &delta.entities[0].attributes;
     let raw = attrs
@@ -277,7 +280,10 @@ fn build_delta_create_new_persists_kind_source_via_serde() {
     // Round-trip via serde must give back the original variant.
     let round_trip: crate::resolution::context::KindSource =
         serde_json::from_value(raw.clone()).expect("round-trip parse");
-    assert_eq!(round_trip, crate::resolution::context::KindSource::TripleHint);
+    assert_eq!(
+        round_trip,
+        crate::resolution::context::KindSource::TripleHint
+    );
 }
 
 #[test]
@@ -288,12 +294,7 @@ fn build_delta_create_new_persists_kind_source_default_when_no_hint() {
     let ctx = fixture_ctx("mem-8");
     let mut draft = fixture_draft("Unknown thing", EntityKind::Other("unknown".into()));
     draft.kind_source = crate::resolution::context::KindSource::Default;
-    let res = EntityResolution::for_test(
-        0,
-        draft,
-        Decision::CreateNew,
-        None,
-    );
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
     let delta = build_delta(&ctx, &[res], &[]);
     let attrs = &delta.entities[0].attributes;
     assert_eq!(
@@ -311,12 +312,7 @@ fn build_delta_mention_text_uses_extracted_entity_name_when_available() {
         entity_type: EntityType::Person,
     });
     let draft = fixture_draft("Alice", EntityKind::Person);
-    let res = EntityResolution::for_test(
-        0,
-        draft,
-        Decision::CreateNew,
-        None,
-    );
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
     let delta = build_delta(&ctx, &[res], &[]);
     assert_eq!(delta.mentions[0].mention_text, "Alice K.");
 }
@@ -325,12 +321,7 @@ fn build_delta_mention_text_uses_extracted_entity_name_when_available() {
 fn build_delta_mention_text_falls_back_to_canonical_when_extracted_missing() {
     let ctx = fixture_ctx("mem-7"); // no extracted_entities
     let draft = fixture_draft("Alice", EntityKind::Person);
-    let res = EntityResolution::for_test(
-        0,
-        draft,
-        Decision::CreateNew,
-        None,
-    );
+    let res = EntityResolution::for_test(0, draft, Decision::CreateNew, None);
     let delta = build_delta(&ctx, &[res], &[]);
     assert_eq!(delta.mentions[0].mention_text, "Alice");
 }
@@ -360,12 +351,18 @@ fn build_delta_edge_add_emits_new_edge_only() {
     assert_eq!(delta.edges.len(), 1);
     assert_eq!(delta.edges[0].subject_id, subj);
     assert!(matches!(delta.edges[0].object, EdgeEnd::Entity { id } if id == obj_id));
-    assert!(delta.edges[0].supersedes.is_none(), "Add must not set supersedes");
+    assert!(
+        delta.edges[0].supersedes.is_none(),
+        "Add must not set supersedes"
+    );
     assert!(delta.edges_to_invalidate.is_empty());
     assert!((delta.edges[0].confidence - 0.9).abs() < 1e-9);
     // Provenance plumbed.
     assert_eq!(delta.edges[0].episode_id, Some(ctx.episode_id));
-    assert_eq!(delta.edges[0].memory_id.as_deref(), Some(ctx.memory.id.as_str()));
+    assert_eq!(
+        delta.edges[0].memory_id.as_deref(),
+        Some(ctx.memory.id.as_str())
+    );
 }
 
 #[test]
@@ -388,7 +385,9 @@ fn build_delta_edge_update_emits_new_edge_and_invalidation_chain() {
             DraftEdgeEnd::EntityName("Beta".into()),
             0.9,
         ),
-        decision: EdgeDecision::Update { supersedes: prior_id },
+        decision: EdgeDecision::Update {
+            supersedes: prior_id,
+        },
         subject_id: subj,
         object: EdgeEnd::Entity { id: beta },
     };
@@ -450,7 +449,9 @@ fn build_delta_edge_defer_to_llm_under_default_conservative_emits_edge_and_tiebr
     assert!(delta.edges_to_invalidate.is_empty());
     assert_eq!(delta.stage_failures.len(), 1);
     assert_eq!(delta.stage_failures[0].error_category, "tiebreak_fallback");
-    assert!(delta.stage_failures[0].error_detail.contains("triple index 7"));
+    assert!(delta.stage_failures[0]
+        .error_detail
+        .contains("triple index 7"));
 }
 
 #[test]
@@ -613,7 +614,9 @@ fn build_delta_combines_ctx_failures_and_locally_generated() {
     let res = EntityResolution::for_test(
         0,
         fixture_draft("Bob", EntityKind::Person),
-        Decision::DeferToLlm { candidate_id: Uuid::new_v4() },
+        Decision::DeferToLlm {
+            candidate_id: Uuid::new_v4(),
+        },
         None,
     );
     let delta = build_delta(&ctx, &[res], &[]);
@@ -662,7 +665,9 @@ fn build_delta_full_run_combines_entities_edges_mentions_predicates() {
         EntityResolution::for_test(
             1,
             fixture_draft("Bob", EntityKind::Person),
-            Decision::MergeInto { candidate_id: bob_id },
+            Decision::MergeInto {
+                candidate_id: bob_id,
+            },
             Some(bob_canonical),
         ),
     ];
@@ -695,7 +700,9 @@ fn build_delta_full_run_combines_entities_edges_mentions_predicates() {
                 DraftEdgeEnd::EntityName("Beta".into()),
                 0.92,
             ),
-            decision: EdgeDecision::Update { supersedes: prior.id },
+            decision: EdgeDecision::Update {
+                supersedes: prior.id,
+            },
             subject_id: bob_id,
             object: EdgeEnd::Entity { id: Uuid::new_v4() },
         },
@@ -731,11 +738,22 @@ fn build_delta_full_run_combines_entities_edges_mentions_predicates() {
 
     assert_eq!(delta.entities.len(), 2, "1 CreateNew + 1 MergeInto upsert");
     assert_eq!(delta.mentions.len(), 2, "one mention per resolved entity");
-    assert_eq!(delta.edges.len(), 3, "Add + Update + Proposed Add (None skipped)");
-    assert_eq!(delta.edges_to_invalidate.len(), 1, "Update produces one invalidation");
+    assert_eq!(
+        delta.edges.len(),
+        3,
+        "Add + Update + Proposed Add (None skipped)"
+    );
+    assert_eq!(
+        delta.edges_to_invalidate.len(),
+        1,
+        "Update produces one invalidation"
+    );
     assert_eq!(delta.proposed_predicates.len(), 1);
     assert_eq!(delta.proposed_predicates[0].label, "met_at");
-    assert!(delta.stage_failures.is_empty(), "no failures on a clean run");
+    assert!(
+        delta.stage_failures.is_empty(),
+        "no failures on a clean run"
+    );
 }
 
 #[test]
@@ -901,14 +919,21 @@ fn build_delta_create_new_emits_alias_upsert_for_each_surface_form() {
             alias.canonical_id, canonical_id,
             "alias must point at the same id stage_extract minted (ISS-076 single-mint)"
         );
-        assert_eq!(alias.alias_raw, "Caroline", "raw form is the canonical_name");
+        assert_eq!(
+            alias.alias_raw, "Caroline",
+            "raw form is the canonical_name"
+        );
         assert_eq!(
             alias.source_episode,
             Some(ctx.episode_id),
             "source_episode tracks where the alias was first observed"
         );
     }
-    let normalized: Vec<&str> = delta.aliases.iter().map(|a| a.normalized.as_str()).collect();
+    let normalized: Vec<&str> = delta
+        .aliases
+        .iter()
+        .map(|a| a.normalized.as_str())
+        .collect();
     assert!(normalized.contains(&"caroline"));
     assert!(normalized.contains(&"carol"));
 }
@@ -932,7 +957,9 @@ fn build_delta_merge_into_emits_alias_upsert_to_accrete_new_surface_form() {
     let res = EntityResolution::for_test(
         0,
         draft,
-        Decision::MergeInto { candidate_id: canonical_id },
+        Decision::MergeInto {
+            candidate_id: canonical_id,
+        },
         Some(canonical),
     );
 
@@ -1011,12 +1038,7 @@ fn build_delta_with_policy_entity_conservative_mints_fresh_id_and_emits_audit() 
     let ctx = fixture_ctx("mem-iss135-1");
     let draft = fixture_draft("Dora", EntityKind::Person);
     let candidate_id = Uuid::new_v4();
-    let res = EntityResolution::for_test(
-        0,
-        draft,
-        Decision::DeferToLlm { candidate_id },
-        None,
-    );
+    let res = EntityResolution::for_test(0, draft, Decision::DeferToLlm { candidate_id }, None);
     let assigned_id = res.assigned_id;
     let delta = build_delta_with_policy(&ctx, &[res], &[], OnTiebreakFailure::Conservative);
 
@@ -1043,7 +1065,9 @@ fn build_delta_with_policy_entity_abort_skips_entity_emits_unresolved_defer() {
     let res = EntityResolution::for_test(
         0,
         draft,
-        Decision::DeferToLlm { candidate_id: Uuid::new_v4() },
+        Decision::DeferToLlm {
+            candidate_id: Uuid::new_v4(),
+        },
         None,
     );
     let delta = build_delta_with_policy(&ctx, &[res], &[], OnTiebreakFailure::Abort);
@@ -1105,5 +1129,7 @@ fn build_delta_with_policy_edge_abort_skips_edge_emits_unresolved_defer() {
     assert!(delta.edges.is_empty(), "Abort must not emit edge");
     assert_eq!(delta.stage_failures.len(), 1);
     assert_eq!(delta.stage_failures[0].error_category, "unresolved_defer");
-    assert!(delta.stage_failures[0].error_detail.contains("triple index 11"));
+    assert!(delta.stage_failures[0]
+        .error_detail
+        .contains("triple index 11"));
 }

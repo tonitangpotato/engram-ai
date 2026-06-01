@@ -98,10 +98,7 @@ impl DecayEngine {
     }
 
     /// Evaluate all active topics.
-    pub fn evaluate_all(
-        &self,
-        store: &dyn KnowledgeStore,
-    ) -> Result<Vec<DecayResult>, KcError> {
+    pub fn evaluate_all(&self, store: &dyn KnowledgeStore) -> Result<Vec<DecayResult>, KcError> {
         let pages = store.get_pages_by_status(TopicStatus::Active)?;
         let mut results = Vec::with_capacity(pages.len());
         for page in &pages {
@@ -331,7 +328,10 @@ mod tests {
         engine.apply_decay(&action, &store).unwrap();
 
         // MarkStale sets quality_score to 0.0
-        let updated = store.get_topic_page(&TopicId("stale-apply".into())).unwrap().unwrap();
+        let updated = store
+            .get_topic_page(&TopicId("stale-apply".into()))
+            .unwrap()
+            .unwrap();
         assert!((updated.metadata.quality_score.unwrap() - 0.0).abs() < 1e-9);
     }
 
@@ -345,7 +345,10 @@ mod tests {
         let action = DecayAction::Refresh(TopicId("refresh-1".into()));
         engine.apply_decay(&action, &store).unwrap();
 
-        let updated = store.get_topic_page(&TopicId("refresh-1".into())).unwrap().unwrap();
+        let updated = store
+            .get_topic_page(&TopicId("refresh-1".into()))
+            .unwrap()
+            .unwrap();
         // Default quality_score was 0.5, refresh adds 0.1 → 0.6
         assert!((updated.metadata.quality_score.unwrap() - 0.6).abs() < 1e-9);
     }
@@ -357,13 +360,18 @@ mod tests {
         page.metadata.quality_score = Some(0.95);
         store.create_topic_page(&page).unwrap();
         // Set quality to 0.95 so refresh (+0.1) would exceed 1.0
-        store.update_activity_score(&TopicId("refresh-cap".into()), 0.95).unwrap();
+        store
+            .update_activity_score(&TopicId("refresh-cap".into()), 0.95)
+            .unwrap();
 
         let engine = DecayEngine::new(default_decay_config());
         let action = DecayAction::Refresh(TopicId("refresh-cap".into()));
         engine.apply_decay(&action, &store).unwrap();
 
-        let updated = store.get_topic_page(&TopicId("refresh-cap".into())).unwrap().unwrap();
+        let updated = store
+            .get_topic_page(&TopicId("refresh-cap".into()))
+            .unwrap()
+            .unwrap();
         // Clamped to 1.0
         assert!((updated.metadata.quality_score.unwrap() - 1.0).abs() < 1e-9);
     }
@@ -384,7 +392,9 @@ mod tests {
     #[test]
     fn test_evaluate_all_skips_archived() {
         let store = make_store();
-        store.create_topic_page(&make_test_page("active-1")).unwrap();
+        store
+            .create_topic_page(&make_test_page("active-1"))
+            .unwrap();
 
         let mut archived = make_test_page("archived-1");
         archived.status = TopicStatus::Archived;
@@ -424,13 +434,19 @@ mod tests {
             relevance_score: 1.0,
             added_at: Utc::now(),
         }];
-        store.save_source_refs(&TopicId("single-src".into()), &refs).unwrap();
+        store
+            .save_source_refs(&TopicId("single-src".into()), &refs)
+            .unwrap();
 
         let engine = DecayEngine::new(default_decay_config());
         let result = engine.evaluate_topic(&page, &store).unwrap();
         assert_eq!(result.source_count, 1);
         // Single source with perfect relevance, added just now → very high freshness
-        assert!(result.freshness_score > 0.9, "got {}", result.freshness_score);
+        assert!(
+            result.freshness_score > 0.9,
+            "got {}",
+            result.freshness_score
+        );
         assert!(matches!(result.recommended_action, DecayAction::Refresh(_)));
     }
 
@@ -454,7 +470,9 @@ mod tests {
             relevance_score: 0.2,
             added_at: Utc::now() - Duration::days(20),
         }];
-        store.save_source_refs(&TopicId("custom-threshold".into()), &refs).unwrap();
+        store
+            .save_source_refs(&TopicId("custom-threshold".into()), &refs)
+            .unwrap();
 
         let result = engine.evaluate_topic(&page, &store).unwrap();
         // Low relevance source → freshness = 0.2, stale_threshold ≈ 0.354 → MarkStale or Archive

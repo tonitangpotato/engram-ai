@@ -18,10 +18,10 @@
 //!
 //! See `INTEROCEPTIVE-LAYER.md` for full design rationale.
 
-pub mod types;
 pub mod hub;
 pub mod regulation;
+pub mod types;
 
-pub use types::*;
 pub use hub::InteroceptiveHub;
 pub use regulation::evaluate_with_hub;
+pub use types::*;

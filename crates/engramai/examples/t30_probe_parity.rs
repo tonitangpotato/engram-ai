@@ -352,7 +352,11 @@ fn print_summary(r: &ProbeParityReport) {
     println!();
     println!("=== Per-query Jaccard ===");
     for q in &r.per_query {
-        let marker = if q.passes_jaccard_threshold { "✓" } else { "✗" };
+        let marker = if q.passes_jaccard_threshold {
+            "✓"
+        } else {
+            "✗"
+        };
         let err_tag = match (&q.legacy_error, &q.unified_error) {
             (Some(_), Some(_)) => " [both-err]",
             (Some(_), None) => " [legacy-err]",
@@ -371,8 +375,14 @@ fn print_summary(r: &ProbeParityReport) {
     println!("=== Aggregate ===");
     println!("  queries_total:            {}", r.queries_total);
     println!("  queries_passing_jaccard:  {}", r.queries_passing_jaccard);
-    println!("  queries_with_legacy_err:  {}", r.queries_with_legacy_error);
-    println!("  queries_with_unified_err: {}", r.queries_with_unified_error);
+    println!(
+        "  queries_with_legacy_err:  {}",
+        r.queries_with_legacy_error
+    );
+    println!(
+        "  queries_with_unified_err: {}",
+        r.queries_with_unified_error
+    );
     println!(
         "  parity_ratio:             {:.4}  (threshold {:.2})",
         r.parity_ratio, r.parity_threshold

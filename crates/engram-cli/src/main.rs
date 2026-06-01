@@ -16,7 +16,6 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use engramai::{Memory, MemoryConfig, MemoryType, Permission, EmpathyBus, EmbeddingConfig, AnthropicExtractor, OllamaExtractor};
 use engramai::compiler::{
     self,
     api::MaintenanceApi,
@@ -32,6 +31,10 @@ use engramai::compiler::{
     storage::{KnowledgeStore, SqliteKnowledgeStore},
     types::*,
 };
+use engramai::{
+    AnthropicExtractor, EmbeddingConfig, EmpathyBus, Memory, MemoryConfig, MemoryType,
+    OllamaExtractor, Permission,
+};
 
 /// Engram — Neuroscience-grounded memory system for AI agents.
 #[derive(Parser)]
@@ -41,23 +44,23 @@ struct Cli {
     /// Path to SQLite database file
     #[arg(short, long, env = "ENGRAM_DB", default_value = "engram.db")]
     database: PathBuf,
-    
+
     /// Agent ID for this session (used for ACL)
     #[arg(short, long, env = "ENGRAM_AGENT_ID")]
     agent_id: Option<String>,
-    
+
     /// Workspace directory for Empathy Bus (SOUL.md, HEARTBEAT.md, etc.)
     #[arg(short, long, env = "ENGRAM_WORKSPACE")]
     workspace: Option<PathBuf>,
-    
+
     /// Ollama embedding model (default: nomic-embed-text)
     #[arg(long, env = "ENGRAM_EMBEDDING_MODEL")]
     embedding_model: Option<String>,
-    
+
     /// Ollama host URL (default: http://localhost:11434)
     #[arg(long, env = "ENGRAM_EMBEDDING_HOST")]
     embedding_host: Option<String>,
-    
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -70,7 +73,7 @@ enum Commands {
         #[arg(long, short = 'f')]
         force: bool,
     },
-    
+
     /// Store a new memory
     Store {
         /// Memory content (positional). Prefer `--content` for payloads
@@ -85,43 +88,43 @@ enum Commands {
         /// Mutually exclusive with the positional form.
         #[arg(long = "content", value_name = "CONTENT", allow_hyphen_values = true)]
         content_flag: Option<String>,
-        
+
         /// Namespace to store in
         #[arg(long, short = 'n', default_value = "default")]
         ns: String,
-        
+
         /// Memory type
         #[arg(long, short = 't', default_value = "factual")]
         r#type: MemoryTypeArg,
-        
+
         /// Importance score (0.0-1.0)
         #[arg(long, short = 'i')]
         importance: Option<f64>,
-        
+
         /// Source identifier
         #[arg(long, short = 's')]
         source: Option<String>,
-        
+
         /// Emotional valence (-1.0 to 1.0)
         #[arg(long, short = 'e')]
         emotion: Option<f64>,
-        
+
         /// Domain for emotional tracking
         #[arg(long)]
         domain: Option<String>,
-        
+
         /// Use LLM extractor to extract facts (ollama, anthropic)
         #[arg(long, env = "ENGRAM_EXTRACTOR")]
         extractor: Option<ExtractorArg>,
-        
+
         /// Ollama model for extraction (default: llama3.2:3b)
         #[arg(long, env = "ENGRAM_EXTRACTOR_MODEL")]
         extractor_model: Option<String>,
-        
+
         /// Anthropic auth token (API key or OAuth token)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
         auth_token: Option<String>,
-        
+
         /// Use OAuth mode for Anthropic (Claude Max)
         #[arg(long)]
         oauth: bool,
@@ -179,19 +182,19 @@ enum Commands {
         /// form. Use this when the query starts with `-`.
         #[arg(long = "query", value_name = "QUERY", allow_hyphen_values = true)]
         query_flag: Option<String>,
-        
+
         /// Namespace to search (use "*" for all)
         #[arg(long, short = 'n', default_value = "default")]
         ns: String,
-        
+
         /// Maximum number of results
         #[arg(long, short = 'l', default_value = "5")]
         limit: usize,
-        
+
         /// Minimum confidence threshold
         #[arg(long, short = 'c')]
         min_confidence: Option<f64>,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
@@ -211,151 +214,151 @@ enum Commands {
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Show memory statistics
     Stats {
         /// Namespace to show stats for (use "*" for all)
         #[arg(long, short = 'n')]
         ns: Option<String>,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Run memory consolidation cycle
     Consolidate {
         /// Namespace to consolidate (omit for all)
         #[arg(long, short = 'n')]
         ns: Option<String>,
-        
+
         /// Simulated days of consolidation
         #[arg(long, short = 'd', default_value = "1.0")]
         days: f64,
     },
-    
+
     /// Grant access permission to an agent
     Grant {
         /// Agent ID to grant permission to
         agent_id: String,
-        
+
         /// Namespace to grant access to
         #[arg(long, short = 'n')]
         ns: String,
-        
+
         /// Permission level (read, write, admin)
         #[arg(long, short = 'p', default_value = "read")]
         perm: PermissionArg,
     },
-    
+
     /// Revoke access permission from an agent
     Revoke {
         /// Agent ID to revoke permission from
         agent_id: String,
-        
+
         /// Namespace to revoke access from
         #[arg(long, short = 'n')]
         ns: String,
     },
-    
+
     /// List permissions for an agent
     Permissions {
         /// Agent ID to list permissions for
         agent_id: String,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Pin a memory (prevent decay)
     Pin {
         /// Memory ID to pin
         memory_id: String,
     },
-    
+
     /// Unpin a memory (allow decay)
     Unpin {
         /// Memory ID to unpin
         memory_id: String,
     },
-    
+
     /// Delete a specific memory
     Forget {
         /// Memory ID to delete
         memory_id: String,
     },
-    
+
     /// Update an existing memory's content
     Update {
         /// Memory ID to update
         memory_id: String,
-        
+
         /// New content
         new_content: String,
-        
+
         /// Reason for update (stored in metadata)
         #[arg(long, short = 'r', default_value = "manual update")]
         reason: String,
     },
-    
+
     /// Export memories to JSON file
     Export {
         /// Output file path
         path: String,
-        
+
         /// Namespace to export (omit for all)
         #[arg(long, short = 'n')]
         ns: Option<String>,
     },
-    
+
     /// Recall associated memories
     RecallAssociated {
         /// Optional query to filter associated memories
         query: Option<String>,
-        
+
         /// Maximum number of results
         #[arg(long, short = 'l', default_value = "5")]
         limit: usize,
-        
+
         /// Minimum confidence threshold
         #[arg(long, short = 'c', default_value = "0.0")]
         min_confidence: f64,
-        
+
         /// Namespace to search
         #[arg(long, short = 'n')]
         ns: Option<String>,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Get a specific memory by ID
     Get {
         /// Memory ID
         memory_id: String,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// List all memories
     List {
         /// Maximum number of results
         #[arg(long, short = 'l', default_value = "20")]
         limit: usize,
-        
+
         /// Namespace to list
         #[arg(long, short = 'n')]
         ns: Option<String>,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Apply reward signal to recent memories
     Reward {
         /// Feedback text (positive/negative sentiment detected).
@@ -366,131 +369,127 @@ enum Commands {
         /// Feedback via flag. Mutually exclusive with the positional form.
         #[arg(long = "feedback", value_name = "FEEDBACK", allow_hyphen_values = true)]
         feedback_flag: Option<String>,
-        
+
         /// Number of recent memories to affect
         #[arg(long, short = 'n', default_value = "3")]
         recent: usize,
     },
-    
+
     /// Empathy Bus commands
     Bus {
         #[command(subcommand)]
         action: BusAction,
     },
-    
+
     // === Phase 3: Cross-Agent Intelligence ===
-    
     /// Subscribe to namespace notifications
     Subscribe {
         /// Agent ID to subscribe
         agent_id: String,
-        
+
         /// Namespace to watch ("*" for all)
         #[arg(long, short = 'n')]
         ns: String,
-        
+
         /// Minimum importance to trigger notification (0.0-1.0)
         #[arg(long, short = 'i', default_value = "0.8")]
         min_importance: f64,
     },
-    
+
     /// Unsubscribe from namespace notifications
     Unsubscribe {
         /// Agent ID to unsubscribe
         agent_id: String,
-        
+
         /// Namespace to stop watching
         #[arg(long, short = 'n')]
         ns: String,
     },
-    
+
     /// Check pending notifications for an agent
     Notifications {
         /// Agent ID to check notifications for
         agent_id: String,
-        
+
         /// Just peek without marking as read
         #[arg(long)]
         peek: bool,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Discover cross-namespace associations
     CrossLinks {
         /// First namespace
         #[arg(long)]
         ns_a: String,
-        
+
         /// Second namespace
         #[arg(long)]
         ns_b: String,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Recall with cross-namespace associations
     RecallAssoc {
         /// Search query
         query: String,
-        
+
         /// Namespace to search (use "*" for all with cross-links)
         #[arg(long, short = 'n', default_value = "*")]
         ns: String,
-        
+
         /// Maximum number of results
         #[arg(long, short = 'l', default_value = "5")]
         limit: usize,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// List subscriptions for an agent
     Subscriptions {
         /// Agent ID to list subscriptions for
         agent_id: String,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     // === Embedding Commands ===
-    
     /// Reindex embeddings for all memories without embeddings
     Reindex {
         /// Show progress during reindexing
         #[arg(long, short = 'p')]
         progress: bool,
     },
-    
+
     /// Show embedding status
     EmbeddingStatus {
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     // === Entity Management ===
-    
     /// Manage entity index
     Entities {
         #[command(subcommand)]
         command: Option<EntityCommand>,
-        
+
         /// Filter by entity type (project, person, technology, etc.)
         #[arg(long, short = 't')]
         entity_type: Option<String>,
     },
 
     // === Knowledge Synthesis ===
-
     /// Run knowledge synthesis (discover clusters, gate check, generate insights)
     Synthesize {
         /// Dry run: show clusters and gate decisions without making changes
@@ -553,7 +552,6 @@ enum Commands {
     },
 
     // === Memory Supersession ===
-
     /// Correct a wrong memory: store replacement and supersede the old one
     Correct {
         /// ID of the memory to correct
@@ -719,50 +717,50 @@ enum BusAction {
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Show suggested SOUL/HEARTBEAT updates
     Suggest {
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Log a behavior outcome
     LogOutcome {
         /// Action name (e.g., "check_email", "run_consolidation")
         action: String,
-        
+
         /// Mark outcome as positive
         #[arg(long, conflicts_with = "negative")]
         positive: bool,
-        
+
         /// Mark outcome as negative
         #[arg(long, conflicts_with = "positive")]
         negative: bool,
     },
-    
+
     /// Show behavior statistics
     BehaviorStats {
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
     },
-    
+
     /// Record an emotional event
     RecordEmotion {
         /// Domain (e.g., "coding", "communication")
         domain: String,
-        
+
         /// Emotional valence (-1.0 to 1.0)
         #[arg(long, short = 'v')]
         valence: f64,
     },
-    
+
     /// Check drive alignment for content
     Alignment {
         /// Content to check alignment for
         content: String,
-        
+
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
@@ -979,7 +977,9 @@ fn default_graph_db_path(main_db: &std::path::Path) -> PathBuf {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "graph".to_string());
-    let parent = main_db.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let parent = main_db
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
     parent.join(format!("{}.graph.db", stem))
 }
 
@@ -1074,7 +1074,7 @@ mod meta_kv_tests {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
-    
+
     let cli = Cli::parse();
 
     // Migration short-circuit — runs against a v0.2 DB that the v0.3
@@ -1121,7 +1121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let db_path = cli.database.to_str().ok_or("invalid database path")?;
-    
+
     // Build embedding config from CLI args
     let mut embedding_config = EmbeddingConfig::default();
     if let Some(ref model) = cli.embedding_model {
@@ -1130,10 +1130,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref host) = cli.embedding_host {
         embedding_config.host = host.clone();
     }
-    
+
     // Build memory config with embedding settings
-    let mem_config = MemoryConfig { embedding: embedding_config, ..Default::default() };
-    
+    let mem_config = MemoryConfig {
+        embedding: embedding_config,
+        ..Default::default()
+    };
+
     // Create Memory with or without Empathy Bus
     let mut mem = if let Some(ref workspace) = cli.workspace {
         let ws_path = workspace.to_str().ok_or("invalid workspace path")?;
@@ -1141,32 +1144,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Memory::new(db_path, Some(mem_config))?
     };
-    
+
     if let Some(agent_id) = &cli.agent_id {
         mem.set_agent_id(agent_id);
     }
-    
+
     match cli.command {
         Commands::Init { force } => {
             // Create config directory
             let config_dir = dirs::config_dir()
                 .ok_or("Could not determine config directory")?
                 .join("engram");
-            
+
             std::fs::create_dir_all(&config_dir)?;
-            
+
             let config_path = config_dir.join("config.json");
-            
+
             // Check if config already exists
             if config_path.exists() && !force {
                 eprintln!("Config file already exists at: {}", config_path.display());
                 eprintln!("Use --force to overwrite.");
                 std::process::exit(1);
             }
-            
+
             // Interactive prompts
             use std::io::{self, Write};
-            
+
             fn prompt(question: &str, default: &str) -> String {
                 print!("{} [{}]: ", question, default);
                 io::stdout().flush().unwrap();
@@ -1179,19 +1182,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     trimmed.to_string()
                 }
             }
-            
+
             println!("Engram Configuration Setup");
             println!("==========================\n");
-            
+
             // Embedding provider
             let embedding_provider = prompt("Embedding provider (ollama/none)", "ollama");
-            
+
             // Extractor provider
-            let extractor_provider = prompt("Extractor provider (anthropic/ollama/none)", "anthropic");
-            
+            let extractor_provider =
+                prompt("Extractor provider (anthropic/ollama/none)", "anthropic");
+
             // Build config JSON
             let mut config = serde_json::json!({});
-            
+
             if embedding_provider != "none" {
                 let embedding_model = if embedding_provider == "ollama" {
                     prompt("Embedding model", "nomic-embed-text")
@@ -1203,42 +1207,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     "http://localhost:11434".to_string()
                 };
-                
+
                 config["embedding"] = serde_json::json!({
                     "provider": embedding_provider,
                     "model": embedding_model,
                     "host": embedding_host
                 });
             }
-            
+
             if extractor_provider != "none" {
                 let extractor_model = match extractor_provider.as_str() {
                     "anthropic" => prompt("Extractor model", "claude-haiku-4-5-20251001"),
                     "ollama" => prompt("Extractor model", "llama3.2:3b"),
-                    _ => "claude-haiku-4-5-20251001".to_string()
+                    _ => "claude-haiku-4-5-20251001".to_string(),
                 };
-                
+
                 let mut extractor_config = serde_json::json!({
                     "provider": extractor_provider,
                     "model": extractor_model
                 });
-                
+
                 if extractor_provider == "ollama" {
-                    let ollama_host = prompt("Ollama host for extraction", "http://localhost:11434");
+                    let ollama_host =
+                        prompt("Ollama host for extraction", "http://localhost:11434");
                     extractor_config["host"] = serde_json::json!(ollama_host);
                 }
-                
+
                 config["extractor"] = extractor_config;
             }
-            
+
             // Write config file
             let config_str = serde_json::to_string_pretty(&config)?;
             std::fs::write(&config_path, &config_str)?;
-            
+
             println!("\n✅ Config written to: {}", config_path.display());
             println!("\nConfig contents:");
             println!("{}", config_str);
-            
+
             // Remind about auth
             if extractor_provider == "anthropic" {
                 println!("\n⚠️  Remember to set your Anthropic auth token:");
@@ -1246,16 +1251,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   # or for Claude Max:");
                 println!("   export ANTHROPIC_AUTH_TOKEN=sk-ant-oat01-...");
             }
-            
+
             return Ok(());
         }
-        
-        Commands::Store { content, content_flag, ns, r#type, importance, source, emotion, domain, extractor, extractor_model, auth_token, oauth, graph_db, no_graph, graph_drain_timeout_secs, meta, occurred_at } => {
+
+        Commands::Store {
+            content,
+            content_flag,
+            ns,
+            r#type,
+            importance,
+            source,
+            emotion,
+            domain,
+            extractor,
+            extractor_model,
+            auth_token,
+            oauth,
+            graph_db,
+            no_graph,
+            graph_drain_timeout_secs,
+            meta,
+            occurred_at,
+        } => {
             // ISS-082: positional `<CONTENT>` or `--content` flag (clap
             // enforces mutual exclusion). Require at least one.
-            let content: String = content.or(content_flag).ok_or_else(|| -> Box<dyn std::error::Error> {
-                "store: missing content — provide as positional <CONTENT> or via --content".into()
-            })?;
+            let content: String =
+                content
+                    .or(content_flag)
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "store: missing content — provide as positional <CONTENT> or via --content"
+                            .into()
+                    })?;
             // === ISS-046: install v0.3 graph layer pipeline pool ===
             // Default ON: ingest writes to <main_db>.graph.db unless --no-graph.
             // Triple extractor: reuses --auth-token if Anthropic mode chosen,
@@ -1271,23 +1298,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 //   reuse the same backend for triples (consistent semantics
                 //   between fact extraction and edge extraction).
                 // - Else: noop (entity-only graph).
-                let triple_extractor: std::sync::Arc<dyn engramai::TripleExtractor> = match (&extractor, &auth_token) {
-                    (Some(ExtractorArg::Anthropic), Some(tok)) => {
-                        std::sync::Arc::new(engramai::AnthropicTripleExtractor::new(tok, oauth))
-                    }
-                    (Some(ExtractorArg::Ollama), _) => {
-                        let model = extractor_model.as_deref().unwrap_or("llama3.2:3b");
-                        std::sync::Arc::new(engramai::OllamaTripleExtractor::new(model))
-                    }
-                    _ => std::sync::Arc::new(engramai::NoopTripleExtractor::new()),
-                };
+                let triple_extractor: std::sync::Arc<dyn engramai::TripleExtractor> =
+                    match (&extractor, &auth_token) {
+                        (Some(ExtractorArg::Anthropic), Some(tok)) => {
+                            std::sync::Arc::new(engramai::AnthropicTripleExtractor::new(tok, oauth))
+                        }
+                        (Some(ExtractorArg::Ollama), _) => {
+                            let model = extractor_model.as_deref().unwrap_or("llama3.2:3b");
+                            std::sync::Arc::new(engramai::OllamaTripleExtractor::new(model))
+                        }
+                        _ => std::sync::Arc::new(engramai::NoopTripleExtractor::new()),
+                    };
 
                 let resolution_cfg = engramai::resolution::ResolutionConfig::default();
 
                 log::info!(
                     "ISS-046: installing v0.3 pipeline pool (graph_db={}, triple_extractor={})",
                     gdb_path.display(),
-                    if matches!(&extractor, Some(ExtractorArg::Anthropic) | Some(ExtractorArg::Ollama)) {
+                    if matches!(
+                        &extractor,
+                        Some(ExtractorArg::Anthropic) | Some(ExtractorArg::Ollama)
+                    ) {
                         "llm"
                     } else {
                         "noop"
@@ -1296,7 +1327,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 mem = mem
                     .with_pipeline_pool(&gdb_path, triple_extractor, resolution_cfg)
-                    .map_err(|e| format!("failed to install pipeline pool at {}: {}", gdb_path.display(), e))?;
+                    .map_err(|e| {
+                        format!(
+                            "failed to install pipeline pool at {}: {}",
+                            gdb_path.display(),
+                            e
+                        )
+                    })?;
             } else {
                 log::info!("ISS-046: --no-graph set, skipping v0.3 graph layer install");
             }
@@ -1306,32 +1343,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match ext {
                     ExtractorArg::Ollama => {
                         let model = extractor_model.as_deref().unwrap_or("llama3.2:3b");
-                        let host = cli.embedding_host.as_deref().unwrap_or("http://localhost:11434");
+                        let host = cli
+                            .embedding_host
+                            .as_deref()
+                            .unwrap_or("http://localhost:11434");
                         let ollama_extractor = OllamaExtractor::with_host(model, host);
                         mem.set_extractor(Box::new(ollama_extractor));
                         log::info!("Using Ollama extractor with model: {}", model);
                     }
                     ExtractorArg::Anthropic => {
-                        let token = auth_token.ok_or("Anthropic extractor requires --auth-token or ANTHROPIC_API_KEY")?;
+                        let token = auth_token.ok_or(
+                            "Anthropic extractor requires --auth-token or ANTHROPIC_API_KEY",
+                        )?;
                         let anthropic_extractor = if let Some(model) = extractor_model.as_deref() {
-                            let mut config = engramai::extractor::AnthropicExtractorConfig::default();
+                            let mut config =
+                                engramai::extractor::AnthropicExtractorConfig::default();
                             config.model = model.to_string();
                             AnthropicExtractor::with_config(&token, oauth, config)
                         } else {
                             AnthropicExtractor::new(&token, oauth)
                         };
-                        let model_used = extractor_model.as_deref().unwrap_or("claude-haiku-4-5-20251001");
+                        let model_used = extractor_model
+                            .as_deref()
+                            .unwrap_or("claude-haiku-4-5-20251001");
                         mem.set_extractor(Box::new(anthropic_extractor));
-                        log::info!("Using Anthropic extractor (model: {}, oauth: {})", model_used, oauth);
+                        log::info!(
+                            "Using Anthropic extractor (model: {}, oauth: {})",
+                            model_used,
+                            oauth
+                        );
                     }
                 }
             }
-            
+
             // === Parse --meta KEY=VALUE side-channel (ISS-081) ===
             // Caller-owned opaque metadata. Stored verbatim under
             // user_metadata for back-mapping. See docs/metadata-channel.md.
-            let user_meta = parse_meta_kv(&meta)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let user_meta =
+                parse_meta_kv(&meta).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
             // === ISS-087: parse --occurred-at RFC3339 if provided ===
             let occurred_at_dt: Option<chrono::DateTime<chrono::Utc>> = match occurred_at.as_deref() {
@@ -1351,7 +1400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // resolution enqueue). Emotion/domain/occurred_at all
             // travel as StorageMeta fields.
             let id = {
-                use engramai::store_api::{StorageMeta, RawStoreOutcome, StoreOutcome};
+                use engramai::store_api::{RawStoreOutcome, StorageMeta, StoreOutcome};
                 let storage_meta = StorageMeta {
                     importance_hint: importance,
                     source: source.clone(),
@@ -1362,21 +1411,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     emotion,
                     domain: domain.clone(),
                 };
-                match mem.store_raw(&content, storage_meta)
+                match mem
+                    .store_raw(&content, storage_meta)
                     .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?
                 {
                     RawStoreOutcome::Stored(outcomes) => {
                         // First outcome's id is the canonical record id;
                         // subsequent outcomes are additional facts from
                         // the same content (Path A may produce multiple).
-                        outcomes.first()
+                        outcomes
+                            .first()
                             .map(|o| match o {
                                 StoreOutcome::Inserted { id } => id.clone(),
                                 StoreOutcome::Merged { id, .. } => id.clone(),
                             })
                             .unwrap_or_default()
                     }
-                    RawStoreOutcome::Skipped { reason, content_hash } => {
+                    RawStoreOutcome::Skipped {
+                        reason,
+                        content_hash,
+                    } => {
                         log::warn!("store skipped: {:?} (hash={:?})", reason, content_hash);
                         String::new()
                     }
@@ -1386,7 +1440,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
-            
+
             // Handle empty ID (extractor found nothing worth storing)
             if id.is_empty() {
                 println!("(no facts extracted)");
@@ -1404,7 +1458,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(Some(stats)) => {
                         log::info!(
                             "ISS-046: pipeline drained ({} processed, {} failed, {} dropped)",
-                            stats.jobs_processed, stats.jobs_failed, stats.jobs_dropped_inbox_full
+                            stats.jobs_processed,
+                            stats.jobs_failed,
+                            stats.jobs_dropped_inbox_full
                         );
                     }
                     Ok(None) => {
@@ -1416,15 +1472,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        
-        Commands::Recall { query, query_flag, ns, limit, min_confidence, json } => {
+
+        Commands::Recall {
+            query,
+            query_flag,
+            ns,
+            limit,
+            min_confidence,
+            json,
+        } => {
             // ISS-082: positional or --query flag (mutually exclusive).
-            let query: String = query.or(query_flag).ok_or_else(|| -> Box<dyn std::error::Error> {
-                "recall: missing query — provide as positional <QUERY> or via --query".into()
-            })?;
-            let ns_opt = if ns == "default" { None } else { Some(ns.as_str()) };
+            let query: String =
+                query
+                    .or(query_flag)
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "recall: missing query — provide as positional <QUERY> or via --query"
+                            .into()
+                    })?;
+            let ns_opt = if ns == "default" {
+                None
+            } else {
+                Some(ns.as_str())
+            };
             let results = mem.recall_from_namespace(&query, limit, None, min_confidence, ns_opt)?;
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&results)?);
             } else {
@@ -1432,7 +1503,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("No memories found.");
                 } else {
                     for r in &results {
-                        println!("[{}] ({:.2}) {}", r.record.id, r.confidence, r.record.content);
+                        println!(
+                            "[{}] ({:.2}) {}",
+                            r.record.id, r.confidence, r.record.content
+                        );
                         if !r.record.source.is_empty() {
                             println!("    source: {}", r.record.source);
                         }
@@ -1440,11 +1514,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        
+
         Commands::RecallRecent { limit, ns, json } => {
-            let ns_opt = if ns == "default" { None } else { Some(ns.as_str()) };
+            let ns_opt = if ns == "default" {
+                None
+            } else {
+                Some(ns.as_str())
+            };
             let records = mem.recall_recent(limit, ns_opt)?;
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&records)?);
             } else {
@@ -1461,7 +1539,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             format!("{}d ago", age.num_days())
                         };
-                        println!("[{}] ({}) [{}] {}", age_str, r.memory_type, r.layer, r.content);
+                        println!(
+                            "[{}] ({}) [{}] {}",
+                            age_str, r.memory_type, r.layer, r.content
+                        );
                     }
                 }
             }
@@ -1469,7 +1550,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Stats { ns, json } => {
             let stats = mem.stats_ns(ns.as_deref())?;
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&stats)?);
             } else {
@@ -1478,22 +1559,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Uptime: {:.2} hours", stats.uptime_hours);
                 println!("\nBy type:");
                 for (type_name, type_stats) in &stats.by_type {
-                    println!("  {}: {} (avg strength: {:.3}, avg importance: {:.3})",
-                        type_name, type_stats.count, type_stats.avg_strength, type_stats.avg_importance);
+                    println!(
+                        "  {}: {} (avg strength: {:.3}, avg importance: {:.3})",
+                        type_name,
+                        type_stats.count,
+                        type_stats.avg_strength,
+                        type_stats.avg_importance
+                    );
                 }
                 println!("\nBy layer:");
                 for (layer_name, layer_stats) in &stats.by_layer {
-                    println!("  {}: {} (avg working: {:.3}, avg core: {:.3})",
-                        layer_name, layer_stats.count, layer_stats.avg_working, layer_stats.avg_core);
+                    println!(
+                        "  {}: {} (avg working: {:.3}, avg core: {:.3})",
+                        layer_name,
+                        layer_stats.count,
+                        layer_stats.avg_working,
+                        layer_stats.avg_core
+                    );
                 }
             }
         }
-        
+
         Commands::Consolidate { ns, days } => {
             mem.consolidate_namespace(days, ns.as_deref())?;
             println!("Consolidation complete ({} days simulated)", days);
         }
-        
+
         Commands::Grant { agent_id, ns, perm } => {
             let perm_str = match perm {
                 PermissionArg::Read => "read",
@@ -1501,17 +1592,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PermissionArg::Admin => "admin",
             };
             mem.grant(&agent_id, &ns, perm.into())?;
-            println!("Granted {} permission to {} on namespace {}", perm_str, agent_id, ns);
+            println!(
+                "Granted {} permission to {} on namespace {}",
+                perm_str, agent_id, ns
+            );
         }
-        
+
         Commands::Revoke { agent_id, ns } => {
             mem.revoke(&agent_id, &ns)?;
             println!("Revoked permission from {} on namespace {}", agent_id, ns);
         }
-        
+
         Commands::Permissions { agent_id, json } => {
             let perms = mem.list_permissions(&agent_id)?;
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&perms)?);
             } else {
@@ -1520,55 +1614,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("Permissions for {}:", agent_id);
                     for p in &perms {
-                        println!("  {} on {} (granted by {} at {})",
-                            p.permission, p.namespace, p.granted_by, p.created_at);
+                        println!(
+                            "  {} on {} (granted by {} at {})",
+                            p.permission, p.namespace, p.granted_by, p.created_at
+                        );
                     }
                 }
             }
         }
-        
+
         Commands::Pin { memory_id } => {
             mem.pin(&memory_id)?;
             println!("Pinned memory {}", memory_id);
         }
-        
+
         Commands::Unpin { memory_id } => {
             mem.unpin(&memory_id)?;
             println!("Unpinned memory {}", memory_id);
         }
-        
+
         Commands::Forget { memory_id } => {
             mem.forget(Some(&memory_id), None)?;
             println!("Deleted memory {}", memory_id);
         }
-        
-        Commands::Reward { feedback, feedback_flag, recent } => {
+
+        Commands::Reward {
+            feedback,
+            feedback_flag,
+            recent,
+        } => {
             // ISS-082: positional or --feedback flag (mutually exclusive).
-            let feedback: String = feedback.or(feedback_flag).ok_or_else(|| -> Box<dyn std::error::Error> {
-                "reward: missing feedback — provide as positional <FEEDBACK> or via --feedback".into()
-            })?;
+            let feedback: String = feedback.or(feedback_flag).ok_or_else(
+                || -> Box<dyn std::error::Error> {
+                    "reward: missing feedback — provide as positional <FEEDBACK> or via --feedback"
+                        .into()
+                },
+            )?;
             mem.reward(&feedback, recent)?;
             println!("Applied reward signal to {} recent memories", recent);
         }
-        
-        Commands::Update { memory_id, new_content, reason } => {
+
+        Commands::Update {
+            memory_id,
+            new_content,
+            reason,
+        } => {
             mem.update_memory(&memory_id, &new_content, &reason)?;
             println!("Updated memory {}", memory_id);
         }
-        
+
         Commands::Export { path, ns } => {
             let count = mem.export_namespace(&path, ns.as_deref())?;
             println!("Exported {} memories to {}", count, path);
         }
-        
-        Commands::RecallAssociated { query, limit, min_confidence, ns, json } => {
-            let results = mem.recall_associated_ns(
-                query.as_deref(),
-                limit,
-                min_confidence,
-                ns.as_deref(),
-            )?;
-            
+
+        Commands::RecallAssociated {
+            query,
+            limit,
+            min_confidence,
+            ns,
+            json,
+        } => {
+            let results =
+                mem.recall_associated_ns(query.as_deref(), limit, min_confidence, ns.as_deref())?;
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&results)?);
             } else {
@@ -1577,7 +1686,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("Associated memories ({}):", results.len());
                     for r in &results {
-                        println!("[{}] ({:.2}) {}", r.record.id, r.confidence, r.record.content);
+                        println!(
+                            "[{}] ({:.2}) {}",
+                            r.record.id, r.confidence, r.record.content
+                        );
                         if let Some(ref meta) = r.record.metadata {
                             if let Some(cause) = meta.get("cause_id") {
                                 println!("    cause: {}", cause);
@@ -1590,41 +1702,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        
-        Commands::Get { memory_id, json } => {
-            match mem.get(&memory_id)? {
-                Some(record) => {
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&record)?);
-                    } else {
-                        println!("ID: {}", record.id);
-                        println!("Content: {}", record.content);
-                        println!("Type: {}", record.memory_type);
-                        println!("Layer: {}", record.layer);
-                        println!("Importance: {:.2}", record.importance);
-                        println!("Pinned: {}", record.pinned);
-                        println!("Working strength: {:.3}", record.working_strength);
-                        println!("Core strength: {:.3}", record.core_strength);
-                        println!("Created: {}", record.created_at);
-                        println!("Access count: {}", record.access_times.len());
-                        if !record.source.is_empty() {
-                            println!("Source: {}", record.source);
-                        }
-                        if let Some(ref meta) = record.metadata {
-                            println!("Metadata: {}", serde_json::to_string_pretty(meta)?);
-                        }
+
+        Commands::Get { memory_id, json } => match mem.get(&memory_id)? {
+            Some(record) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&record)?);
+                } else {
+                    println!("ID: {}", record.id);
+                    println!("Content: {}", record.content);
+                    println!("Type: {}", record.memory_type);
+                    println!("Layer: {}", record.layer);
+                    println!("Importance: {:.2}", record.importance);
+                    println!("Pinned: {}", record.pinned);
+                    println!("Working strength: {:.3}", record.working_strength);
+                    println!("Core strength: {:.3}", record.core_strength);
+                    println!("Created: {}", record.created_at);
+                    println!("Access count: {}", record.access_times.len());
+                    if !record.source.is_empty() {
+                        println!("Source: {}", record.source);
+                    }
+                    if let Some(ref meta) = record.metadata {
+                        println!("Metadata: {}", serde_json::to_string_pretty(meta)?);
                     }
                 }
-                None => {
-                    eprintln!("Memory {} not found", memory_id);
-                    std::process::exit(1);
-                }
             }
-        }
-        
+            None => {
+                eprintln!("Memory {} not found", memory_id);
+                std::process::exit(1);
+            }
+        },
+
         Commands::List { limit, ns, json } => {
             let memories = mem.list_ns(ns.as_deref(), Some(limit))?;
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&memories)?);
             } else {
@@ -1643,20 +1753,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        
+
         Commands::Bus { action } => {
             // Bus commands require workspace
-            let workspace = cli.workspace.as_ref()
+            let workspace = cli
+                .workspace
+                .as_ref()
                 .ok_or("Empathy Bus commands require --workspace")?;
             let ws_path = workspace.to_str().ok_or("invalid workspace path")?;
-            
+
             // Create bus directly if not already attached
             let bus = EmpathyBus::new(ws_path, mem.connection())?;
-            
+
             match action {
                 BusAction::Trends { json } => {
                     let trends = bus.get_trends(mem.connection())?;
-                    
+
                     if json {
                         println!("{}", serde_json::to_string_pretty(&trends)?);
                     } else {
@@ -1665,18 +1777,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             println!("Emotional Trends:");
                             for trend in &trends {
-                                let flag = if trend.needs_soul_update() { " ⚠️ needs update" } else { "" };
-                                println!("  {}: {:.2} avg over {} events{}",
-                                    trend.domain, trend.valence, trend.count, flag);
+                                let flag = if trend.needs_soul_update() {
+                                    " ⚠️ needs update"
+                                } else {
+                                    ""
+                                };
+                                println!(
+                                    "  {}: {:.2} avg over {} events{}",
+                                    trend.domain, trend.valence, trend.count, flag
+                                );
                             }
                         }
                     }
                 }
-                
+
                 BusAction::Suggest { json } => {
                     let soul_updates = bus.suggest_soul_updates(mem.connection())?;
                     let heartbeat_updates = bus.suggest_heartbeat_updates(mem.connection())?;
-                    
+
                     if json {
                         let combined = serde_json::json!({
                             "soul_updates": soul_updates,
@@ -1696,15 +1814,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if !heartbeat_updates.is_empty() {
                                 println!("\nHEARTBEAT.md Suggestions:");
                                 for h in &heartbeat_updates {
-                                    println!("  [{}] {} (score: {:.0}%, {} attempts)",
-                                        h.suggestion, h.action, h.stats.score * 100.0, h.stats.total);
+                                    println!(
+                                        "  [{}] {} (score: {:.0}%, {} attempts)",
+                                        h.suggestion,
+                                        h.action,
+                                        h.stats.score * 100.0,
+                                        h.stats.total
+                                    );
                                 }
                             }
                         }
                     }
                 }
-                
-                BusAction::LogOutcome { action, positive, negative } => {
+
+                BusAction::LogOutcome {
+                    action,
+                    positive,
+                    negative,
+                } => {
                     let outcome = if positive {
                         true
                     } else if negative {
@@ -1712,15 +1839,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         return Err("Must specify --positive or --negative".into());
                     };
-                    
+
                     bus.log_behavior(mem.connection(), &action, outcome)?;
                     let outcome_str = if outcome { "positive" } else { "negative" };
                     println!("Logged {} outcome for '{}'", outcome_str, action);
                 }
-                
+
                 BusAction::BehaviorStats { json } => {
                     let stats = bus.get_behavior_stats(mem.connection())?;
-                    
+
                     if json {
                         println!("{}", serde_json::to_string_pretty(&stats)?);
                     } else {
@@ -1729,24 +1856,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             println!("Behavior Statistics:");
                             for s in &stats {
-                                let flag = if s.should_deprioritize() { " ⚠️ deprioritize" } else { "" };
-                                println!("  {}: {:.0}% success ({}/{} positive){}",
-                                    s.action, s.score * 100.0, s.positive, s.total, flag);
+                                let flag = if s.should_deprioritize() {
+                                    " ⚠️ deprioritize"
+                                } else {
+                                    ""
+                                };
+                                println!(
+                                    "  {}: {:.0}% success ({}/{} positive){}",
+                                    s.action,
+                                    s.score * 100.0,
+                                    s.positive,
+                                    s.total,
+                                    flag
+                                );
                             }
                         }
                     }
                 }
-                
+
                 BusAction::RecordEmotion { domain, valence } => {
                     bus.process_interaction(mem.connection(), "", valence, &domain)?;
                     println!("Recorded emotion {:.2} for domain '{}'", valence, domain);
                 }
-                
+
                 BusAction::Alignment { content, json } => {
                     let score = bus.alignment_score(&content);
                     let boost = bus.align_importance(&content);
                     let aligned = bus.find_aligned(&content);
-                    
+
                     if json {
                         let result = serde_json::json!({
                             "score": score,
@@ -1767,31 +1904,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        
+
         // === Phase 3: Cross-Agent Intelligence ===
-        
-        Commands::Subscribe { agent_id, ns, min_importance } => {
+        Commands::Subscribe {
+            agent_id,
+            ns,
+            min_importance,
+        } => {
             mem.subscribe(&agent_id, &ns, min_importance)?;
-            println!("Subscribed {} to namespace '{}' (min_importance: {:.2})", 
-                agent_id, ns, min_importance);
+            println!(
+                "Subscribed {} to namespace '{}' (min_importance: {:.2})",
+                agent_id, ns, min_importance
+            );
         }
-        
+
         Commands::Unsubscribe { agent_id, ns } => {
             let removed = mem.unsubscribe(&agent_id, &ns)?;
             if removed {
                 println!("Unsubscribed {} from namespace '{}'", agent_id, ns);
             } else {
-                println!("No subscription found for {} on namespace '{}'", agent_id, ns);
+                println!(
+                    "No subscription found for {} on namespace '{}'",
+                    agent_id, ns
+                );
             }
         }
-        
-        Commands::Notifications { agent_id, peek, json } => {
+
+        Commands::Notifications {
+            agent_id,
+            peek,
+            json,
+        } => {
             let notifs = if peek {
                 mem.peek_notifications(&agent_id)?
             } else {
                 mem.check_notifications(&agent_id)?
             };
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&notifs)?);
             } else {
@@ -1800,8 +1949,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("Notifications for {} ({}):", agent_id, notifs.len());
                     for n in &notifs {
-                        println!("  [{}:{}] ({:.2}) {}", 
-                            n.namespace, n.memory_id, n.importance, 
+                        println!(
+                            "  [{}:{}] ({:.2}) {}",
+                            n.namespace,
+                            n.memory_id,
+                            n.importance,
                             if n.content.len() > 60 {
                                 format!("{}...", &n.content[..60])
                             } else {
@@ -1815,29 +1967,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        
+
         Commands::CrossLinks { ns_a, ns_b, json } => {
             let links = mem.discover_cross_links(&ns_a, &ns_b)?;
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&links)?);
             } else {
                 if links.is_empty() {
-                    println!("No cross-namespace links found between '{}' and '{}'", ns_a, ns_b);
+                    println!(
+                        "No cross-namespace links found between '{}' and '{}'",
+                        ns_a, ns_b
+                    );
                 } else {
-                    println!("Cross-namespace links between '{}' and '{}' ({}):", ns_a, ns_b, links.len());
+                    println!(
+                        "Cross-namespace links between '{}' and '{}' ({}):",
+                        ns_a,
+                        ns_b,
+                        links.len()
+                    );
                     for link in &links {
-                        println!("  {} ↔ {} (strength: {:.2}, coactivations: {})",
-                            link.source_id, link.target_id, link.strength, link.coactivation_count);
+                        println!(
+                            "  {} ↔ {} (strength: {:.2}, coactivations: {})",
+                            link.source_id, link.target_id, link.strength, link.coactivation_count
+                        );
                     }
                 }
             }
         }
-        
-        Commands::RecallAssoc { query, ns, limit, json } => {
-            let ns_opt = if ns == "default" { None } else { Some(ns.as_str()) };
+
+        Commands::RecallAssoc {
+            query,
+            ns,
+            limit,
+            json,
+        } => {
+            let ns_opt = if ns == "default" {
+                None
+            } else {
+                Some(ns.as_str())
+            };
             let result = mem.recall_with_associations(&query, ns_opt, limit)?;
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -1846,28 +2017,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("Memories ({}):", result.memories.len());
                     for r in &result.memories {
-                        println!("  [{}] ({:.2}) {}", r.record.id, r.confidence, r.record.content);
+                        println!(
+                            "  [{}] ({:.2}) {}",
+                            r.record.id, r.confidence, r.record.content
+                        );
                     }
-                    
+
                     if !result.cross_links.is_empty() {
-                        println!("\nCross-namespace associations ({}):", result.cross_links.len());
+                        println!(
+                            "\nCross-namespace associations ({}):",
+                            result.cross_links.len()
+                        );
                         for link in &result.cross_links {
-                            let desc = link.description.as_ref()
-                                .map(|d| if d.len() > 40 { format!("{}...", &d[..40]) } else { d.clone() })
+                            let desc = link
+                                .description
+                                .as_ref()
+                                .map(|d| {
+                                    if d.len() > 40 {
+                                        format!("{}...", &d[..40])
+                                    } else {
+                                        d.clone()
+                                    }
+                                })
                                 .unwrap_or_default();
-                            println!("  {}:{} → {}:{} ({:.2}) {}", 
-                                link.source_ns, link.source_id, 
-                                link.target_ns, link.target_id,
-                                link.strength, desc);
+                            println!(
+                                "  {}:{} → {}:{} ({:.2}) {}",
+                                link.source_ns,
+                                link.source_id,
+                                link.target_ns,
+                                link.target_id,
+                                link.strength,
+                                desc
+                            );
                         }
                     }
                 }
             }
         }
-        
+
         Commands::Subscriptions { agent_id, json } => {
             let subs = mem.list_subscriptions(&agent_id)?;
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&subs)?);
             } else {
@@ -1876,22 +2066,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("Subscriptions for {} ({}):", agent_id, subs.len());
                     for sub in &subs {
-                        println!("  {} (min_importance: {:.2}, since: {})",
-                            sub.namespace, sub.min_importance, sub.created_at.format("%Y-%m-%d %H:%M"));
+                        println!(
+                            "  {} (min_importance: {:.2}, since: {})",
+                            sub.namespace,
+                            sub.min_importance,
+                            sub.created_at.format("%Y-%m-%d %H:%M")
+                        );
                     }
                 }
             }
         }
-        
+
         // === Embedding Commands ===
-        
         Commands::Reindex { progress } => {
             if !mem.has_embedding_support() {
                 eprintln!("Error: Ollama not available. Cannot reindex embeddings.");
-                eprintln!("Make sure Ollama is running at {}", mem.embedding_config().host);
+                eprintln!(
+                    "Make sure Ollama is running at {}",
+                    mem.embedding_config().host
+                );
                 std::process::exit(1);
             }
-            
+
             if progress {
                 let count = mem.reindex_embeddings_with_progress(|current, total| {
                     eprint!("\rReindexing: {}/{}", current, total);
@@ -1903,13 +2099,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Reindexed {} memories", count);
             }
         }
-        
+
         Commands::EmbeddingStatus { json } => {
             let stats = mem.embedding_stats()?;
             let config = mem.embedding_config();
             let enabled = mem.has_embedding_support();
             let available = mem.is_embedding_available();
-            
+
             if json {
                 let result = serde_json::json!({
                     "enabled": enabled,
@@ -1929,44 +2125,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Model: {}", config.model);
                 println!("  Host: {}", config.host);
                 println!("  Dimensions: {}", config.dimensions);
-                println!("  Enabled: {}", if enabled { "yes" } else { "no (Ollama not found at startup)" });
-                println!("  Ollama available now: {}", if available { "yes" } else { "no" });
+                println!(
+                    "  Enabled: {}",
+                    if enabled {
+                        "yes"
+                    } else {
+                        "no (Ollama not found at startup)"
+                    }
+                );
+                println!(
+                    "  Ollama available now: {}",
+                    if available { "yes" } else { "no" }
+                );
                 println!();
                 println!("Memory Coverage:");
                 println!("  Total memories: {}", stats.total_memories);
                 println!("  With embeddings: {}", stats.embedded_count);
                 println!("  Pending: {}", stats.total_memories - stats.embedded_count);
-                
+
                 if stats.total_memories > 0 {
-                    let coverage = stats.embedded_count as f64 / stats.total_memories as f64 * 100.0;
+                    let coverage =
+                        stats.embedded_count as f64 / stats.total_memories as f64 * 100.0;
                     println!("  Coverage: {:.1}%", coverage);
                 }
-                
+
                 if !enabled {
                     println!();
-                    println!("Note: Embedding is disabled because Ollama was not available when the");
-                    println!("      memory system was initialized. Start Ollama and restart to enable.");
+                    println!(
+                        "Note: Embedding is disabled because Ollama was not available when the"
+                    );
+                    println!(
+                        "      memory system was initialized. Start Ollama and restart to enable."
+                    );
                 }
             }
         }
-        
+
         // === Entity Management ===
-        
-        Commands::Entities { command, entity_type } => {
+        Commands::Entities {
+            command,
+            entity_type,
+        } => {
             match command {
                 Some(EntityCommand::Backfill { batch_size }) => {
                     println!("⏳ Backfilling entities from existing memories...");
                     let (processed, entities, relations) = mem.backfill_entities(batch_size)?;
-                    println!("✅ Processed: {} memories, {} entities, {} relations", 
-                        processed, entities, relations);
+                    println!(
+                        "✅ Processed: {} memories, {} entities, {} relations",
+                        processed, entities, relations
+                    );
                 }
                 Some(EntityCommand::Purge) => {
                     println!("🧹 Purging garbage entities...");
                     let deleted = mem.purge_garbage_entities()?;
                     println!("✅ Deleted {} garbage entities", deleted);
                     let (entity_count, relation_count, link_count) = mem.entity_stats()?;
-                    println!("📊 Remaining: {} entities, {} relations, {} links", 
-                        entity_count, relation_count, link_count);
+                    println!(
+                        "📊 Remaining: {} entities, {} relations, {} links",
+                        entity_count, relation_count, link_count
+                    );
                 }
                 Some(EntityCommand::Stats) => {
                     let (entity_count, relation_count, link_count) = mem.entity_stats()?;
@@ -1975,17 +2192,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  Relations: {:>5}", relation_count);
                     println!("  Links:     {:>5}", link_count);
                 }
-                Some(EntityCommand::List { entity_type: list_type, limit }) => {
+                Some(EntityCommand::List {
+                    entity_type: list_type,
+                    limit,
+                }) => {
                     let filter_type = list_type.as_deref();
                     let entities = mem.list_entities(filter_type, None, limit)?;
-                    
+
                     if entities.is_empty() {
                         println!("No entities found.");
                     } else {
-                        let type_label = filter_type.map(|t| format!(" [{}]", t)).unwrap_or_default();
+                        let type_label =
+                            filter_type.map(|t| format!(" [{}]", t)).unwrap_or_default();
                         println!("📊 Entities{} (top {}):", type_label, entities.len());
                         for (entity, mentions) in &entities {
-                            println!("  {:<20} [{:<12}] {:>3} mentions", entity.name, entity.entity_type, mentions);
+                            println!(
+                                "  {:<20} [{:<12}] {:>3} mentions",
+                                entity.name, entity.entity_type, mentions
+                            );
                         }
                     }
                 }
@@ -1993,14 +2217,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Default: list top 20 entities by mention count, filtered by --type if given
                     let filter_type = entity_type.as_deref();
                     let entities = mem.list_entities(filter_type, None, 20)?;
-                    
+
                     if entities.is_empty() {
                         println!("No entities found.");
                     } else {
-                        let type_label = filter_type.map(|t| format!(" [{}]", t)).unwrap_or_default();
+                        let type_label =
+                            filter_type.map(|t| format!(" [{}]", t)).unwrap_or_default();
                         println!("📊 Entities{} (top {}):", type_label, entities.len());
                         for (entity, mentions) in &entities {
-                            println!("  {:<20} [{:<12}] {:>3} mentions", entity.name, entity.entity_type, mentions);
+                            println!(
+                                "  {:<20} [{:<12}] {:>3} mentions",
+                                entity.name, entity.entity_type, mentions
+                            );
                         }
                     }
                 }
@@ -2009,7 +2237,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Synthesize { dry_run, json } => {
             // Enable synthesis with defaults for this run
-            let settings = engramai::SynthesisSettings { enabled: true, ..Default::default() };
+            let settings = engramai::SynthesisSettings {
+                enabled: true,
+                ..Default::default()
+            };
 
             if dry_run {
                 mem.set_synthesis_settings(settings);
@@ -2018,7 +2249,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if json {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
-                    println!("Cluster Discovery: found {} clusters", report.clusters_found);
+                    println!(
+                        "Cluster Discovery: found {} clusters",
+                        report.clusters_found
+                    );
                     println!();
                     let mut synth_count = 0;
                     let mut skip_count = 0;
@@ -2034,8 +2268,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     println!("Gate Check:");
                     println!("  SYNTHESIZE:  {} clusters (ready for LLM)", synth_count);
-                    println!("  AUTO_UPDATE: {} clusters (existing insight covers)", auto_count);
-                    println!("  SKIP:        {} clusters (near-duplicate/covered)", skip_count);
+                    println!(
+                        "  AUTO_UPDATE: {} clusters (existing insight covers)",
+                        auto_count
+                    );
+                    println!(
+                        "  SKIP:        {} clusters (near-duplicate/covered)",
+                        skip_count
+                    );
                     println!("  DEFER:       {} clusters (too recent/small)", defer_count);
                     println!();
                     println!("Dry run — no changes made. Run without --dry-run to execute.");
@@ -2053,7 +2293,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         report.clusters_found, report.clusters_synthesized,
                         report.clusters_auto_updated, report.clusters_skipped, report.clusters_deferred);
                     println!("  Insights:     {} created", report.insights_created.len());
-                    println!("  Demotions:    {} sources demoted", report.sources_demoted.len());
+                    println!(
+                        "  Demotions:    {} sources demoted",
+                        report.sources_demoted.len()
+                    );
 
                     if !report.insights_created.is_empty() {
                         println!();
@@ -2085,7 +2328,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if insights.is_empty() {
                     println!("No insights found. Run `engram synthesize` first.");
                 } else {
-                    println!("{:<12} {:<8} {:<8} {:<12} Content", "ID", "Type", "Sources", "Created");
+                    println!(
+                        "{:<12} {:<8} {:<8} {:<12} Content",
+                        "ID", "Type", "Sources", "Created"
+                    );
                     for insight in &insights {
                         let meta = insight.metadata.as_ref();
                         let synth_type = meta
@@ -2099,15 +2345,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let created = insight.created_at.format("%Y-%m-%d");
                         let preview: String = insight.content.chars().take(60).collect();
                         let short_id: String = insight.id.chars().take(10).collect();
-                        println!("{:<12} {:<8} {:<8} {:<12} {}",
-                            short_id, synth_type, source_count, created, preview);
+                        println!(
+                            "{:<12} {:<8} {:<8} {:<12} {}",
+                            short_id, synth_type, source_count, created, preview
+                        );
                     }
                     println!("\nTotal: {} insights", insights.len());
                 }
             }
         }
 
-        Commands::Insight { id, sources, provenance, json } => {
+        Commands::Insight {
+            id,
+            sources,
+            provenance,
+            json,
+        } => {
             // Show insight details
             let record = mem.get(&id)?;
             match record {
@@ -2140,7 +2393,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or(0.0);
                         println!("Type:    {}", synth_type);
                         println!("Conf:    {:.2}", confidence);
-                        println!("Created: {}", record.created_at.format("%Y-%m-%dT%H:%M:%SZ"));
+                        println!(
+                            "Created: {}",
+                            record.created_at.format("%Y-%m-%dT%H:%M:%SZ")
+                        );
                         println!("Content: {}", record.content);
 
                         if sources {
@@ -2149,14 +2405,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("\nNo provenance records found.");
                             } else {
                                 println!("\nSources ({}):", src_records.len());
-                                println!("  {:<12} {:<10} {:<10} Content", "ID", "Orig Imp.", "Confidence");
+                                println!(
+                                    "  {:<12} {:<10} {:<10} Content",
+                                    "ID", "Orig Imp.", "Confidence"
+                                );
                                 for pr in &src_records {
                                     if let Ok(Some(src_mem)) = mem.get(&pr.source_id) {
-                                        let preview: String = src_mem.content.chars().take(50).collect();
-                                        let short_id: String = pr.source_id.chars().take(10).collect();
+                                        let preview: String =
+                                            src_mem.content.chars().take(50).collect();
+                                        let short_id: String =
+                                            pr.source_id.chars().take(10).collect();
                                         let orig_imp = pr.source_original_importance.unwrap_or(0.0);
-                                        println!("  {:<12} {:<10.2} {:<10.2} {}",
-                                            short_id, orig_imp, pr.confidence, preview);
+                                        println!(
+                                            "  {:<12} {:<10.2} {:<10.2} {}",
+                                            short_id, orig_imp, pr.confidence, preview
+                                        );
                                     }
                                 }
                             }
@@ -2165,11 +2428,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if provenance {
                             let chain = mem.get_provenance(&id, 5)?;
                             let total: usize = chain.layers.iter().map(|l| l.len()).sum();
-                            println!("\nProvenance Chain ({} records across {} layers):", total, chain.layers.len());
+                            println!(
+                                "\nProvenance Chain ({} records across {} layers):",
+                                total,
+                                chain.layers.len()
+                            );
                             for (depth, layer) in chain.layers.iter().enumerate() {
                                 for pr in layer {
                                     let indent = "  ".repeat(depth + 1);
-                                    println!("{}← {} (confidence: {:.2})", indent, pr.source_id, pr.confidence);
+                                    println!(
+                                        "{}← {} (confidence: {:.2})",
+                                        indent, pr.source_id, pr.confidence
+                                    );
                                 }
                             }
                         }
@@ -2180,23 +2450,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Sleep { ns, days, json } => {
             // Enable synthesis for the sleep cycle
-            let settings = engramai::SynthesisSettings { enabled: true, ..Default::default() };
+            let settings = engramai::SynthesisSettings {
+                enabled: true,
+                ..Default::default()
+            };
             mem.set_synthesis_settings(settings);
 
             let report = mem.sleep_cycle(days, ns.as_deref())?;
 
             if json {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "consolidation_ok": report.consolidation_ok,
-                    "synthesis": report.synthesis,
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "consolidation_ok": report.consolidation_ok,
+                        "synthesis": report.synthesis,
+                    }))?
+                );
             } else {
                 println!("Sleep Cycle Complete");
                 println!("  Consolidation: ✅ ({:.1} days)", days);
                 match report.synthesis {
                     Some(synth) => {
-                        println!("  Synthesis:     ✅ ({} clusters, {} insights, {:.1}s)",
-                            synth.clusters_found, synth.insights_created.len(), synth.duration.as_secs_f64());
+                        println!(
+                            "  Synthesis:     ✅ ({} clusters, {} insights, {:.1}s)",
+                            synth.clusters_found,
+                            synth.insights_created.len(),
+                            synth.duration.as_secs_f64()
+                        );
                     }
                     None => {
                         println!("  Synthesis:     ⏭️  (not enabled or no clusters)");
@@ -2210,20 +2490,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("✅ Reversed synthesis of insight {}", result.insight_id);
             println!("  Sources restored: {}", result.restored_sources.len());
             for src in &result.restored_sources {
-                println!("    {} — original importance: {:.2}, restored: {}", 
-                    src.memory_id, src.original_importance, if src.restored { "✅" } else { "❌" });
+                println!(
+                    "    {} — original importance: {:.2}, restored: {}",
+                    src.memory_id,
+                    src.original_importance,
+                    if src.restored { "✅" } else { "❌" }
+                );
             }
         }
 
         // ── Memory Supersession Commands ──────────────────────────
-
-        Commands::Correct { old_id, new_content, importance, r#type } => {
+        Commands::Correct {
+            old_id,
+            new_content,
+            importance,
+            r#type,
+        } => {
             let type_override = r#type.map(|t| t.into());
             let new_id = mem.correct(&old_id, &new_content, importance, type_override)?;
             println!("✅ Corrected memory {} → {}", old_id, new_id);
         }
 
-        Commands::CorrectBulk { query, new_content, ns, limit, yes } => {
+        Commands::CorrectBulk {
+            query,
+            new_content,
+            ns,
+            limit,
+            yes,
+        } => {
             // First, show what would be superseded
             let ns_ref = ns.as_deref();
             let matches = mem.recall_from_namespace(&query, limit, None, None, ns_ref)?;
@@ -2235,8 +2529,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Found {} matching memories:", matches.len());
             for (i, m) in matches.iter().enumerate() {
                 let content_preview: String = m.record.content.chars().take(80).collect();
-                println!("  {}. [{}] {} (score: {:.2})", 
-                    i + 1, m.record.id, content_preview, m.confidence);
+                println!(
+                    "  {}. [{}] {} (score: {:.2})",
+                    i + 1,
+                    m.record.id,
+                    content_preview,
+                    m.confidence
+                );
             }
             println!("\nWill supersede all with: \"{}\"", new_content);
 
@@ -2253,7 +2552,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let result = mem.correct_bulk(&query, &new_content, ns_ref, limit)?;
-            println!("✅ Bulk corrected {} memories → {}", result.superseded_count, result.new_id);
+            println!(
+                "✅ Bulk corrected {} memories → {}",
+                result.superseded_count, result.new_id
+            );
             for id in &result.superseded_ids {
                 println!("  ⊘ {}", id);
             }
@@ -2262,15 +2564,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Superseded { ns, json } => {
             let infos = mem.list_superseded(ns.as_deref())?;
             if json {
-                let items: Vec<serde_json::Value> = infos.iter().map(|info| {
-                    serde_json::json!({
-                        "id": info.superseded.id,
-                        "content": info.superseded.content,
-                        "superseded_by": info.superseded_by_id,
-                        "chain_head": info.chain_head,
-                        "created_at": info.superseded.created_at.to_rfc3339(),
+                let items: Vec<serde_json::Value> = infos
+                    .iter()
+                    .map(|info| {
+                        serde_json::json!({
+                            "id": info.superseded.id,
+                            "content": info.superseded.content,
+                            "superseded_by": info.superseded_by_id,
+                            "chain_head": info.chain_head,
+                            "created_at": info.superseded.created_at.to_rfc3339(),
+                        })
                     })
-                }).collect();
+                    .collect();
                 println!("{}", serde_json::to_string_pretty(&items)?);
             } else {
                 if infos.is_empty() {
@@ -2278,9 +2583,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("Superseded memories ({}):", infos.len());
                     for info in &infos {
-                        let content_preview: String = info.superseded.content.chars().take(60).collect();
+                        let content_preview: String =
+                            info.superseded.content.chars().take(60).collect();
                         let chain = info.chain_head.as_deref().unwrap_or("⚠️ cycle");
-                        println!("  ⊘ {} → {} (head: {})", info.superseded.id, info.superseded_by_id, chain);
+                        println!(
+                            "  ⊘ {} → {} (head: {})",
+                            info.superseded.id, info.superseded_by_id, chain
+                        );
                         println!("    \"{}\"", content_preview);
                     }
                 }
@@ -2296,12 +2605,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Open knowledge store backed by the same database
             let kc_store = SqliteKnowledgeStore::open(&cli.database)
                 .map_err(|e| format!("Failed to open knowledge store: {}", e))?;
-            kc_store.init_schema()
+            kc_store
+                .init_schema()
                 .map_err(|e| format!("Failed to init KC schema: {}", e))?;
             let kc_config = KcConfig::load();
 
             match cmd {
-                KnowledgeCommand::Query { search, limit, format } => {
+                KnowledgeCommand::Query {
+                    search,
+                    limit,
+                    format,
+                } => {
                     let api = MaintenanceApi::new(
                         SqliteKnowledgeStore::open(&cli.database)
                             .map_err(|e| format!("Failed to open store: {}", e))?,
@@ -2311,7 +2625,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         limit,
                         include_archived: false,
                     };
-                    let results = api.query(&search, &opts)
+                    let results = api
+                        .query(&search, &opts)
                         .map_err(|e| format!("Query failed: {}", e))?;
 
                     match format {
@@ -2322,9 +2637,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if results.is_empty() {
                                 println!("No topics matching '{}'.", search);
                             } else {
-                                println!("Knowledge topics matching '{}' ({}):", search, results.len());
+                                println!(
+                                    "Knowledge topics matching '{}' ({}):",
+                                    search,
+                                    results.len()
+                                );
                                 for r in &results {
-                                    println!("  [{}] {} ({:?}, relevance: {:.1})", r.topic_id, r.title, r.status, r.relevance);
+                                    println!(
+                                        "  [{}] {} ({:?}, relevance: {:.1})",
+                                        r.topic_id, r.title, r.status, r.relevance
+                                    );
                                     if !r.summary.is_empty() {
                                         let preview: String = r.summary.chars().take(80).collect();
                                         println!("    {}", preview);
@@ -2335,16 +2657,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                KnowledgeCommand::Inspect { topic_id, sources, conflicts } => {
+                KnowledgeCommand::Inspect {
+                    topic_id,
+                    sources,
+                    conflicts,
+                } => {
                     let tid = TopicId(topic_id.clone());
-                    match kc_store.get_topic_page(&tid)
-                        .map_err(|e| format!("Failed to get topic: {}", e))? {
+                    match kc_store
+                        .get_topic_page(&tid)
+                        .map_err(|e| format!("Failed to get topic: {}", e))?
+                    {
                         Some(page) => {
                             println!("Topic: {} ({})", page.title, page.id);
                             println!("Status:  {:?}", page.status);
                             println!("Version: {}", page.version);
-                            println!("Created: {}", page.metadata.created_at.format("%Y-%m-%dT%H:%M:%SZ"));
-                            println!("Updated: {}", page.metadata.updated_at.format("%Y-%m-%dT%H:%M:%SZ"));
+                            println!(
+                                "Created: {}",
+                                page.metadata.created_at.format("%Y-%m-%dT%H:%M:%SZ")
+                            );
+                            println!(
+                                "Updated: {}",
+                                page.metadata.updated_at.format("%Y-%m-%dT%H:%M:%SZ")
+                            );
                             if let Some(q) = page.metadata.quality_score {
                                 println!("Quality: {:.2}", q);
                             }
@@ -2355,22 +2689,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("\n{}", page.content);
 
                             if sources {
-                                let refs = kc_store.get_source_refs(&tid)
+                                let refs = kc_store
+                                    .get_source_refs(&tid)
                                     .map_err(|e| format!("Failed to get source refs: {}", e))?;
                                 if refs.is_empty() {
                                     println!("\nNo source memories.");
                                 } else {
                                     println!("\nSource memories ({}):", refs.len());
                                     for r in &refs {
-                                        println!("  {} (relevance: {:.3}, added: {})",
-                                            r.memory_id, r.relevance_score,
-                                            r.added_at.format("%Y-%m-%dT%H:%M:%SZ"));
+                                        println!(
+                                            "  {} (relevance: {:.3}, added: {})",
+                                            r.memory_id,
+                                            r.relevance_score,
+                                            r.added_at.format("%Y-%m-%dT%H:%M:%SZ")
+                                        );
                                     }
                                 }
                             }
 
                             if conflicts {
-                                let all_topics = kc_store.list_topic_pages()
+                                let all_topics = kc_store
+                                    .list_topic_pages()
                                     .map_err(|e| format!("Failed to list topics: {}", e))?;
                                 let detector = ConflictDetector::new();
                                 let scope = ConflictScope::WithinTopic(tid.clone());
@@ -2381,8 +2720,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         } else {
                                             println!("\nConflicts ({}):", records.len());
                                             for cr in &records {
-                                                println!("  [{:?}] {} ({:?})",
-                                                    cr.severity, cr.conflict.description, cr.conflict.conflict_type);
+                                                println!(
+                                                    "  [{:?}] {} ({:?})",
+                                                    cr.severity,
+                                                    cr.conflict.description,
+                                                    cr.conflict.conflict_type
+                                                );
                                             }
                                         }
                                     }
@@ -2413,10 +2756,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     let export_fmt = match format {
                         OutputFormat::Json => compiler::types::ExportFormat::Json,
-                        OutputFormat::Md | OutputFormat::Text => compiler::types::ExportFormat::Markdown,
+                        OutputFormat::Md | OutputFormat::Text => {
+                            compiler::types::ExportFormat::Markdown
+                        }
                     };
-                    let result = ExportEngine::export(&kc_store, &privacy, &ctx, &filter, export_fmt)
-                        .map_err(|e| format!("Export failed: {}", e))?;
+                    let result =
+                        ExportEngine::export(&kc_store, &privacy, &ctx, &filter, export_fmt)
+                            .map_err(|e| format!("Export failed: {}", e))?;
 
                     match result {
                         ExportOutput::Json(json_str) => {
@@ -2444,8 +2790,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let importer = MarkdownImporter {
                         split: kc_config.import.split_strategy.clone(),
                     };
-                    let report = ImportPipeline::run(&kc_store, &importer, import_path, &kc_config.import)
-                        .map_err(|e| format!("Import failed: {}", e))?;
+                    let report =
+                        ImportPipeline::run(&kc_store, &importer, import_path, &kc_config.import)
+                            .map_err(|e| format!("Import failed: {}", e))?;
                     println!("Import complete:");
                     println!("  Processed: {}", report.total_processed);
                     println!("  Imported:  {}", report.imported);
@@ -2458,7 +2805,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                KnowledgeCommand::Health { scope: _, format, json } => {
+                KnowledgeCommand::Health {
+                    scope: _,
+                    format,
+                    json,
+                } => {
                     let decay_engine = DecayEngine::new(kc_config.decay.clone());
                     let conflict_detector = ConflictDetector::new();
                     let auditor = HealthAuditor;
@@ -2474,8 +2825,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("  Broken links:     {}", report.broken_links.len());
                                 println!("  Recommendations:  {}", report.recommendations.len());
                                 for rec in &report.recommendations {
-                                    println!("    [P{}] {} — {} ({})",
-                                        rec.priority, rec.topic_id, rec.action, rec.reason);
+                                    println!(
+                                        "    [P{}] {} — {} ({})",
+                                        rec.priority, rec.topic_id, rec.action, rec.reason
+                                    );
                                 }
                             }
                         }
@@ -2486,22 +2839,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                KnowledgeCommand::Decay { evaluate: _, apply, topic } => {
+                KnowledgeCommand::Decay {
+                    evaluate: _,
+                    apply,
+                    topic,
+                } => {
                     let decay_engine = DecayEngine::new(kc_config.decay.clone());
 
                     if let Some(ref topic_id) = topic {
                         let tid = TopicId(topic_id.clone());
-                        match kc_store.get_topic_page(&tid)
-                            .map_err(|e| format!("Failed to get topic: {}", e))? {
+                        match kc_store
+                            .get_topic_page(&tid)
+                            .map_err(|e| format!("Failed to get topic: {}", e))?
+                        {
                             Some(page) => {
-                                let result = decay_engine.evaluate_topic(&page, &kc_store)
+                                let result = decay_engine
+                                    .evaluate_topic(&page, &kc_store)
                                     .map_err(|e| format!("Decay evaluation failed: {}", e))?;
                                 println!("Decay evaluation for '{}':", page.title);
                                 println!("  Freshness:    {:.3}", result.freshness_score);
                                 println!("  Sources:      {}", result.source_count);
                                 println!("  Action:       {:?}", result.recommended_action);
                                 if apply {
-                                    decay_engine.apply_decay(&result.recommended_action, &kc_store)
+                                    decay_engine
+                                        .apply_decay(&result.recommended_action, &kc_store)
                                         .map_err(|e| format!("Apply decay failed: {}", e))?;
                                     println!("  ✅ Applied.");
                                 }
@@ -2512,19 +2873,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     } else {
-                        let results = decay_engine.evaluate_all(&kc_store)
+                        let results = decay_engine
+                            .evaluate_all(&kc_store)
                             .map_err(|e| format!("Decay evaluation failed: {}", e))?;
                         if results.is_empty() {
                             println!("No active topics to evaluate.");
                         } else {
                             println!("Decay evaluation ({} topics):", results.len());
                             for r in &results {
-                                println!("  [{}] freshness={:.3} sources={} action={:?}",
-                                    r.topic_id, r.freshness_score, r.source_count, r.recommended_action);
+                                println!(
+                                    "  [{}] freshness={:.3} sources={} action={:?}",
+                                    r.topic_id,
+                                    r.freshness_score,
+                                    r.source_count,
+                                    r.recommended_action
+                                );
                             }
                             if apply {
                                 for r in &results {
-                                    decay_engine.apply_decay(&r.recommended_action, &kc_store)
+                                    decay_engine
+                                        .apply_decay(&r.recommended_action, &kc_store)
                                         .map_err(|e| format!("Apply decay failed: {}", e))?;
                                 }
                                 println!("✅ Applied decay to {} topics.", results.len());
@@ -2534,7 +2902,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 KnowledgeCommand::Conflicts { scan: _, json } => {
-                    let all_topics = kc_store.list_topic_pages()
+                    let all_topics = kc_store
+                        .list_topic_pages()
                         .map_err(|e| format!("Failed to list topics: {}", e))?;
                     if all_topics.len() < 2 {
                         println!("Need at least 2 topics to detect conflicts.");
@@ -2546,7 +2915,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let scope = ConflictScope::WithinTopic(topic.id.clone());
                         match detector.detect_conflicts(&all_topics, &scope, None) {
                             Ok(mut conflicts) => all_conflicts.append(&mut conflicts),
-                            Err(e) => eprintln!("Warning: conflict detection failed for {}: {}", topic.id, e),
+                            Err(e) => eprintln!(
+                                "Warning: conflict detection failed for {}: {}",
+                                topic.id, e
+                            ),
                         }
                     }
                     // Deduplicate by conflict id
@@ -2561,16 +2933,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             println!("Conflicts ({}):", all_conflicts.len());
                             for cr in &all_conflicts {
-                                println!("  [{:?}] {} ({:?})",
-                                    cr.severity, cr.conflict.description, cr.conflict.conflict_type);
+                                println!(
+                                    "  [{:?}] {} ({:?})",
+                                    cr.severity, cr.conflict.description, cr.conflict.conflict_type
+                                );
                             }
                         }
                     }
                 }
 
-                KnowledgeCommand::Audit { links, duplicates, repair } => {
+                KnowledgeCommand::Audit {
+                    links,
+                    duplicates,
+                    repair,
+                } => {
                     let auditor = HealthAuditor;
-                    let all_topics = kc_store.list_topic_pages()
+                    let all_topics = kc_store
+                        .list_topic_pages()
                         .map_err(|e| format!("Failed to list topics: {}", e))?;
 
                     if links || !duplicates {
@@ -2578,23 +2957,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut total_broken = 0usize;
                         let mut total_stale = 0usize;
                         for topic in &all_topics {
-                            let entries = auditor.audit_links(topic, &kc_store)
+                            let entries = auditor
+                                .audit_links(topic, &kc_store)
                                 .map_err(|e| format!("Audit failed for {}: {}", topic.id, e))?;
-                            let broken: Vec<_> = entries.iter()
+                            let broken: Vec<_> = entries
+                                .iter()
                                 .filter(|e| e.status == LinkStatus::Broken)
                                 .collect();
-                            let stale: Vec<_> = entries.iter()
+                            let stale: Vec<_> = entries
+                                .iter()
                                 .filter(|e| e.status == LinkStatus::Stale)
                                 .collect();
                             if !broken.is_empty() || !stale.is_empty() {
-                                println!("  [{}] {} broken, {} stale links",
-                                    topic.id, broken.len(), stale.len());
+                                println!(
+                                    "  [{}] {} broken, {} stale links",
+                                    topic.id,
+                                    broken.len(),
+                                    stale.len()
+                                );
                             }
                             total_broken += broken.len();
                             total_stale += stale.len();
                         }
-                        println!("  Total: {} broken, {} stale links across {} topics",
-                            total_broken, total_stale, all_topics.len());
+                        println!(
+                            "  Total: {} broken, {} stale links across {} topics",
+                            total_broken,
+                            total_stale,
+                            all_topics.len()
+                        );
                     }
 
                     if duplicates {
@@ -2605,8 +2995,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             println!("\nDuplicate groups ({}):", dup_groups.len());
                             for group in &dup_groups {
-                                println!("  Canonical: {} (similarity: {:.1}%)",
-                                    group.canonical, group.similarity * 100.0);
+                                println!(
+                                    "  Canonical: {} (similarity: {:.1}%)",
+                                    group.canonical,
+                                    group.similarity * 100.0
+                                );
                                 for dup in &group.duplicates {
                                     println!("    duplicate: {}", dup);
                                 }
@@ -2618,13 +3011,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("\nAuto-repair:");
                         let mut repaired = 0usize;
                         let mut failed = 0usize;
-                        let mut all_topics_mut = kc_store.list_topic_pages()
+                        let mut all_topics_mut = kc_store
+                            .list_topic_pages()
                             .map_err(|e| format!("Failed to list topics for repair: {}", e))?;
                         for topic in &mut all_topics_mut {
-                            let entries = auditor.audit_links(topic, &kc_store)
+                            let entries = auditor
+                                .audit_links(topic, &kc_store)
                                 .map_err(|e| format!("Audit failed for {}: {}", topic.id, e))?;
-                            let problematic: Vec<_> = entries.into_iter()
-                                .filter(|e| e.status == LinkStatus::Broken || e.status == LinkStatus::Stale)
+                            let problematic: Vec<_> = entries
+                                .into_iter()
+                                .filter(|e| {
+                                    e.status == LinkStatus::Broken || e.status == LinkStatus::Stale
+                                })
                                 .collect();
                             for entry in &problematic {
                                 let action = auditor.suggest_repair(entry, topic);
@@ -2634,7 +3032,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         repaired += 1;
                                     }
                                     Err(e) => {
-                                        println!("  ❌ Failed to repair {} in {}: {}", entry.memory_id, topic.id, e);
+                                        println!(
+                                            "  ❌ Failed to repair {} in {}: {}",
+                                            entry.memory_id, topic.id, e
+                                        );
                                         failed += 1;
                                     }
                                 }
@@ -2648,7 +3049,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                KnowledgeCommand::Privacy { set_level, level, audit_log } => {
+                KnowledgeCommand::Privacy {
+                    set_level,
+                    level,
+                    audit_log,
+                } => {
                     let privacy = PrivacyGuard::in_memory()
                         .map_err(|e| format!("Failed to create privacy guard: {}", e))?;
 
@@ -2657,8 +3062,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         match level.as_deref() {
                             Some(lvl) => {
                                 // Privacy level is tag-based; update topic tags
-                                match kc_store.get_topic_page(&tid)
-                                    .map_err(|e| format!("Failed to get topic: {}", e))? {
+                                match kc_store
+                                    .get_topic_page(&tid)
+                                    .map_err(|e| format!("Failed to get topic: {}", e))?
+                                {
                                     Some(mut page) => {
                                         // Remove existing privacy tags
                                         page.metadata.tags.retain(|t| !t.starts_with("privacy:"));
@@ -2676,9 +3083,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if tag != "privacy:public" {
                                             page.metadata.tags.push(tag.to_string());
                                         }
-                                        kc_store.update_topic_page(&page)
-                                            .map_err(|e| format!("Failed to update topic: {}", e))?;
-                                        println!("Set privacy level for '{}' to '{}'.", topic_id, lvl);
+                                        kc_store.update_topic_page(&page).map_err(|e| {
+                                            format!("Failed to update topic: {}", e)
+                                        })?;
+                                        println!(
+                                            "Set privacy level for '{}' to '{}'.",
+                                            topic_id, lvl
+                                        );
                                     }
                                     None => {
                                         eprintln!("Topic '{}' not found.", topic_id);
@@ -2692,31 +3103,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     } else if audit_log {
-                        let entries = privacy.query_audit_log(None, 50)
+                        let entries = privacy
+                            .query_audit_log(None, 50)
                             .map_err(|e| format!("Failed to query audit log: {}", e))?;
                         if entries.is_empty() {
                             println!("No audit log entries.");
                         } else {
                             println!("Audit log ({} entries):", entries.len());
                             for entry in &entries {
-                                let tid = entry.topic_id.as_ref()
-                                    .map(|t| t.0.as_str())
-                                    .unwrap_or("-");
-                                println!("  {} [{}] topic={} actor={} {}",
+                                let tid =
+                                    entry.topic_id.as_ref().map(|t| t.0.as_str()).unwrap_or("-");
+                                println!(
+                                    "  {} [{}] topic={} actor={} {}",
                                     entry.timestamp.format("%Y-%m-%dT%H:%M:%SZ"),
-                                    entry.operation, tid, entry.actor, entry.details);
+                                    entry.operation,
+                                    tid,
+                                    entry.actor,
+                                    entry.details
+                                );
                             }
                         }
                     } else {
                         println!("Usage:");
-                        println!("  engram knowledge privacy --set-level <TOPIC_ID> --level <LEVEL>");
+                        println!(
+                            "  engram knowledge privacy --set-level <TOPIC_ID> --level <LEVEL>"
+                        );
                         println!("  engram knowledge privacy --audit-log");
                     }
                 }
 
                 KnowledgeCommand::Compile { topic, dry_run } => {
                     // Step 1: Read all memories
-                    let all_memories = mem.list_ns(None, None)
+                    let all_memories = mem
+                        .list_ns(None, None)
                         .map_err(|e| format!("Failed to read memories: {}", e))?;
 
                     if all_memories.is_empty() {
@@ -2746,78 +3165,117 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // (verified at src/types.rs:162 — only `created_at` + `access_times`).
                     // Use the most recent access time as a proxy; adding a real `updated_at`
                     // to `MemoryRecord` is deferred to a separate ticket.
-                    let snapshots: Vec<MemorySnapshot> = all_memories.iter().map(|m| {
-                        let tags = m.metadata.as_ref()
-                            .and_then(|v| v.get("tags"))
-                            .and_then(|v| v.as_array())
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                            .unwrap_or_default();
+                    let snapshots: Vec<MemorySnapshot> = all_memories
+                        .iter()
+                        .map(|m| {
+                            let tags = m
+                                .metadata
+                                .as_ref()
+                                .and_then(|v| v.get("tags"))
+                                .and_then(|v| v.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
 
-                        // Parse dimensional metadata. `None` when absent (legacy memory).
-                        let dimensions = engramai::compiler::types::Dimensions::from_metadata(&m.metadata);
-                        let confidence = dimensions.as_ref().and_then(|d| d.confidence);
-                        let valence = dimensions.as_ref().and_then(|d| d.valence);
+                            // Parse dimensional metadata. `None` when absent (legacy memory).
+                            let dimensions =
+                                engramai::compiler::types::Dimensions::from_metadata(&m.metadata);
+                            let confidence = dimensions.as_ref().and_then(|d| d.confidence);
+                            let valence = dimensions.as_ref().and_then(|d| d.valence);
 
-                        // type_weights always succeeds — falls back to Default (all 1.0) if absent.
-                        // We only populate Some when the JSON was actually present, so downstream
-                        // code can distinguish "no data" from "neutral data".
-                        let type_weights = m.metadata.as_ref()
-                            .and_then(|v| v.get("type_weights"))
-                            .and_then(|tw| serde_json::from_value::<engramai::type_weights::TypeWeights>(tw.clone()).ok());
+                            // type_weights always succeeds — falls back to Default (all 1.0) if absent.
+                            // We only populate Some when the JSON was actually present, so downstream
+                            // code can distinguish "no data" from "neutral data".
+                            let type_weights = m
+                                .metadata
+                                .as_ref()
+                                .and_then(|v| v.get("type_weights"))
+                                .and_then(|tw| {
+                                    serde_json::from_value::<engramai::type_weights::TypeWeights>(
+                                        tw.clone(),
+                                    )
+                                    .ok()
+                                });
 
-                        // updated_at stopgap from access_times.
-                        let updated_at = m.access_times.last().copied().unwrap_or(m.created_at);
+                            // updated_at stopgap from access_times.
+                            let updated_at = m.access_times.last().copied().unwrap_or(m.created_at);
 
-                        MemorySnapshot {
-                            id: m.id.clone(),
-                            content: m.content.clone(),
-                            memory_type: format!("{:?}", m.memory_type).to_lowercase(),
-                            importance: m.importance,
-                            created_at: m.created_at,
-                            updated_at,
-                            tags,
-                            embedding: embedding_map.get(&m.id).cloned(),
-                            dimensions,
-                            type_weights,
-                            confidence,
-                            valence,
-                        }
-                    }).collect();
+                            MemorySnapshot {
+                                id: m.id.clone(),
+                                content: m.content.clone(),
+                                memory_type: format!("{:?}", m.memory_type).to_lowercase(),
+                                importance: m.importance,
+                                created_at: m.created_at,
+                                updated_at,
+                                tags,
+                                embedding: embedding_map.get(&m.id).cloned(),
+                                dimensions,
+                                type_weights,
+                                confidence,
+                                valence,
+                            }
+                        })
+                        .collect();
 
                     match topic {
                         Some(ref topic_id) => {
                             // Recompile a specific topic
                             let tid = TopicId(topic_id.clone());
-                            let existing = kc_store.get_topic_page(&tid)
+                            let existing = kc_store
+                                .get_topic_page(&tid)
                                 .map_err(|e| format!("Failed to get topic: {}", e))?;
                             match existing {
                                 Some(page) => {
                                     if dry_run {
-                                        println!("🔍 Dry run: would recompile topic '{}'", page.title);
+                                        println!(
+                                            "🔍 Dry run: would recompile topic '{}'",
+                                            page.title
+                                        );
                                         println!("   Current version: {}", page.version);
-                                        println!("   Source memories: {}", page.metadata.source_memory_ids.len());
-                                        println!("   Available memories for matching: {}", snapshots.len());
+                                        println!(
+                                            "   Source memories: {}",
+                                            page.metadata.source_memory_ids.len()
+                                        );
+                                        println!(
+                                            "   Available memories for matching: {}",
+                                            snapshots.len()
+                                        );
                                     } else {
                                         println!("🔄 Recompiling topic '{}'...", page.title);
                                         // Filter snapshots to those relevant to this topic
-                                        let relevant: Vec<MemorySnapshot> = snapshots.iter()
-                                            .filter(|s| page.metadata.source_memory_ids.contains(&s.id))
+                                        let relevant: Vec<MemorySnapshot> = snapshots
+                                            .iter()
+                                            .filter(|s| {
+                                                page.metadata.source_memory_ids.contains(&s.id)
+                                            })
                                             .cloned()
                                             .collect();
 
                                         let api = MaintenanceApi::new(
-                                            SqliteKnowledgeStore::open(&cli.database)
-                                                .map_err(|e| format!("Failed to open store: {}", e))?,
+                                            SqliteKnowledgeStore::open(&cli.database).map_err(
+                                                |e| format!("Failed to open store: {}", e),
+                                            )?,
                                             kc_config.clone(),
                                         );
 
-                                        let pages = api.compile_all::<NoopProvider>(None, &relevant)
+                                        let pages = api
+                                            .compile_all::<NoopProvider>(None, &relevant)
                                             .map_err(|e| format!("Compilation failed: {}", e))?;
 
                                         println!("✅ Recompiled {} topic(s)", pages.len());
                                         for p in &pages {
-                                            let q = p.metadata.quality_score.map(|s| format!(" q={:.2}", s)).unwrap_or_default();
-                                            println!("   [{}] {} (v{}{})", p.id.0, p.title, p.version, q);
+                                            let q = p
+                                                .metadata
+                                                .quality_score
+                                                .map(|s| format!(" q={:.2}", s))
+                                                .unwrap_or_default();
+                                            println!(
+                                                "   [{}] {} (v{}{})",
+                                                p.id.0, p.title, p.version, q
+                                            );
                                         }
                                     }
                                 }
@@ -2831,12 +3289,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // Auto-discovery mode
                             if dry_run {
                                 // Run discovery only, show what would be compiled
-                                let embeddings: Vec<(String, Vec<f32>)> = snapshots.iter()
+                                let embeddings: Vec<(String, Vec<f32>)> = snapshots
+                                    .iter()
                                     .map(|m| {
-                                        let emb = m.embedding.clone()
-                                            .unwrap_or_else(|| {
-                                                engramai::compiler::compilation::simple_hash_embedding(&m.content, 64)
-                                            });
+                                        let emb = m.embedding.clone().unwrap_or_else(|| {
+                                            engramai::compiler::compilation::simple_hash_embedding(
+                                                &m.content, 64,
+                                            )
+                                        });
                                         (m.id.clone(), emb)
                                     })
                                     .collect();
@@ -2848,13 +3308,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("🔍 No topic candidates discovered.");
                                     println!("   Try adding more related memories (min cluster size: {})", kc_config.min_cluster_size);
                                 } else {
-                                    println!("🔍 Dry run: discovered {} topic candidate(s):", candidates.len());
+                                    println!(
+                                        "🔍 Dry run: discovered {} topic candidate(s):",
+                                        candidates.len()
+                                    );
                                     for (i, c) in candidates.iter().enumerate() {
-                                        let title = c.suggested_title.as_deref().unwrap_or("(untitled)");
-                                        println!("   {}. {} ({} memories)", i + 1, title, c.memories.len());
+                                        let title =
+                                            c.suggested_title.as_deref().unwrap_or("(untitled)");
+                                        println!(
+                                            "   {}. {} ({} memories)",
+                                            i + 1,
+                                            title,
+                                            c.memories.len()
+                                        );
                                         for mid in &c.memories {
-                                            if let Some(snap) = snapshots.iter().find(|s| &s.id == mid) {
-                                                let preview: String = snap.content.chars().take(80).collect();
+                                            if let Some(snap) =
+                                                snapshots.iter().find(|s| &s.id == mid)
+                                            {
+                                                let preview: String =
+                                                    snap.content.chars().take(80).collect();
                                                 println!("      - [{}] {}", mid, preview);
                                             }
                                         }
@@ -2870,22 +3342,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     kc_config.clone(),
                                 );
 
-                                let pages = api.compile_all::<NoopProvider>(None, &snapshots)
+                                let pages = api
+                                    .compile_all::<NoopProvider>(None, &snapshots)
                                     .map_err(|e| format!("Compilation failed: {}", e))?;
 
                                 if pages.is_empty() {
-                                    println!("No topic candidates discovered from {} memories.", snapshots.len());
+                                    println!(
+                                        "No topic candidates discovered from {} memories.",
+                                        snapshots.len()
+                                    );
                                     println!("   Memories may not form clear clusters yet.");
-                                    println!("   Minimum cluster size: {}", kc_config.min_cluster_size);
+                                    println!(
+                                        "   Minimum cluster size: {}",
+                                        kc_config.min_cluster_size
+                                    );
                                 } else {
                                     println!("✅ Compiled {} topic(s):", pages.len());
                                     for p in &pages {
-                                        let q = p.metadata.quality_score.map(|s| format!(" q={:.2}", s)).unwrap_or_default();
-                                        println!("   [{}] {} ({} sources, v{}{})",
-                                            p.id.0, p.title, p.metadata.source_memory_ids.len(), p.version, q);
+                                        let q = p
+                                            .metadata
+                                            .quality_score
+                                            .map(|s| format!(" q={:.2}", s))
+                                            .unwrap_or_default();
+                                        println!(
+                                            "   [{}] {} ({} sources, v{}{})",
+                                            p.id.0,
+                                            p.title,
+                                            p.metadata.source_memory_ids.len(),
+                                            p.version,
+                                            q
+                                        );
                                     }
                                     println!("\nUse `engram knowledge list` to see all topics.");
-                                    println!("Use `engram knowledge inspect <topic-id>` for details.");
+                                    println!(
+                                        "Use `engram knowledge inspect <topic-id>` for details."
+                                    );
                                 }
                             }
                         }
@@ -2893,7 +3384,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 KnowledgeCommand::List { json, limit } => {
-                    let topics = kc_store.list_topic_pages()
+                    let topics = kc_store
+                        .list_topic_pages()
                         .map_err(|e| format!("Failed to list topics: {}", e))?;
                     let topics: Vec<_> = topics.into_iter().take(limit).collect();
 
@@ -2905,11 +3397,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             println!("Knowledge topics ({}):", topics.len());
                             for t in &topics {
-                                let quality = t.metadata.quality_score
+                                let quality = t
+                                    .metadata
+                                    .quality_score
                                     .map(|q| format!(" q={:.2}", q))
                                     .unwrap_or_default();
-                                println!("  [{}] {} (v{}, {:?}{})",
-                                    t.id, t.title, t.version, t.status, quality);
+                                println!(
+                                    "  [{}] {} (v{}, {:?}{})",
+                                    t.id, t.title, t.version, t.status, quality
+                                );
                             }
                         }
                     }
@@ -2924,7 +3420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             unreachable!("Migrate subcommand should have been handled before Memory init");
         }
     }
-    
+
     Ok(())
 }
 
@@ -2957,8 +3453,8 @@ fn run_migrate_subcommand(
     auth_token: Option<String>,
     oauth: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use engramai_migrate::{migrate, status, MigrateOptions, OutputFormat};
     use engramai_migrate::progress::MigrationPhase;
+    use engramai_migrate::{migrate, status, MigrateOptions, OutputFormat};
 
     // Translate clap argv into library options.
     let mut opts = MigrateOptions::new(&db_path);
@@ -2998,9 +3494,7 @@ fn run_migrate_subcommand(
 
     // 5-second grace banner for --no-backup unless --no-grace was set.
     if no_backup && !no_grace && !dry_run {
-        eprintln!(
-            "⚠️  --no-backup was passed. The migration will run WITHOUT a backup file."
-        );
+        eprintln!("⚠️  --no-backup was passed. The migration will run WITHOUT a backup file.");
         eprintln!("    You have 5 seconds to cancel (Ctrl-C). Pass --no-grace to skip.");
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
@@ -3080,14 +3574,19 @@ fn render_migration_report(
                 println!("  backup            : {}", bp);
             }
             if !report.phases_completed.is_empty() {
-                println!("  phases_completed  : {}", report.phases_completed.join(", "));
+                println!(
+                    "  phases_completed  : {}",
+                    report.phases_completed.join(", ")
+                );
             }
-            println!("  counts.pre        : memories={} kc_topics={} entities={} edges={} topics={}",
+            println!(
+                "  counts.pre        : memories={} kc_topics={} entities={} edges={} topics={}",
                 report.counts.pre.memories,
                 report.counts.pre.kc_topic_pages,
                 report.counts.pre.entities,
                 report.counts.pre.edges,
-                report.counts.pre.knowledge_topics);
+                report.counts.pre.knowledge_topics
+            );
             println!("  counts.post       : memories={} entities={} edges={} topics={} legacy={} synth={}",
                 report.counts.post.memories,
                 report.counts.post.entities,
@@ -3096,11 +3595,13 @@ fn render_migration_report(
                 report.counts.post.knowledge_topics_legacy,
                 report.counts.post.knowledge_topics_synthesized);
             if report.backfill.records_total > 0 || report.backfill.records_processed > 0 {
-                println!("  backfill          : {}/{} processed, {} succeeded, {} failed",
+                println!(
+                    "  backfill          : {}/{} processed, {} succeeded, {} failed",
                     report.backfill.records_processed,
                     report.backfill.records_total,
                     report.backfill.records_succeeded,
-                    report.backfill.records_failed);
+                    report.backfill.records_failed
+                );
             }
             for w in &report.warnings {
                 println!("  ⚠ {}", w);

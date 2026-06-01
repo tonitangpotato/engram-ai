@@ -102,7 +102,12 @@ fn fixture_memory(id: &str) -> MemoryRecord {
 }
 
 fn ctx(memory_id: &str) -> PipelineContext {
-    PipelineContext::new(fixture_memory(memory_id), Uuid::new_v4(), None, String::new())
+    PipelineContext::new(
+        fixture_memory(memory_id),
+        Uuid::new_v4(),
+        None,
+        String::new(),
+    )
 }
 
 /// Build a `DraftEntity` carrying `kind` + `kind_source` exactly as
@@ -137,15 +142,47 @@ fn kind_and_kind_source_round_trip_through_apply_graph_delta() {
     //   - non-canonical Other(_) hint               ("location") via TripleHint
     //   - no hint at all → Default + unknown        (the "opaque thing" path)
     let drafts: Vec<EntityResolution> = vec![
-        create(0, draft("Alice",            EntityKind::Person,             KindSource::TripleHint)),
-        create(1, draft("Bob",              EntityKind::Person,             KindSource::TripleHint)),
-        create(2, draft("Rust",             EntityKind::Concept,            KindSource::TripleHint)),
-        create(3, draft("memory safety",    EntityKind::Concept,            KindSource::TripleHint)),
-        create(4, draft("RustConf",         EntityKind::Event,              KindSource::TripleHint)),
-        create(5, draft("Portland",         EntityKind::other("location"),  KindSource::TripleHint)),
-        create(6, draft("category theory",  EntityKind::Topic,              KindSource::TripleHint)),
-        create(7, draft("mathematics",      EntityKind::Topic,              KindSource::TripleHint)),
-        create(8, draft("opaque thing",     EntityKind::other("unknown"),   KindSource::Default)),
+        create(
+            0,
+            draft("Alice", EntityKind::Person, KindSource::TripleHint),
+        ),
+        create(1, draft("Bob", EntityKind::Person, KindSource::TripleHint)),
+        create(
+            2,
+            draft("Rust", EntityKind::Concept, KindSource::TripleHint),
+        ),
+        create(
+            3,
+            draft("memory safety", EntityKind::Concept, KindSource::TripleHint),
+        ),
+        create(
+            4,
+            draft("RustConf", EntityKind::Event, KindSource::TripleHint),
+        ),
+        create(
+            5,
+            draft(
+                "Portland",
+                EntityKind::other("location"),
+                KindSource::TripleHint,
+            ),
+        ),
+        create(
+            6,
+            draft("category theory", EntityKind::Topic, KindSource::TripleHint),
+        ),
+        create(
+            7,
+            draft("mathematics", EntityKind::Topic, KindSource::TripleHint),
+        ),
+        create(
+            8,
+            draft(
+                "opaque thing",
+                EntityKind::other("unknown"),
+                KindSource::Default,
+            ),
+        ),
     ];
 
     let context = ctx("mem-iss072");
@@ -236,15 +273,15 @@ fn kind_and_kind_source_round_trip_through_apply_graph_delta() {
     // ── Assertion 1: every draft round-trips with its exact kind
     //                  *and* the matching kind_source breadcrumb.
     let expectations: &[(&str, EntityKind, &str)] = &[
-        ("Alice",            EntityKind::Person,             "TripleHint"),
-        ("Bob",              EntityKind::Person,             "TripleHint"),
-        ("Rust",             EntityKind::Concept,            "TripleHint"),
-        ("memory safety",    EntityKind::Concept,            "TripleHint"),
-        ("RustConf",         EntityKind::Event,              "TripleHint"),
-        ("Portland",         EntityKind::other("location"),  "TripleHint"),
-        ("category theory",  EntityKind::Topic,              "TripleHint"),
-        ("mathematics",      EntityKind::Topic,              "TripleHint"),
-        ("opaque thing",     EntityKind::other("unknown"),   "Default"),
+        ("Alice", EntityKind::Person, "TripleHint"),
+        ("Bob", EntityKind::Person, "TripleHint"),
+        ("Rust", EntityKind::Concept, "TripleHint"),
+        ("memory safety", EntityKind::Concept, "TripleHint"),
+        ("RustConf", EntityKind::Event, "TripleHint"),
+        ("Portland", EntityKind::other("location"), "TripleHint"),
+        ("category theory", EntityKind::Topic, "TripleHint"),
+        ("mathematics", EntityKind::Topic, "TripleHint"),
+        ("opaque thing", EntityKind::other("unknown"), "Default"),
     ];
 
     for (name, expected_kind, expected_source) in expectations {
@@ -259,9 +296,7 @@ fn kind_and_kind_source_round_trip_through_apply_graph_delta() {
             .get("kind_source")
             .and_then(|v| v.as_str())
             .unwrap_or_else(|| {
-                panic!(
-                    "attributes.kind_source missing for {name}; full attrs: {actual_attrs}"
-                )
+                panic!("attributes.kind_source missing for {name}; full attrs: {actual_attrs}")
             });
         assert_eq!(
             actual_source, *expected_source,
@@ -274,7 +309,10 @@ fn kind_and_kind_source_round_trip_through_apply_graph_delta() {
     //                  variant on disk without wiring the deserializer.
     let allowed_sources = ["Default", "TripleHint", "DictionaryMatch", "EnrichmentLlm"];
     for (name, (_, attrs)) in &by_name {
-        let src = attrs.get("kind_source").and_then(|v| v.as_str()).unwrap_or("");
+        let src = attrs
+            .get("kind_source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         assert!(
             allowed_sources.contains(&src),
             "{name}: invalid attributes.kind_source = {src:?} \

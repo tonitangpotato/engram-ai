@@ -14,8 +14,8 @@ use std::collections::{HashMap, VecDeque};
 use chrono::Utc;
 
 use crate::interoceptive::types::{
-    AdaptiveBaseline, DeviationLevel, DomainState, InteroceptiveSignal,
-    InteroceptiveState, SomaticMarker,
+    AdaptiveBaseline, DeviationLevel, DomainState, InteroceptiveSignal, InteroceptiveState,
+    SomaticMarker,
 };
 
 /// Default maximum number of signals to retain in the buffer.
@@ -87,11 +87,7 @@ impl InteroceptiveHub {
     }
 
     /// Create a hub with custom capacity settings.
-    pub fn with_capacity(
-        buffer_capacity: usize,
-        marker_cache_size: usize,
-        alpha: f64,
-    ) -> Self {
+    pub fn with_capacity(buffer_capacity: usize, marker_cache_size: usize, alpha: f64) -> Self {
         Self {
             domain_states: HashMap::new(),
             signal_buffer: VecDeque::with_capacity(buffer_capacity.min(4096)),
@@ -166,8 +162,10 @@ impl InteroceptiveHub {
             if self.somatic_cache.len() >= self.marker_cache_size {
                 self.evict_lru_marker();
             }
-            self.somatic_cache
-                .insert(situation_hash, SomaticMarker::new(situation_hash, current_valence));
+            self.somatic_cache.insert(
+                situation_hash,
+                SomaticMarker::new(situation_hash, current_valence),
+            );
         }
         self.somatic_cache.get(&situation_hash).unwrap()
     }
@@ -284,7 +282,9 @@ impl InteroceptiveHub {
 
     /// Check whether all baselines for a domain are calibrated.
     pub fn is_domain_calibrated(&self, domain: &str) -> bool {
-        let domain_baselines: Vec<_> = self.baselines.iter()
+        let domain_baselines: Vec<_> = self
+            .baselines
+            .iter()
             .filter(|((_, d), _)| d == domain)
             .collect();
 
@@ -314,12 +314,8 @@ mod tests {
     #[test]
     fn hub_processes_signal_and_updates_domain() {
         let mut hub = InteroceptiveHub::new();
-        let sig = InteroceptiveSignal::new(
-            SignalSource::Accumulator,
-            Some("coding".into()),
-            0.7,
-            0.3,
-        );
+        let sig =
+            InteroceptiveSignal::new(SignalSource::Accumulator, Some("coding".into()), 0.7, 0.3);
         let notable = hub.process_signal(sig);
         assert!(!notable); // positive + low arousal → not notable
 
@@ -333,12 +329,8 @@ mod tests {
     #[test]
     fn hub_notable_signal() {
         let mut hub = InteroceptiveHub::new();
-        let sig = InteroceptiveSignal::new(
-            SignalSource::Anomaly,
-            Some("trading".into()),
-            -0.8,
-            0.9,
-        );
+        let sig =
+            InteroceptiveSignal::new(SignalSource::Anomaly, Some("trading".into()), -0.8, 0.9);
         assert!(hub.process_signal(sig)); // negative + urgent → notable
     }
 
@@ -365,12 +357,8 @@ mod tests {
 
         // Add high-arousal signals.
         for _ in 0..10 {
-            let sig = InteroceptiveSignal::new(
-                SignalSource::Anomaly,
-                Some("test".into()),
-                -0.5,
-                0.8,
-            );
+            let sig =
+                InteroceptiveSignal::new(SignalSource::Anomaly, Some("test".into()), -0.5, 0.8);
             hub.process_signal(sig);
         }
 
@@ -412,12 +400,7 @@ mod tests {
     fn hub_current_state_snapshot() {
         let mut hub = InteroceptiveHub::new();
 
-        let sig = InteroceptiveSignal::new(
-            SignalSource::Feedback,
-            Some("coding".into()),
-            0.6,
-            0.2,
-        );
+        let sig = InteroceptiveSignal::new(SignalSource::Feedback, Some("coding".into()), 0.6, 0.2);
         hub.process_signal(sig);
 
         let state = hub.current_state();

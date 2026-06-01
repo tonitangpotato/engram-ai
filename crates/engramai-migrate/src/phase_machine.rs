@@ -388,7 +388,14 @@ mod tests {
         assert_eq!(outcome, PhaseRunOutcome::Complete);
         assert_eq!(
             ex.calls,
-            vec!["preflight", "backup", "schema", "topics", "backfill", "verify"],
+            vec![
+                "preflight",
+                "backup",
+                "schema",
+                "topics",
+                "backfill",
+                "verify"
+            ],
             "phases must run in design §3.1 order, exactly once each"
         );
     }

@@ -200,10 +200,7 @@ mod tests {
     #[test]
     fn decide_high_conf_merges() {
         let id = Uuid::new_v4();
-        let out = decide(
-            &DecisionThresholds::default(),
-            vec![make_fusion(id, 0.9)],
-        );
+        let out = decide(&DecisionThresholds::default(), vec![make_fusion(id, 0.9)]);
         assert_eq!(out.decision, Decision::MergeInto { candidate_id: id });
         assert_eq!(out.scored_candidates.len(), 1);
     }
@@ -212,10 +209,7 @@ mod tests {
     #[test]
     fn decide_mid_conf_defers() {
         let id = Uuid::new_v4();
-        let out = decide(
-            &DecisionThresholds::default(),
-            vec![make_fusion(id, 0.7)],
-        );
+        let out = decide(&DecisionThresholds::default(), vec![make_fusion(id, 0.7)]);
         assert_eq!(out.decision, Decision::DeferToLlm { candidate_id: id });
     }
 
@@ -223,10 +217,7 @@ mod tests {
     #[test]
     fn decide_low_conf_creates_new() {
         let id = Uuid::new_v4();
-        let out = decide(
-            &DecisionThresholds::default(),
-            vec![make_fusion(id, 0.3)],
-        );
+        let out = decide(&DecisionThresholds::default(), vec![make_fusion(id, 0.3)]);
         assert_eq!(out.decision, Decision::CreateNew);
         // Even on CreateNew we still return scored candidates for trace.
         assert_eq!(out.scored_candidates.len(), 1);

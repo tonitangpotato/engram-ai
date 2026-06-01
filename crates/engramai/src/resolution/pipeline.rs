@@ -62,20 +62,20 @@ use uuid::Uuid;
 
 use crate::entities::EntityExtractor;
 use crate::graph::audit::{
-    CATEGORY_CANDIDATE_RETRIEVAL_ERROR, CATEGORY_CANONICAL_FETCH_ERROR,
-    CATEGORY_FIND_EDGES_ERROR, CATEGORY_UNRESOLVED_OBJECT, CATEGORY_UNRESOLVED_SUBJECT,
+    CATEGORY_CANDIDATE_RETRIEVAL_ERROR, CATEGORY_CANONICAL_FETCH_ERROR, CATEGORY_FIND_EDGES_ERROR,
+    CATEGORY_UNRESOLVED_OBJECT, CATEGORY_UNRESOLVED_SUBJECT,
 };
 use crate::graph::{EdgeEnd, GraphStore, PipelineKind, RunStatus};
 use crate::triple_extractor::TripleExtractor;
 use crate::types::MemoryRecord;
 
+use super::adapters::draft_entity_from_triple_endpoint;
 use super::candidate_retrieval::{retrieve_candidates, RetrievalParams};
 use super::context::{DraftEdgeEnd, PipelineContext, PipelineStage};
 use super::decision::{decide, Decision, DecisionThresholds, ResolutionOutcome};
 use super::edge_decision::{compute_edge_decision, EdgeDecision};
 use super::fusion::{fuse, FusionResult, SignalWeights};
 use super::queue::{JobMode, PipelineJob};
-use super::adapters::draft_entity_from_triple_endpoint;
 use super::stage_edge_extract::extract_edges;
 use super::stage_extract::extract_entities;
 use super::stage_persist::{
@@ -163,10 +163,7 @@ pub trait MemoryReader: Send + Sync {
     /// source-of-truth that the resolution worker must use for all graph
     /// reads/writes (ISS-055). Implementations that do not track namespace
     /// (legacy stubs) must return an empty string.
-    fn fetch(
-        &self,
-        memory_id: &str,
-    ) -> Result<Option<(MemoryRecord, String)>, MemoryReadError>;
+    fn fetch(&self, memory_id: &str) -> Result<Option<(MemoryRecord, String)>, MemoryReadError>;
 }
 
 /// Errors surfaced by [`MemoryReader::fetch`]. Distinct from
@@ -504,11 +501,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
     /// namespace — the begin/finish `WHERE namespace = ?` filter then
     /// returns 0 rows and finish reports `"run not found"`. Stamping here
     /// makes begin/persist/finish all use the same namespace value.
-    fn begin_run(
-        &self,
-        job: &PipelineJob,
-        namespace: &str,
-    ) -> Result<Uuid, ProcessError> {
+    fn begin_run(&self, job: &PipelineJob, namespace: &str) -> Result<Uuid, ProcessError> {
         let kind = match job.mode {
             JobMode::Initial => PipelineKind::Resolution,
             JobMode::ReExtract => PipelineKind::Reextract,
@@ -631,13 +624,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
             // FusionResult.
             let fused: Vec<FusionResult> = scored
                 .iter()
-                .map(|c| {
-                    fuse(
-                        c.match_row.entity_id,
-                        &self.config.weights,
-                        &c.measurements,
-                    )
-                })
+                .map(|c| fuse(c.match_row.entity_id, &self.config.weights, &c.measurements))
                 .collect();
 
             // Decide: CreateNew / MergeInto / DeferToLlm.
@@ -800,7 +787,7 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
                 match store.find_edges(
                     subject_id,
                     &draft.predicate,
-                    None,         // unfiltered slot — see ISS-035 note in edge_decision
+                    None, // unfiltered slot — see ISS-035 note in edge_decision
                     /* valid_only */ true,
                 ) {
                     Ok(rows) => rows,
@@ -901,12 +888,8 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
         // ISS-055: namespace is provided by the migration caller (which
         // batches rows by namespace) — backfill cannot read it from the
         // record because v0.2 `MemoryRecord` does not carry it.
-        let mut ctx = PipelineContext::new(
-            memory.clone(),
-            Uuid::nil(),
-            None,
-            namespace.to_string(),
-        );
+        let mut ctx =
+            PipelineContext::new(memory.clone(), Uuid::nil(), None, namespace.to_string());
 
         // §3.2 entity extract — total over v0.2 extractor; non-fatal
         // failures land on `ctx.failures`.
@@ -1035,8 +1018,8 @@ mod backfill_tests {
     use crate::graph::entity::{Entity, EntityKind};
     use crate::graph::schema::Predicate;
     use crate::graph::store::{
-        CandidateMatch, CandidateQuery, EntityMentions, GraphRead, GraphWrite,
-        PipelineRunRow, ProposedPredicateStats,
+        CandidateMatch, CandidateQuery, EntityMentions, GraphRead, GraphWrite, PipelineRunRow,
+        ProposedPredicateStats,
     };
     use crate::graph::topic::KnowledgeTopic;
     use crate::graph::{ApplyReport, EdgeEnd, GraphDelta, GraphError};
@@ -1138,16 +1121,10 @@ mod backfill_tests {
         fn edges_in_episode(&self, _e: Uuid) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
-        fn mentions_of_entity(
-            &self,
-            _e: Uuid,
-        ) -> Result<EntityMentions, GraphError> {
+        fn mentions_of_entity(&self, _e: Uuid) -> Result<EntityMentions, GraphError> {
             unimplemented!()
         }
-        fn entities_linked_to_memory(
-            &self,
-            _m: &str,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn entities_linked_to_memory(&self, _m: &str) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
         fn memories_mentioning_entity(
@@ -1157,10 +1134,7 @@ mod backfill_tests {
         ) -> Result<Vec<String>, GraphError> {
             unimplemented!()
         }
-        fn edges_sourced_from_memory(
-            &self,
-            _m: &str,
-        ) -> Result<Vec<Edge>, GraphError> {
+        fn edges_sourced_from_memory(&self, _m: &str) -> Result<Vec<Edge>, GraphError> {
             unimplemented!()
         }
         fn get_topic(&self, _id: Uuid) -> Result<Option<KnowledgeTopic>, GraphError> {
@@ -1186,10 +1160,7 @@ mod backfill_tests {
         ) -> Result<Vec<ProposedPredicateStats>, GraphError> {
             unimplemented!()
         }
-        fn list_failed_episodes(
-            &self,
-            _unresolved_only: bool,
-        ) -> Result<Vec<Uuid>, GraphError> {
+        fn list_failed_episodes(&self, _unresolved_only: bool) -> Result<Vec<Uuid>, GraphError> {
             unimplemented!()
         }
         fn list_namespaces(&self) -> Result<Vec<String>, GraphError> {
@@ -1313,10 +1284,7 @@ mod backfill_tests {
         ) -> Result<(), GraphError> {
             unimplemented!()
         }
-        fn record_resolution_trace(
-            &mut self,
-            _t: &ResolutionTrace,
-        ) -> Result<(), GraphError> {
+        fn record_resolution_trace(&mut self, _t: &ResolutionTrace) -> Result<(), GraphError> {
             unimplemented!()
         }
         fn record_predicate_use(
@@ -1327,10 +1295,7 @@ mod backfill_tests {
         ) -> Result<(), GraphError> {
             unimplemented!()
         }
-        fn record_extraction_failure(
-            &mut self,
-            _f: &ExtractionFailure,
-        ) -> Result<(), GraphError> {
+        fn record_extraction_failure(&mut self, _f: &ExtractionFailure) -> Result<(), GraphError> {
             unimplemented!()
         }
         fn mark_failure_resolved(
@@ -1346,10 +1311,7 @@ mod backfill_tests {
         ) -> Result<(), GraphError> {
             unimplemented!()
         }
-        fn apply_graph_delta(
-            &mut self,
-            _d: &GraphDelta,
-        ) -> Result<ApplyReport, GraphError> {
+        fn apply_graph_delta(&mut self, _d: &GraphDelta) -> Result<ApplyReport, GraphError> {
             // resolve_for_backfill must NOT call apply — surface loudly
             // if a future change accidentally wires it through.
             panic!("apply_graph_delta should not be called by resolve_for_backfill")
@@ -1364,10 +1326,7 @@ mod backfill_tests {
 
     struct StubReader;
     impl MemoryReader for StubReader {
-        fn fetch(
-            &self,
-            _id: &str,
-        ) -> Result<Option<(MemoryRecord, String)>, MemoryReadError> {
+        fn fetch(&self, _id: &str) -> Result<Option<(MemoryRecord, String)>, MemoryReadError> {
             // resolve_for_backfill takes &MemoryRecord directly and never
             // hits the reader. Surface loudly if that changes.
             Ok(None)
@@ -1401,7 +1360,9 @@ mod backfill_tests {
         let mr: Arc<dyn MemoryReader> = Arc::new(StubReader);
         ResolutionPipeline::new(
             mr,
-            Arc::new(EntityExtractor::new(&crate::entities::EntityConfig::default())),
+            Arc::new(EntityExtractor::new(
+                &crate::entities::EntityConfig::default(),
+            )),
             Arc::new(StubTriples(triples)),
             Arc::new(StdMutex::new(StubStore)),
             crate::resolution::default_embedder(),
@@ -1565,7 +1526,11 @@ mod lift_tests {
             "subject not lifted: {:?}",
             aliases
         );
-        assert!(aliases.contains(&"acme"), "object not lifted: {:?}", aliases);
+        assert!(
+            aliases.contains(&"acme"),
+            "object not lifted: {:?}",
+            aliases
+        );
 
         // Kind is the weak `Other("unknown")` per draft_entity_from_triple_endpoint.
         for d in &ctx.entity_drafts {

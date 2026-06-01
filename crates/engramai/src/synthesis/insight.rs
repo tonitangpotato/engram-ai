@@ -92,11 +92,15 @@ pub fn build_prompt(
 
     // Format requirements
     prompt.push_str("Format requirements:\n");
-    prompt.push_str("- Respond ONLY with valid JSON — no markdown fences, no preamble, no trailing text\n");
+    prompt.push_str(
+        "- Respond ONLY with valid JSON — no markdown fences, no preamble, no trailing text\n",
+    );
     prompt.push_str("- All string values must be properly escaped\n");
     prompt.push_str("- \"confidence\" must be a decimal number between 0.0 and 1.0 (inclusive)\n");
     prompt.push_str("- \"insight_type\" must be exactly one of: \"pattern\", \"rule\", \"connection\", \"contradiction\"\n");
-    prompt.push_str("- \"source_references\" must contain only IDs from the provided memories list\n");
+    prompt.push_str(
+        "- \"source_references\" must contain only IDs from the provided memories list\n",
+    );
     prompt.push_str("- \"insight\" must be between 50 and 500 characters\n\n");
 
     // Memory list
@@ -195,12 +199,11 @@ pub fn validate_output(
     };
 
     // Parse JSON
-    let resp: LlmResponse = serde_json::from_str(cleaned).map_err(|e| {
-        SynthesisError::LlmInvalidResponse {
+    let resp: LlmResponse =
+        serde_json::from_str(cleaned).map_err(|e| SynthesisError::LlmInvalidResponse {
             cluster_id: cluster_id.clone(),
             raw_response: format!("JSON parse error: {e}"),
-        }
-    })?;
+        })?;
 
     // Check 2: confidence in 0.0-1.0
     if !(0.0..=1.0).contains(&resp.confidence) {
@@ -326,7 +329,12 @@ mod tests {
     use crate::types::MemoryLayer;
     use chrono::Utc;
 
-    fn make_record(id: &str, content: &str, memory_type: MemoryType, importance: f64) -> MemoryRecord {
+    fn make_record(
+        id: &str,
+        content: &str,
+        memory_type: MemoryType,
+        importance: f64,
+    ) -> MemoryRecord {
         MemoryRecord {
             id: id.to_string(),
             content: content.to_string(),

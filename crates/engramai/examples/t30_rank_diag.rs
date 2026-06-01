@@ -142,7 +142,9 @@ fn main() -> ExitCode {
                     "renorm_scale={:.3} renorm_applied={}\n\n",
                     trace.fusion.renorm_scale, trace.fusion.renorm_applied
                 ));
-                report.push_str("| rank | id | fused | vector | bm25 | graph | recency | actr | affect |\n");
+                report.push_str(
+                    "| rank | id | fused | vector | bm25 | graph | recency | actr | affect |\n",
+                );
                 report.push_str("|---:|---|---:|---:|---:|---:|---:|---:|---:|\n");
                 for (i, c) in candidates.iter().take(12).enumerate() {
                     report.push_str(&format!(
@@ -192,11 +194,7 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_query(
-    path: &str,
-    unified: bool,
-    text: &str,
-) -> Result<GraphQueryResponse, String> {
+fn run_query(path: &str, unified: bool, text: &str) -> Result<GraphQueryResponse, String> {
     let mut cfg = MemoryConfig::default();
     cfg.unified_substrate = unified;
     let mem = Memory::new(path, Some(cfg))

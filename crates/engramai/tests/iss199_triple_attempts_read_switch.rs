@@ -71,7 +71,9 @@ fn legacy_attempts(storage: &Storage, id: &str) -> i64 {
 #[test]
 fn unified_increment_writes_nodes_attributes_json() {
     let mut storage = Storage::with_unified_substrate(":memory:", true).unwrap();
-    storage.add(&sample("mem-1", "rust is a language"), "default").unwrap();
+    storage
+        .add(&sample("mem-1", "rust is a language"), "default")
+        .unwrap();
 
     // Missing key reads as 0 (matches column DEFAULT 0).
     assert_eq!(unified_attempts(&storage, "mem-1"), 0);
@@ -87,8 +89,12 @@ fn unified_increment_writes_nodes_attributes_json() {
 #[test]
 fn unified_get_unenriched_reads_nodes_and_respects_cap() {
     let mut storage = Storage::with_unified_substrate(":memory:", true).unwrap();
-    storage.add(&sample("mem-1", "fresh memory needing triples"), "default").unwrap();
-    storage.add(&sample("mem-2", "another memory"), "default").unwrap();
+    storage
+        .add(&sample("mem-1", "fresh memory needing triples"), "default")
+        .unwrap();
+    storage
+        .add(&sample("mem-2", "another memory"), "default")
+        .unwrap();
 
     // Both are unenriched (no triples, attempts 0 < max).
     let ids = storage.get_unenriched_memory_ids(10, 3).unwrap();
@@ -100,7 +106,10 @@ fn unified_get_unenriched_reads_nodes_and_respects_cap() {
     storage.increment_extraction_attempts("mem-1").unwrap();
     storage.increment_extraction_attempts("mem-1").unwrap();
     let ids = storage.get_unenriched_memory_ids(10, 3).unwrap();
-    assert!(!ids.contains(&"mem-1".to_string()), "mem-1 at cap must be excluded");
+    assert!(
+        !ids.contains(&"mem-1".to_string()),
+        "mem-1 at cap must be excluded"
+    );
     assert!(ids.contains(&"mem-2".to_string()), "mem-2 still under cap");
 }
 
@@ -108,7 +117,9 @@ fn unified_get_unenriched_reads_nodes_and_respects_cap() {
 fn legacy_mode_still_uses_memories_column() {
     // Default `Storage::new` is legacy read mode.
     let mut storage = Storage::new(":memory:").unwrap();
-    storage.add(&sample("mem-1", "legacy path memory"), "default").unwrap();
+    storage
+        .add(&sample("mem-1", "legacy path memory"), "default")
+        .unwrap();
 
     assert_eq!(legacy_attempts(&storage, "mem-1"), 0);
     storage.increment_extraction_attempts("mem-1").unwrap();
@@ -120,5 +131,8 @@ fn legacy_mode_still_uses_memories_column() {
     storage.increment_extraction_attempts("mem-1").unwrap();
     storage.increment_extraction_attempts("mem-1").unwrap();
     let ids = storage.get_unenriched_memory_ids(10, 3).unwrap();
-    assert!(!ids.contains(&"mem-1".to_string()), "mem-1 at cap (3) excluded");
+    assert!(
+        !ids.contains(&"mem-1".to_string()),
+        "mem-1 at cap (3) excluded"
+    );
 }

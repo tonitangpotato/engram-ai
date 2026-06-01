@@ -95,17 +95,16 @@ pub mod bus;
 pub mod clustering;
 pub mod compiler;
 pub mod confidence;
+pub mod config;
 pub mod dimensions;
+pub mod embeddings;
 pub mod enriched;
 pub mod entities;
-pub mod config;
-pub mod embeddings;
 pub mod extractor;
 pub mod graph;
-pub mod knowledge_compile;
-pub mod resolution;
 pub mod hybrid_search;
 pub mod interoceptive;
+pub mod knowledge_compile;
 pub mod lifecycle;
 pub mod memory;
 pub mod merge_types;
@@ -114,6 +113,7 @@ pub mod migration_types;
 pub mod models;
 pub mod promotion;
 pub mod query_classifier;
+pub mod resolution;
 pub mod retrieval;
 pub mod session_wm;
 pub mod storage;
@@ -129,27 +129,42 @@ pub mod types;
 pub mod write_stats;
 
 // Re-export main types
-pub use bus::{EmpathyBus, SoulUpdate, HeartbeatUpdate, Drive, HeartbeatTask, Identity, EmpathyTrend, ActionStats, SubscriptionManager, Subscription, Notification, DriveEmbeddings, score_alignment_hybrid};
+pub use bus::{
+    score_alignment_hybrid, ActionStats, Drive, DriveEmbeddings, EmpathyBus, EmpathyTrend,
+    HeartbeatTask, HeartbeatUpdate, Identity, Notification, SoulUpdate, Subscription,
+    SubscriptionManager,
+};
 // Backward-compat aliases
 pub use bus::{EmotionalBus, EmotionalTrend};
 pub use config::MemoryConfig;
 pub use config::TripleConfig;
-pub use embeddings::{EmbeddingConfig, EmbeddingProvider, EmbeddingError};
-pub use extractor::{MemoryExtractor, ExtractedFact, AnthropicExtractor, AnthropicExtractorConfig, TokenProvider, OllamaExtractor, OllamaExtractorConfig};
-pub use type_weights::{TypeWeights, infer_type_weights};
-pub use memory::{Memory, SleepReport, is_insight};
-pub use write_stats::{
-    CountingSink, EventSink, NoopSink, SharedSink, StoreEvent, WriteStats,
+pub use embeddings::{EmbeddingConfig, EmbeddingError, EmbeddingProvider};
+pub use extractor::{
+    AnthropicExtractor, AnthropicExtractorConfig, ExtractedFact, MemoryExtractor, OllamaExtractor,
+    OllamaExtractorConfig, TokenProvider,
 };
+pub use memory::{is_insight, Memory, SleepReport};
 pub use storage::EmbeddingStats;
 pub use storage::EntityRecord;
-pub use types::{AclEntry, CrossLink, HebbianLink, MemoryLayer, MergeOutcome, MemoryRecord, MemoryStats, MemoryType, Permission, RecallResult, RecallWithAssociationsResult, SupersessionError, SupersessionInfo, BulkCorrectionResult};
+pub use type_weights::{infer_type_weights, TypeWeights};
+pub use types::{
+    AclEntry, BulkCorrectionResult, CrossLink, HebbianLink, MemoryLayer, MemoryRecord, MemoryStats,
+    MemoryType, MergeOutcome, Permission, RecallResult, RecallWithAssociationsResult,
+    SupersessionError, SupersessionInfo,
+};
+pub use write_stats::{CountingSink, EventSink, NoopSink, SharedSink, StoreEvent, WriteStats};
 
 // Re-export new modules
-pub use anomaly::{BaselineTracker, Baseline, AnomalyResult};
-pub use confidence::{confidence_score, confidence_label, confidence_detail, content_reliability, retrieval_salience, ConfidenceDetail};
-pub use hybrid_search::{hybrid_search, adaptive_hybrid_search, reciprocal_rank_fusion, HybridSearchResult, HybridSearchOpts};
-pub use session_wm::{ActiveContext, SessionRegistry, SessionRecallResult, CachedScore};
+pub use anomaly::{AnomalyResult, Baseline, BaselineTracker};
+pub use confidence::{
+    confidence_detail, confidence_label, confidence_score, content_reliability, retrieval_salience,
+    ConfidenceDetail,
+};
+pub use hybrid_search::{
+    adaptive_hybrid_search, hybrid_search, reciprocal_rank_fusion, HybridSearchOpts,
+    HybridSearchResult,
+};
+pub use session_wm::{ActiveContext, CachedScore, SessionRecallResult, SessionRegistry};
 
 /// Deprecated alias for [`ActiveContext`].
 ///
@@ -159,15 +174,24 @@ pub use session_wm::{ActiveContext, SessionRegistry, SessionRecallResult, Cached
 /// strength. See DESIGN-v0.3 review r1 / finding A1.
 ///
 /// Will be removed in v0.4.
-#[deprecated(since = "0.3.0", note = "renamed to `ActiveContext` in v0.3; will be removed in v0.4")]
+#[deprecated(
+    since = "0.3.0",
+    note = "renamed to `ActiveContext` in v0.3; will be removed in v0.4"
+)]
 pub type SessionWorkingMemory = ActiveContext;
-pub use synthesis::types::{
-    SynthesisSettings, SynthesisReport, SynthesisError, SynthesisEngine,
-    SynthesisLlmProvider, MemoryCluster, GateDecision, GateResult,
-    ProvenanceRecord, ProvenanceChain, UndoSynthesis,
+pub use lifecycle::{
+    AddResult, DecayReport, ForgetReport, HealthReport, LifecycleError, PhaseReport,
+    RebalanceReport,
 };
-pub use triple::{Triple, Predicate, TripleSource};
-pub use triple_extractor::{TripleExtractor, AnthropicTripleExtractor, OllamaTripleExtractor, NoopTripleExtractor};
+pub use metacognition::{
+    MetaCognitionReport, MetaCognitionTracker, ParameterSuggestion, RecallEvent, SynthesisEvent,
+};
 pub use promotion::PromotionCandidate;
-pub use metacognition::{MetaCognitionTracker, MetaCognitionReport, ParameterSuggestion, RecallEvent, SynthesisEvent};
-pub use lifecycle::{DecayReport, ForgetReport, AddResult, LifecycleError, PhaseReport, HealthReport, RebalanceReport};
+pub use synthesis::types::{
+    GateDecision, GateResult, MemoryCluster, ProvenanceChain, ProvenanceRecord, SynthesisEngine,
+    SynthesisError, SynthesisLlmProvider, SynthesisReport, SynthesisSettings, UndoSynthesis,
+};
+pub use triple::{Predicate, Triple, TripleSource};
+pub use triple_extractor::{
+    AnthropicTripleExtractor, NoopTripleExtractor, OllamaTripleExtractor, TripleExtractor,
+};

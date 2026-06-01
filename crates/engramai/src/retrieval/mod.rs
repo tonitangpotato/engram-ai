@@ -34,18 +34,16 @@ pub mod plans;
 pub use api::{
     EntityId, GraphQuery, GraphQueryResponse, MemoryTier, ScoredResult, SubScores, TimeWindow,
 };
+pub use budget::{BudgetController, CostCap, CostCaps, CostCounters, Stage, StageBudget};
 pub use explain::{
     AffectTrace, BiTemporalTrace, ClassifierTrace, Downgrade, FusionCandidate, FusionTrace,
     HybridTruncatedEntry, LlmCost, PerStageTiming, PlanDetail, PlanTrace, PlanTraceBuilder,
     SignalScoreSnapshot,
 };
-pub use outcomes::{RetrievalError, RetrievalOutcome};
-pub use budget::{
-    BudgetController, CostCap, CostCaps, CostCounters, Stage, StageBudget,
-};
 pub use fusion::{NullReranker, Reranker};
 pub use metrics::{
-    BiTemporalMode, Counter, DowngradeReason, DroppedKind, Gauge, Histogram, MetricLabel,
-    MetricsRegistry, OutcomeLabel, TokenDirection, render_prometheus,
-    DEFAULT_LATENCY_BUCKETS, DEFAULT_LLM_DURATION_BUCKETS,
+    render_prometheus, BiTemporalMode, Counter, DowngradeReason, DroppedKind, Gauge, Histogram,
+    MetricLabel, MetricsRegistry, OutcomeLabel, TokenDirection, DEFAULT_LATENCY_BUCKETS,
+    DEFAULT_LLM_DURATION_BUCKETS,
 };
+pub use outcomes::{RetrievalError, RetrievalOutcome};

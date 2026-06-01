@@ -319,18 +319,16 @@ fn verify_backup(
 
     // 5c. schema_version equivalence (skip when both sides lack the table —
     // v0.2.2 pre-dates schema_version per §4.3 step 2).
-    let source_digest = schema_version_digest(source_conn).map_err(|e| {
-        MigrationError::BackupFailed {
+    let source_digest =
+        schema_version_digest(source_conn).map_err(|e| MigrationError::BackupFailed {
             path: backup_path.to_path_buf(),
             source: io::Error::other(format!("source schema_version digest failed: {e}")),
-        }
-    })?;
-    let backup_digest = schema_version_digest(&backup_conn).map_err(|e| {
-        MigrationError::BackupFailed {
+        })?;
+    let backup_digest =
+        schema_version_digest(&backup_conn).map_err(|e| MigrationError::BackupFailed {
             path: backup_path.to_path_buf(),
             source: io::Error::other(format!("backup schema_version digest failed: {e}")),
-        }
-    })?;
+        })?;
     if source_digest != backup_digest {
         return Err(MigrationError::BackupFailed {
             path: backup_path.to_path_buf(),

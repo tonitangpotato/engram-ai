@@ -71,7 +71,11 @@ fn main() -> ExitCode {
     // OAuth bearer token => is_oauth=true.
     let extractor = AnthropicTripleExtractor::with_model(&token, true, MODEL);
 
-    println!("# ISS-203 prompt A/B probe ({} sentences, model {})\n", SENTENCES.len(), MODEL);
+    println!(
+        "# ISS-203 prompt A/B probe ({} sentences, model {})\n",
+        SENTENCES.len(),
+        MODEL
+    );
 
     let mut total_legacy_phrase_objs = 0usize;
     let mut total_v2_phrase_objs = 0usize;
@@ -121,27 +125,43 @@ fn main() -> ExitCode {
         let v2_phrase = count_phrase(&v2);
         let v2_decomp = v2
             .iter()
-            .filter(|t| {
-                matches!(t.predicate.as_str(), "part_of" | "related_to")
-            })
+            .filter(|t| matches!(t.predicate.as_str(), "part_of" | "related_to"))
             .count();
 
         total_legacy_phrase_objs += legacy_phrase;
         total_v2_phrase_objs += v2_phrase;
         total_v2_belongs_or_assoc += v2_decomp;
 
-        println!("  legacy ({} triples, {} phrase-endpoints):", legacy.len(), legacy_phrase);
+        println!(
+            "  legacy ({} triples, {} phrase-endpoints):",
+            legacy.len(),
+            legacy_phrase
+        );
         println!("{}", fmt_triples(&legacy));
-        println!("  v2     ({} triples, {} phrase-endpoints, {} part_of/related_to):", v2.len(), v2_phrase, v2_decomp);
+        println!(
+            "  v2     ({} triples, {} phrase-endpoints, {} part_of/related_to):",
+            v2.len(),
+            v2_phrase,
+            v2_decomp
+        );
         println!("{}", fmt_triples(&v2));
         println!();
     }
 
     println!("---");
     println!("SUMMARY:");
-    println!("  legacy phrase-endpoint triples total: {}", total_legacy_phrase_objs);
-    println!("  v2     phrase-endpoint triples total: {}", total_v2_phrase_objs);
-    println!("  v2     part_of/related_to triples total: {}", total_v2_belongs_or_assoc);
+    println!(
+        "  legacy phrase-endpoint triples total: {}",
+        total_legacy_phrase_objs
+    );
+    println!(
+        "  v2     phrase-endpoint triples total: {}",
+        total_v2_phrase_objs
+    );
+    println!(
+        "  v2     part_of/related_to triples total: {}",
+        total_v2_belongs_or_assoc
+    );
     println!();
     println!("GATE: V2 should have FEWER phrase-endpoint triples than legacy");
     println!("      AND produce part_of/related_to decomposition edges.");

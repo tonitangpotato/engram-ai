@@ -152,7 +152,10 @@ fn t29_4_links_weighted_unified_accumulates_without_cap() {
         .map(|(_, w)| w)
         .expect("unified returns b");
 
-    assert!(legacy_weight <= 1.0, "legacy strength caps at 1.0 (got {legacy_weight})");
+    assert!(
+        legacy_weight <= 1.0,
+        "legacy strength caps at 1.0 (got {legacy_weight})"
+    );
     assert!(
         unified_weight > 1.0,
         "unified weight should exceed cap after 20 coactivations (got {unified_weight})"
@@ -193,7 +196,10 @@ fn t29_4_links_weighted_multi_neighbour_weights_all_positive() {
                 .get(n)
                 .copied()
                 .unwrap_or_else(|| panic!("missing {n} on unified={unified_flag}"));
-            assert!(w > 0.0, "weight for {n} must be > 0 (unified={unified_flag}, got {w})");
+            assert!(
+                w > 0.0,
+                "weight for {n} must be > 0 (unified={unified_flag}, got {w})"
+            );
         }
     }
 }

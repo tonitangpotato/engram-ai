@@ -32,14 +32,12 @@ use tempfile::tempdir;
 /// The four substrate tables that Phase A creates. The integration test
 /// asserts against this list, not against whatever happens to exist —
 /// any drift between this list and storage.rs will be caught.
-const UNIFIED_TABLES: &[&str] =
-    &["nodes", "edges", "nodes_fts", "node_embeddings"];
+const UNIFIED_TABLES: &[&str] = &["nodes", "edges", "nodes_fts", "node_embeddings"];
 
 /// Triggers created by T07. If any of these go missing the FTS surface
 /// silently de-syncs from `nodes`, which is the single most expensive
 /// failure mode this acceptance test catches.
-const UNIFIED_FTS_TRIGGERS: &[&str] =
-    &["nodes_fts_ai", "nodes_fts_ad", "nodes_fts_au"];
+const UNIFIED_FTS_TRIGGERS: &[&str] = &["nodes_fts_ai", "nodes_fts_ad", "nodes_fts_au"];
 
 /// Indexes the writers will rely on. Not exhaustive (storage.rs creates
 /// more) — just the ones the acceptance test cares about.
@@ -90,10 +88,7 @@ fn schema_version(conn: &Connection) -> String {
 
 fn assert_phase_a_complete(conn: &Connection) {
     for tbl in UNIFIED_TABLES {
-        assert!(
-            table_exists(conn, tbl),
-            "Phase A table missing: {tbl}"
-        );
+        assert!(table_exists(conn, tbl), "Phase A table missing: {tbl}");
     }
     for trig in UNIFIED_FTS_TRIGGERS {
         assert!(
@@ -246,7 +241,11 @@ fn t11_reopen_preserves_legacy_rows_and_adds_substrate() {
     // source_id rather than id (composite PK), so use a per-table key
     // column.
     for (tbl, id, _, _, _) in &snapshot {
-        let key_col = if tbl == "hebbian_links" { "source_id" } else { "id" };
+        let key_col = if tbl == "hebbian_links" {
+            "source_id"
+        } else {
+            "id"
+        };
         let exists: bool = conn
             .query_row(
                 &format!("SELECT 1 FROM {tbl} WHERE {key_col} = ?1"),

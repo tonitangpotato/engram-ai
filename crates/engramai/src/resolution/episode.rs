@@ -187,7 +187,10 @@ mod tests {
         let ep = Episode::new("only text");
         let json_str = serde_json::to_string(&ep).expect("serialize");
         // None fields must NOT appear as nulls — wire stays clean.
-        assert!(!json_str.contains("\"id\""), "id should be omitted: {json_str}");
+        assert!(
+            !json_str.contains("\"id\""),
+            "id should be omitted: {json_str}"
+        );
         assert!(
             !json_str.contains("\"session_id\""),
             "session_id should be omitted: {json_str}"

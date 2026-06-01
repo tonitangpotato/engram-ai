@@ -20,14 +20,17 @@ impl Drive {
     /// Extract keywords from the drive name and description.
     pub fn extract_keywords(&self) -> Vec<String> {
         let mut keywords = Vec::new();
-        
+
         // Add name as keyword
         keywords.push(self.name.to_lowercase());
-        
+
         // Extract significant words from description (3+ chars, not stopwords)
-        let stopwords = ["the", "and", "for", "with", "that", "this", "from", "are", "was", "but"];
+        let stopwords = [
+            "the", "and", "for", "with", "that", "this", "from", "are", "was", "but",
+        ];
         for word in self.description.split_whitespace() {
-            let clean: String = word.chars()
+            let clean: String = word
+                .chars()
                 .filter(|c| c.is_alphanumeric())
                 .collect::<String>()
                 .to_lowercase();
@@ -35,7 +38,7 @@ impl Drive {
                 keywords.push(clean);
             }
         }
-        
+
         keywords.sort();
         keywords.dedup();
         keywords
@@ -71,26 +74,26 @@ pub struct Identity {
 pub fn parse_soul(content: &str) -> Vec<Drive> {
     let mut drives = Vec::new();
     let mut current_section = String::new();
-    
+
     for line in content.lines() {
         let trimmed = line.trim();
-        
+
         // Track section headers
         if trimmed.starts_with('#') {
             current_section = trimmed.trim_start_matches('#').trim().to_string();
             continue;
         }
-        
+
         // Skip empty lines
         if trimmed.is_empty() {
             continue;
         }
-        
+
         // Parse key: value pairs
         if let Some(colon_pos) = trimmed.find(':') {
             let key = trimmed[..colon_pos].trim();
             let value = trimmed[colon_pos + 1..].trim();
-            
+
             // Skip if key looks like a URL or is a section-like thing
             if !key.contains('/') && !key.is_empty() && !value.is_empty() {
                 let mut drive = Drive {
@@ -103,18 +106,28 @@ pub fn parse_soul(content: &str) -> Vec<Drive> {
                 continue;
             }
         }
-        
+
         // Parse bullet points
         if trimmed.starts_with('-') || trimmed.starts_with('*') {
             let item = trimmed[1..].trim();
             if !item.is_empty() {
                 // Use section as context if available
                 let name = if !current_section.is_empty() {
-                    format!("{}/{}", current_section, item.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+                    format!(
+                        "{}/{}",
+                        current_section,
+                        item.split_whitespace()
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )
                 } else {
-                    item.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
+                    item.split_whitespace()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 };
-                
+
                 let mut drive = Drive {
                     name,
                     description: item.to_string(),
@@ -125,7 +138,7 @@ pub fn parse_soul(content: &str) -> Vec<Drive> {
             }
         }
     }
-    
+
     drives
 }
 
@@ -136,17 +149,17 @@ pub fn parse_soul(content: &str) -> Vec<Drive> {
 /// - `- [x] task` or `- [X] task` (completed)
 pub fn parse_heartbeat(content: &str) -> Vec<HeartbeatTask> {
     let mut tasks = Vec::new();
-    
+
     for line in content.lines() {
         let trimmed = line.trim();
-        
+
         // Parse checkbox items
         if let Some(stripped) = trimmed.strip_prefix("- [") {
             if let Some(bracket_end) = stripped.find(']') {
                 let checkbox_content = &stripped[..bracket_end];
                 let completed = checkbox_content.eq_ignore_ascii_case("x");
                 let description = stripped[bracket_end + 1..].trim().to_string();
-                
+
                 if !description.is_empty() {
                     tasks.push(HeartbeatTask {
                         description,
@@ -157,7 +170,7 @@ pub fn parse_heartbeat(content: &str) -> Vec<HeartbeatTask> {
             }
         }
     }
-    
+
     tasks
 }
 
@@ -170,18 +183,18 @@ pub fn parse_heartbeat(content: &str) -> Vec<HeartbeatTask> {
 /// - `emoji: value`
 pub fn parse_identity(content: &str) -> Identity {
     let mut identity = Identity::default();
-    
+
     for line in content.lines() {
         let _trimmed = line.trim().to_lowercase();
-        
+
         if let Some(colon_pos) = line.find(':') {
             let key = line[..colon_pos].trim().to_lowercase();
             let value = line[colon_pos + 1..].trim().to_string();
-            
+
             if value.is_empty() {
                 continue;
             }
-            
+
             match key.as_str() {
                 "name" => identity.name = Some(value),
                 "creature" => identity.creature = Some(value),
@@ -191,7 +204,7 @@ pub fn parse_identity(content: &str) -> Identity {
             }
         }
     }
-    
+
     identity
 }
 
@@ -206,7 +219,9 @@ pub fn read_soul<P: AsRef<Path>>(workspace_dir: P) -> Result<Vec<Drive>, std::io
 }
 
 /// Read and parse HEARTBEAT.md from workspace directory.
-pub fn read_heartbeat<P: AsRef<Path>>(workspace_dir: P) -> Result<Vec<HeartbeatTask>, std::io::Error> {
+pub fn read_heartbeat<P: AsRef<Path>>(
+    workspace_dir: P,
+) -> Result<Vec<HeartbeatTask>, std::io::Error> {
     let path = workspace_dir.as_ref().join("HEARTBEAT.md");
     if !path.exists() {
         return Ok(Vec::new());
@@ -236,11 +251,11 @@ pub fn update_soul_field<P: AsRef<Path>>(
     if !path.exists() {
         return Ok(false);
     }
-    
+
     let content = fs::read_to_string(&path)?;
     let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
     let mut updated = false;
-    
+
     for line in &mut lines {
         if let Some(colon_pos) = line.find(':') {
             let line_key = line[..colon_pos].trim();
@@ -251,11 +266,11 @@ pub fn update_soul_field<P: AsRef<Path>>(
             }
         }
     }
-    
+
     if updated {
         fs::write(path, lines.join("\n"))?;
     }
-    
+
     Ok(updated)
 }
 
@@ -271,12 +286,12 @@ pub fn add_soul_drive<P: AsRef<Path>>(
     } else {
         String::new()
     };
-    
+
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
     content.push_str(&format!("{}: {}\n", key, value));
-    
+
     fs::write(path, content)?;
     Ok(())
 }
@@ -291,13 +306,13 @@ pub fn update_heartbeat_task<P: AsRef<Path>>(
     if !path.exists() {
         return Ok(false);
     }
-    
+
     let content = fs::read_to_string(&path)?;
     let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
     let mut updated = false;
-    
+
     let checkbox_mark = if completed { "x" } else { " " };
-    
+
     for line in &mut lines {
         let trimmed = line.trim();
         if let Some(stripped) = trimmed.strip_prefix("- [") {
@@ -313,11 +328,11 @@ pub fn update_heartbeat_task<P: AsRef<Path>>(
             }
         }
     }
-    
+
     if updated {
         fs::write(path, lines.join("\n"))?;
     }
-    
+
     Ok(updated)
 }
 
@@ -332,12 +347,12 @@ pub fn add_heartbeat_task<P: AsRef<Path>>(
     } else {
         String::new()
     };
-    
+
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
     content.push_str(&format!("- [ ] {}\n", description));
-    
+
     fs::write(path, content)?;
     Ok(())
 }
@@ -352,11 +367,11 @@ pub fn update_identity_field<P: AsRef<Path>>(
     if !path.exists() {
         return Ok(false);
     }
-    
+
     let content = fs::read_to_string(&path)?;
     let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
     let mut updated = false;
-    
+
     for line in &mut lines {
         if let Some(colon_pos) = line.find(':') {
             let line_key = line[..colon_pos].trim();
@@ -367,11 +382,11 @@ pub fn update_identity_field<P: AsRef<Path>>(
             }
         }
     }
-    
+
     if updated {
         fs::write(path, lines.join("\n"))?;
     }
-    
+
     Ok(updated)
 }
 
@@ -379,7 +394,7 @@ pub fn update_identity_field<P: AsRef<Path>>(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_parse_soul_key_value() {
         let content = r#"
@@ -395,7 +410,7 @@ patience: Wait for the right moment
         assert_eq!(drives[0].name, "curiosity");
         assert!(drives[0].description.contains("understand"));
     }
-    
+
     #[test]
     fn test_parse_soul_bullets() {
         let content = r#"
@@ -407,7 +422,7 @@ patience: Wait for the right moment
         assert_eq!(drives.len(), 2);
         assert!(drives[0].name.contains("Values"));
     }
-    
+
     #[test]
     fn test_parse_heartbeat() {
         let content = r#"
@@ -422,7 +437,7 @@ patience: Wait for the right moment
         assert!(tasks[1].completed);
         assert_eq!(tasks[0].description, "Check emails");
     }
-    
+
     #[test]
     fn test_parse_identity() {
         let content = r#"
@@ -436,7 +451,7 @@ emoji: 🐱
         assert_eq!(identity.creature, Some("Cat".to_string()));
         assert_eq!(identity.emoji, Some("🐱".to_string()));
     }
-    
+
     #[test]
     fn test_drive_keywords() {
         let drive = Drive {
@@ -449,19 +464,19 @@ emoji: 🐱
         assert!(keywords.contains(&"understand".to_string()));
         assert!(keywords.contains(&"concepts".to_string()));
     }
-    
+
     #[test]
     fn test_write_operations() {
         let tmpdir = TempDir::new().unwrap();
         let workspace = tmpdir.path();
-        
+
         // Test SOUL.md
         fs::write(workspace.join("SOUL.md"), "curiosity: old value\n").unwrap();
         let updated = update_soul_field(workspace, "curiosity", "new value").unwrap();
         assert!(updated);
         let content = fs::read_to_string(workspace.join("SOUL.md")).unwrap();
         assert!(content.contains("new value"));
-        
+
         // Test HEARTBEAT.md
         fs::write(workspace.join("HEARTBEAT.md"), "- [ ] test task\n").unwrap();
         let updated = update_heartbeat_task(workspace, "test task", true).unwrap();

@@ -116,11 +116,7 @@ impl DimParseCache {
     }
 
     /// Lookup or parse. Hits update LRU recency; misses parse, insert, and return.
-    pub fn get_or_parse(
-        &mut self,
-        phrase: &str,
-        reference: DateTime<Utc>,
-    ) -> Option<TimeRange> {
+    pub fn get_or_parse(&mut self, phrase: &str, reference: DateTime<Utc>) -> Option<TimeRange> {
         let key = (phrase.to_string(), reference.date_naive());
         if let Some(cached) = self.inner.get(&key) {
             return cached.clone();
@@ -161,10 +157,12 @@ mod tests {
     #[test]
     fn test_parse_yesterday_relative_to_reference() {
         let reference = ts(2024, 1, 10, 12);
-        let r = parse_dimension_time("yesterday", reference)
-            .expect("'yesterday' must parse");
+        let r = parse_dimension_time("yesterday", reference).expect("'yesterday' must parse");
         // "yesterday" anchored at 2024-01-10 → range covering 2024-01-09.
-        assert_eq!(r.start.date_naive(), NaiveDate::from_ymd_opt(2024, 1, 9).unwrap());
+        assert_eq!(
+            r.start.date_naive(),
+            NaiveDate::from_ymd_opt(2024, 1, 9).unwrap()
+        );
         // End is exclusive in two_timer; should be on or after Jan 9, at most Jan 10.
         assert!(r.end.date_naive() >= NaiveDate::from_ymd_opt(2024, 1, 9).unwrap());
         assert!(r.end.date_naive() <= NaiveDate::from_ymd_opt(2024, 1, 10).unwrap());
@@ -174,9 +172,11 @@ mod tests {
     fn test_parse_absolute_date() {
         // Absolute dates ignore `reference`; any anchor works.
         let reference = ts(2024, 1, 10, 12);
-        let r = parse_dimension_time("May 6, 1968", reference)
-            .expect("absolute date must parse");
-        assert_eq!(r.start.date_naive(), NaiveDate::from_ymd_opt(1968, 5, 6).unwrap());
+        let r = parse_dimension_time("May 6, 1968", reference).expect("absolute date must parse");
+        assert_eq!(
+            r.start.date_naive(),
+            NaiveDate::from_ymd_opt(1968, 5, 6).unwrap()
+        );
     }
 
     #[test]

@@ -196,9 +196,7 @@ impl LlmProvider for OpenAiProvider {
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
 
         if !status.is_success() {
-            let msg = json["error"]["message"]
-                .as_str()
-                .unwrap_or("unknown error");
+            let msg = json["error"]["message"].as_str().unwrap_or("unknown error");
             return Err(LlmError::ProviderUnavailable(format!(
                 "HTTP {}: {}",
                 status, msg
@@ -215,10 +213,7 @@ impl LlmProvider for OpenAiProvider {
             output_tokens: json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32,
         };
 
-        let model = json["model"]
-            .as_str()
-            .unwrap_or(&self.model)
-            .to_string();
+        let model = json["model"].as_str().unwrap_or(&self.model).to_string();
 
         Ok(LlmResponse {
             content,
@@ -338,9 +333,7 @@ impl LlmProvider for AnthropicProvider {
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
 
         if !status.is_success() {
-            let msg = json["error"]["message"]
-                .as_str()
-                .unwrap_or("unknown error");
+            let msg = json["error"]["message"].as_str().unwrap_or("unknown error");
             return Err(LlmError::ProviderUnavailable(format!(
                 "HTTP {}: {}",
                 status, msg
@@ -357,10 +350,7 @@ impl LlmProvider for AnthropicProvider {
             output_tokens: json["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
         };
 
-        let model = json["model"]
-            .as_str()
-            .unwrap_or(&self.model)
-            .to_string();
+        let model = json["model"].as_str().unwrap_or(&self.model).to_string();
 
         Ok(LlmResponse {
             content,
@@ -401,9 +391,7 @@ impl LlmProvider for AnthropicProvider {
         if resp.status().is_success() || resp.status() == reqwest::StatusCode::OK {
             Ok(())
         } else if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            Err(LlmError::ProviderUnavailable(
-                "Invalid API key".to_string(),
-            ))
+            Err(LlmError::ProviderUnavailable("Invalid API key".to_string()))
         } else {
             Err(LlmError::ProviderUnavailable(format!(
                 "Health check failed: HTTP {}",

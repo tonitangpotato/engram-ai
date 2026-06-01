@@ -130,10 +130,7 @@ fn t29_4_get_hebbian_neighbors_multi_neighbour_matches() {
         .collect();
 
     assert_eq!(legacy, unified, "multi-neighbour set must match");
-    let expected: HashSet<String> = ["b", "c", "d"]
-        .into_iter()
-        .map(String::from)
-        .collect();
+    let expected: HashSet<String> = ["b", "c", "d"].into_iter().map(String::from).collect();
     assert_eq!(legacy, expected);
 }
 
@@ -159,10 +156,16 @@ fn t29_4_get_hebbian_neighbors_or_match_both_endpoints() {
 
     for memory_id in ["a", "b"] {
         let other = if memory_id == "a" { "b" } else { "a" };
-        let legacy_set: HashSet<String> =
-            legacy.get_hebbian_neighbors(memory_id).unwrap().into_iter().collect();
-        let unified_set: HashSet<String> =
-            unified.get_hebbian_neighbors(memory_id).unwrap().into_iter().collect();
+        let legacy_set: HashSet<String> = legacy
+            .get_hebbian_neighbors(memory_id)
+            .unwrap()
+            .into_iter()
+            .collect();
+        let unified_set: HashSet<String> = unified
+            .get_hebbian_neighbors(memory_id)
+            .unwrap()
+            .into_iter()
+            .collect();
         let expected: HashSet<String> = [other.to_string()].into_iter().collect();
         assert_eq!(legacy_set, expected, "legacy for {memory_id}");
         assert_eq!(unified_set, expected, "unified for {memory_id}");

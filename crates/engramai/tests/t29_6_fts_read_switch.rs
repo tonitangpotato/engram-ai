@@ -65,8 +65,12 @@ fn t29_6_search_fts_default_ns_parity() {
     // Read on legacy path (memories_fts).
     let legacy_hits = {
         let s = Storage::with_unified_substrate(&path, false).unwrap();
-        let mut ids: Vec<String> =
-            s.search_fts("fox", 10).expect("legacy").into_iter().map(|r| r.id).collect();
+        let mut ids: Vec<String> = s
+            .search_fts("fox", 10)
+            .expect("legacy")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         ids.sort();
         ids
     };
@@ -74,8 +78,12 @@ fn t29_6_search_fts_default_ns_parity() {
     // Read on unified path (nodes_fts).
     let unified_hits = {
         let s = Storage::with_unified_substrate(&path, true).unwrap();
-        let mut ids: Vec<String> =
-            s.search_fts("fox", 10).expect("unified").into_iter().map(|r| r.id).collect();
+        let mut ids: Vec<String> = s
+            .search_fts("fox", 10)
+            .expect("unified")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         ids.sort();
         ids
     };

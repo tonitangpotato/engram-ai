@@ -51,8 +51,8 @@
 use crate::graph::store::GraphRead;
 use crate::retrieval::api::EntityId;
 use crate::retrieval::plans::episodic::{EpisodicMemoryStore, ResolvedWindow};
-use crate::store_api::MemoryId;
 use crate::storage::Storage;
+use crate::store_api::MemoryId;
 
 /// Hard cap on rows pulled from Storage per window scan. Bounds memory
 /// + scan cost: 1 024 rows × ~1 KiB record ≈ 1 MiB which is acceptable
@@ -76,20 +76,13 @@ pub struct StorageEpisodicStore<'a> {
 }
 
 impl<'a> StorageEpisodicStore<'a> {
-    pub fn new(
-        storage: &'a Storage,
-        graph: &'a dyn GraphRead,
-    ) -> Self {
+    pub fn new(storage: &'a Storage, graph: &'a dyn GraphRead) -> Self {
         Self { storage, graph }
     }
 }
 
 impl<'a> EpisodicMemoryStore for StorageEpisodicStore<'a> {
-    fn memories_in_window(
-        &self,
-        window: &ResolvedWindow,
-        limit: usize,
-    ) -> Vec<MemoryId> {
+    fn memories_in_window(&self, window: &ResolvedWindow, limit: usize) -> Vec<MemoryId> {
         if limit == 0 {
             return Vec::new();
         }
@@ -138,13 +131,15 @@ impl<'a> EpisodicMemoryStore for StorageEpisodicStore<'a> {
         // is harmless because we dedupe + truncate).
         let per_entity = (limit / entities.len()).max(1) + 1;
 
-        let mut seen: std::collections::HashSet<MemoryId> =
-            std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<MemoryId> = std::collections::HashSet::new();
         let mut out: Vec<MemoryId> = Vec::with_capacity(limit);
 
         for entity_id in entities {
             // EntityId = uuid::Uuid (alias).
-            let memory_ids = match self.graph.memories_mentioning_entity(*entity_id, per_entity) {
+            let memory_ids = match self
+                .graph
+                .memories_mentioning_entity(*entity_id, per_entity)
+            {
                 Ok(v) => v,
                 Err(_) => continue, // Per-entity failure non-fatal.
             };

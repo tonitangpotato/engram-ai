@@ -192,19 +192,25 @@ impl ResolutionStats {
     /// Saturating-add accumulator. Used by the worker to fold per-job
     /// stats into a per-call rollup before returning.
     pub fn add(&mut self, other: &ResolutionStats) {
-        self.entities_extracted = self.entities_extracted.saturating_add(other.entities_extracted);
+        self.entities_extracted = self
+            .entities_extracted
+            .saturating_add(other.entities_extracted);
         self.edges_extracted = self.edges_extracted.saturating_add(other.edges_extracted);
         self.entities_merged = self.entities_merged.saturating_add(other.entities_merged);
         self.entities_created = self.entities_created.saturating_add(other.entities_created);
-        self.entities_deferred = self.entities_deferred.saturating_add(other.entities_deferred);
+        self.entities_deferred = self
+            .entities_deferred
+            .saturating_add(other.entities_deferred);
         self.edges_added = self.edges_added.saturating_add(other.edges_added);
         self.edges_updated = self.edges_updated.saturating_add(other.edges_updated);
         self.edges_preserved = self.edges_preserved.saturating_add(other.edges_preserved);
         self.stage_failures = self.stage_failures.saturating_add(other.stage_failures);
-        self.entity_extract_duration =
-            self.entity_extract_duration.saturating_add(other.entity_extract_duration);
-        self.edge_extract_duration =
-            self.edge_extract_duration.saturating_add(other.edge_extract_duration);
+        self.entity_extract_duration = self
+            .entity_extract_duration
+            .saturating_add(other.entity_extract_duration);
+        self.edge_extract_duration = self
+            .edge_extract_duration
+            .saturating_add(other.edge_extract_duration);
         self.resolve_duration = self.resolve_duration.saturating_add(other.resolve_duration);
         self.persist_duration = self.persist_duration.saturating_add(other.persist_duration);
     }

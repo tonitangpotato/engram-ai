@@ -113,9 +113,7 @@ impl FailureKind {
     /// `CATEGORY_LLM_INVALID_OUTPUT`, ...) are the canonical names;
     /// they all currently fold into `LlmError` until we split them.
     pub fn from_kind_str(s: &str) -> Self {
-        use crate::graph::audit::{
-            CATEGORY_LLM_INVALID_OUTPUT, CATEGORY_LLM_TIMEOUT,
-        };
+        use crate::graph::audit::{CATEGORY_LLM_INVALID_OUTPUT, CATEGORY_LLM_TIMEOUT};
         match s {
             CATEGORY_LLM_TIMEOUT | CATEGORY_LLM_INVALID_OUTPUT => Self::LlmError,
             _ => Self::Other,
@@ -395,7 +393,8 @@ mod tests {
 
     #[test]
     fn failed_row_with_json_error_detail_decodes_stage_and_kind() {
-        let detail = r#"{"stage": "edge_extract", "error_kind": "llm_timeout", "message": "Anthropic 504"}"#;
+        let detail =
+            r#"{"stage": "edge_extract", "error_kind": "llm_timeout", "message": "Anthropic 504"}"#;
         let r = PipelineRunRow {
             run_id: Uuid::new_v4(),
             kind: PipelineKind::Resolution,
@@ -515,8 +514,17 @@ mod tests {
     #[test]
     fn failure_kind_from_kind_str_known_categories_fold_to_llm_error() {
         use crate::graph::audit::{CATEGORY_LLM_INVALID_OUTPUT, CATEGORY_LLM_TIMEOUT};
-        assert_eq!(FailureKind::from_kind_str(CATEGORY_LLM_TIMEOUT), FailureKind::LlmError);
-        assert_eq!(FailureKind::from_kind_str(CATEGORY_LLM_INVALID_OUTPUT), FailureKind::LlmError);
-        assert_eq!(FailureKind::from_kind_str("unknown_category"), FailureKind::Other);
+        assert_eq!(
+            FailureKind::from_kind_str(CATEGORY_LLM_TIMEOUT),
+            FailureKind::LlmError
+        );
+        assert_eq!(
+            FailureKind::from_kind_str(CATEGORY_LLM_INVALID_OUTPUT),
+            FailureKind::LlmError
+        );
+        assert_eq!(
+            FailureKind::from_kind_str("unknown_category"),
+            FailureKind::Other
+        );
     }
 }

@@ -245,10 +245,7 @@ impl MigrateOptions {
                 )))
             }
             Some(MigrateExtractor::Ollama) => {
-                let model = self
-                    .extractor_model
-                    .as_deref()
-                    .unwrap_or("llama3.2:3b");
+                let model = self.extractor_model.as_deref().unwrap_or("llama3.2:3b");
                 Ok(Some(std::sync::Arc::new(
                     engramai::OllamaTripleExtractor::new(model),
                 )))
@@ -416,10 +413,7 @@ impl MigrationReport {
 /// table is absent (e.g., counting `entities` on a fresh v0.2 DB pre-DDL).
 fn count_or_zero(conn: &Connection, table: &str) -> i64 {
     // Validate identifier (defence in depth — only ASCII alnum + underscore).
-    if !table
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return 0;
     }
     let exists: bool = conn
@@ -706,12 +700,12 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
         //      Arc<dyn BackfillResolver>
         //   7. BackfillOrchestrator iterating the cursor
 
-        use std::sync::{Arc, Mutex};
+        use engramai::entities::EntityExtractor;
         use engramai::graph::store::SqliteGraphStore;
         use engramai::resolution::pipeline::{PipelineConfig, ResolutionPipeline};
         use engramai::resolution::SqliteMemoryReader;
-        use engramai::entities::EntityExtractor;
         use engramai::NoopTripleExtractor;
+        use std::sync::{Arc, Mutex};
 
         let graph_db_path = self.options.graph_db_path_resolved();
         let main_db_path = self.options.db_path.clone();
@@ -749,22 +743,17 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
                     "PRAGMA journal_mode=WAL; {fk_pragma} PRAGMA busy_timeout=5000;"
                 ))
                 .map_err(|e| {
-                    MigrationError::BackfillFatal(format!(
-                        "failed to set pragmas on graph DB: {e}"
-                    ))
+                    MigrationError::BackfillFatal(format!("failed to set pragmas on graph DB: {e}"))
                 })?;
             // Idempotent v0.3 graph schema init (creates entities/edges/
             // mentions tables on a fresh DB; no-op on an existing one).
             engramai::graph::init_graph_tables(&gconn).map_err(|e| {
-                MigrationError::BackfillFatal(format!(
-                    "failed to init graph schema: {e}"
-                ))
+                MigrationError::BackfillFatal(format!("failed to init graph schema: {e}"))
             })?;
             Box::leak(Box::new(gconn))
         };
         let graph_store = SqliteGraphStore::new(graph_conn);
-        let store_arc: Arc<Mutex<SqliteGraphStore<'static>>> =
-            Arc::new(Mutex::new(graph_store));
+        let store_arc: Arc<Mutex<SqliteGraphStore<'static>>> = Arc::new(Mutex::new(graph_store));
 
         // 2. Memory reader against the v0.2 main DB. Separate connection
         //    (the orchestrator's `&mut conn` is reserved for the
@@ -835,9 +824,8 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
         // `Arc<Mutex<SqliteGraphStore<'static>>>` as
         // `Arc<Mutex<dyn GraphWrite + Send>>`. We clone the Arc first so
         // the pipeline keeps its read-side handle.
-        let processor_store: Arc<
-            Mutex<dyn engramai::graph::store::GraphWrite + Send>,
-        > = store_arc.clone();
+        let processor_store: Arc<Mutex<dyn engramai::graph::store::GraphWrite + Send>> =
+            store_arc.clone();
         let processor = crate::processor::PipelineRecordProcessor::new(resolver_arc)
             .with_namespace("default") // ISS-055: default ns until --namespace lands
             .with_graph_store(processor_store);
@@ -867,7 +855,9 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
             ))
         })?;
         bf_conn
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+            )
             .map_err(|e| {
                 MigrationError::BackfillFatal(format!(
                     "failed to set pragmas on backfill conn: {e}"
@@ -917,8 +907,9 @@ impl<'a> PhaseExecutors for DefaultExecutors<'a> {
             records_failed_permanent: summary.records_failed,
         };
         if summary.stopped_on_failure {
-            self.warnings
-                .push("phase4: stopped on first per-record failure (--stop-on-failure)".to_string());
+            self.warnings.push(
+                "phase4: stopped on first per-record failure (--stop-on-failure)".to_string(),
+            );
             self.phases_completed
                 .push(MigrationPhase::Backfill.tag().to_string());
             // Mirror the orchestrator's contract: stopping on failure
@@ -1018,8 +1009,7 @@ pub fn migrate(options: &MigrateOptions) -> Result<MigrationReport, MigrationErr
             // No memories — nothing to migrate. Treat as success so init
             // scripts can call `engram migrate` unconditionally.
             report.warnings.push(
-                "fresh database — no migration needed (memories table empty or absent)"
-                    .to_string(),
+                "fresh database — no migration needed (memories table empty or absent)".to_string(),
             );
             report.migration_complete = true;
             report.final_phase = MigrationPhase::Complete.tag().to_string();
@@ -1060,11 +1050,7 @@ pub fn migrate(options: &MigrateOptions) -> Result<MigrationReport, MigrationErr
     // runs create the singleton row at Phase 0.
     CheckpointStore::init(&conn)?;
     if CheckpointStore::load_state(&conn)?.is_none() {
-        CheckpointStore::insert_initial_state(
-            &conn,
-            MigrationPhase::PreFlight,
-            &started_rfc3339,
-        )?;
+        CheckpointStore::insert_initial_state(&conn, MigrationPhase::PreFlight, &started_rfc3339)?;
     }
 
     // Drive the phase machine.
@@ -1085,7 +1071,9 @@ pub fn migrate(options: &MigrateOptions) -> Result<MigrationReport, MigrationErr
     // Drain executor state into the report regardless of run outcome —
     // partial reports are useful (warnings + which phases completed).
     report.phases_completed = std::mem::take(&mut executors.phases_completed);
-    report.warnings.extend(std::mem::take(&mut executors.warnings));
+    report
+        .warnings
+        .extend(std::mem::take(&mut executors.warnings));
     report.backfill = std::mem::take(&mut executors.backfill);
     report.topic_carry_forward = std::mem::take(&mut executors.topic_carry_forward);
     report.backup_path = executors
@@ -1304,10 +1292,7 @@ mod tests {
 
         assert!(report.migration_complete);
         assert_eq!(report.final_phase, MigrationPhase::Complete.tag());
-        assert!(report
-            .warnings
-            .iter()
-            .any(|w| w.contains("fresh database")));
+        assert!(report.warnings.iter().any(|w| w.contains("fresh database")));
     }
 
     #[test]
@@ -1337,7 +1322,10 @@ mod tests {
         // Dry-run + gate=Phase1 → expect gate-reached error (mapped to
         // ExitCode::GateReached by the CLI binary).
         let result = migrate(&opts);
-        assert!(result.is_err(), "expected gate-reached error, got {result:?}");
+        assert!(
+            result.is_err(),
+            "expected gate-reached error, got {result:?}"
+        );
     }
 
     #[test]

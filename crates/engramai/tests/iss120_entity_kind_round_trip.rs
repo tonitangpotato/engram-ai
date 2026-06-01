@@ -20,9 +20,9 @@
 
 use chrono::Utc;
 use engramai::graph::storage_graph::init_graph_tables;
-use engramai::graph::store::{GraphWrite, SqliteGraphStore, extract_legacy_entity_kind};
+use engramai::graph::store::{extract_legacy_entity_kind, GraphWrite, SqliteGraphStore};
 use engramai::graph::{Entity, EntityKind};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 fn fresh_conn() -> Connection {
@@ -177,8 +177,7 @@ fn iss120_reader_round_trips_other_variant() {
     insert(&mut conn, &e);
 
     let (attrs, node_kind) = read_node_attrs_and_kind(&conn, id);
-    let (decoded_kind, _) =
-        extract_legacy_entity_kind(&attrs, &node_kind).expect("decode");
+    let (decoded_kind, _) = extract_legacy_entity_kind(&attrs, &node_kind).expect("decode");
     assert_eq!(decoded_kind, kind);
 }
 

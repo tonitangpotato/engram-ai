@@ -48,7 +48,9 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--db" => db = Some(PathBuf::from(iter.next().ok_or("--db needs value")?)),
-            "--dataset" => dataset = Some(PathBuf::from(iter.next().ok_or("--dataset needs value")?)),
+            "--dataset" => {
+                dataset = Some(PathBuf::from(iter.next().ok_or("--dataset needs value")?))
+            }
             "--max-session" => {
                 max_session = iter.next().ok_or("--max-session needs value")?.parse()?
             }
@@ -89,7 +91,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    in sessions 1..=max_session (same logic as v0.3 driver).
     let raw = std::fs::read_to_string(&args.dataset)?;
     let v: Value = serde_json::from_str(&raw)?;
-    let conv = v.as_array().ok_or("dataset not array")?
+    let conv = v
+        .as_array()
+        .ok_or("dataset not array")?
         .iter()
         .find(|c| c["sample_id"].as_str() == Some("conv-26"))
         .ok_or("conv-26 not found")?;
@@ -100,7 +104,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // alone — otherwise we'd score the system on questions that need
     // unseen sessions, inflating the "miss" count unfairly.
     let qa_all = conv["qa"].as_array().ok_or("no qa array")?;
-    let qas: Vec<&Value> = qa_all.iter()
+    let qas: Vec<&Value> = qa_all
+        .iter()
         .filter(|q| {
             let evidence = q["evidence"].as_array();
             match evidence {
@@ -115,8 +120,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    println!("Loaded {} QAs (out of {}) with evidence in sessions 1..={}",
-             qas.len(), qa_all.len(), args.max_session);
+    println!(
+        "Loaded {} QAs (out of {}) with evidence in sessions 1..={}",
+        qas.len(),
+        qa_all.len(),
+        args.max_session
+    );
 
     // 2. Open Memory (no graph store needed for v0.2 path)
     let mut mem = Memory::new(args.db.to_str().unwrap(), None)?;
@@ -133,8 +142,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (idx, q) in qas.iter().enumerate() {
         let question = q["question"].as_str().unwrap_or("");
-        let evidence: HashSet<String> = q["evidence"].as_array()
-            .map(|arr| arr.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+        let evidence: HashSet<String> = q["evidence"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let category = q["category"].as_u64().unwrap_or(0);
 
@@ -167,11 +181,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let q_short: String = question.chars().take(70).collect();
-        let mark = if hit { "✓" } else if results.is_empty() { "∅" } else { "✗" };
+        let mark = if hit {
+            "✓"
+        } else if results.is_empty() {
+            "∅"
+        } else {
+            "✗"
+        };
         println!(
             "[{:>2}/{}] {} cat={} got={} | gold={:?} top={:?}",
-            idx + 1, qas.len(), mark, category, results.len(),
-            evidence.iter().collect::<Vec<_>>(), top_sources,
+            idx + 1,
+            qas.len(),
+            mark,
+            category,
+            results.len(),
+            evidence.iter().collect::<Vec<_>>(),
+            top_sources,
         );
         let _ = q_short; // (reserved for verbose mode)
     }

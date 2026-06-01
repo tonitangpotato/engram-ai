@@ -1,4 +1,9 @@
-#![allow(deprecated, clippy::field_reassign_with_default, clippy::useless_vec, clippy::redundant_closure)]
+#![allow(
+    deprecated,
+    clippy::field_reassign_with_default,
+    clippy::useless_vec,
+    clippy::redundant_closure
+)]
 
 //! Integration tests for entity indexing: Memory → Storage → Entity pipeline.
 
@@ -46,9 +51,7 @@ fn find_entities_by_name(
     name: &str,
 ) -> Vec<(String, String, String, String)> {
     let mut stmt = conn
-        .prepare(
-            "SELECT id, name, entity_type, namespace FROM entities WHERE name = ?1",
-        )
+        .prepare("SELECT id, name, entity_type, namespace FROM entities WHERE name = ?1")
         .unwrap();
     stmt.query_map(params![name], |row| {
         Ok((
@@ -119,7 +122,10 @@ fn test_add_raw_creates_entities() {
         "should find an 'ironclaw' entity, got: {:?}",
         entities
     );
-    assert_eq!(entities[0].2, "project", "ironclaw should be a project entity");
+    assert_eq!(
+        entities[0].2, "project",
+        "ironclaw should be a project entity"
+    );
 }
 
 #[test]
@@ -166,7 +172,10 @@ fn test_add_raw_creates_co_occurrence() {
     let conn = mem.connection();
     let ironclaw_entities = find_entities_by_name(conn, "ironclaw");
     let sqlite_entities = find_entities_by_name(conn, "sqlite");
-    assert!(!ironclaw_entities.is_empty(), "ironclaw entity should exist");
+    assert!(
+        !ironclaw_entities.is_empty(),
+        "ironclaw entity should exist"
+    );
     assert!(!sqlite_entities.is_empty(), "sqlite entity should exist");
 
     let ironclaw_id = &ironclaw_entities[0].0;
@@ -297,8 +306,14 @@ fn test_backfill_processes_unlinked() {
     let (mut mem, _dir) = setup_memory();
 
     // Add memories normally (entities created inline)
-    mem.add("ironclaw is fast", MemoryType::Factual, Some(0.7), None, None)
-        .unwrap();
+    mem.add(
+        "ironclaw is fast",
+        MemoryType::Factual,
+        Some(0.7),
+        None,
+        None,
+    )
+    .unwrap();
 
     // All memories already have entity links, so backfill should process 0
     let (processed, _entities, _relations) = mem.backfill_entities(100).unwrap();
@@ -328,10 +343,7 @@ fn test_backfill_processes_unlinked() {
 
     // Now backfill should find the unlinked memory
     let (processed, entity_count, _relations) = mem.backfill_entities(100).unwrap();
-    assert_eq!(
-        processed, 1,
-        "backfill should find 1 unlinked memory"
-    );
+    assert_eq!(processed, 1, "backfill should find 1 unlinked memory");
     assert!(
         entity_count > 0,
         "backfill should have created entities for the unlinked memory"
@@ -553,17 +565,17 @@ fn test_list_entities() {
     .unwrap();
 
     let entities = mem.list_entities(None, None, 50).unwrap();
-    assert!(
-        !entities.is_empty(),
-        "list_entities should return results"
-    );
+    assert!(!entities.is_empty(), "list_entities should return results");
 
     // Find rustclaw - it should have 2 mentions (appears in both memories)
     let rustclaw = entities.iter().find(|(e, _)| e.name == "rustclaw");
     assert!(
         rustclaw.is_some(),
         "should find rustclaw in listed entities; got: {:?}",
-        entities.iter().map(|(e, c)| (&e.name, c)).collect::<Vec<_>>()
+        entities
+            .iter()
+            .map(|(e, c)| (&e.name, c))
+            .collect::<Vec<_>>()
     );
     let (_, mention_count) = rustclaw.unwrap();
     assert_eq!(
@@ -578,10 +590,7 @@ fn test_list_entities() {
         "should find engramai in listed entities"
     );
     let (_, mention_count) = engramai.unwrap();
-    assert_eq!(
-        *mention_count, 1,
-        "engramai should have 1 mention"
-    );
+    assert_eq!(*mention_count, 1, "engramai should have 1 mention");
 
     // Entities should be sorted by mention_count desc (rustclaw first)
     // The first entity should have the highest mention count
@@ -630,7 +639,9 @@ fn test_list_entities_filter_by_type() {
         );
     }
     assert!(
-        techs.iter().any(|(e, _)| e.name == "sqlite" || e.name == "python"),
+        techs
+            .iter()
+            .any(|(e, _)| e.name == "sqlite" || e.name == "python"),
         "sqlite or python should be in technology list; got: {:?}",
         techs.iter().map(|(e, _)| &e.name).collect::<Vec<_>>()
     );

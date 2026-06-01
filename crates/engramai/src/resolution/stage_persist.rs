@@ -67,12 +67,12 @@ use uuid::Uuid;
 
 use crate::graph::{
     audit::{
-        CATEGORY_APPLY_GRAPH_DELTA_ERROR, CATEGORY_MISSING_CANONICAL,
-        CATEGORY_TIEBREAK_FALLBACK, CATEGORY_UNRESOLVED_DEFER,
+        CATEGORY_APPLY_GRAPH_DELTA_ERROR, CATEGORY_MISSING_CANONICAL, CATEGORY_TIEBREAK_FALLBACK,
+        CATEGORY_UNRESOLVED_DEFER,
     },
     delta::{
-        ApplyReport, EdgeInvalidation, GraphDelta, MemoryEntityMention,
-        ProposedPredicate, StageFailureRow,
+        ApplyReport, EdgeInvalidation, GraphDelta, MemoryEntityMention, ProposedPredicate,
+        StageFailureRow,
     },
     edge::{ConfidenceSource, Edge, EdgeEnd, ResolutionMethod},
     entity::Entity,
@@ -80,9 +80,7 @@ use crate::graph::{
     store::{GraphStore, GraphWrite},
     GraphError,
 };
-use crate::resolution::context::{
-    DraftEdge, DraftEntity, PipelineContext, PipelineStage,
-};
+use crate::resolution::context::{DraftEdge, DraftEntity, PipelineContext, PipelineStage};
 use crate::resolution::decision::Decision;
 use crate::resolution::edge_decision::EdgeDecision;
 use crate::resolution::pipeline::OnTiebreakFailure;
@@ -287,7 +285,10 @@ pub fn build_delta_with_policy(
                 // produce dangling endpoints.
                 let new_entity = build_new_entity(er.assigned_id, &er.draft, now, ctx);
                 let entity_id = new_entity.id;
-                debug_assert_eq!(entity_id, er.assigned_id, "ISS-076 invariant: entity row id must equal EntityResolution.assigned_id");
+                debug_assert_eq!(
+                    entity_id, er.assigned_id,
+                    "ISS-076 invariant: entity row id must equal EntityResolution.assigned_id"
+                );
                 mentions.push(mention_row(
                     memory_id,
                     entity_id,
@@ -366,8 +367,7 @@ pub fn build_delta_with_policy(
                     // `resolve_entities` under this policy so edge
                     // endpoints lifted via `name_to_id` already point
                     // here (ISS-076 invariant preserved).
-                    let mut new_entity =
-                        build_new_entity(er.assigned_id, &er.draft, now, ctx);
+                    let mut new_entity = build_new_entity(er.assigned_id, &er.draft, now, ctx);
                     // Stamp the confidence floor. design §1061:
                     // "method = Automatic, confidence = low". 0.1 is
                     // the smallest value the resolver may produce;
@@ -402,10 +402,7 @@ pub fn build_delta_with_policy(
                              for draft '{}' (index {}, candidate {}). \
                              New entity id = {}; identity_confidence = 0.1. \
                              Agent may merge via agent_curate_entity (§6.3).",
-                            er.draft.canonical_name,
-                            er.draft_index,
-                            candidate_id,
-                            entity_id,
+                            er.draft.canonical_name, er.draft_index, candidate_id, entity_id,
                         ),
                         now,
                     ));
@@ -685,12 +682,20 @@ fn alias_upserts_for_draft(
         .collect()
 }
 
-fn build_new_entity(id: Uuid, draft: &DraftEntity, now: DateTime<Utc>, ctx: &PipelineContext) -> Entity {
+fn build_new_entity(
+    id: Uuid,
+    draft: &DraftEntity,
+    now: DateTime<Utc>,
+    ctx: &PipelineContext,
+) -> Entity {
     let mut e = Entity::new(id, draft.canonical_name.clone(), draft.kind.clone(), now);
     e.first_seen = draft.first_seen;
     e.last_seen = draft.last_seen.max(ctx.memory.created_at);
     // Carry the affect snapshot per GUARD-8 (immutable after capture).
-    e.somatic_fingerprint = draft.somatic_fingerprint.clone().or(ctx.affect_snapshot.clone());
+    e.somatic_fingerprint = draft
+        .somatic_fingerprint
+        .clone()
+        .or(ctx.affect_snapshot.clone());
     // Subtype hint goes into attributes so adapter precision survives.
     if let Some(hint) = &draft.subtype_hint {
         if let serde_json::Value::Object(map) = &mut e.attributes {
@@ -717,8 +722,7 @@ fn build_new_entity(id: Uuid, draft: &DraftEntity, now: DateTime<Utc>, ctx: &Pip
     if let serde_json::Value::Object(map) = &mut e.attributes {
         map.insert(
             "kind_source".to_string(),
-            serde_json::to_value(draft.kind_source)
-                .expect("KindSource serialize is infallible"),
+            serde_json::to_value(draft.kind_source).expect("KindSource serialize is infallible"),
         );
     }
     // ISS-075 root fix: copy the draft's name embedding (computed in

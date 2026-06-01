@@ -20,7 +20,6 @@ use crate::interoceptive::types::{
 pub struct RegulationConfig {
     // ── Cold-start fallback thresholds ───────────────────────────────
     // Used ONLY when adaptive baselines are uncalibrated.
-
     /// Valence below this triggers SoulUpdateSuggestion (cold-start).
     pub fallback_negative_valence: f64,
     /// Minimum signals with negative valence before triggering (cold-start).
@@ -36,7 +35,6 @@ pub struct RegulationConfig {
 
     // ── Adaptive thresholds ──────────────────────────────────────────
     // σ-multipliers for when baselines ARE calibrated.
-
     /// Minimum σ deviation to trigger actions (default: 2.5).
     pub action_sigma: f64,
     /// Minimum σ for high-severity alerts (default: 3.5).
@@ -210,8 +208,7 @@ fn check_success_rate(
             let dev = hub.deviation_level("feedback", &ds.domain, ds.action_success_rate);
             match dev {
                 DeviationLevel::Uncalibrated => {
-                    ds.action_success_rate < config.fallback_low_success
-                        && ds.signal_count >= 5
+                    ds.action_success_rate < config.fallback_low_success && ds.signal_count >= 5
                 }
                 _ => {
                     // Success rate is below 50% AND significantly below baseline.
@@ -219,9 +216,7 @@ fn check_success_rate(
                 }
             }
         }
-        None => {
-            ds.action_success_rate < config.fallback_low_success && ds.signal_count >= 5
-        }
+        None => ds.action_success_rate < config.fallback_low_success && ds.signal_count >= 5,
     };
 
     if should_trigger {
@@ -256,17 +251,12 @@ fn check_alignment(
             let dev = hub.deviation_level("alignment", &ds.domain, ds.alignment_score);
             match dev {
                 DeviationLevel::Uncalibrated => {
-                    ds.alignment_score < config.fallback_low_alignment
-                        && ds.signal_count >= 5
+                    ds.alignment_score < config.fallback_low_alignment && ds.signal_count >= 5
                 }
-                _ => {
-                    ds.alignment_score < 0.4 && dev.is_actionable()
-                }
+                _ => ds.alignment_score < 0.4 && dev.is_actionable(),
             }
         }
-        None => {
-            ds.alignment_score < config.fallback_low_alignment && ds.signal_count >= 5
-        }
+        None => ds.alignment_score < config.fallback_low_alignment && ds.signal_count >= 5,
     };
 
     if should_trigger {
@@ -324,8 +314,7 @@ fn check_identity_evolution(
         // exists and is calibrated (meaning consistent performance history).
         if ds.action_success_rate > 0.75 && ds.valence_trend > 0.2 {
             // Valence should be within normal range of the accumulator baseline.
-            let valence_dev =
-                hub.deviation_level("accumulator", &ds.domain, ds.valence_trend);
+            let valence_dev = hub.deviation_level("accumulator", &ds.domain, ds.valence_trend);
 
             let valence_is_stable = matches!(
                 valence_dev,
@@ -459,10 +448,7 @@ fn check_multi_domain_anomaly(
     } else if anomalous_domains.len() == 1 {
         actions.push(RegulationAction::Alert {
             severity: AlertSeverity::Medium,
-            message: format!(
-                "Anomalous pattern in domain '{}'",
-                anomalous_domains[0]
-            ),
+            message: format!("Anomalous pattern in domain '{}'", anomalous_domains[0]),
             domains: anomalous_domains,
         });
     }
@@ -511,7 +497,9 @@ fn check_heartbeat_frequency(
                 Some(hub) => {
                     let dev = hub.deviation_level("anomaly", &ds.domain, ds.anomaly_level);
                     match dev {
-                        DeviationLevel::Uncalibrated => ds.anomaly_level > config.fallback_high_anomaly,
+                        DeviationLevel::Uncalibrated => {
+                            ds.anomaly_level > config.fallback_high_anomaly
+                        }
                         _ => dev.is_elevated(),
                     }
                 }
@@ -538,8 +526,8 @@ fn check_heartbeat_frequency(
 
     // If ≥2 domains are troubled, or global arousal is high → increase frequency.
     let high_global_arousal = state.global_arousal > 0.6;
-    let should_increase = troubled_domains.len() >= 2
-        || (!troubled_domains.is_empty() && high_global_arousal);
+    let should_increase =
+        troubled_domains.len() >= 2 || (!troubled_domains.is_empty() && high_global_arousal);
 
     if should_increase {
         // Severity determines multiplier: more troubled domains → more aggressive.
@@ -600,10 +588,8 @@ fn check_heartbeat_frequency(
     });
 
     if all_calm {
-        let stable_domains: Vec<String> = active_domains
-            .iter()
-            .map(|ds| ds.domain.clone())
-            .collect();
+        let stable_domains: Vec<String> =
+            active_domains.iter().map(|ds| ds.domain.clone()).collect();
 
         actions.push(RegulationAction::HeartbeatFrequencyAdjustment {
             direction: HeartbeatAdjustDirection::Decrease,
@@ -621,8 +607,8 @@ fn check_heartbeat_frequency(
 mod tests {
     use super::*;
     use crate::interoceptive::types::{InteroceptiveSignal, SignalSource};
-    use std::collections::HashMap;
     use chrono::Utc;
+    use std::collections::HashMap;
 
     fn make_state(domains: Vec<DomainState>) -> InteroceptiveState {
         let mut domain_states = HashMap::new();
@@ -663,18 +649,14 @@ mod tests {
 
     #[test]
     fn no_actions_for_healthy_state() {
-        let state = make_state(vec![
-            domain_with("coding", 0.5, 0.8, 0.7, 0.8, 0.5, 20),
-        ]);
+        let state = make_state(vec![domain_with("coding", 0.5, 0.8, 0.7, 0.8, 0.5, 20)]);
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(actions.is_empty(), "got: {:?}", actions);
     }
 
     #[test]
     fn fallback_negative_valence_triggers_soul_update() {
-        let state = make_state(vec![
-            domain_with("coding", -0.7, 0.7, 0.6, 0.7, 0.5, 15),
-        ]);
+        let state = make_state(vec![domain_with("coding", -0.7, 0.7, 0.6, 0.7, 0.5, 15)]);
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(actions.iter().any(|a| matches!(
             a,
@@ -689,41 +671,36 @@ mod tests {
         ]);
         let actions = evaluate(&state, &RegulationConfig::default());
         // Should NOT trigger because signal_count < fallback_min_signals (10)
-        assert!(!actions.iter().any(|a| matches!(
-            a,
-            RegulationAction::SoulUpdateSuggestion { .. }
-        )));
+        assert!(!actions
+            .iter()
+            .any(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. })));
     }
 
     #[test]
     fn fallback_low_confidence_triggers_retrieval() {
-        let state = make_state(vec![
-            domain_with("research", 0.2, 0.2, 0.6, 0.7, 0.5, 10),
-        ]);
+        let state = make_state(vec![domain_with("research", 0.2, 0.2, 0.6, 0.7, 0.5, 10)]);
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(actions.iter().any(|a| matches!(
             a,
-            RegulationAction::RetrievalAdjustment { expand_search: true, .. }
+            RegulationAction::RetrievalAdjustment {
+                expand_search: true,
+                ..
+            }
         )));
     }
 
     #[test]
     fn fallback_low_success_triggers_behavior_shift() {
-        let state = make_state(vec![
-            domain_with("testing", 0.1, 0.7, 0.1, 0.7, 0.5, 10),
-        ]);
+        let state = make_state(vec![domain_with("testing", 0.1, 0.7, 0.1, 0.7, 0.5, 10)]);
         let actions = evaluate(&state, &RegulationConfig::default());
-        assert!(actions.iter().any(|a| matches!(
-            a,
-            RegulationAction::BehaviorShift { .. }
-        )));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, RegulationAction::BehaviorShift { .. })));
     }
 
     #[test]
     fn fallback_low_alignment_triggers_soul_update() {
-        let state = make_state(vec![
-            domain_with("social", 0.0, 0.7, 0.6, 0.1, 0.5, 10),
-        ]);
+        let state = make_state(vec![domain_with("social", 0.0, 0.7, 0.6, 0.1, 0.5, 10)]);
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(actions.iter().any(|a| matches!(
             a,
@@ -740,7 +717,10 @@ mod tests {
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(actions.iter().any(|a| matches!(
             a,
-            RegulationAction::Alert { severity: AlertSeverity::High, .. }
+            RegulationAction::Alert {
+                severity: AlertSeverity::High,
+                ..
+            }
         )));
     }
 
@@ -753,22 +733,17 @@ mod tests {
             // Small variation around the normal value.
             let jitter = ((i % 5) as f64 - 2.0) * 0.05;
             let val = normal_valence + jitter;
-            let sig = InteroceptiveSignal::new(
-                SignalSource::Accumulator,
-                Some(domain.into()),
-                val,
-                0.3,
-            );
+            let sig =
+                InteroceptiveSignal::new(SignalSource::Accumulator, Some(domain.into()), val, 0.3);
             hub.process_signal(sig);
 
             // Also feed confidence, feedback, alignment signals for those baselines.
-            for source in [SignalSource::Confidence, SignalSource::Feedback, SignalSource::Alignment] {
-                let sig = InteroceptiveSignal::new(
-                    source,
-                    Some(domain.into()),
-                    0.5 + jitter,
-                    0.2,
-                );
+            for source in [
+                SignalSource::Confidence,
+                SignalSource::Feedback,
+                SignalSource::Alignment,
+            ] {
+                let sig = InteroceptiveSignal::new(source, Some(domain.into()), 0.5 + jitter, 0.2);
                 hub.process_signal(sig);
             }
         }
@@ -785,7 +760,9 @@ mod tests {
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         // Should NOT trigger because 0.2 is within normal σ range of baseline ~0.3.
         assert!(
-            !actions.iter().any(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. })),
+            !actions
+                .iter()
+                .any(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. })),
             "got: {:?}",
             actions,
         );
@@ -800,7 +777,9 @@ mod tests {
         ]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         assert!(
-            actions.iter().any(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. })),
+            actions
+                .iter()
+                .any(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. })),
             "large deviation should trigger, got: {:?}",
             actions,
         );
@@ -809,12 +788,12 @@ mod tests {
     #[test]
     fn adaptive_message_includes_sigma() {
         let hub = build_calibrated_hub("coding", 0.3, 30);
-        let state = make_state(vec![
-            domain_with("coding", -0.8, 0.7, 0.6, 0.7, 0.5, 30),
-        ]);
+        let state = make_state(vec![domain_with("coding", -0.8, 0.7, 0.6, 0.7, 0.5, 30)]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         // The reason string should mention σ.
-        let soul_action = actions.iter().find(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. }));
+        let soul_action = actions
+            .iter()
+            .find(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. }));
         if let Some(RegulationAction::SoulUpdateSuggestion { reason, .. }) = soul_action {
             assert!(reason.contains("σ"), "reason should mention σ: {}", reason);
         }
@@ -830,7 +809,9 @@ mod tests {
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         // Should trigger via fallback (no calibrated baseline).
         assert!(
-            actions.iter().any(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. })),
+            actions
+                .iter()
+                .any(|a| matches!(a, RegulationAction::SoulUpdateSuggestion { .. })),
             "uncalibrated should fall back to hardcoded, got: {:?}",
             actions,
         );
@@ -839,9 +820,15 @@ mod tests {
     #[test]
     fn multiple_issues_generate_multiple_actions() {
         // Domain with BOTH low confidence AND negative valence.
-        let state = make_state(vec![
-            domain_with("debugging", -0.7, 0.15, 0.6, 0.7, 0.5, 15),
-        ]);
+        let state = make_state(vec![domain_with(
+            "debugging",
+            -0.7,
+            0.15,
+            0.6,
+            0.7,
+            0.5,
+            15,
+        )]);
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(
             actions.len() >= 2,
@@ -897,15 +884,12 @@ mod tests {
     #[test]
     fn identity_evolution_not_triggered_without_hub() {
         // High performance but no hub → no identity suggestions.
-        let state = make_state(vec![
-            domain_with("coding", 0.5, 0.9, 0.95, 0.8, 0.3, 50),
-        ]);
+        let state = make_state(vec![domain_with("coding", 0.5, 0.9, 0.95, 0.8, 0.3, 50)]);
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(
-            !actions.iter().any(|a| matches!(
-                a,
-                RegulationAction::IdentityEvolutionSuggestion { .. }
-            )),
+            !actions
+                .iter()
+                .any(|a| matches!(a, RegulationAction::IdentityEvolutionSuggestion { .. })),
             "no identity evolution without hub: {:?}",
             actions,
         );
@@ -915,15 +899,12 @@ mod tests {
     fn identity_evolution_not_triggered_with_few_signals() {
         let hub = build_high_performance_hub("coding", 40);
         // Only 10 signals in state (below 30 threshold).
-        let state = make_state(vec![
-            domain_with("coding", 0.5, 0.9, 0.95, 0.8, 0.3, 10),
-        ]);
+        let state = make_state(vec![domain_with("coding", 0.5, 0.9, 0.95, 0.8, 0.3, 10)]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         assert!(
-            !actions.iter().any(|a| matches!(
-                a,
-                RegulationAction::IdentityEvolutionSuggestion { .. }
-            )),
+            !actions
+                .iter()
+                .any(|a| matches!(a, RegulationAction::IdentityEvolutionSuggestion { .. })),
             "need 30+ signals: {:?}",
             actions,
         );
@@ -935,9 +916,7 @@ mod tests {
 
         // Hub accumulator baseline mean ≈ 0.6 with tight variance.
         // DomainState valence must be within Normal/Elevated range of that baseline.
-        let state = make_state(vec![
-            domain_with("coding", 0.6, 0.85, 0.92, 0.75, 0.3, 50),
-        ]);
+        let state = make_state(vec![domain_with("coding", 0.6, 0.85, 0.92, 0.75, 0.3, 50)]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         assert!(
             actions.iter().any(|a| matches!(
@@ -957,9 +936,7 @@ mod tests {
         let hub = build_high_performance_hub("research", 40);
         // Success 0.82 (>0.75 but <0.9) + positive valence → Capability.
         // Hub accumulator baseline ≈ 0.6, so valence must be near 0.6.
-        let state = make_state(vec![
-            domain_with("research", 0.6, 0.7, 0.82, 0.6, 0.3, 50),
-        ]);
+        let state = make_state(vec![domain_with("research", 0.6, 0.7, 0.82, 0.6, 0.3, 50)]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         assert!(
             actions.iter().any(|a| matches!(
@@ -979,9 +956,7 @@ mod tests {
         let hub = build_high_performance_hub("writing", 40);
         // High confidence (>0.8) + high alignment (>0.7) + positive valence → BehavioralPattern.
         // Hub accumulator baseline ≈ 0.6, so valence must be near 0.6.
-        let state = make_state(vec![
-            domain_with("writing", 0.6, 0.85, 0.6, 0.8, 0.3, 50),
-        ]);
+        let state = make_state(vec![domain_with("writing", 0.6, 0.85, 0.6, 0.8, 0.3, 50)]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         assert!(
             actions.iter().any(|a| matches!(
@@ -1000,15 +975,12 @@ mod tests {
     fn identity_evolution_not_triggered_by_mediocre_performance() {
         let hub = build_calibrated_hub("coding", 0.3, 30);
         // Average performance — nothing special.
-        let state = make_state(vec![
-            domain_with("coding", 0.1, 0.5, 0.5, 0.5, 0.5, 50),
-        ]);
+        let state = make_state(vec![domain_with("coding", 0.1, 0.5, 0.5, 0.5, 0.5, 50)]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         assert!(
-            !actions.iter().any(|a| matches!(
-                a,
-                RegulationAction::IdentityEvolutionSuggestion { .. }
-            )),
+            !actions
+                .iter()
+                .any(|a| matches!(a, RegulationAction::IdentityEvolutionSuggestion { .. })),
             "mediocre performance should not trigger identity evolution: {:?}",
             actions,
         );
@@ -1017,14 +989,15 @@ mod tests {
     #[test]
     fn identity_evolution_suggestion_has_valid_confidence() {
         let hub = build_high_performance_hub("coding", 40);
-        let state = make_state(vec![
-            domain_with("coding", 0.5, 0.85, 0.92, 0.75, 0.3, 50),
-        ]);
+        let state = make_state(vec![domain_with("coding", 0.5, 0.85, 0.92, 0.75, 0.3, 50)]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
         for action in &actions {
             if let RegulationAction::IdentityEvolutionSuggestion { confidence, .. } = action {
-                assert!(*confidence > 0.0 && *confidence <= 1.0,
-                    "confidence should be in (0, 1]: {}", confidence);
+                assert!(
+                    *confidence > 0.0 && *confidence <= 1.0,
+                    "confidence should be in (0, 1]: {}",
+                    confidence
+                );
             }
         }
     }
@@ -1034,15 +1007,12 @@ mod tests {
     #[test]
     fn heartbeat_no_adjustment_with_single_domain() {
         // Need ≥2 active domains for heartbeat frequency decisions.
-        let state = make_state(vec![
-            domain_with("coding", -0.8, 0.3, 0.2, 0.3, 3.0, 20),
-        ]);
+        let state = make_state(vec![domain_with("coding", -0.8, 0.3, 0.2, 0.3, 3.0, 20)]);
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(
-            !actions.iter().any(|a| matches!(
-                a,
-                RegulationAction::HeartbeatFrequencyAdjustment { .. }
-            )),
+            !actions
+                .iter()
+                .any(|a| matches!(a, RegulationAction::HeartbeatFrequencyAdjustment { .. })),
             "single domain should not trigger heartbeat adjustment: {:?}",
             actions,
         );
@@ -1057,10 +1027,9 @@ mod tests {
         ]);
         let actions = evaluate(&state, &RegulationConfig::default());
         assert!(
-            !actions.iter().any(|a| matches!(
-                a,
-                RegulationAction::HeartbeatFrequencyAdjustment { .. }
-            )),
+            !actions
+                .iter()
+                .any(|a| matches!(a, RegulationAction::HeartbeatFrequencyAdjustment { .. })),
             "too few signals should not trigger: {:?}",
             actions,
         );
@@ -1074,16 +1043,26 @@ mod tests {
             domain_with("research", -0.6, 0.3, 0.3, 0.3, 2.5, 15),
         ]);
         let actions = evaluate(&state, &RegulationConfig::default());
-        let hb = actions.iter().find(|a| matches!(
-            a,
-            RegulationAction::HeartbeatFrequencyAdjustment { .. }
-        ));
-        assert!(hb.is_some(), "two troubled domains should increase frequency: {:?}", actions);
+        let hb = actions
+            .iter()
+            .find(|a| matches!(a, RegulationAction::HeartbeatFrequencyAdjustment { .. }));
+        assert!(
+            hb.is_some(),
+            "two troubled domains should increase frequency: {:?}",
+            actions
+        );
         if let Some(RegulationAction::HeartbeatFrequencyAdjustment {
-            direction, interval_multiplier, ..
-        }) = hb {
+            direction,
+            interval_multiplier,
+            ..
+        }) = hb
+        {
             assert_eq!(*direction, HeartbeatAdjustDirection::Increase);
-            assert!(*interval_multiplier <= 0.5, "multiplier should be ≤0.5: {}", interval_multiplier);
+            assert!(
+                *interval_multiplier <= 0.5,
+                "multiplier should be ≤0.5: {}",
+                interval_multiplier
+            );
         }
     }
 
@@ -1096,13 +1075,20 @@ mod tests {
         ]);
         state.global_arousal = 0.8;
         let actions = evaluate(&state, &RegulationConfig::default());
-        let hb = actions.iter().find(|a| matches!(
-            a,
-            RegulationAction::HeartbeatFrequencyAdjustment {
-                direction: HeartbeatAdjustDirection::Increase, ..
-            }
-        ));
-        assert!(hb.is_some(), "one troubled + high arousal should increase: {:?}", actions);
+        let hb = actions.iter().find(|a| {
+            matches!(
+                a,
+                RegulationAction::HeartbeatFrequencyAdjustment {
+                    direction: HeartbeatAdjustDirection::Increase,
+                    ..
+                }
+            )
+        });
+        assert!(
+            hb.is_some(),
+            "one troubled + high arousal should increase: {:?}",
+            actions
+        );
     }
 
     #[test]
@@ -1114,14 +1100,15 @@ mod tests {
             domain_with("trading", -0.6, 0.3, 0.3, 0.3, 2.5, 15),
         ]);
         let actions = evaluate(&state, &RegulationConfig::default());
-        let hb = actions.iter().find(|a| matches!(
-            a,
-            RegulationAction::HeartbeatFrequencyAdjustment { .. }
-        ));
+        let hb = actions
+            .iter()
+            .find(|a| matches!(a, RegulationAction::HeartbeatFrequencyAdjustment { .. }));
         assert!(hb.is_some(), "three troubled → increase: {:?}", actions);
         if let Some(RegulationAction::HeartbeatFrequencyAdjustment {
-            interval_multiplier, ..
-        }) = hb {
+            interval_multiplier,
+            ..
+        }) = hb
+        {
             assert!(
                 (*interval_multiplier - 0.25).abs() < f64::EPSILON,
                 "3 troubled domains → 0.25 multiplier, got: {}",
@@ -1166,17 +1153,26 @@ mod tests {
             domain_with("research", 0.3, 0.7, 0.7, 0.7, 0.0, 50),
         ]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
-        let hb = actions.iter().find(|a| matches!(
-            a,
-            RegulationAction::HeartbeatFrequencyAdjustment { .. }
-        ));
-        assert!(hb.is_some(), "all stable → decrease frequency: {:?}", actions);
+        let hb = actions
+            .iter()
+            .find(|a| matches!(a, RegulationAction::HeartbeatFrequencyAdjustment { .. }));
+        assert!(
+            hb.is_some(),
+            "all stable → decrease frequency: {:?}",
+            actions
+        );
         if let Some(RegulationAction::HeartbeatFrequencyAdjustment {
-            direction, interval_multiplier, ..
-        }) = hb {
+            direction,
+            interval_multiplier,
+            ..
+        }) = hb
+        {
             assert_eq!(*direction, HeartbeatAdjustDirection::Decrease);
-            assert!((*interval_multiplier - 2.0).abs() < f64::EPSILON,
-                "stable → 2.0x interval: {}", interval_multiplier);
+            assert!(
+                (*interval_multiplier - 2.0).abs() < f64::EPSILON,
+                "stable → 2.0x interval: {}",
+                interval_multiplier
+            );
         }
     }
 
@@ -1192,7 +1188,8 @@ mod tests {
             !actions.iter().any(|a| matches!(
                 a,
                 RegulationAction::HeartbeatFrequencyAdjustment {
-                    direction: HeartbeatAdjustDirection::Decrease, ..
+                    direction: HeartbeatAdjustDirection::Decrease,
+                    ..
                 }
             )),
             "decrease needs hub for calibration check: {:?}",
@@ -1213,7 +1210,8 @@ mod tests {
             !actions.iter().any(|a| matches!(
                 a,
                 RegulationAction::HeartbeatFrequencyAdjustment {
-                    direction: HeartbeatAdjustDirection::Decrease, ..
+                    direction: HeartbeatAdjustDirection::Decrease,
+                    ..
                 }
             )),
             "uncalibrated baselines → no decrease: {:?}",
@@ -1229,20 +1227,29 @@ mod tests {
             domain_with("research", 0.5, 0.8, 0.8, 0.8, 0.3, 15),
         ]);
         let actions = evaluate(&state, &RegulationConfig::default());
-        let increase = actions.iter().any(|a| matches!(
-            a,
-            RegulationAction::HeartbeatFrequencyAdjustment {
-                direction: HeartbeatAdjustDirection::Increase, ..
-            }
-        ));
-        let decrease = actions.iter().any(|a| matches!(
-            a,
-            RegulationAction::HeartbeatFrequencyAdjustment {
-                direction: HeartbeatAdjustDirection::Decrease, ..
-            }
-        ));
-        assert!(!(increase && decrease),
-            "should never emit both increase and decrease: {:?}", actions);
+        let increase = actions.iter().any(|a| {
+            matches!(
+                a,
+                RegulationAction::HeartbeatFrequencyAdjustment {
+                    direction: HeartbeatAdjustDirection::Increase,
+                    ..
+                }
+            )
+        });
+        let decrease = actions.iter().any(|a| {
+            matches!(
+                a,
+                RegulationAction::HeartbeatFrequencyAdjustment {
+                    direction: HeartbeatAdjustDirection::Decrease,
+                    ..
+                }
+            )
+        });
+        assert!(
+            !(increase && decrease),
+            "should never emit both increase and decrease: {:?}",
+            actions
+        );
     }
 
     #[test]
@@ -1255,12 +1262,19 @@ mod tests {
             domain_with("research", -0.4, 0.4, 0.3, 0.3, 1.8, 15),
         ]);
         let actions = evaluate_with_hub(&state, &RegulationConfig::default(), Some(&hub));
-        let hb = actions.iter().find(|a| matches!(
-            a,
-            RegulationAction::HeartbeatFrequencyAdjustment {
-                direction: HeartbeatAdjustDirection::Increase, ..
-            }
-        ));
-        assert!(hb.is_some(), "negative deviation from baseline → increase: {:?}", actions);
+        let hb = actions.iter().find(|a| {
+            matches!(
+                a,
+                RegulationAction::HeartbeatFrequencyAdjustment {
+                    direction: HeartbeatAdjustDirection::Increase,
+                    ..
+                }
+            )
+        });
+        assert!(
+            hb.is_some(),
+            "negative deviation from baseline → increase: {:?}",
+            actions
+        );
     }
 }

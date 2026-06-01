@@ -67,7 +67,10 @@ fn with_graph_store_default_768_still_works() {
 
     // Default config: nomic-embed-text 768d.
     let cfg = MemoryConfig::default();
-    assert_eq!(cfg.embedding.dimensions, 768, "default config dim regressed");
+    assert_eq!(
+        cfg.embedding.dimensions, 768,
+        "default config dim regressed"
+    );
 
     let mut mem = Memory::new(substrate.to_str().unwrap(), Some(cfg))
         .expect("Memory::new")
@@ -80,11 +83,7 @@ fn with_graph_store_default_768_still_works() {
 
     let mut store = mem.graph_mut().with_namespace("default");
     let result = store.insert_entity(&e);
-    assert!(
-        result.is_ok(),
-        "default 768d path regressed: {:?}",
-        result
-    );
+    assert!(result.is_ok(), "default 768d path regressed: {:?}", result);
 }
 
 /// Mismatch direction: 1024d config + 768d entity blob must still

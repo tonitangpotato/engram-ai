@@ -54,7 +54,9 @@ fn t29_5p4_single_mention_matches() {
     storage
         .store_raw("mem-1", "Alice was here", "factual", 1.0, None)
         .unwrap();
-    storage.link_memory_entity("mem-1", &alice, "mention").unwrap();
+    storage
+        .link_memory_entity("mem-1", &alice, "mention")
+        .unwrap();
 
     let legacy = Storage::with_unified_substrate(&db, false)
         .unwrap()

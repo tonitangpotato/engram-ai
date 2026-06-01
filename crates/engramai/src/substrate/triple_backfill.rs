@@ -158,16 +158,19 @@ pub fn backfill_triples_from_memories(
 
     // Resume cursor: if an earlier run exists in-progress for the same
     // namespace, pick up its `last_memory_id`. Latest-wins on started_at.
-    let mut cursor: Option<String> = storage.conn().query_row(
-        r#"
+    let mut cursor: Option<String> = storage
+        .conn()
+        .query_row(
+            r#"
         SELECT last_memory_id FROM triple_backfill_checkpoint
         WHERE status = 'in_progress' AND run_id != ?
               AND (namespace_filter IS ? OR namespace_filter = ?)
         ORDER BY started_at DESC LIMIT 1
         "#,
-        params![run_id, opts.namespace_filter, opts.namespace_filter],
-        |row| row.get::<_, Option<String>>(0),
-    ).unwrap_or(None);
+            params![run_id, opts.namespace_filter, opts.namespace_filter],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None);
 
     let mut rows_read: u64 = 0;
     let mut memories_inserted: u64 = 0;
@@ -215,8 +218,12 @@ pub fn backfill_triples_from_memories(
                 rows_skipped_existing += 1;
                 cursor = Some(memory_id.clone());
                 update_checkpoint(
-                    storage, &run_id, &memory_id,
-                    rows_read - rows_failed, triples_inserted_total, rows_failed,
+                    storage,
+                    &run_id,
+                    &memory_id,
+                    rows_read - rows_failed,
+                    triples_inserted_total,
+                    rows_failed,
                 )?;
                 continue;
             }
@@ -277,8 +284,12 @@ pub fn backfill_triples_from_memories(
             }
             cursor = Some(memory_id.clone());
             update_checkpoint(
-                storage, &run_id, &memory_id,
-                rows_read - rows_failed, triples_inserted_total, rows_failed,
+                storage,
+                &run_id,
+                &memory_id,
+                rows_read - rows_failed,
+                triples_inserted_total,
+                rows_failed,
             )?;
         }
     }
@@ -352,7 +363,10 @@ pub fn backfill_triples_from_memories(
         rows_read,
         "T26a per-memory counter invariant broken: \
          inserted({}) + skipped({}) + failed({}) != read({})",
-        memories_inserted, rows_skipped_existing, rows_failed, rows_read
+        memories_inserted,
+        rows_skipped_existing,
+        rows_failed,
+        rows_read
     );
     Ok(run)
 }
@@ -366,7 +380,11 @@ fn fetch_memory_page(
     opts: &TripleBackfillOpts,
 ) -> Result<Vec<(String, String)>, rusqlite::Error> {
     let cursor_clause = if cursor.is_some() { "AND id > ?" } else { "" };
-    let ns_clause = if opts.namespace_filter.is_some() { "AND namespace = ?" } else { "" };
+    let ns_clause = if opts.namespace_filter.is_some() {
+        "AND namespace = ?"
+    } else {
+        ""
+    };
     let sql = format!(
         "SELECT id, content FROM memories \
          WHERE deleted_at IS NULL {} {} \
@@ -378,18 +396,26 @@ fn fetch_memory_page(
     // rusqlite needs typed params; build the list manually.
     let limit = opts.batch_size as i64;
     let rows: Vec<(String, String)> = match (cursor, opts.namespace_filter.as_deref()) {
-        (Some(c), Some(ns)) => stmt.query_map(params![c, ns, limit], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?.collect::<Result<_, _>>()?,
-        (Some(c), None) => stmt.query_map(params![c, limit], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?.collect::<Result<_, _>>()?,
-        (None, Some(ns)) => stmt.query_map(params![ns, limit], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?.collect::<Result<_, _>>()?,
-        (None, None) => stmt.query_map(params![limit], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?.collect::<Result<_, _>>()?,
+        (Some(c), Some(ns)) => stmt
+            .query_map(params![c, ns, limit], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<_, _>>()?,
+        (Some(c), None) => stmt
+            .query_map(params![c, limit], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<_, _>>()?,
+        (None, Some(ns)) => stmt
+            .query_map(params![ns, limit], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<_, _>>()?,
+        (None, None) => stmt
+            .query_map(params![limit], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<_, _>>()?,
     };
     Ok(rows)
 }

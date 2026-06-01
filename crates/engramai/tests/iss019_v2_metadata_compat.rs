@@ -70,10 +70,7 @@ fn manual_v1_metadata_parses_correctly() {
         .unwrap();
     let meta_val: serde_json::Value = serde_json::from_str(&stored_meta).unwrap();
 
-    let dims = engramai::dimensions::Dimensions::from_stored_metadata(
-        &meta_val, content,
-    )
-    .unwrap();
+    let dims = engramai::dimensions::Dimensions::from_stored_metadata(&meta_val, content).unwrap();
 
     assert_eq!(dims.participants.as_deref(), Some("alice, bob"));
     assert_eq!(dims.causation.as_deref(), Some("kickoff meeting"));
@@ -116,10 +113,8 @@ fn v1_and_v2_equivalent_layouts_yield_identical_dimensions() {
         "user": {}
     });
 
-    let d1 =
-        engramai::dimensions::Dimensions::from_stored_metadata(&v1, "note").unwrap();
-    let d2 =
-        engramai::dimensions::Dimensions::from_stored_metadata(&v2, "note").unwrap();
+    let d1 = engramai::dimensions::Dimensions::from_stored_metadata(&v1, "note").unwrap();
+    let d2 = engramai::dimensions::Dimensions::from_stored_metadata(&v2, "note").unwrap();
 
     assert_eq!(d1.participants, d2.participants);
     assert!((d1.valence.get() - d2.valence.get()).abs() < 1e-9);

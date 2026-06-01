@@ -79,11 +79,13 @@ impl MaintenanceLock {
             Some(p) => p,
             None => return LockStatus::Free, // Corrupt lock file
         };
-        let since: DateTime<Utc> =
-            match lines.next().and_then(|s| DateTime::parse_from_rfc3339(s).ok()) {
-                Some(dt) => dt.with_timezone(&Utc),
-                None => Utc::now(), // Missing timestamp, use now
-            };
+        let since: DateTime<Utc> = match lines
+            .next()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        {
+            Some(dt) => dt.with_timezone(&Utc),
+            None => Utc::now(), // Missing timestamp, use now
+        };
 
         if Self::is_pid_running(pid) {
             LockStatus::Held { pid, since }
@@ -207,7 +209,11 @@ mod tests {
         let lock = MaintenanceLock::new(dir.path());
 
         // Write garbage to lock file
-        fs::write(dir.path().join(".engram-maintenance.lock"), "not-a-pid\ngarbage").unwrap();
+        fs::write(
+            dir.path().join(".engram-maintenance.lock"),
+            "not-a-pid\ngarbage",
+        )
+        .unwrap();
 
         // Should treat corrupt file as free
         assert!(matches!(lock.status(), LockStatus::Free));

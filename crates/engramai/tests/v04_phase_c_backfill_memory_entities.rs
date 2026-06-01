@@ -35,8 +35,7 @@
 use chrono::{TimeZone, Utc};
 use engramai::storage::Storage;
 use engramai::substrate::backfill::{
-    backfill_entities_to_nodes, backfill_memories_to_nodes,
-    backfill_memory_entities_to_edges,
+    backfill_entities_to_nodes, backfill_memories_to_nodes, backfill_memory_entities_to_edges,
 };
 use engramai::types::{MemoryLayer, MemoryRecord, MemoryType};
 use rusqlite::params;
@@ -166,7 +165,16 @@ fn t23_canonical_mention_role_writes_provenance_edge() {
             "SELECT edge_kind, predicate, source_id, target_id, namespace, attributes \
              FROM edges WHERE source_id = ?",
             params!["mem-1"],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .unwrap();
     assert_eq!(kind, "provenance");
@@ -327,14 +335,18 @@ fn t23_unknown_role_folds_to_mention_with_audit_and_counter() {
         .unwrap();
     let parsed: Value = serde_json::from_str(&notes).unwrap();
     assert_eq!(
-        parsed.get("rows_normalized_legacy_role").and_then(|v| v.as_u64()),
+        parsed
+            .get("rows_normalized_legacy_role")
+            .and_then(|v| v.as_u64()),
         Some(1)
     );
     let samples = parsed
         .get("unknown_role_samples")
         .and_then(|v| v.as_array())
         .expect("unknown_role_samples array");
-    assert!(samples.iter().any(|v| v.as_str() == Some("wildcard-role-xyz")));
+    assert!(samples
+        .iter()
+        .any(|v| v.as_str() == Some("wildcard-role-xyz")));
 }
 
 #[test]
@@ -413,7 +425,10 @@ fn t23_namespace_filter_uses_parent_memory_namespace() {
     backfill_entities_to_nodes(&mut storage, None).expect("T21 all-ns");
 
     let run = backfill_memory_entities_to_edges(&mut storage, Some("ns-a")).expect("T23 ns-a");
-    assert_eq!(run.rows_read, 1, "filter must restrict to ns-a's parent memory");
+    assert_eq!(
+        run.rows_read, 1,
+        "filter must restrict to ns-a's parent memory"
+    );
     assert_eq!(run.rows_inserted, 1);
 
     // edges table should have ns-a's row only.
@@ -552,7 +567,10 @@ fn t23_many_rows_mixed_roles_counter_invariant_holds() {
     // triple, custom-1, '' → 8 provenance + 4 structural.
     assert_eq!(provenance_count + structural_count, 12);
     assert_eq!(structural_count, 4, "2× subject + 2× object");
-    assert_eq!(provenance_count, 8, "2× each of mention/triple/custom-1/'' ");
+    assert_eq!(
+        provenance_count, 8,
+        "2× each of mention/triple/custom-1/'' "
+    );
 
     // Audit notes should record 4 normalized rows (2× triple + 2× custom-1)
     // and 2 distinct unknown-role samples.
@@ -566,16 +584,22 @@ fn t23_many_rows_mixed_roles_counter_invariant_holds() {
         .unwrap();
     let parsed: Value = serde_json::from_str(&notes).unwrap();
     assert_eq!(
-        parsed.get("rows_normalized_legacy_role").and_then(|v| v.as_u64()),
+        parsed
+            .get("rows_normalized_legacy_role")
+            .and_then(|v| v.as_u64()),
         Some(4)
     );
     assert_eq!(
-        parsed.get("unknown_role_distinct_count").and_then(|v| v.as_u64()),
+        parsed
+            .get("unknown_role_distinct_count")
+            .and_then(|v| v.as_u64()),
         Some(2),
         "'triple' and 'custom-1' are the 2 distinct non-canonical roles"
     );
     assert_eq!(
-        parsed.get("unknown_role_samples_truncated").and_then(|v| v.as_bool()),
+        parsed
+            .get("unknown_role_samples_truncated")
+            .and_then(|v| v.as_bool()),
         Some(false)
     );
 }
@@ -607,7 +631,9 @@ fn t23_unknown_role_samples_truncated_flag_set_above_cap() {
         .unwrap();
     let parsed: Value = serde_json::from_str(&notes).unwrap();
     assert_eq!(
-        parsed.get("unknown_role_distinct_count").and_then(|v| v.as_u64()),
+        parsed
+            .get("unknown_role_distinct_count")
+            .and_then(|v| v.as_u64()),
         Some(12)
     );
     let samples = parsed
@@ -616,7 +642,9 @@ fn t23_unknown_role_samples_truncated_flag_set_above_cap() {
         .unwrap();
     assert_eq!(samples.len(), 10, "cap = 10 distinct samples");
     assert_eq!(
-        parsed.get("unknown_role_samples_truncated").and_then(|v| v.as_bool()),
+        parsed
+            .get("unknown_role_samples_truncated")
+            .and_then(|v| v.as_bool()),
         Some(true),
         "must signal truncation when distinct count > sample cap"
     );
@@ -689,7 +717,9 @@ fn t23_mismatched_kind_at_same_id_counted_not_silently_skipped() {
         .unwrap();
     let parsed: Value = serde_json::from_str(&notes).unwrap();
     assert_eq!(
-        parsed.get("rows_skipped_mismatched_kind").and_then(|v| v.as_u64()),
+        parsed
+            .get("rows_skipped_mismatched_kind")
+            .and_then(|v| v.as_u64()),
         Some(1),
         "mismatched-kind row must be visible in audit, not silently lumped into skipped_existing"
     );

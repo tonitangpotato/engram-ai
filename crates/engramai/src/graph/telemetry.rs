@@ -66,12 +66,10 @@ impl WatermarkTracker {
             return None;
         }
         // current >= threshold. Latch the bit; return Some on the transition only.
-        match self.crossed.compare_exchange(
-            false,
-            true,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
+        match self
+            .crossed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        {
             Ok(_) => Some(current as f64 / self.threshold.max(1) as f64),
             Err(_) => None, // already crossed
         }

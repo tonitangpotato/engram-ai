@@ -35,12 +35,9 @@
 //! T16 provenance). Unknown / not-yet-typed kinds round-trip as
 //! `NodeAttributes::Unknown(Value)`.
 
-pub mod types;
 pub mod backfill;
 pub mod triple_backfill;
+pub mod types;
 pub mod verify;
 
-pub use types::{
-    Edge, EdgeAttributes, EdgeKind, Node, NodeAttributes, NodeKind,
-    MemoryAttributes,
-};
+pub use types::{Edge, EdgeAttributes, EdgeKind, MemoryAttributes, Node, NodeAttributes, NodeKind};
