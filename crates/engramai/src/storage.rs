@@ -596,6 +596,20 @@ impl Storage {
         // Idempotent (DDL-inspection guard).
         Self::migrate_graph_tables_fk_to_nodes(&conn)?;
 
+        // v0.4 ISS-202: backfill `edges.source_memory_id` from
+        // `graph_edges.memory_id` for already-ingested DBs. The dual-write
+        // path historically hardcoded `source_memory_id = NULL` ("Phase-B
+        // NULL"), which stripped edge→memory provenance from the unified
+        // read path and seeded the `factual` plan with zero candidates (the
+        // conv-26 single-hop floor). The forward-write is fixed in
+        // `graph/store.rs::dual_write_edge_to_edges`; this migration repairs
+        // the historic NULLs in place. Must run AFTER
+        // `migrate_graph_tables_fk_to_nodes` (so `graph_edges` exists with
+        // its memory_id FK) and `migrate_unified_nodes` (so `nodes` exists
+        // as the FK parent for the populated value). Idempotent — only
+        // touches rows that are still NULL and whose memory is in `nodes`.
+        Self::migrate_backfill_edge_source_memory_id(&conn)?;
+
         // v0.4 unified substrate: bump schema_version (T09).
         // Runs last so a partial Phase A migration leaves the version
         // unchanged — re-opening then re-attempts the missing migrations
@@ -1620,6 +1634,82 @@ impl Storage {
                 "CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_status ON graph_pipeline_runs(status) WHERE status != 'succeeded'",
                 "CREATE INDEX IF NOT EXISTS idx_graph_pipeline_runs_memory ON graph_pipeline_runs(memory_id, started_at DESC) WHERE memory_id IS NOT NULL",
             ],
+        )?;
+        Ok(())
+    }
+
+    /// v0.4 ISS-202: repair historic `edges.source_memory_id = NULL` by
+    /// copying the provenance from the legacy `graph_edges.memory_id`.
+    ///
+    /// Why this exists: `dual_write_edge_to_edges` historically hardcoded
+    /// `source_memory_id = NULL` (the "Phase-B NULL"). The unified read path
+    /// reverse-maps `Edge.memory_id ← source_memory_id`, so every traversed
+    /// edge reported `memory_id = None`; the `factual` retrieval plan
+    /// (`retrieval/plans/factual.rs:588`) seeds candidate memories from
+    /// `edge.memory_id`, so it seeded **nothing** under unified reads — the
+    /// conv-26 single-hop floor (0.031). The forward-write is fixed at the
+    /// dual-write site; this migration backfills the rows already on disk so
+    /// existing DBs benefit without re-ingestion.
+    ///
+    /// Mapping: legacy `graph_edges.id` is a 16-byte UUID BLOB; unified
+    /// `edges.id` is the TEXT UUID. We join by re-encoding the BLOB to the
+    /// canonical hyphenated TEXT form via SQLite string ops on `hex(id)`.
+    ///
+    /// FK safety: `edges.source_memory_id REFERENCES nodes(id)` and
+    /// `PRAGMA foreign_keys=ON`. We only write the value when the memory
+    /// exists in `nodes` (the `AND EXISTS (... nodes ...)` guard), so the
+    /// UPDATE can never violate the FK for a legacy-only memory.
+    ///
+    /// Idempotent: scoped to `edges.source_memory_id IS NULL`, so a second
+    /// run is a no-op once rows are populated. No data is destroyed.
+    fn migrate_backfill_edge_source_memory_id(conn: &Connection) -> SqlResult<()> {
+        // Guard: both tables must exist (a fresh DB created straight into the
+        // unified schema may not have `graph_edges` yet).
+        let have_both: bool = conn.query_row(
+            "SELECT \
+               (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='graph_edges') > 0 \
+               AND \
+               (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='edges') > 0",
+            [],
+            |row| row.get(0),
+        )?;
+        if !have_both {
+            return Ok(());
+        }
+
+        conn.execute(
+            r#"
+            UPDATE edges
+               SET source_memory_id = (
+                       SELECT ge.memory_id
+                         FROM graph_edges ge
+                        WHERE lower(
+                                  substr(hex(ge.id), 1, 8)  || '-' ||
+                                  substr(hex(ge.id), 9, 4)  || '-' ||
+                                  substr(hex(ge.id), 13, 4) || '-' ||
+                                  substr(hex(ge.id), 17, 4) || '-' ||
+                                  substr(hex(ge.id), 21, 12)
+                              ) = lower(edges.id)
+                          AND ge.memory_id IS NOT NULL
+                        LIMIT 1
+                   )
+             WHERE edges.edge_kind = 'structural'
+               AND edges.source_memory_id IS NULL
+               AND EXISTS (
+                       SELECT 1
+                         FROM graph_edges ge
+                         JOIN nodes n ON n.id = ge.memory_id
+                        WHERE lower(
+                                  substr(hex(ge.id), 1, 8)  || '-' ||
+                                  substr(hex(ge.id), 9, 4)  || '-' ||
+                                  substr(hex(ge.id), 13, 4) || '-' ||
+                                  substr(hex(ge.id), 17, 4) || '-' ||
+                                  substr(hex(ge.id), 21, 12)
+                              ) = lower(edges.id)
+                          AND ge.memory_id IS NOT NULL
+                   )
+            "#,
+            [],
         )?;
         Ok(())
     }
@@ -11978,5 +12068,241 @@ mod tests {
                 .unwrap();
             assert_eq!(present, 1, "ISS-198: rebuilt hebbian_links must keep column `{col}`");
         }
+    }
+
+    // ── ISS-202 backfill migration ────────────────────────────────────────
+    //
+    // `migrate_backfill_edge_source_memory_id` repairs historic structural
+    // edges whose `source_memory_id` was hardcoded NULL by the old
+    // `dual_write_edge_to_edges` (the "Phase-B NULL"). It joins
+    // `graph_edges` (16-byte BLOB id, `memory_id` populated) to `edges`
+    // (UUID-TEXT id) by reconstructing the hyphenated UUID from the BLOB's
+    // hex, then copies the provenance memory id across — FK-guarded so it
+    // only fills when the memory exists in `nodes`.
+    #[test]
+    fn iss202_backfill_populates_source_memory_id_from_graph_edges() {
+        let s = test_storage();
+        let conn = s.connection();
+
+        // The shared identity between the two tables: a UUID. `edges.id` is
+        // its hyphenated lowercase TEXT form; `graph_edges.id` is its 16
+        // raw bytes (BLOB). These must round-trip through the migration's
+        // hex()→UUID reconstruction.
+        let edge_uuid = "12345678-90ab-cdef-1234-567890abcdef";
+        let edge_bytes: Vec<u8> = (0..16)
+            .map(|i| {
+                let hex = &edge_uuid.replace('-', "")[i * 2..i * 2 + 2];
+                u8::from_str_radix(hex, 16).unwrap()
+            })
+            .collect();
+
+        // Memory node (the provenance source) + two entity nodes (the
+        // structural edge endpoints). All live in `nodes`, none in
+        // `memories` — matching the post-T34a unified-write world.
+        iss198_seed_node(&s, "mem-prov", 8801);
+        conn.execute(
+            "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+             VALUES ('ent-caroline', 'entity', 'Caroline', 0.0, 0.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+             VALUES ('ent-becoming-nicole', 'entity', 'Becoming Nicole', 0.0, 0.0)",
+            [],
+        )
+        .unwrap();
+
+        // graph_entities subject (graph_edges.subject_id FK).
+        conn.execute(
+            "INSERT INTO graph_entities \
+             (id, canonical_name, kind, first_seen, last_seen, created_at, updated_at) \
+             VALUES (?1, 'Caroline', 'Person', 0.0, 0.0, 0.0, 0.0)",
+            rusqlite::params![edge_bytes.clone()],
+        )
+        .unwrap();
+
+        // Legacy graph_edges row WITH memory_id set (the value source).
+        conn.execute(
+            "INSERT INTO graph_edges \
+             (id, subject_id, predicate_kind, predicate_label, object_kind, object_literal, \
+              recorded_at, memory_id, resolution_method, created_at) \
+             VALUES (?1, ?1, 'canonical', 'uses', 'literal', '\"Becoming Nicole\"', \
+                     0.0, 'mem-prov', 'direct', 0.0)",
+            rusqlite::params![edge_bytes.clone()],
+        )
+        .unwrap();
+
+        // Matching unified edges row with the bug: source_memory_id NULL.
+        conn.execute(
+            "INSERT INTO edges \
+             (id, source_id, target_id, edge_kind, predicate, recorded_at, source_memory_id, created_at, updated_at) \
+             VALUES (?1, 'ent-caroline', 'ent-becoming-nicole', 'structural', 'uses', 0.0, NULL, 0.0, 0.0)",
+            rusqlite::params![edge_uuid],
+        )
+        .unwrap();
+
+        // Pre-condition: the bug is present.
+        let before: Option<String> = conn
+            .query_row(
+                "SELECT source_memory_id FROM edges WHERE id = ?1",
+                rusqlite::params![edge_uuid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, None, "fixture must start with source_memory_id NULL");
+
+        // Run the backfill.
+        Storage::migrate_backfill_edge_source_memory_id(conn).expect("backfill migration");
+
+        // Post-condition: provenance is repaired.
+        let after: Option<String> = conn
+            .query_row(
+                "SELECT source_memory_id FROM edges WHERE id = ?1",
+                rusqlite::params![edge_uuid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            after.as_deref(),
+            Some("mem-prov"),
+            "ISS-202: backfill must copy graph_edges.memory_id into edges.source_memory_id"
+        );
+    }
+
+    /// FK-safety: when the provenance memory id is NOT present in `nodes`,
+    /// the EXISTS guard must leave the edge NULL rather than writing a
+    /// dangling FK reference (PRAGMA foreign_keys=ON would otherwise trip).
+    #[test]
+    fn iss202_backfill_skips_when_memory_absent_from_nodes() {
+        let s = test_storage();
+        let conn = s.connection();
+
+        let edge_uuid = "abcdef01-2345-6789-abcd-ef0123456789";
+        let edge_bytes: Vec<u8> = (0..16)
+            .map(|i| {
+                let hex = &edge_uuid.replace('-', "")[i * 2..i * 2 + 2];
+                u8::from_str_radix(hex, 16).unwrap()
+            })
+            .collect();
+
+        conn.execute(
+            "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+             VALUES ('ent-x', 'entity', 'X', 0.0, 0.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+             VALUES ('ent-y', 'entity', 'Y', 0.0, 0.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO graph_entities \
+             (id, canonical_name, kind, first_seen, last_seen, created_at, updated_at) \
+             VALUES (?1, 'X', 'Person', 0.0, 0.0, 0.0, 0.0)",
+            rusqlite::params![edge_bytes.clone()],
+        )
+        .unwrap();
+        // graph_edges.memory_id FK → nodes(id) (ISS-199 repoint), so the
+        // "memory absent from nodes" case can only be reached by memory_id
+        // being NULL — a structural edge with no provenance at all.
+        conn.execute(
+            "INSERT INTO graph_edges \
+             (id, subject_id, predicate_kind, predicate_label, object_kind, object_literal, \
+              recorded_at, memory_id, resolution_method, created_at) \
+             VALUES (?1, ?1, 'canonical', 'rel', 'literal', '\"lit\"', \
+                     0.0, NULL, 'direct', 0.0)",
+            rusqlite::params![edge_bytes.clone()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges \
+             (id, source_id, target_id, edge_kind, predicate, recorded_at, source_memory_id, created_at, updated_at) \
+             VALUES (?1, 'ent-x', 'ent-y', 'structural', 'rel', 0.0, NULL, 0.0, 0.0)",
+            rusqlite::params![edge_uuid],
+        )
+        .unwrap();
+
+        Storage::migrate_backfill_edge_source_memory_id(conn).expect("backfill migration");
+
+        let after: Option<String> = conn
+            .query_row(
+                "SELECT source_memory_id FROM edges WHERE id = ?1",
+                rusqlite::params![edge_uuid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            after, None,
+            "ISS-202: backfill must leave source_memory_id NULL when no provenance exists"
+        );
+    }
+
+    /// Idempotency: running the migration twice must not change the result
+    /// (the UPDATE is keyed on `source_memory_id IS NULL`, so the second
+    /// pass is a no-op on already-repaired rows).
+    #[test]
+    fn iss202_backfill_is_idempotent() {
+        let s = test_storage();
+        let conn = s.connection();
+
+        let edge_uuid = "0fedcba9-8765-4321-0fed-cba987654321";
+        let edge_bytes: Vec<u8> = (0..16)
+            .map(|i| {
+                let hex = &edge_uuid.replace('-', "")[i * 2..i * 2 + 2];
+                u8::from_str_radix(hex, 16).unwrap()
+            })
+            .collect();
+
+        iss198_seed_node(&s, "mem-idem", 8802);
+        conn.execute(
+            "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+             VALUES ('ent-a2', 'entity', 'A', 0.0, 0.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+             VALUES ('ent-b2', 'entity', 'B', 0.0, 0.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO graph_entities \
+             (id, canonical_name, kind, first_seen, last_seen, created_at, updated_at) \
+             VALUES (?1, 'A', 'Person', 0.0, 0.0, 0.0, 0.0)",
+            rusqlite::params![edge_bytes.clone()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO graph_edges \
+             (id, subject_id, predicate_kind, predicate_label, object_kind, object_literal, \
+              recorded_at, memory_id, resolution_method, created_at) \
+             VALUES (?1, ?1, 'canonical', 'rel', 'literal', '\"lit\"', \
+                     0.0, 'mem-idem', 'direct', 0.0)",
+            rusqlite::params![edge_bytes.clone()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges \
+             (id, source_id, target_id, edge_kind, predicate, recorded_at, source_memory_id, created_at, updated_at) \
+             VALUES (?1, 'ent-a2', 'ent-b2', 'structural', 'rel', 0.0, NULL, 0.0, 0.0)",
+            rusqlite::params![edge_uuid],
+        )
+        .unwrap();
+
+        Storage::migrate_backfill_edge_source_memory_id(conn).expect("first pass");
+        Storage::migrate_backfill_edge_source_memory_id(conn).expect("second pass");
+
+        let after: Option<String> = conn
+            .query_row(
+                "SELECT source_memory_id FROM edges WHERE id = ?1",
+                rusqlite::params![edge_uuid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after.as_deref(), Some("mem-idem"), "ISS-202: backfill must be idempotent");
     }
 }

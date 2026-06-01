@@ -1312,7 +1312,7 @@ fn dual_write_edge_to_edges(
             ?10, ?11, ?12,
             ?13, ?14, ?15,
             ?16,
-            NULL, ?17,
+            (SELECT id FROM nodes WHERE id = ?20), ?17,
             ?18, ?19, ?19
         )
         "#,
@@ -1333,21 +1333,27 @@ fn dual_write_edge_to_edges(
             invalidated_by_text,
             supersedes_text,
             agent_affect_json,
-            // NOTE: source_memory_id intentionally NULL in Phase B.
-            // The legacy `graph_edges.memory_id` still carries the
-            // legacy string id (`mem-N` form), but the unified
-            // `edges.source_memory_id` FK targets `nodes(id)`, which
-            // only contains memory rows that flowed through
-            // `Storage::add` (T12 dual-write). Memory rows seeded
-            // directly into the legacy `memories` table (e.g. test
-            // fixtures, historic backfill) have no corresponding
-            // `nodes` row yet — Phase C backfill (T19) closes that
-            // gap. Until then we leave source_memory_id NULL so the
-            // dual-write succeeds atomically; provenance is still
-            // recoverable via the legacy `graph_edges.memory_id`.
+            // ISS-202: source_memory_id now carries the same provenance as
+            // the legacy `graph_edges.memory_id` (bound as ?20 above). The
+            // Phase-B NULL was motivated by the `edges.source_memory_id` FK
+            // targeting `nodes(id)` when memory rows weren't reliably in
+            // `nodes`. ISS-197/199 migrated memory rows into `nodes`, so for
+            // production-ingested memories the FK resolves. Dropping this
+            // value made the unified read path report `edge.memory_id = NULL`,
+            // so the `factual` plan (retrieval/plans/factual.rs:588) seeded
+            // zero candidate memories from traversed edges — the conv-26
+            // single-hop floor (0.031). The `(SELECT id FROM nodes WHERE
+            // id = ?20)` guard keeps the FK invariant intact for the
+            // legacy-only edge case (memory seeded into `memories` but not
+            // `nodes` — test fixtures, historic backfill): it resolves to
+            // NULL instead of FK-failing the atomic dual-write. PRAGMA
+            // foreign_keys is ON (storage.rs:447), so a bare bind would
+            // break ingestion on those rows; the subquery degrades
+            // gracefully while populating the value for every real ingest.
             resolution_text,
             namespace,
             created_at_unix,
+            edge.memory_id.clone(),
         ],
     )?;
     Ok(())
@@ -10727,6 +10733,99 @@ mod tests {
         assert!(store.get_entity(alice.id).unwrap().is_some());
         assert!(store.get_entity(acme.id).unwrap().is_some());
         assert!(store.get_edge(edge.id).unwrap().is_some());
+    }
+
+    /// ISS-202: the unified `edges.source_memory_id` must carry the same
+    /// provenance as the legacy `graph_edges.memory_id`, so the `factual`
+    /// plan can seed candidate memories from a traversed edge. Before the
+    /// fix this was hardcoded NULL and the read path reported
+    /// `Edge.memory_id = None`.
+    #[test]
+    fn iss202_dual_write_populates_source_memory_id_when_memory_in_nodes() {
+        let mut conn = fresh_conn();
+        // Seed the source memory into BOTH `memories` and `nodes` (mirrors
+        // production: `add` dual-writes into `nodes` before enrichment writes
+        // the graph). The FK `edges.source_memory_id REFERENCES nodes(id)`
+        // is satisfied only because the `nodes` row exists.
+        insert_stub_memory(&conn, "mem-prov-1");
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let mem_id = Uuid::new_v4();
+        let mut delta = GraphDelta::new(mem_id);
+
+        let alice = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
+        let acme = Entity::new_random_id("Acme".into(), EntityKind::Organization, now);
+        let mut edge = Edge::new(
+            alice.id,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: acme.id },
+            None,
+            now,
+        );
+        // The persist path sets `edge.memory_id` to the source episode id.
+        edge.memory_id = Some("mem-prov-1".into());
+        delta.entities.push(alice);
+        delta.entities.push(acme);
+        delta.edges.push(edge.clone());
+
+        store.apply_graph_delta(&delta).expect("apply ok");
+
+        // The unified read path reverse-maps `Edge.memory_id ←
+        // source_memory_id`, so a populated value round-trips here.
+        let got = store.get_edge(edge.id).unwrap().expect("edge present");
+        assert_eq!(
+            got.memory_id.as_deref(),
+            Some("mem-prov-1"),
+            "source_memory_id must carry the legacy graph_edges.memory_id provenance"
+        );
+    }
+
+    /// ISS-202 FK-safety: the dual-write must remain atomic when an edge
+    /// carries no source-memory provenance (`edge.memory_id = None`). This
+    /// is the legitimate NULL case (e.g. edges minted without an episode
+    /// link). The `(SELECT id FROM nodes WHERE id=?)` guard in the unified
+    /// INSERT resolves a NULL bind to NULL without touching the FK.
+    ///
+    /// Note: the "memory present in legacy `memories` but absent from
+    /// `nodes`" case cannot reach this dual-write through
+    /// `apply_graph_delta` — the LEGACY `graph_edges.memory_id` FK (also
+    /// re-pointed to `nodes(id)` by ISS-199) rejects it first. So in
+    /// production a written edge's memory is always in `nodes`; the subquery
+    /// guard is belt-and-suspenders for any future caller that bypasses the
+    /// legacy insert.
+    #[test]
+    fn iss202_dual_write_source_memory_id_null_safe_when_no_provenance() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let now = Utc::now();
+        let mem_id = Uuid::new_v4();
+        let mut delta = GraphDelta::new(mem_id);
+
+        let alice = Entity::new_random_id("Alice".into(), EntityKind::Person, now);
+        let acme = Entity::new_random_id("Acme".into(), EntityKind::Organization, now);
+        let edge = Edge::new(
+            alice.id,
+            Predicate::Canonical(CanonicalPredicate::WorksAt),
+            EdgeEnd::Entity { id: acme.id },
+            None,
+            now,
+        );
+        // No source-memory provenance on this edge.
+        assert!(edge.memory_id.is_none());
+        delta.entities.push(alice);
+        delta.entities.push(acme);
+        delta.edges.push(edge.clone());
+
+        // Must succeed (no FK violation), and source_memory_id resolves NULL.
+        store
+            .apply_graph_delta(&delta)
+            .expect("apply must not FK-fail when edge has no provenance");
+
+        let got = store.get_edge(edge.id).unwrap().expect("edge present");
+        assert_eq!(
+            got.memory_id, None,
+            "source_memory_id must be NULL when the edge carries no provenance"
+        );
     }
 
     #[test]
