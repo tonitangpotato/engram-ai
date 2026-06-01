@@ -1,12 +1,19 @@
 ---
 id: ISS-203
 title: Entity canonicalization fragments one person into dozens of nodes — case-fold merge fails + possessive/prepositional phrases become standalone entities
-status: open
+status: resolved
 priority: P1
 severity: data-quality
-tags: [unified-substrate, graph, entity, canonicalization, resolution, locomo]
+tags:
+- unified-substrate
+- graph
+- entity
+- canonicalization
+- resolution
+- locomo
 created: 2026-05-31
-relates_to: [ISS-202]
+relates_to:
+- ISS-202
 parent: ISS-202
 ---
 
@@ -367,20 +374,50 @@ overall       0.2829  0.2961  +0.0132
 episode and answered correctly, and B answered "I don't know" — the dated
 memory fell out of the top-K.
 
-### Mechanism confirmed (artifact: artifacts/l1-mechanism-probe-20260601.txt)
+### Mechanism — DB-verified 2026-06-01 (downgrades earlier "confirmed from probe")
 
-Hypothesis "V2 shreds the dated clause into fragments" → **FALSIFIED.**
-Extracted the 4 real dated sentences under both prompts: the resolved date
-appears in **0/4 triples under EITHER prompt**. Dates never live in entity
-edges — they live in the memory text + temporal metadata. V2 does not damage
-the date.
+EARLIER STATUS (probe-only): the "mechanism confirmed" claim was *inferred*
+from summary.json + per_query.jsonl + the iss203_l1_mechanism_probe output. It
+had NOT been checked against actual stored DB content. Per the standing rule
+(always inspect real stored content), I opened the live pre-fix conv-26 DB
+(`/var/folders/48/.../.tmpa0Kbrm/substrate.db`, 454 memory nodes, V2 OFF /
+legacy prompt) and queried the 4 failing date queries' gold episodes directly.
 
-What V2 actually does: produces **denser entity edges** per memory (q20 2→3,
-q35 0→3, etc.). The dated episodes are unchanged, but the now-richer
-entity-anchored memories **out-compete them in top-K retrieval**. This is a
-**retrieval-ranking competition effect**, not an extraction defect — and it is
-the same date-stranding root cause already tracked in ISS-190/191/201/q0,
-intensified by stronger entity-edge competitors.
+**Hypothesis "V2 shreds the dated clause into fragments" → still FALSIFIED, now
+DB-verified.** The dated episodes are stored cleanly *as memories*:
+- q20 museum `3cf5c975`: text "yesterday (2023-07-05)" + temporal `day/2023-07-05`,
+  has a 3072-d embedding, is a `nodes` row → fully retrievable. Date NOT stranded.
+- q62 park `d621d1cc`: temporal `day/2023-08-27` → clean.
+- q33 parade gold `77c95667`: temporal `day/2023-07-03` → clean.
+- q35 camping gold `9242a2d1`: temporal `approx`, start/end collapsed to
+  full-year 2023, real date "two weekends ago from 2023-07-17" only in the
+  `note` string → **DATE-STRANDED** (same defect as q0/ISS-191).
+
+So the failure is **NOT uniform**. It decomposes:
+- **q20, q62 = pure retrieval crowding.** Dates are clean; the gold episode
+  simply fell out of top-K. The `Melanie` entity is mentioned by **188 of 454
+  memories** — the museum/park episode is one needle in a 188-memory haystack.
+  Legacy already anchors the museum memory on phrase-shard mentions
+  ("spending time with kids", "rewarding experience") not clean atomic edges;
+  V2 produces denser entity edges per memory, which shifts top-K composition
+  and pushes the (clean-but-dateless-in-graph) episode out.
+- **q33, q35 = crowding COMPOUNDED by genuine date-stranding** (`approx` golds
+  with year-only start/end), the ISS-190/191/q0 defect.
+
+Note also (ISS-202 corroboration, same DB): unified `edges.source_memory_id` is
+NULL for all 789 structural + 220 provenance edges, while legacy
+`graph_edges.memory_id` is SET 789/789 — the provenance is present in the legacy
+projection but lost in the unified one. Relevant to why entity-anchored seeding
+behaves differently across substrates.
+
+**What remains genuinely inferred (NOT DB-verified):** the exact top-K
+candidate *ranking* under arm B (V2-on) is unrecoverable — the L1 arm DBs were
+in-memory/temp and cleaned up. I verified the gold episodes are clean-and-
+present in the legacy graph and that the competitor pool is huge (188), which is
+*consistent with* crowding, but I did not observe the arm-B top-K list directly.
+To make the crowding claim itself DB-verified, a single L1 arm-B re-run with DB
+persistence + a direct SQL dump of the top-K candidates for q20/q33/q35/q62 is
+required. Filed as the follow-up below.
 
 ### Conclusion
 - **AC-4: gate NOT cleared on conv-26 → V2 stays flag-gated, default OFF.**
@@ -403,3 +440,15 @@ fix (ensure date-bearing episodes retain a top-K slot for temporal queries),
 tied to the existing date-stranding track (ISS-190/191/201/q0_root_cause).
 File as a new ISS once that track's direction is settled. Until then V2 remains
 an opt-in correctness improvement for entity-anchored workloads.
+
+**Two distinct follow-ups, do not conflate:**
+1. **Crowding (ranking layer, new ISS):** make the crowding claim DB-verified
+   first — re-run one L1 arm-B (V2-on) with DB persistence (do NOT use the
+   in-memory harness path), then SQL the top-K candidate list for q20/q33/q35/q62
+   and confirm the gold episode is present-but-low-ranked vs absent. Only after
+   that, design the fix (e.g. a temporal-query top-K reservation for
+   date-bearing episodes). This is the gate-clearing work for V2 default-on.
+2. **Date-stranding (existing track ISS-190/191/201, q0_root_cause):** the
+   `approx` golds (q35, the q33 distractor `1626c463`) with year-only start/end
+   and the real day buried in `note`. Extractor must pin the resolved day into
+   start/end. q20 and q62 do NOT need this — their dates are already clean.
