@@ -1,0 +1,80 @@
+# ISS-203 prompt A/B probe (8 sentences, model claude-haiku-4-5-20251001)
+
+## [1] Caroline showed her paintings at the LGBTQ art show
+  legacy (2 triples, 0 phrase-endpoints):
+    Caroline --[uses]--> LGBTQ art show  (conf 0.80)
+    paintings --[part_of]--> LGBTQ art show  (conf 0.85)
+  v2     (2 triples, 0 phrase-endpoints, 2 part_of/related_to):
+    paintings --[part_of]--> Caroline  (conf 0.90)
+    paintings --[part_of]--> LGBTQ art show  (conf 0.85)
+
+## [2] Caroline attended a LGBTQ support group
+  legacy (1 triples, 0 phrase-endpoints):
+    Caroline --[part_of]--> LGBTQ support group  (conf 0.85)
+  v2     (1 triples, 0 phrase-endpoints, 1 part_of/related_to):
+    Caroline --[part_of]--> LGBTQ support group  (conf 0.90)
+
+## [3] Caroline found transgender stories inspiring and felt happy and thankful for the support received
+  legacy (2 triples, 0 phrase-endpoints):
+    Caroline --[related_to]--> transgender stories  (conf 0.80)
+    support --[leads_to]--> happiness  (conf 0.70)
+  v2     (2 triples, 0 phrase-endpoints, 2 part_of/related_to):
+    Caroline --[related_to]--> transgender stories  (conf 0.85)
+    support --[related_to]--> Caroline  (conf 0.90)
+
+## [4] Caroline feels accepted by the support group and has gained courage to embrace herself
+  legacy (3 triples, 0 phrase-endpoints):
+    support group --[leads_to]--> acceptance  (conf 0.85)
+    support group --[leads_to]--> courage  (conf 0.85)
+    courage --[leads_to]--> self-acceptance  (conf 0.80)
+  v2     (3 triples, 0 phrase-endpoints, 1 part_of/related_to):
+    Caroline --[related_to]--> support group  (conf 0.85)
+    support group --[leads_to]--> courage  (conf 0.80)
+    courage --[leads_to]--> self-acceptance  (conf 0.75)
+
+## [5] Caroline is interested in pursuing counseling or mental health work to support people with similar issues to her own.
+  legacy (3 triples, 1 phrase-endpoints):
+    Caroline --[related_to]--> counseling  (conf 0.85)
+    Caroline --[related_to]--> mental health work  (conf 0.85)
+    counseling --[leads_to]--> support for people with mental health issues  (conf 0.80)
+  v2     (4 triples, 0 phrase-endpoints, 2 part_of/related_to):
+    Caroline --[related_to]--> counseling  (conf 0.85)
+    Caroline --[related_to]--> mental health work  (conf 0.85)
+    counseling --[leads_to]--> support  (conf 0.80)
+    mental health work --[leads_to]--> support  (conf 0.80)
+
+## [6] Melanie is taking care of the kids and going swimming with them
+  legacy (2 triples, 0 phrase-endpoints):
+    Melanie --[related_to]--> kids  (conf 0.80)
+    Melanie --[uses]--> swimming  (conf 0.70)
+  v2     (2 triples, 0 phrase-endpoints, 2 part_of/related_to):
+    Melanie --[related_to]--> kids  (conf 0.85)
+    Melanie --[related_to]--> swimming  (conf 0.80)
+
+## [7] Caroline read the book Becoming Nicole about a transgender girl
+  legacy (2 triples, 0 phrase-endpoints):
+    Caroline --[uses]--> Becoming Nicole  (conf 0.85)
+    Becoming Nicole --[related_to]--> transgender girl  (conf 0.90)
+  v2     (3 triples, 0 phrase-endpoints, 2 part_of/related_to):
+    Caroline --[uses]--> Becoming Nicole  (conf 0.85)
+    Becoming Nicole --[related_to]--> Nicole  (conf 0.80)
+    Nicole --[related_to]--> transgender girl  (conf 0.75)
+
+## [8] Melanie loves Caroline's painting and finds the support group helpful
+  legacy (2 triples, 1 phrase-endpoints):
+    Melanie --[related_to]--> Caroline's painting  (conf 0.80)
+    Melanie --[related_to]--> support group  (conf 0.80)
+  v2     (3 triples, 0 phrase-endpoints, 3 part_of/related_to):
+    painting --[part_of]--> Caroline  (conf 0.90)
+    Melanie --[related_to]--> painting  (conf 0.85)
+    Melanie --[related_to]--> support group  (conf 0.80)
+
+---
+SUMMARY:
+  legacy phrase-endpoint triples total: 2
+  v2     phrase-endpoint triples total: 0
+  v2     part_of/related_to triples total: 15
+
+GATE: V2 should have FEWER phrase-endpoint triples than legacy
+      AND produce part_of/related_to decomposition edges.
+  => PASS (behavior changed in intended direction) — proceed to sweep
