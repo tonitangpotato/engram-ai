@@ -37,10 +37,7 @@ impl NoopTripleExtractor {
 }
 
 impl TripleExtractor for NoopTripleExtractor {
-    fn extract_triples(
-        &self,
-        _content: &str,
-    ) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
+    fn extract_triples(&self, _content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
         Ok(Vec::new())
     }
 }
@@ -71,6 +68,91 @@ If nothing worth extracting, return empty array [].
 
 Text:
 "#;
+
+/// ISS-203 root-fix prompt: enforces an atomicity contract so the LLM
+/// decomposes possessive/prepositional phrases into atomic entities + a
+/// relation, instead of emitting the whole phrase as one "entity".
+///
+/// The defect this fixes is a *type error*: the legacy prompt (above) demos
+/// phrase-objects like `"prevention of data races"` and never tells the model
+/// that subject/object must be real-world things. The LLM learned to emit
+/// `"Caroline's paintings"`, `"support from Caroline"`, `"conversation with
+/// Caroline"` as standalone entities. Each then becomes its own node, never
+/// linked back to the `Caroline` person node — fragmenting one entity into
+/// ~21 disconnected shards and starving entity-anchored retrieval.
+///
+/// Note: no new `Predicate` variant is needed. `belongs_to` is already an
+/// accepted alias of `PartOf` in `Predicate::from_str_lossy`, and
+/// `associated_with` aliases `RelatedTo`. So "X's Y → Y belongs_to X" and
+/// "support from X → support associated_with X" both round-trip through the
+/// existing enum. The fix is teaching the model the contract, not widening
+/// the vocabulary.
+///
+/// Flag-gated via `ENGRAM_TRIPLE_PROMPT_V2` because the extraction layer has
+/// regressed before (ISS-162/178 harmful, ISS-161 inert) — must A/B on
+/// conv-26 + conv-44 before flipping the default.
+const TRIPLE_EXTRACTION_PROMPT_V2: &str = r#"Extract subject-predicate-object triples from the following text.
+
+Allowed predicates: is_a, part_of, belongs_to, uses, depends_on, caused_by, leads_to, implements, contradicts, associated_with, related_to
+
+Allowed entity kinds (optional, for subject_kind and object_kind):
+  Person, Organization, Place, Concept, Artifact, Event, Topic
+
+If the entity kind is unclear or doesn't fit the above, OMIT the field — do not
+guess. Anything outside this allowlist is dropped (it does NOT fall through to
+an "Other" bucket).
+
+ATOMICITY CONTRACT — subject and object must each be an ATOMIC ENTITY: a single
+real-world thing (a person, place, organization, artifact, concept, event, or
+topic). They must NOT be phrases that bury a relationship inside the name.
+
+When a phrase encodes a relation, DECOMPOSE it into entity + relation + entity:
+  - Possessive ("X's Y"): emit Y as the subject and X as the object with
+    predicate `belongs_to`. "Caroline's paintings" → paintings belongs_to Caroline.
+  - Prepositional ("Y from X", "Y with X", "Y of X"): emit Y and X as separate
+    entities linked with `associated_with` (or a more specific predicate if one
+    fits). "support from Caroline" → support associated_with Caroline.
+  - Never emit a possessive or prepositional phrase as a single subject/object
+    (no "Caroline's paintings", "support from Caroline", "conversation with Bob"
+    as one entity).
+
+Return ONLY a JSON array (no markdown, no explanation):
+[{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.X, "subject_kind": "Person", "object_kind": "Organization"}]
+
+Examples:
+Input: "Rust's borrow checker prevents data races at compile time"
+Output: [{"subject": "borrow checker", "predicate": "belongs_to", "object": "Rust", "confidence": 0.9, "subject_kind": "Concept", "object_kind": "Artifact"}, {"subject": "borrow checker", "predicate": "leads_to", "object": "data races", "confidence": 0.8, "object_kind": "Concept"}]
+
+Input: "Caroline showed her paintings at the LGBTQ art show"
+Output: [{"subject": "paintings", "predicate": "belongs_to", "object": "Caroline", "confidence": 0.9, "subject_kind": "Artifact", "object_kind": "Person"}, {"subject": "paintings", "predicate": "part_of", "object": "LGBTQ art show", "confidence": 0.85, "object_kind": "Event"}]
+
+Input: "The Memory struct uses SQLite for persistence"
+Output: [{"subject": "Memory struct", "predicate": "uses", "object": "SQLite", "confidence": 0.9, "object_kind": "Artifact"}, {"subject": "SQLite", "predicate": "implements", "object": "persistence", "confidence": 0.8, "subject_kind": "Artifact", "object_kind": "Concept"}]
+
+If nothing worth extracting, return empty array [].
+
+Text:
+"#;
+
+/// Select the active triple-extraction prompt.
+///
+/// Returns the ISS-203 atomicity-contract prompt when `ENGRAM_TRIPLE_PROMPT_V2`
+/// is set to a truthy value (`1`, `true`, `on`, `yes`, case-insensitive),
+/// otherwise the legacy prompt. Default is legacy until the conv-26 + conv-44
+/// A/B clears the regression gate.
+fn select_triple_prompt() -> &'static str {
+    match std::env::var("ENGRAM_TRIPLE_PROMPT_V2") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            if matches!(v.as_str(), "1" | "true" | "on" | "yes") {
+                TRIPLE_EXTRACTION_PROMPT_V2
+            } else {
+                TRIPLE_EXTRACTION_PROMPT
+            }
+        }
+        Err(_) => TRIPLE_EXTRACTION_PROMPT,
+    }
+}
 
 /// Parse a triple extraction response from an LLM.
 fn parse_triple_response(content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
@@ -261,7 +343,6 @@ fn extract_first_top_level_array(s: &str) -> Option<&str> {
     None
 }
 
-
 /// `EntityKind`. Returns `None` for empty / unknown / out-of-allowlist strings;
 /// callers fall back to `KindSource::Default`.
 ///
@@ -350,13 +431,16 @@ impl AnthropicTripleExtractor {
 
     fn build_headers(&self) -> Result<reqwest::header::HeaderMap, Box<dyn Error + Send + Sync>> {
         let token = self.token_provider.get_token()?;
-        Ok(crate::anthropic_client::build_anthropic_headers(&token, self.is_oauth))
+        Ok(crate::anthropic_client::build_anthropic_headers(
+            &token,
+            self.is_oauth,
+        ))
     }
 }
 
 impl TripleExtractor for AnthropicTripleExtractor {
     fn extract_triples(&self, content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
-        let prompt = format!("{}{}", TRIPLE_EXTRACTION_PROMPT, content);
+        let prompt = format!("{}{}", select_triple_prompt(), content);
 
         let body = serde_json::json!({
             "model": self.model,
@@ -369,7 +453,8 @@ impl TripleExtractor for AnthropicTripleExtractor {
             ]
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://api.anthropic.com/v1/messages")
             .headers(self.build_headers()?)
             .json(&body)
@@ -434,7 +519,7 @@ impl OllamaTripleExtractor {
 
 impl TripleExtractor for OllamaTripleExtractor {
     fn extract_triples(&self, content: &str) -> Result<Vec<Triple>, Box<dyn Error + Send + Sync>> {
-        let prompt = format!("{}{}", TRIPLE_EXTRACTION_PROMPT, content);
+        let prompt = format!("{}{}", select_triple_prompt(), content);
 
         let body = serde_json::json!({
             "model": self.model,
@@ -449,7 +534,8 @@ impl TripleExtractor for OllamaTripleExtractor {
 
         let url = format!("{}/api/chat", self.url);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("content-type", "application/json")
             .json(&body)
@@ -479,7 +565,8 @@ mod tests {
 
     #[test]
     fn test_parse_triple_response_clean() {
-        let response = r#"[{"subject": "Rust", "predicate": "uses", "object": "LLVM", "confidence": 0.9}]"#;
+        let response =
+            r#"[{"subject": "Rust", "predicate": "uses", "object": "LLVM", "confidence": 0.9}]"#;
         let triples = parse_triple_response(response).unwrap();
         assert_eq!(triples.len(), 1);
         assert_eq!(triples[0].subject, "Rust");
@@ -510,14 +597,16 @@ mod tests {
 
     #[test]
     fn test_parse_triple_response_unknown_predicate() {
-        let response = r#"[{"subject": "X", "predicate": "foobar", "object": "Y", "confidence": 0.5}]"#;
+        let response =
+            r#"[{"subject": "X", "predicate": "foobar", "object": "Y", "confidence": 0.5}]"#;
         let triples = parse_triple_response(response).unwrap();
         assert_eq!(triples[0].predicate, Predicate::RelatedTo);
     }
 
     #[test]
     fn test_parse_triple_response_clamps_confidence() {
-        let response = r#"[{"subject": "X", "predicate": "uses", "object": "Y", "confidence": 1.5}]"#;
+        let response =
+            r#"[{"subject": "X", "predicate": "uses", "object": "Y", "confidence": 1.5}]"#;
         let triples = parse_triple_response(response).unwrap();
         assert!((triples[0].confidence - 1.0).abs() < f64::EPSILON);
     }
@@ -537,7 +626,10 @@ mod tests {
         );
         assert_eq!(parse_kind_hint(Some("Place")), Some(EntityKind::Place));
         assert_eq!(parse_kind_hint(Some("Concept")), Some(EntityKind::Concept));
-        assert_eq!(parse_kind_hint(Some("Artifact")), Some(EntityKind::Artifact));
+        assert_eq!(
+            parse_kind_hint(Some("Artifact")),
+            Some(EntityKind::Artifact)
+        );
         assert_eq!(parse_kind_hint(Some("Event")), Some(EntityKind::Event));
         assert_eq!(parse_kind_hint(Some("Topic")), Some(EntityKind::Topic));
     }
@@ -569,7 +661,8 @@ mod tests {
     fn parse_triple_response_omitted_kind_yields_none_hint() {
         // Design test #8 — old fixtures (no subject_kind/object_kind) still
         // parse via #[serde(default)], yielding None hints. Wire-compatible.
-        let response = r#"[{"subject": "X", "predicate": "uses", "object": "Y", "confidence": 0.8}]"#;
+        let response =
+            r#"[{"subject": "X", "predicate": "uses", "object": "Y", "confidence": 0.8}]"#;
         let triples = parse_triple_response(response).unwrap();
         assert_eq!(triples.len(), 1);
         assert_eq!(triples[0].subject_kind_hint, None);
@@ -740,7 +833,11 @@ Wait, scratch that — let me re-extract more conservatively.
 
 [{"subject": "Rust", "predicate": "is_a", "object": "language", "confidence": 0.95}]"#;
         let triples = parse_triple_response(response).expect("must parse");
-        assert_eq!(triples.len(), 2, "first array (2 triples) wins over second (1)");
+        assert_eq!(
+            triples.len(),
+            2,
+            "first array (2 triples) wins over second (1)"
+        );
         assert_eq!(triples[0].subject, "Rust");
         assert_eq!(triples[0].predicate, Predicate::Uses);
         assert_eq!(triples[1].predicate, Predicate::Implements);
@@ -783,5 +880,103 @@ Hope this helps!"#;
         assert_eq!(triples.len(), 1);
         assert_eq!(triples[0].object, r#"the "big" idea"#);
     }
-}
 
+    // --- ISS-203: atomicity-contract prompt (V2) ---
+
+    /// The fix relies on `belongs_to` and `associated_with` already being
+    /// accepted aliases, so no new `Predicate` variant is needed. Guard that
+    /// assumption: if these mappings ever change, the V2 prompt silently
+    /// degrades possessive/prepositional edges and this test must catch it.
+    #[test]
+    fn iss203_possessive_predicates_roundtrip_through_existing_enum() {
+        assert_eq!(Predicate::from_str_lossy("belongs_to"), Predicate::PartOf);
+        assert_eq!(
+            Predicate::from_str_lossy("associated_with"),
+            Predicate::RelatedTo
+        );
+    }
+
+    /// The V2 prompt must carry the atomicity contract and demonstrate
+    /// decomposing a possessive phrase into entity + relation + entity.
+    #[test]
+    fn iss203_v2_prompt_enforces_atomicity_and_decomposition() {
+        let p = TRIPLE_EXTRACTION_PROMPT_V2;
+        assert!(
+            p.contains("ATOMICITY CONTRACT"),
+            "V2 must state the atomicity contract"
+        );
+        assert!(
+            p.contains("belongs_to"),
+            "V2 must allow the possessive predicate"
+        );
+        // The canonical possessive decomposition example.
+        assert!(
+            p.contains("paintings belongs_to Caroline")
+                || p.contains(
+                    "\"paintings\", \"predicate\": \"belongs_to\", \"object\": \"Caroline\""
+                ),
+            "V2 must demo X's Y -> Y belongs_to X decomposition"
+        );
+        // Prepositional decomposition guidance.
+        assert!(
+            p.contains("support associated_with Caroline"),
+            "V2 must demo 'support from X' -> associated_with decomposition"
+        );
+    }
+
+    /// The bad phrase-object example that taught the LLM the wrong behavior
+    /// must NOT survive into V2.
+    #[test]
+    fn iss203_v2_prompt_drops_phrase_object_example() {
+        assert!(
+            !TRIPLE_EXTRACTION_PROMPT_V2.contains("prevention of data races"),
+            "V2 must not demo a buried-relation phrase as an object"
+        );
+        // The legacy prompt still carries it (we only gate, never mutate it).
+        assert!(
+            TRIPLE_EXTRACTION_PROMPT.contains("prevention of data races"),
+            "legacy prompt is left untouched by the gate"
+        );
+    }
+
+    /// `select_triple_prompt()` defaults to legacy and switches to V2 only on
+    /// a truthy env value. Serialized via a mutex because it mutates a process-
+    /// global env var.
+    #[test]
+    fn iss203_select_triple_prompt_gating() {
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let key = "ENGRAM_TRIPLE_PROMPT_V2";
+        let restore = std::env::var(key).ok();
+
+        std::env::remove_var(key);
+        assert_eq!(select_triple_prompt(), TRIPLE_EXTRACTION_PROMPT);
+
+        for truthy in ["1", "true", "on", "yes", "TRUE", "On"] {
+            std::env::set_var(key, truthy);
+            assert_eq!(
+                select_triple_prompt(),
+                TRIPLE_EXTRACTION_PROMPT_V2,
+                "value {:?} should select V2",
+                truthy
+            );
+        }
+
+        for falsy in ["0", "false", "off", "", "garbage"] {
+            std::env::set_var(key, falsy);
+            assert_eq!(
+                select_triple_prompt(),
+                TRIPLE_EXTRACTION_PROMPT,
+                "value {:?} should keep legacy",
+                falsy
+            );
+        }
+
+        match restore {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+}
