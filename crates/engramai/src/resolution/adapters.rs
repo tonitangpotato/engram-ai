@@ -66,6 +66,7 @@ pub fn map_entity_kind(v02: &V02EntityType) -> (EntityKind, Option<String>) {
 /// | `Implements`  | `Implements`     |
 /// | `Contradicts` | `Contradicts`    |
 /// | `RelatedTo`   | `RelatedTo`      |
+/// | `OccurredOn`  | `OccurredOn`     |
 pub fn map_predicate(v02: &V02Predicate) -> Predicate {
     let canon = match v02 {
         V02Predicate::IsA => CanonicalPredicate::IsA,
@@ -77,6 +78,7 @@ pub fn map_predicate(v02: &V02Predicate) -> Predicate {
         V02Predicate::Implements => CanonicalPredicate::Implements,
         V02Predicate::Contradicts => CanonicalPredicate::Contradicts,
         V02Predicate::RelatedTo => CanonicalPredicate::RelatedTo,
+        V02Predicate::OccurredOn => CanonicalPredicate::OccurredOn,
     };
     Predicate::Canonical(canon)
 }
@@ -296,6 +298,7 @@ mod tests {
             (V02Predicate::Implements, CanonicalPredicate::Implements),
             (V02Predicate::Contradicts, CanonicalPredicate::Contradicts),
             (V02Predicate::RelatedTo, CanonicalPredicate::RelatedTo),
+            (V02Predicate::OccurredOn, CanonicalPredicate::OccurredOn),
         ];
         for (v02, expected_canon) in cases {
             assert_eq!(

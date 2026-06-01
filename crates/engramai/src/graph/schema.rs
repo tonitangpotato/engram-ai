@@ -84,6 +84,10 @@ pub enum CanonicalPredicate {
     CausedBy,
     LeadsTo,
     PrecededBy,
+    /// Event-occurrence time (ISS-204). The object is a literal date, not an
+    /// entity — this records *when an event happened*. Distinct from
+    /// `PrecededBy` (relative ordering between two events).
+    OccurredOn,
     // authored / sourced
     CreatedBy,
     MentionedIn,
@@ -171,6 +175,7 @@ pub fn directionality(p: &CanonicalPredicate) -> Directionality {
         CreatedBy => Directionality::Directed { inverse: None },
         MentionedIn => Directionality::Directed { inverse: None },
         Supports => Directionality::Directed { inverse: None },
+        OccurredOn => Directionality::Directed { inverse: None },
     }
 }
 
@@ -202,6 +207,7 @@ pub fn directionality(p: &CanonicalPredicate) -> Directionality {
 /// | `Contradicts`  | `ManyToMany`  | Many-to-many                                         |
 /// | `Supports`     | `ManyToMany`  | Many-to-many                                         |
 /// | `RelatedTo`    | `ManyToMany`  | Generic fallback, assumed multi-valued               |
+/// | `OccurredOn`   | `OneToOne`    | Functional: an event happened on a single date       |
 pub fn cardinality(p: &CanonicalPredicate) -> Cardinality {
     use CanonicalPredicate::*;
     match p {
@@ -210,6 +216,8 @@ pub fn cardinality(p: &CanonicalPredicate) -> Cardinality {
         MarriedTo => Cardinality::OneToOne,
         PrecededBy => Cardinality::OneToOne,
         CreatedBy => Cardinality::OneToOne,
+        // An event-occurrence happens on a single date (functional).
+        OccurredOn => Cardinality::OneToOne,
 
         // OneToMany — structural fan-out from subject.
         MemberOf => Cardinality::OneToMany,

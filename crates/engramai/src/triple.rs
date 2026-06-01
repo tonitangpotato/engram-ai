@@ -20,6 +20,11 @@ pub enum Predicate {
     Implements,
     Contradicts,
     RelatedTo,
+    /// Event-occurrence time. Object is a literal date (ISO `YYYY-MM-DD`),
+    /// never an entity. Semantically distinct from the abstract-semantic
+    /// relations above: this records *when an event happened*, not a
+    /// relationship between two things (ISS-204).
+    OccurredOn,
 }
 
 impl Predicate {
@@ -36,6 +41,9 @@ impl Predicate {
             "implements" | "implement" | "realizes" => Predicate::Implements,
             "contradicts" | "contradict" | "conflicts_with" => Predicate::Contradicts,
             "related_to" | "relatedto" | "associated_with" => Predicate::RelatedTo,
+            "occurred_on" | "occurredon" | "happened_at" | "on_date" | "dated" => {
+                Predicate::OccurredOn
+            }
             _ => Predicate::RelatedTo,
         }
     }
@@ -51,6 +59,7 @@ impl Predicate {
             Predicate::LeadsTo => "leads_to",
             Predicate::Implements => "implements",
             Predicate::Contradicts => "contradicts",
+            Predicate::OccurredOn => "occurred_on",
             Predicate::RelatedTo => "related_to",
         }
     }
