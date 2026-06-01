@@ -209,6 +209,15 @@ pub struct FactualPlanInputs<'a> {
     /// [`crate::retrieval::api::GraphQuery::entity_filter`]. When set,
     /// only anchors whose `entity_id` is in this set are kept.
     pub entity_filter: Option<&'a [Uuid]>,
+
+    /// ISS-205 — temporal date-bearing reservation. `Some(R)` reserves
+    /// `R` seed slots for date-bearing (`OccurredOn`) episodes of each
+    /// resolved anchor, force-admitting the top-`R` by interval-overlap
+    /// so the gold dated episode survives the recency-truncated
+    /// `memories_mentioning_entity` scan on dense anchors. `None`
+    /// (default) ⇒ no-op, byte-identical seed pool. Threaded from
+    /// [`crate::retrieval::api::GraphQuery::temporal_reservation_override`].
+    pub temporal_reservation: Option<usize>,
 }
 
 /// Default caps used by [`FactualPlanInputs`] in tests / placeholder
@@ -1065,6 +1074,7 @@ mod tests {
             // existing assertions keep their semantics.
             requested_k: 0,
             entity_filter: None,
+            temporal_reservation: None,
         }
     }
 

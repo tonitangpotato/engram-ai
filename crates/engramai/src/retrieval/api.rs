@@ -242,6 +242,25 @@ pub struct GraphQuery {
     /// leave this `None`.
     pub bm25_pool_override: Option<usize>,
 
+    /// ISS-205 — temporal date-bearing reservation for the Factual plan
+    /// seed pool.
+    ///
+    /// When `Some(R)`, the Factual plan reserves `R` seed slots for
+    /// date-bearing episodes of each resolved anchor: it pulls the
+    /// anchor's `OccurredOn` edges (uncapped via [`crate::graph::GraphRead::edges_of`]),
+    /// ranks them by interval-overlap against the query's temporal
+    /// constraint (ISS-191 `temporal_score`), and force-admits the
+    /// `source_memory_id` of the top-`R` into the candidate pool. This
+    /// stops the gold dated episode from being crowded out of the
+    /// recency-truncated `memories_mentioning_entity` scan on dense
+    /// anchors (e.g. Caroline carries 31 `occurred_on` edges).
+    ///
+    /// `None` (default) ⇒ the reservation path is a no-op and the seed
+    /// pool is byte-identical to the pre-ISS-205 behaviour. Default-off
+    /// until the conv-26 / conv-44 A/B clears (ISS-205 AC-3..6, mirrors
+    /// the ISS-139 MMR-default-off discipline).
+    pub temporal_reservation_override: Option<usize>,
+
     /// Optional cross-encoder (or any [`Reranker`]) override that runs
     /// at Stage C.5 **before** MMR when both are wired (ISS-159 D5:
     /// CE first reorders by quality, then MMR diversifies the
@@ -340,6 +359,10 @@ impl std::fmt::Debug for GraphQuery {
             .field("mmr_lambda_override", &self.mmr_lambda_override)
             .field("k_seed_override", &self.k_seed_override)
             .field("bm25_pool_override", &self.bm25_pool_override)
+            .field(
+                "temporal_reservation_override",
+                &self.temporal_reservation_override,
+            )
             // `cross_encoder_override` skipped — `dyn Reranker` is not
             // `Debug`. Surface presence/absence instead.
             .field(
@@ -379,6 +402,7 @@ impl GraphQuery {
             mmr_lambda_override: None,
             k_seed_override: None,
             bm25_pool_override: None,
+            temporal_reservation_override: None,
             cross_encoder_override: None,
             entity_channel_override: None,
             factual_reweight_override: None,
@@ -465,6 +489,19 @@ impl GraphQuery {
     /// `None` to fall back to `(query.limit * 4).max(40)`.
     pub fn with_bm25_pool_override(mut self, pool: Option<usize>) -> Self {
         self.bm25_pool_override = pool;
+        self
+    }
+
+    /// Builder: per-query temporal date-bearing reservation (ISS-205).
+    ///
+    /// See [`GraphQuery::temporal_reservation_override`] for semantics.
+    /// `Some(R)` reserves `R` Factual-plan seed slots for the resolved
+    /// anchors' date-bearing (`OccurredOn`) episodes; `None` (default)
+    /// is a no-op. Intended consumer: bench drivers running the
+    /// ISS-205 A/B (`ENGRAM_BENCH_TEMPORAL_RESERVATION`). Production
+    /// callers leave this `None` until the A/B clears.
+    pub fn with_temporal_reservation(mut self, reservation: Option<usize>) -> Self {
+        self.temporal_reservation_override = reservation;
         self
     }
 
