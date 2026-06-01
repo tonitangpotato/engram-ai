@@ -15,6 +15,7 @@ created: 2026-05-31
 relates_to:
 - ISS-202
 parent: ISS-202
+blocked_by: ISS-204
 ---
 
 # ISS-203: entity canonicalization fragments one person into dozens of nodes
