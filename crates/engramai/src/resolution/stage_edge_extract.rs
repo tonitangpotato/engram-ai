@@ -15,7 +15,7 @@
 //!   pass through, novel labels become `Predicate::Proposed(label)`.
 
 use crate::graph::audit::CATEGORY_EXTRACTOR_ERROR;
-use crate::graph::ResolutionMethod;
+use crate::graph::{CanonicalPredicate, Predicate, ResolutionMethod};
 use crate::resolution::adapters::map_predicate;
 use crate::resolution::context::{DraftEdge, DraftEdgeEnd, PipelineContext, PipelineStage};
 use crate::resolution::stage_extract::StageError;
@@ -77,6 +77,50 @@ pub fn extract_edges(
 
     ctx.extracted_triples = triples;
 
+    // ISS-204 Component 1 — emit an event-occurrence edge.
+    //
+    // Event-time is a first-class graph relation, not a memory-metadata
+    // afterthought. When the enrichment pipeline derived a *day-precision*
+    // date for this memory (`TemporalMark::Day`/`Exact` — a single calendar
+    // day, the only precision a literal `OccurredOn` object can faithfully
+    // carry), project it as an explicit `OccurredOn` literal-object edge so
+    // temporal queries resolve by graph traversal instead of degrading to
+    // vector recall over a huge competitor pool.
+    //
+    // Lower-precision marks (`Range`/`Approx`/`Vague`) are intentionally
+    // skipped: a literal ISO day would lie about the precision. Those cases
+    // (e.g. conv-26 q33/q35) need ISS-190/191 to pin the day into the mark
+    // first; once they resolve to `Day`, this path picks them up unchanged.
+    //
+    // Subject anchor: the primary participant — the subject of the first
+    // triple-derived edge. That entity is guaranteed to enter the graph
+    // (it is lifted into `entity_drafts`), so the literal edge is not
+    // orphaned and a query anchor that resolves to it can traverse the date.
+    // When no triple was extracted there is no anchor entity to hang the
+    // date on, so we skip rather than emit a dangling edge.
+    if let Some(day) = ctx
+        .memory
+        .derived_temporal_mark()
+        .and_then(|m| day_precision_iso(&m))
+    {
+        if let Some(anchor) = ctx
+            .extracted_triples
+            .first()
+            .map(|t| t.subject.clone())
+            .filter(|s| !s.trim().is_empty())
+        {
+            ctx.edge_drafts.push(DraftEdge {
+                subject_name: anchor,
+                predicate: Predicate::Canonical(CanonicalPredicate::OccurredOn),
+                object: DraftEdgeEnd::Literal(day),
+                // Derived from the store-time temporal mark, not an LLM
+                // assertion; full confidence in the derivation itself.
+                source_confidence: 1.0,
+                resolution_method: ResolutionMethod::Automatic,
+            });
+        }
+    }
+
     log::debug!(
         target: "resolution.stage_edge_extract",
         "edge extraction complete: memory_id={} triples={}",
@@ -85,6 +129,22 @@ pub fn extract_edges(
     );
 
     Ok(())
+}
+
+/// Render a [`TemporalMark`](crate::dimensions::TemporalMark) as an ISO
+/// `YYYY-MM-DD` string **iff** it pins a single calendar day.
+///
+/// Only `Day` and `Exact` carry day precision. `Range`/`Approx`/`Vague`
+/// describe intervals or uncertainty and have no single day to assert as a
+/// literal `OccurredOn` object — returning `None` for them keeps the graph
+/// from claiming a precision the mark does not have (ISS-204).
+fn day_precision_iso(mark: &crate::dimensions::TemporalMark) -> Option<String> {
+    use crate::dimensions::TemporalMark;
+    match mark {
+        TemporalMark::Day(d) => Some(d.format("%Y-%m-%d").to_string()),
+        TemporalMark::Exact(dt) => Some(dt.format("%Y-%m-%d").to_string()),
+        TemporalMark::Range { .. } | TemporalMark::Approx { .. } | TemporalMark::Vague(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -255,5 +315,149 @@ mod tests {
             ctx.edge_drafts[0].resolution_method,
             ResolutionMethod::Automatic
         );
+    }
+
+    // ---- ISS-204 Component 1: OccurredOn event-time literal edge ----
+
+    use crate::dimensions::TemporalMark;
+    use chrono::NaiveDate;
+
+    /// Build a context whose memory carries `mark` as its derived temporal
+    /// dimension, written in the canonical `dimensions.temporal` tagged-enum
+    /// layout that `derived_temporal_mark()` reads.
+    fn ctx_with_temporal(content: &str, mark: &TemporalMark) -> PipelineContext {
+        let mut mem = fixture_memory(content);
+        let temporal = serde_json::to_value(mark).unwrap();
+        mem.metadata = Some(serde_json::json!({
+            "dimensions": { "temporal": temporal }
+        }));
+        PipelineContext::new(mem, Uuid::new_v4(), None, String::new())
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> TemporalMark {
+        TemporalMark::Day(NaiveDate::from_ymd_opt(y, m, d).unwrap())
+    }
+
+    #[test]
+    fn day_precision_iso_only_for_single_day_marks() {
+        let d = NaiveDate::from_ymd_opt(2023, 7, 5).unwrap();
+        assert_eq!(
+            day_precision_iso(&TemporalMark::Day(d)).as_deref(),
+            Some("2023-07-05")
+        );
+        assert_eq!(
+            day_precision_iso(&TemporalMark::Exact(
+                d.and_hms_opt(14, 30, 0).unwrap().and_utc()
+            ))
+            .as_deref(),
+            Some("2023-07-05")
+        );
+        // Interval / uncertain marks have no single day to assert.
+        assert_eq!(
+            day_precision_iso(&TemporalMark::Range {
+                start: d,
+                end: NaiveDate::from_ymd_opt(2023, 7, 9).unwrap()
+            }),
+            None
+        );
+        assert_eq!(
+            day_precision_iso(&TemporalMark::Approx {
+                start: d,
+                end: None,
+                approximate: true,
+                note: None
+            }),
+            None
+        );
+        assert_eq!(
+            day_precision_iso(&TemporalMark::Vague("a while back".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn day_precision_mark_emits_occurred_on_literal_edge() {
+        let extractor = StaticExtractor(vec![Triple::new(
+            "Melanie".into(),
+            V02Predicate::RelatedTo,
+            "museum".into(),
+            0.9,
+        )]);
+        let mut ctx = ctx_with_temporal("Melanie took her kids to the museum.", &day(2023, 7, 5));
+        extract_edges(&extractor, &mut ctx).unwrap();
+
+        // One triple-derived edge + one OccurredOn literal edge.
+        assert_eq!(ctx.edge_drafts.len(), 2);
+        let occ = ctx
+            .edge_drafts
+            .iter()
+            .find(|d| {
+                matches!(
+                    &d.predicate,
+                    Predicate::Canonical(CanonicalPredicate::OccurredOn)
+                )
+            })
+            .expect("OccurredOn edge emitted");
+        // Anchored on the primary participant (first triple subject).
+        assert_eq!(occ.subject_name, "Melanie");
+        // Literal ISO day object, day-precision.
+        match &occ.object {
+            DraftEdgeEnd::Literal(s) => assert_eq!(s, "2023-07-05"),
+            other => panic!("expected literal object, got {:?}", other),
+        }
+        assert_eq!(occ.resolution_method, ResolutionMethod::Automatic);
+    }
+
+    #[test]
+    fn no_temporal_mark_emits_no_occurred_on_edge() {
+        let extractor = StaticExtractor(vec![Triple::new(
+            "Alice".into(),
+            V02Predicate::Uses,
+            "Rust".into(),
+            0.9,
+        )]);
+        let mut ctx = ctx_for("Alice uses Rust."); // metadata: None
+        extract_edges(&extractor, &mut ctx).unwrap();
+        assert_eq!(ctx.edge_drafts.len(), 1);
+        assert!(!ctx.edge_drafts.iter().any(|d| matches!(
+            &d.predicate,
+            Predicate::Canonical(CanonicalPredicate::OccurredOn)
+        )));
+    }
+
+    #[test]
+    fn low_precision_mark_emits_no_occurred_on_edge() {
+        // An Approx (year-granular) mark is NOT day precision — q33/q35 case
+        // that needs ISS-190/191 to pin the day first. We must not fabricate
+        // a literal day for it.
+        let extractor = StaticExtractor(vec![Triple::new(
+            "Bob".into(),
+            V02Predicate::RelatedTo,
+            "camping".into(),
+            0.8,
+        )]);
+        let mark = TemporalMark::Approx {
+            start: NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
+            end: Some(NaiveDate::from_ymd_opt(2023, 12, 31).unwrap()),
+            approximate: true,
+            note: Some("sometime in 2023".into()),
+        };
+        let mut ctx = ctx_with_temporal("Bob went camping.", &mark);
+        extract_edges(&extractor, &mut ctx).unwrap();
+        assert_eq!(ctx.edge_drafts.len(), 1);
+        assert!(!ctx.edge_drafts.iter().any(|d| matches!(
+            &d.predicate,
+            Predicate::Canonical(CanonicalPredicate::OccurredOn)
+        )));
+    }
+
+    #[test]
+    fn day_precision_but_no_triple_emits_no_occurred_on_edge() {
+        // No triple → no anchor entity to hang the date on → skip rather
+        // than emit a dangling literal edge.
+        let extractor = StaticExtractor(vec![]);
+        let mut ctx = ctx_with_temporal("Something happened.", &day(2023, 7, 5));
+        extract_edges(&extractor, &mut ctx).unwrap();
+        assert!(ctx.edge_drafts.is_empty());
     }
 }

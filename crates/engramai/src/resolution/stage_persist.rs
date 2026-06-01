@@ -787,7 +787,14 @@ fn build_new_edge(
         er.subject_id,
         er.draft.predicate.clone(),
         er.object.clone(),
-        Some(now), // valid_from = the episode time (best available)
+        // valid_from = when the fact became true *in the real world*. We do
+        // NOT know that from the write-clock — stamping `now` here (the
+        // ingest time) conflates bitemporal fact-validity with event time
+        // and corrupts as-of-T queries (ISS-204). The ingest time is already
+        // captured in `recorded_at` (the `now` positional below). Event-
+        // occurrence time, when known, is carried by an explicit `OccurredOn`
+        // literal-object edge, never by `valid_from`. Leave validity unknown.
+        None,
         now,
     );
     e.confidence = er.draft.source_confidence.clamp(0.0, 1.0);
