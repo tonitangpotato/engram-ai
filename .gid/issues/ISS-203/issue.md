@@ -303,3 +303,38 @@ nodes are things, edges are relations.
    examples; no eval gold strings leaked into examples.
 4. A/B conv-26 + conv-44 paired with ISS-202 AC-4; flip default only on
    no-regression.
+
+---
+
+## Implementation (commit 4a931ff, 2026-05-31)
+
+Root fix landed exactly as scoped, with one refinement discovered during
+implementation: **no new `Predicate` variant was needed.** `Predicate::from_str_lossy`
+already maps `belongs_to` → `PartOf` and `associated_with` → `RelatedTo`, so the
+possessive/prepositional edges round-trip through the existing enum. The fix is
+purely a prompt-contract change; the vocabulary was already sufficient.
+
+- Added `TRIPLE_EXTRACTION_PROMPT_V2` (atomicity contract + decomposition rules
+  + two new examples: `paintings belongs_to Caroline` and
+  `support associated_with Caroline`). Replaced the bad `prevention of data races`
+  phrase-object example.
+- `select_triple_prompt()` gates on `ENGRAM_TRIPLE_PROMPT_V2` (truthy: `1/true/on/yes`).
+  Default = legacy prompt, untouched.
+- Wired into both `AnthropicTripleExtractor` and `OllamaTripleExtractor`.
+- 4 unit tests: predicate-roundtrip guard, atomicity/decomposition present,
+  bad example dropped (legacy untouched), env-var gating. 2093 lib tests pass (+4).
+
+### Acceptance criteria
+- [x] AC-1: V2 prompt enforces atomicity contract + demos possessive/prepositional decomposition.
+- [x] AC-2: Legacy prompt untouched; new prompt flag-gated (default off).
+- [x] AC-3: Unit tests green; no eval gold strings leaked into prompt examples.
+- [ ] AC-4: conv-26 + conv-44 A/B (paired with ISS-202 AC-4) confirms no retrieval regression before flipping default.
+
+### Open questions resolved
+- *Which prepositional predicate?* → `associated_with` (aliases `RelatedTo`).
+  Generic by design; a more specific predicate can be emitted by the LLM when one fits.
+- *New predicate variant?* → No. `belongs_to`/`associated_with` already alias existing variants.
+- *Does endpoint-lift handle now-atomic endpoints?* → Yes — the lift path
+  (`draft_entity_from_triple_endpoint`) consumes subject/object strings verbatim;
+  atomic endpoints flow through unchanged. Decomposition happens at the prompt
+  layer (the LLM emits two atomic endpoints + a relation), not in `parse_triple_response`.
