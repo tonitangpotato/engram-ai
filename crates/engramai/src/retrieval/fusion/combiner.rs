@@ -1029,6 +1029,7 @@ mod tests {
                 score: 0.0,
                 sub_scores: sub_gold.clone(),
                 embedding: None,
+                reserved: false,
             }]
         };
 
@@ -1095,6 +1096,7 @@ mod tests {
                 score: 0.0,
                 sub_scores: sub.clone(),
                 embedding: None,
+                reserved: false,
             }]
         };
 

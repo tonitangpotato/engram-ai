@@ -528,6 +528,10 @@ pub(crate) fn factual_to_scored(
                 score: 0.0, // overwritten by fusion::combine
                 sub_scores,
                 embedding,
+                // ISS-211: carry the reservation through fusion so the
+                // post-fusion reserved-first reorder can hard-promote the
+                // dated source episode for date-asking queries.
+                reserved: row.reserved,
             })
         })
         .collect()
@@ -593,6 +597,7 @@ pub(crate) fn episodic_to_scored(
                 score: 0.0, // overwritten by fusion
                 sub_scores,
                 embedding,
+                reserved: false, // ISS-211: only the Factual adapter reserves
             })
         })
         .collect()
@@ -664,6 +669,7 @@ pub(crate) fn associative_to_scored(
                 score: 0.0,
                 sub_scores,
                 embedding,
+                reserved: false, // ISS-211: only the Factual adapter reserves
             })
         })
         .collect()
@@ -738,6 +744,7 @@ pub(crate) fn affective_to_scored(
                 score: 0.0,
                 sub_scores,
                 embedding,
+                reserved: false, // ISS-211: only the Factual adapter reserves
             })
         })
         .collect()
@@ -800,6 +807,7 @@ pub(crate) fn hybrid_to_scored(
                     score: ranked.rrf_score,
                     sub_scores: SubScores::default(),
                     embedding,
+                    reserved: false, // ISS-211: only the Factual adapter reserves
                 })
             }
             HybridItem::Topic(uuid) => {

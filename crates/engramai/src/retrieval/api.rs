@@ -611,6 +611,23 @@ pub enum ScoredResult {
         /// pool candidates ≈ 300KB transient memory at the rerank
         /// boundary — acceptable per ISS-139 design note.
         embedding: Option<Vec<f32>>,
+        /// ISS-211: reservation privilege survives fusion as a hard flag.
+        ///
+        /// The Factual plan reserves the dated source episode for
+        /// date-asking queries (ISS-205); `factual_to_scored` applies a
+        /// soft graph-axis boost, but multi-signal fusion
+        /// (`0.45*graph + 0.40*text + 0.15*recency`) dilutes it so the
+        /// reserved row can still be crowded out of the head by
+        /// higher-text distractors (ISS-211 distractor saturation).
+        ///
+        /// Carrying `reserved` as a flag lets the post-fusion stage
+        /// hard-promote reserved rows to the head for date-asking
+        /// factual queries *without* perturbing scores — a deterministic
+        /// reserved-first reorder, not a score hack. `false` everywhere
+        /// except the Factual adapter; the promotion is additionally
+        /// gated on `query_asks_for_date` so non-temporal factual queries
+        /// stay byte-identical.
+        reserved: bool,
     },
     /// L5 topic candidate (Abstract plan, optionally Hybrid).
     Topic {
@@ -1012,6 +1029,34 @@ impl Memory {
             ranked = mmr.rerank(&query_text, &ranked)?;
         }
 
+        // Stage C.6 (ISS-211): reserved-first promotion for date-asking
+        // factual queries.
+        //
+        // The Factual plan reserves the dated source episode (ISS-205) and
+        // `factual_to_scored` lifts it on the graph axis, but multi-signal
+        // fusion (`0.45*graph + 0.40*text + 0.15*recency`) dilutes that
+        // boost — a reserved row scoring 0.79 can still trail higher-text
+        // distractors (the conv-26-q0 distractor-saturation failure: gold
+        // delivered at rank 3, generation anchored on ranks 0–2 and
+        // answered "I don't know").
+        //
+        // Express the reservation as a hard **rank** for date-asking
+        // queries: stable-partition reserved rows to the head, preserving
+        // their relative (fusion) order within the reserved block and the
+        // non-reserved block. This is a reorder only — no score is touched,
+        // so `explain` scores stay truthful — and it runs after MMR/CE so
+        // it is the last word on the head before truncation, guaranteeing
+        // the dated gold survives top-K.
+        //
+        // Gating: only Factual plan AND `query_asks_for_date`. Non-temporal
+        // factual queries (where nothing is reserved anyway) and every
+        // other plan are byte-identical.
+        if matches!(plan_kind, crate::retrieval::dispatch::PlanKind::Factual)
+            && crate::query_classifier::asks_for_date(&query_text)
+        {
+            promote_reserved_first(&mut ranked);
+        }
+
         // Top-K cutoff.
         if ranked.len() > limit {
             ranked.truncate(limit);
@@ -1080,6 +1125,36 @@ impl Memory {
                 .into(),
         ))
     }
+}
+
+// ---------------------------------------------------------------------------
+// ISS-211: reserved-first promotion
+// ---------------------------------------------------------------------------
+
+/// Stable-partition reserved `ScoredResult::Memory` rows to the head of
+/// `ranked`, preserving relative order within the reserved and non-reserved
+/// blocks.
+///
+/// Called by the post-fusion stage **only** for date-asking Factual queries
+/// (see Stage C.6 in `graph_query`). The reservation privilege is otherwise
+/// a soft graph-axis score boost (ISS-205) that multi-signal fusion can
+/// dilute below distractors; this expresses it as a hard rank so the dated
+/// source episode survives top-K truncation and leads the context window
+/// the generator reads.
+///
+/// Reorder only — scores are untouched, so `explain` output stays truthful.
+/// `Topic` rows (Abstract plan; never present on the Factual route) and
+/// non-reserved memories keep their fusion order. Idempotent and stable: a
+/// pool with no reserved rows is returned unchanged.
+fn promote_reserved_first(ranked: &mut Vec<ScoredResult>) {
+    // `Vec::sort_by_key` is stable, so keying on `!reserved` (false < true)
+    // pulls reserved rows to the front while preserving the within-block
+    // fusion order. Cheaper and clearer than a manual two-pass partition.
+    ranked.sort_by_key(|r| match r {
+        ScoredResult::Memory { reserved, .. } => !*reserved,
+        // Topics carry no reservation; treat as non-reserved (stable tail).
+        ScoredResult::Topic { .. } => true,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1189,6 +1264,7 @@ mod tests {
             score: 0.42,
             sub_scores: SubScores::default(),
             embedding: None,
+            reserved: false,
         };
         assert!((mem.score() - 0.42).abs() < f64::EPSILON);
     }
@@ -1740,5 +1816,90 @@ mod tests {
         assert!(q_cleared
             .populate_embeddings_for_diversity_override
             .is_none());
+    }
+
+    // ISS-211: reserved-first promotion --------------------------------------
+
+    fn mk_scored(id: &str, score: f64, reserved: bool) -> ScoredResult {
+        ScoredResult::Memory {
+            record: MemoryRecord {
+                id: id.into(),
+                content: id.into(),
+                memory_type: crate::types::MemoryType::Factual,
+                layer: crate::types::MemoryLayer::Working,
+                created_at: chrono::Utc::now(),
+                occurred_at: None,
+                access_times: vec![],
+                working_strength: 0.0,
+                core_strength: 0.0,
+                importance: 0.0,
+                pinned: false,
+                consolidation_count: 0,
+                last_consolidated: None,
+                source: String::new(),
+                contradicts: None,
+                contradicted_by: None,
+                superseded_by: None,
+                metadata: None,
+            },
+            score,
+            sub_scores: SubScores::default(),
+            embedding: None,
+            reserved,
+        }
+    }
+
+    fn ids(v: &[ScoredResult]) -> Vec<String> {
+        v.iter()
+            .map(|r| match r {
+                ScoredResult::Memory { record, .. } => record.id.clone(),
+                ScoredResult::Topic { .. } => "<topic>".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn iss211_promote_reserved_first_leads_with_reserved_row() {
+        // Gold (reserved) is buried at rank 3 behind higher-scored
+        // distractors — the conv-26-q0 distractor-saturation shape.
+        let mut ranked = vec![
+            mk_scored("d0", 0.82, false),
+            mk_scored("d1", 0.81, false),
+            mk_scored("d2", 0.80, false),
+            mk_scored("gold", 0.79, true), // dated source episode
+            mk_scored("d4", 0.78, false),
+        ];
+        promote_reserved_first(&mut ranked);
+        // Reserved gold leads; non-reserved relative order preserved.
+        assert_eq!(ids(&ranked), vec!["gold", "d0", "d1", "d2", "d4"]);
+    }
+
+    #[test]
+    fn iss211_promote_reserved_first_is_stable_within_blocks() {
+        // Two reserved rows keep their incoming relative order, and so do
+        // the non-reserved rows.
+        let mut ranked = vec![
+            mk_scored("a", 0.9, false),
+            mk_scored("r1", 0.5, true),
+            mk_scored("b", 0.8, false),
+            mk_scored("r2", 0.4, true),
+            mk_scored("c", 0.7, false),
+        ];
+        promote_reserved_first(&mut ranked);
+        assert_eq!(ids(&ranked), vec!["r1", "r2", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn iss211_promote_reserved_first_no_reserved_is_identity() {
+        // No reserved rows → byte-identical order (the non-date-asking and
+        // non-Factual common case never even calls this, but the helper
+        // must be inert when nothing is reserved).
+        let mut ranked = vec![
+            mk_scored("a", 0.9, false),
+            mk_scored("b", 0.8, false),
+            mk_scored("c", 0.7, false),
+        ];
+        promote_reserved_first(&mut ranked);
+        assert_eq!(ids(&ranked), vec!["a", "b", "c"]);
     }
 }

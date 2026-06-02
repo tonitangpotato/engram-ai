@@ -275,6 +275,7 @@ mod tests {
             score,
             sub_scores: SubScores::default(),
             embedding: None,
+            reserved: false,
         }
     }
 

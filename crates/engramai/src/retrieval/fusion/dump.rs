@@ -424,6 +424,7 @@ mod tests {
             score,
             sub_scores: sub,
             embedding: None,
+            reserved: false,
         }
     }
 

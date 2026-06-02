@@ -360,6 +360,7 @@ mod tests {
             score,
             sub_scores: SubScores::default(),
             embedding: emb,
+            reserved: false,
         }
     }
 

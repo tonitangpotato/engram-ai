@@ -67,7 +67,7 @@ lower-ranked exact match. The gold line scores 0.7942 vs distractors at
 - [ ] AC-1: conv-26-q0 flips 0→1 (gold dated line is used in the answer).
 - [ ] AC-2: no regression on the other conv-26 single-hop / temporal
       questions (aggregate ≥ prior run within ingest-noise band).
-- [ ] AC-3: the fix targets the date-asking subset specifically, not a
+- [x] AC-3: the fix targets the date-asking subset specifically, not a
       blanket re-rank that disturbs non-temporal queries.
 
 ## Why this is separate from ISS-210
@@ -77,3 +77,30 @@ the anchor never resolved, so the gold edge was never reserved. That is
 fixed and proven (gold now at rank 3 in top-10). ISS-211 is a
 **generation** bug — the gold is delivered but not used. Different layer,
 different fix.
+
+## Implementation (chosen fix: hard reserved-first re-rank)
+
+Threaded the reservation through fusion as a hard flag instead of leaving
+it as a soft graph-axis score that fusion dilutes.
+
+1. **`ScoredResult::Memory` gains `reserved: bool`** (api.rs). `false`
+   everywhere except the Factual adapter, which sets it from
+   `FactualMemoryRow.reserved` in `factual_to_scored`
+   (orchestrator.rs). All other plan adapters set `false`.
+2. **Stage C.6 reserved-first promotion** (api.rs `graph_query`,
+   `promote_reserved_first`): runs *after* fusion + MMR + cross-encoder,
+   *before* the top-K truncate, so it is the last word on the head and the
+   dated source episode always survives truncation and leads the context.
+   Stable partition — preserves within-block fusion order, touches no
+   score (`explain` stays truthful).
+3. **Gated** on `plan_kind == Factual && asks_for_date(query_text)`.
+   Every other plan and every non-date-asking factual query is
+   byte-identical (the helper is also inert when nothing is reserved).
+   `graph_query_locked` delegates to `graph_query`, so the bench path is
+   covered.
+
+Tests: `iss211_promote_reserved_first_{leads_with_reserved_row,
+is_stable_within_blocks,no_reserved_is_identity}` (api.rs). 2131 lib
+tests + 11 v03 retrieval acceptance tests green.
+
+AC-1/AC-2 pending the conv-26 q0 confirmation bench arm.
