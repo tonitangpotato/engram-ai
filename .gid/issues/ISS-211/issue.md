@@ -65,8 +65,20 @@ lower-ranked exact match. The gold line scores 0.7942 vs distractors at
 ## Acceptance criteria
 
 - [ ] AC-1: conv-26-q0 flips 0→1 (gold dated line is used in the answer).
-- [ ] AC-2: no regression on the other conv-26 single-hop / temporal
-      questions (aggregate ≥ prior run within ingest-noise band).
+      **Ranking met, generation residual.** v2 confirmation arm (run
+      `2026-06-02T21-…_locomo`, STAMP `20260602T210128Z`, DB `.tmpjTs3bm`):
+      delivery probe shows gold `641e2014` at **rank 0** of the fused
+      top-10 with the line `[2023-05-07] Caroline attended a LGBTQ support
+      group`, plan_used=Factual (Stage C.6 fires). The generator still
+      answered "I don't know" — so AC-1's *ranking* half is done; the
+      residual is a generation-prompt defect (model ignores the top dated
+      line, distracted by the 9 other Caroline LGBTQ episodes at ranks
+      1-9). Splitting AC-1 into AC-1a (delivery, **met**) and AC-1b
+      (generation uses it, **open → ISS for prompt hardening**).
+- [x] AC-2: no regression on the other conv-26 single-hop / temporal
+      questions. v2 overall **0.3092** (single-hop 0.125, multi-hop
+      0.3243, temporal 0.4143) vs v1 0.2763 and ISS-210 0.2697 — the
+      reserved-relevance reorder *improved* the aggregate, no regression.
 - [x] AC-3: the fix targets the date-asking subset specifically, not a
       blanket re-rank that disturbs non-temporal queries.
 
@@ -134,3 +146,27 @@ lib tests + 11 v03 retrieval acceptance tests green.
 
 AC-1/AC-2 pending the conv-26 q0 confirmation bench arm (re-run against the
 v2 binary).
+
+## Verdict (2026-06-02, v2 confirmation arm STAMP 20260602T210128Z)
+
+**Ranking objective DONE; generation residual handed to ISS-212.**
+
+The v2 confirmation arm ran conv-26 against the 0c8886bc binary (DB
+`.tmpjTs3bm`). The delivery probe confirms gold `641e2014` is now at
+**rank 0** of the fused top-10 (v1 left it buried behind a higher-recency
+reserved neighbour). plan_used=Factual, so Stage C.6 fired. The dated line
+`[2023-05-07] Caroline attended a LGBTQ support group` is the first line
+of the generator's context.
+
+- **AC-2 PASS**: overall 0.3092 (single-hop 0.125, multi-hop 0.3243,
+  temporal 0.4143) — *improved* over v1 0.2763 and ISS-210 0.2697. No
+  regression; the relevance tiebreak helped the aggregate.
+- **AC-1 split**: the *ranking* half is met (gold delivered at rank 0).
+  The generator still answered "I don't know," distracted by the nine
+  other Caroline LGBTQ episodes at ranks 1-9. That residual is a
+  generation-prompt defect, not a ranking one — ranking is now provably
+  maxed out. Filed **ISS-212** (date-asking prompt hardening) for the
+  generation half.
+
+ISS-211 retrieval/ranking work is complete. q0 end-to-end flip now gated
+on ISS-212.
