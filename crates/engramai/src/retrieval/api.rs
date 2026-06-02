@@ -1131,9 +1131,10 @@ impl Memory {
 // ISS-211: reserved-first promotion
 // ---------------------------------------------------------------------------
 
-/// Stable-partition reserved `ScoredResult::Memory` rows to the head of
-/// `ranked`, preserving relative order within the reserved and non-reserved
-/// blocks.
+/// Reserved-first reorder for date-asking Factual queries: promote the
+/// reserved rows to the head, and **within** the reserved block order by
+/// query relevance (vector cosine, then BM25) so the episode that actually
+/// answers the question leads — not merely the highest-fusion reserved row.
 ///
 /// Called by the post-fusion stage **only** for date-asking Factual queries
 /// (see Stage C.6 in `graph_query`). The reservation privilege is otherwise
@@ -1142,18 +1143,53 @@ impl Memory {
 /// source episode survives top-K truncation and leads the context window
 /// the generator reads.
 ///
+/// **Why a relevance tiebreak inside the reserved block (ISS-211 v2):** the
+/// reservation admits the R earliest dated episodes for the anchor entity,
+/// because at reserve-time we don't yet know which one answers the question.
+/// All R get the `RESERVED_PRIVILEGE` graph floor, so the graph axis no
+/// longer discriminates between them and fusion ranks them by their
+/// remaining (text/recency) signal. A coincidentally high-recency neighbour
+/// ("[2023-06-09] Caroline organized an event …") can then outrank the exact
+/// answer ("[2023-05-07] Caroline attended a LGBTQ support group"). The
+/// disambiguator is **query relevance**: the answering episode contains the
+/// queried phrase, so its `vector_score` / `bm25_score` against the question
+/// is highest. Ordering the reserved block by that signal puts the answer at
+/// rank 0. Non-reserved rows keep their fusion order.
+///
 /// Reorder only — scores are untouched, so `explain` output stays truthful.
 /// `Topic` rows (Abstract plan; never present on the Factual route) and
 /// non-reserved memories keep their fusion order. Idempotent and stable: a
 /// pool with no reserved rows is returned unchanged.
 fn promote_reserved_first(ranked: &mut Vec<ScoredResult>) {
-    // `Vec::sort_by_key` is stable, so keying on `!reserved` (false < true)
-    // pulls reserved rows to the front while preserving the within-block
-    // fusion order. Cheaper and clearer than a manual two-pass partition.
-    ranked.sort_by_key(|r| match r {
-        ScoredResult::Memory { reserved, .. } => !*reserved,
-        // Topics carry no reservation; treat as non-reserved (stable tail).
-        ScoredResult::Topic { .. } => true,
+    // Per-row sort key. Tuple ordering, all ascending:
+    //   0. `!reserved`            — reserved (false) sorts before plain.
+    //   1. `-relevance`           — within the reserved block, highest
+    //                               query relevance (vector → bm25) first.
+    //                               Negated so larger relevance sorts first.
+    // Non-reserved rows get relevance 0.0; combined with the stable sort
+    // this leaves their incoming (fusion) order untouched. Topics carry no
+    // reservation and no relevance — they fall to the non-reserved tail.
+    fn relevance(r: &ScoredResult) -> f64 {
+        match r {
+            ScoredResult::Memory {
+                reserved,
+                sub_scores,
+                ..
+            } if *reserved => sub_scores
+                .vector_score
+                .or(sub_scores.bm25_score)
+                .unwrap_or(0.0),
+            _ => 0.0,
+        }
+    }
+    ranked.sort_by(|a, b| {
+        let a_plain = !matches!(a, ScoredResult::Memory { reserved: true, .. });
+        let b_plain = !matches!(b, ScoredResult::Memory { reserved: true, .. });
+        a_plain
+            .cmp(&b_plain)
+            // Within the reserved block, higher relevance first. NaN-safe:
+            // total_cmp gives a deterministic total order on f64.
+            .then_with(|| relevance(b).total_cmp(&relevance(a)))
     });
 }
 
@@ -1821,6 +1857,15 @@ mod tests {
     // ISS-211: reserved-first promotion --------------------------------------
 
     fn mk_scored(id: &str, score: f64, reserved: bool) -> ScoredResult {
+        mk_scored_rel(id, score, reserved, SubScores::default())
+    }
+
+    fn mk_scored_rel(
+        id: &str,
+        score: f64,
+        reserved: bool,
+        sub_scores: SubScores,
+    ) -> ScoredResult {
         ScoredResult::Memory {
             record: MemoryRecord {
                 id: id.into(),
@@ -1843,7 +1888,7 @@ mod tests {
                 metadata: None,
             },
             score,
-            sub_scores: SubScores::default(),
+            sub_scores,
             embedding: None,
             reserved,
         }
@@ -1901,5 +1946,58 @@ mod tests {
         ];
         promote_reserved_first(&mut ranked);
         assert_eq!(ids(&ranked), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn iss211_reserved_block_ordered_by_query_relevance() {
+        // ISS-211 v2: the conv-26-q0 shape. Reservation admits the R
+        // earliest dated episodes for the anchor (all share the graph
+        // floor), so fusion ranks them by their *remaining* signal. A
+        // higher-fusion reserved neighbour ("organized an event") can
+        // outrank the lower-fusion reserved *answer* ("attended a support
+        // group"). The answer has the highest query relevance (it contains
+        // the queried phrase), so the reserved block must reorder by
+        // vector → bm25 to put the answer at rank 0 — NOT keep the buried
+        // fusion order (which v1's stable sort would have done).
+        let neighbour = SubScores {
+            vector_score: Some(0.62),
+            ..SubScores::default()
+        };
+        let answer = SubScores {
+            vector_score: Some(0.88),
+            ..SubScores::default()
+        };
+        let mut ranked = vec![
+            mk_scored("d0", 0.85, false),
+            // neighbour: higher fusion score but lower query relevance
+            mk_scored_rel("neighbour", 0.81, true, neighbour),
+            // answer: lower fusion score but highest query relevance
+            mk_scored_rel("answer", 0.74, true, answer),
+            mk_scored("d3", 0.70, false),
+        ];
+        promote_reserved_first(&mut ranked);
+        // Answer leads despite its lower fusion score; neighbour second;
+        // non-reserved tail keeps fusion order.
+        assert_eq!(ids(&ranked), vec!["answer", "neighbour", "d0", "d3"]);
+    }
+
+    #[test]
+    fn iss211_reserved_block_falls_back_to_bm25_when_no_vector() {
+        // If vector_score is absent, the tiebreak falls back to bm25_score
+        // so the answer still leads on lexical overlap alone.
+        let neighbour = SubScores {
+            bm25_score: Some(0.30),
+            ..SubScores::default()
+        };
+        let answer = SubScores {
+            bm25_score: Some(0.71),
+            ..SubScores::default()
+        };
+        let mut ranked = vec![
+            mk_scored_rel("neighbour", 0.90, true, neighbour),
+            mk_scored_rel("answer", 0.50, true, answer),
+        ];
+        promote_reserved_first(&mut ranked);
+        assert_eq!(ids(&ranked), vec!["answer", "neighbour"]);
     }
 }

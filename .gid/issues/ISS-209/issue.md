@@ -299,3 +299,40 @@ The two writers must emit the **same id** for the same canonical key:
 
 bb94f337 stays (deterministic > random is strictly better and harmless),
 but it does not satisfy AC-1/AC-3. Issue remains **open**.
+
+## ROOT FIX (2026-06-02, commit ce9075fd) — unify id across BOTH writers
+
+The insufficient fix (bb94f337) touched only the resolution pipeline. The
+root fix introduces ONE shared id primitive both writers call:
+
+```
+graph::canonical_entity_id(name: &str, namespace: &str) -> Uuid
+// key = lowercase(name.trim()) | namespace ; SHA-256 -> first 16 bytes -> UUID
+```
+
+- `storage::generate_entity_id` (legacy add/enrich path) → delegates; its
+  16-hex FNV id is gone, now emits the shared UUID. `entities.id` is
+  `TEXT PRIMARY KEY` (no format constraint) so no schema/index migration.
+- `resolution::pipeline::deterministic_entity_id` (CreateNew mint) →
+  delegates; kind argument retained for call-site compat but ignored.
+
+**Identity contract decision (potato delegated):** key on
+`lowercase(name)|namespace` only — kind is NOT part of the id. The two
+writers classify with divergent taxonomies (`entities::EntityType` =
+project/person/technology/concept/file/url/org vs `graph::EntityKind` =
+person/organization/place/other) stored in different attribute shapes
+(`entity_type` vs `_legacy_kind`), so a kind-in-key scheme would silently
+re-split entities whenever they disagree. Data confirms the cost is
+near-zero: in the failing-fix DB, 687 entity nodes → 684 distinct
+lowercase names; all 3 collisions (caroline/melanie/go) are the SAME
+entity we want merged — no real same-name/different-kind cases. Person
+"Mercury" vs Place "Mercury" collapsing is the accepted, documented
+tradeoff; kind disambiguation belongs in a later resolution pass.
+
+Tests: 2126 lib + entity_integration + iss072/120/122/123 integration all
+green. 11 ISS-209 unit tests (4 on `canonical_entity_id`, 7 on the pipeline
+wrapper) assert case-fold collapse, namespace discrimination, UUID format,
+and kind-not-in-identity across taxonomies.
+
+Re-running conv-26 q0 confirmation arm (STAMP 20260602T174640Z) to verify
+the split is gone end-to-end and q0 flips 0→1.
