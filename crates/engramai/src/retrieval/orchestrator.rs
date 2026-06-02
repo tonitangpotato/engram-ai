@@ -1729,25 +1729,54 @@ fn run_associative_fallback(
 /// the privilege as *rank position*: reserved rows get the lowest ranks
 /// (largest RRF reciprocal-rank contribution), so the dated source episode
 /// is carried into the fused top-K.
+/// Project a Factual sub-plan's rows into hybrid items in
+/// **graph-relevance order**, so the rank-only RRF fuser (`fuse_rrf`,
+/// `1/(k+rank)`) receives ranks that reflect the Factual plan's signal
+/// instead of arbitrary `memory_id` (BTreeMap) order (ISS-207).
+///
+/// Ordering is lexicographic over two keys:
+///
+///   1. **Privilege tier** — `reserved` > `edge_seeded` > plain. These map
+///      to the always-on `RESERVED_PRIVILEGE` band and the (env-gated)
+///      edge-seed band that `factual_to_scored` applies on the pure-Factual
+///      route; in RRF-rank space the band must be expressed as a leading
+///      block so any reserved hit outranks any edge-seeded hit, which in
+///      turn outranks any plain co-mention. (ISS-205.)
+///   2. **Within a tier — breadth descending** (`seen_via.len()`). This is
+///      the same anchor-breadth signal `factual_to_scored` turns into the
+///      base `graph_score` (`seen_via.len() / total_anchors`); a candidate
+///      seen via more anchors is more relevant and must get the lower
+///      (better) RRF rank. Ties on breadth fall back to `memory_id` for a
+///      deterministic, reproducible order.
+///
+/// Without (2) the hybrid route discarded breadth entirely and ranked by
+/// id — the defect ISS-207 documents.
 fn partition_factual_reserved_first(
     memories: Vec<crate::retrieval::plans::factual::FactualMemoryRow>,
 ) -> Vec<crate::retrieval::plans::hybrid::HybridItem> {
     use crate::retrieval::plans::hybrid::HybridItem;
-    let mut reserved = Vec::new();
-    let mut edge_seeded = Vec::new();
-    let mut rest = Vec::new();
-    for m in memories {
+    // Tier rank: lower sorts first. reserved=0, edge_seeded=1, plain=2.
+    fn tier(m: &crate::retrieval::plans::factual::FactualMemoryRow) -> u8 {
         if m.reserved {
-            reserved.push(HybridItem::Memory(m.memory_id));
+            0
         } else if m.edge_seeded {
-            edge_seeded.push(HybridItem::Memory(m.memory_id));
+            1
         } else {
-            rest.push(HybridItem::Memory(m.memory_id));
+            2
         }
     }
-    reserved.extend(edge_seeded);
-    reserved.extend(rest);
-    reserved
+    let mut rows = memories;
+    rows.sort_by(|a, b| {
+        tier(a)
+            .cmp(&tier(b))
+            // breadth descending → more anchors = better (lower) rank
+            .then_with(|| b.seen_via.len().cmp(&a.seen_via.len()))
+            // deterministic tie-break
+            .then_with(|| a.memory_id.cmp(&b.memory_id))
+    });
+    rows.into_iter()
+        .map(|m| HybridItem::Memory(m.memory_id))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1789,9 +1818,23 @@ mod tests {
         use std::collections::BTreeSet;
 
         fn row(id: &str, reserved: bool, edge_seeded: bool) -> FactualMemoryRow {
+            row_breadth(id, reserved, edge_seeded, 0)
+        }
+
+        /// Build a row with a controllable anchor-breadth (`seen_via.len()`).
+        /// Breadth is the within-tier ranking key (ISS-207), so tests that
+        /// exercise breadth ordering use distinct synthetic anchor UUIDs.
+        fn row_breadth(
+            id: &str,
+            reserved: bool,
+            edge_seeded: bool,
+            breadth: usize,
+        ) -> FactualMemoryRow {
+            let seen_via: BTreeSet<uuid::Uuid> =
+                (0..breadth).map(|_| uuid::Uuid::new_v4()).collect();
             FactualMemoryRow {
                 memory_id: id.to_string(),
-                seen_via: BTreeSet::new(),
+                seen_via,
                 edge_seeded,
                 reserved,
             }
@@ -1822,7 +1865,8 @@ mod tests {
         }
 
         #[test]
-        fn intra_tier_order_is_preserved() {
+        fn intra_tier_order_falls_back_to_id_when_breadth_equal() {
+            // All breadth 0 → within-tier tie-break is memory_id ASC.
             let input = vec![
                 row("r1", true, false),
                 row("e1", false, true),
@@ -1833,6 +1877,33 @@ mod tests {
             ];
             let out = partition_factual_reserved_first(input);
             assert_eq!(ids(&out), vec!["r1", "r2", "e1", "e2", "n1", "n2"]);
+        }
+
+        #[test]
+        fn intra_tier_orders_by_breadth_descending() {
+            // ISS-207: within a tier, more anchor-breadth = better (earlier)
+            // rank, regardless of memory_id order. Here the plain tier has
+            // three rows whose id order ("a","b","c") is the INVERSE of
+            // their breadth (1, 2, 3) — breadth must win.
+            let input = vec![
+                row_breadth("a", false, false, 1),
+                row_breadth("b", false, false, 2),
+                row_breadth("c", false, false, 3),
+            ];
+            let out = partition_factual_reserved_first(input);
+            assert_eq!(ids(&out), vec!["c", "b", "a"]);
+        }
+
+        #[test]
+        fn tier_dominates_breadth() {
+            // A high-breadth plain row must still rank BELOW a zero-breadth
+            // reserved row: the privilege tier is the primary key.
+            let input = vec![
+                row_breadth("plain_wide", false, false, 9),
+                row_breadth("reserved_narrow", true, false, 0),
+            ];
+            let out = partition_factual_reserved_first(input);
+            assert_eq!(ids(&out), vec!["reserved_narrow", "plain_wide"]);
         }
 
         #[test]

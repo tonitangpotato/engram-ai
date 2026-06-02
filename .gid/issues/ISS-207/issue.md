@@ -1,7 +1,8 @@
 ---
 id: ISS-207
 title: Hybrid factual sub-plan emits candidates in memory_id order, not relevance order — bypasses factual_to_scored for all factual-via-hybrid queries
-status: open
+status: resolved
+resolution: fixed (breadth-ordered within reserved/edge_seeded/plain tiers)
 priority: P1
 severity: retrieval-quality
 tags:
@@ -12,11 +13,29 @@ tags:
 - rrf
 - architecture
 created: 2026-06-02
+closed: 2026-06-02
 relates_to:
 - ISS-205
 - ISS-189
 - ISS-192
+- ISS-206
 ---
+
+> **FIXED (2026-06-02, commit pending).** `partition_factual_reserved_first`
+> (orchestrator.rs) now orders the Factual sub-plan's rows by
+> **(privilege-tier, breadth-descending, memory_id)** before mapping to
+> `HybridItem::Memory`, instead of dropping breadth and emitting BTreeMap
+> (id) order. The hybrid RRF fuser (`fuse_rrf`, `1/(k+rank)`) therefore
+> receives ranks that reflect the Factual plan's anchor-breadth signal — the
+> same `seen_via.len()`-derived signal `factual_to_scored` turns into the
+> pure-Factual `graph_score`. Privilege tiers (reserved > edge_seeded >
+> plain) remain the primary key so the ISS-205 reservation privilege and the
+> ISS-192 edge-seed band still dominate any breadth advantage (verified by
+> `tier_dominates_breadth`). Tests: `intra_tier_orders_by_breadth_descending`
+> + `tier_dominates_breadth` added; existing 5 ordering tests still pass;
+> 2115/2115 lib green. Option 1 from the issue (cheapest, no collaborator
+> threading) — chosen over Options 2/3 because the row-local breadth signal
+> is already on `FactualMemoryRow` and needs no loader/embedding lookup.
 
 # ISS-207: hybrid factual sub-plan ignores per-item relevance scoring
 
