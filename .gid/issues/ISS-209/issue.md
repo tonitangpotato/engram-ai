@@ -22,6 +22,7 @@ labels:
 - entity-canonicalization
 - proven-blocker
 - ac0-done
+- fix-insufficient
 ---
 
 # ISS-209: case-fold entity split survives ISS-203
@@ -247,3 +248,54 @@ DBs fragmented.
   despite name similarity ~1.0; likely embedding distance or occurred_at
   window pulled them apart below the 0.85 gate. That diagnosis is AC-0
   before choosing approach A vs B).
+
+## VERIFICATION (2026-06-02 post-fix) — fix bb94f337 INSUFFICIENT, q0 still FAILS
+
+Post-fix q0 confirmation arm (run `2026-06-02T17-31-32Z_locomo`, ISS-190
+envelope conv-26 R=5 surface=on):
+
+- **conv-26-q0: FAIL, score 0.0** (predicted "I don't know. The memories
+  mention Caroline being part of a group and receiving support, but they
+  don't specify when she went to an LGBTQ support group.")
+- **overall: 0.2961** — slightly DOWN from the 0.3026 pre-fix baseline
+  (within re-ingest noise, but NOT the improvement expected).
+
+### Autopsy (post-fix DB `.tmptVtS8h/substrate.db`) — split SURVIVES
+
+The fix made the resolution-path id *deterministic* (random `d7f9a67a` →
+stable UUIDv5 `3e2fb6bb-a831-5dda-...`) but did **not unify it with the
+legacy FNV node**. Both Caroline nodes still exist:
+
+- `1d11ce4c7b5c12d8` — `caroline`, `{entity_type:person}`, FNV-16hex id.
+  **0 occurred_on, 98 incoming mention edges.** Anchor resolver lands here.
+- `3e2fb6bb-a831-5dda-defb-c11153815661` — `Caroline`,
+  `{_legacy_kind:person,kind_source:DictionaryMatch}`, deterministic
+  UUIDv5 (the fix). **31 occurred_on (incl gold 2023-05-07), 209 outgoing.**
+
+### Why the fix could never work
+
+Path (1) `memory.rs` add/enrich → `storage.upsert_entity()` (call sites
+memory.rs:3044/3115/3200/6813) → `generate_entity_id()` = **FNV-1a 64-bit
+→ 16-hex string**. Path (2) resolution pipeline → `stage_persist` →
+`deterministic_entity_id()` = **SHA-256 → UUIDv5**. Both key on
+`lowercase(name)|kind|ns`, but **FNV-16hex and SHA256-UUID are different
+functions producing different id formats** — they can NEVER collide.
+Making path (2) deterministic does nothing to merge it with path (1). The
+AC-0 "sub-option (i)/(ii) reconcile the two paths, decide during
+implementation" half was the load-bearing part and was skipped.
+
+### Corrected root fix (decision needed)
+
+The two writers must emit the **same id** for the same canonical key:
+- **(i)** `storage.upsert_entity` adopts the same UUIDv5 as the pipeline
+  (changes legacy node id format 16-hex → UUID; touches the
+  `UNIQUE(name,entity_type,namespace)` index and every FNV-keyed row;
+  needs historical-DB migration but fix-forward suffices for the bench).
+- **(ii)** resolution pipeline looks up the existing legacy entity id (by
+  `generate_entity_id` on the case-folded name) before minting, and
+  adopts it when present — keeps legacy 16-hex format as canonical.
+- **(iii)** workaround: anchor resolution gathers edges across all
+  same-canonical-key nodes (leaves split in place).
+
+bb94f337 stays (deterministic > random is strictly better and harmless),
+but it does not satisfy AC-1/AC-3. Issue remains **open**.

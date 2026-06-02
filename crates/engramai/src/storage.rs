@@ -305,23 +305,22 @@ pub struct EntityRecord {
 
 /// Generate a deterministic entity ID from (name, entity_type, namespace).
 ///
-/// Uses a stable FNV-1a-inspired hash to produce a 16-char hex string.
-/// Deterministic: same inputs always produce the same ID.
-/// The UNIQUE index on `(name, entity_type, namespace)` is the real safety net.
-fn generate_entity_id(name: &str, entity_type: &str, namespace: &str) -> String {
-    let input = format!(
-        "{}|{}|{}",
-        name.to_lowercase(),
-        entity_type.to_lowercase(),
-        namespace
-    );
-    // FNV-1a 64-bit (stable, no external crate needed)
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in input.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{:016x}", hash)
+/// Canonical entity id — delegates to [`crate::graph::canonical_entity_id`]
+/// so the legacy add/enrich path and the resolution pipeline derive the
+/// **same** id for the same `(name, namespace)` (ISS-209).
+///
+/// Before ISS-209 this used an FNV-1a → 16-hex scheme while the resolution
+/// pipeline minted a SHA-256 → UUIDv5; the two formats could never collide,
+/// so the same entity fragmented into two nodes. The `entity_type` argument
+/// is retained for call-site compatibility (and the legacy
+/// `UNIQUE(name, entity_type, namespace)` index still discriminates rows
+/// in the `entities` table) but is intentionally **not** part of the node
+/// id — see `canonical_entity_id` for the identity-contract rationale.
+///
+/// `entities.id` is `TEXT PRIMARY KEY` with no format constraint, so storing
+/// the UUID string here needs no schema/index migration.
+fn generate_entity_id(name: &str, _entity_type: &str, namespace: &str) -> String {
+    crate::graph::canonical_entity_id(name, namespace).to_string()
 }
 
 /// SQLite-backed memory storage with FTS5 search.

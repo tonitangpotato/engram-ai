@@ -45,7 +45,10 @@ pub use delta::{
     StageFailureRow, GRAPH_DELTA_SCHEMA_VERSION,
 };
 pub use edge::{ConfidenceSource, Edge, EdgeEnd, ResolutionMethod};
-pub use entity::{validate_attributes, Entity, EntityKind, HistoryEntry, RESERVED_ATTRIBUTE_KEYS};
+pub use entity::{
+    canonical_entity_id, validate_attributes, Entity, EntityKind, HistoryEntry,
+    RESERVED_ATTRIBUTE_KEYS,
+};
 pub use error::GraphError;
 pub use schema::{CanonicalPredicate, Directionality, Predicate};
 pub use storage_graph::init_graph_tables;

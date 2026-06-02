@@ -49,6 +49,43 @@ impl EntityKind {
     }
 }
 
+/// Canonical entity id derivation — the single source of truth for entity
+/// node identity across **all** writers (ISS-209).
+///
+/// Both entity-writing subsystems must call this so the same real-world
+/// entity lands on one node:
+///   1. the legacy add/enrich path (`storage::upsert_entity`), and
+///   2. the resolution pipeline's `CreateNew` mint
+///      (`resolution::pipeline::deterministic_entity_id`).
+///
+/// Before ISS-209 these used *different* hash functions producing *different
+/// id formats* (FNV-1a → 16-hex vs SHA-256 → UUIDv5), so the same entity
+/// (e.g. `Caroline`) fragmented into two nodes: one owning the mention /
+/// provenance edges, the other owning the structural / `occurred_on` edges.
+/// Anchor resolution would land on the mention node and never reach the
+/// edge-owning node, starving temporal reservation.
+///
+/// **Identity contract:** `lowercase(name) | namespace`. Kind is deliberately
+/// **not** part of the key. The two writers classify kinds with divergent
+/// taxonomies (`entities::EntityType` vs `graph::EntityKind`) and store them
+/// in different attribute shapes, so a kind-in-key scheme would silently
+/// re-split entities the moment the taxonomies disagree. For a memory system
+/// the honest default is "same name in same namespace ⇒ same entity";
+/// kind-level disambiguation, if ever needed, belongs in a later resolution
+/// pass, not baked into the id hash.
+///
+/// The output is a UUID (SHA-256 → first 16 bytes), satisfying the graph
+/// store's `nodes.id` UUID-format invariant. Same primitive layout as
+/// `substrate::backfill::uuid_from_hash`.
+pub fn canonical_entity_id(name: &str, namespace: &str) -> Uuid {
+    use sha2::{Digest, Sha256};
+    let key = format!("{}|{}", name.trim().to_lowercase(), namespace);
+    let digest = Sha256::digest(key.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    Uuid::from_bytes(bytes)
+}
+
 /// Append-only audit entry recording a `canonical_name` change.
 /// Promoted from the legacy `attributes.history` slot so merge invariants
 /// can't be clobbered by callers (§3.1).
@@ -261,6 +298,40 @@ mod tests {
     use super::*;
     use crate::graph::GraphError;
     use serde_json::json;
+
+    #[test]
+    fn iss209_canonical_entity_id_case_folds() {
+        let a = canonical_entity_id("Caroline", "default");
+        let b = canonical_entity_id("caroline", "default");
+        let c = canonical_entity_id("  CAROLINE  ", "default");
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    #[test]
+    fn iss209_canonical_entity_id_namespace_discriminates() {
+        assert_ne!(
+            canonical_entity_id("Caroline", "default"),
+            canonical_entity_id("Caroline", "tenant-x"),
+        );
+    }
+
+    #[test]
+    fn iss209_canonical_entity_id_distinct_names() {
+        assert_ne!(
+            canonical_entity_id("Caroline", "default"),
+            canonical_entity_id("Melanie", "default"),
+        );
+    }
+
+    #[test]
+    fn iss209_canonical_entity_id_is_uuid_format() {
+        // Must satisfy the graph store's `nodes.id` UUID-format invariant.
+        let id = canonical_entity_id("Caroline", "default").to_string();
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.matches('-').count(), 4);
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    }
 
     #[test]
     fn new_entity_invariants() {

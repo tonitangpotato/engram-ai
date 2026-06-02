@@ -87,7 +87,9 @@ use super::worker::{JobProcessor, ProcessError};
 use crate::graph::delta::GraphDelta;
 
 /// Derive a deterministic entity id from the case-folded canonical key
-/// `lowercase(name)|kind|namespace` (ISS-209).
+/// Deterministic, case-folding entity id for the resolution pipeline's
+/// `CreateNew` mint — delegates to [`crate::graph::canonical_entity_id`]
+/// (ISS-209).
 ///
 /// Previously `CreateNew` minted a random `Uuid::new_v4()`. That made the
 /// resolution-pipeline entity id non-deterministic across ingests AND
@@ -96,36 +98,17 @@ use crate::graph::delta::GraphDelta;
 /// edges hung off one, the mention/provenance edges off the other). See
 /// ISS-209 AC-0.
 ///
-/// This produces a deterministic, casing-invariant UUID (SHA-256 over the
-/// canonical key, first 16 bytes → UUID — the same content-addressed
-/// primitive as `substrate::backfill::uuid_from_hash`). It satisfies the
-/// graph store's UUID-format invariant (`nodes.id` is a 36-char hyphenated
-/// UUID) while collapsing `Caroline`/`caroline`/`CAROLINE` to one id.
-///
-/// The kind is serialized via serde (`rename_all = "lowercase"`, stable),
-/// so two drafts with the same name+kind+namespace always collapse, and a
-/// `Person` named "Mercury" stays distinct from a `Place` named "Mercury".
-fn deterministic_entity_id(name: &str, kind: &crate::graph::EntityKind, namespace: &str) -> Uuid {
-    use sha2::{Digest, Sha256};
-    // Stable string form of the kind (serde lowercases canonical variants;
-    // `Other(s)` round-trips its normalized inner string).
-    let kind_str = serde_json::to_value(kind)
-        .ok()
-        .and_then(|v| match v {
-            serde_json::Value::String(s) => Some(s),
-            // `Other` serializes as {"other": "robot"} — fold to "robot".
-            serde_json::Value::Object(m) => m
-                .into_iter()
-                .next()
-                .map(|(_, val)| val.as_str().unwrap_or_default().to_string()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let key = format!("{}|{}|{}", name.trim().to_lowercase(), kind_str, namespace);
-    let digest = Sha256::digest(key.as_bytes());
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    Uuid::from_bytes(bytes)
+/// A first ISS-209 attempt made *this* function deterministic over
+/// `lowercase(name)|kind|namespace`, but that still did not unify with the
+/// legacy `storage::upsert_entity` node, because the legacy path used a
+/// different hash (FNV-1a → 16-hex) over `lowercase(name)|entity_type|ns`.
+/// Two deterministic-but-different ids are still two nodes. The fix is for
+/// **both** writers to call the one shared primitive, which keys on
+/// `lowercase(name)|namespace` only (kind dropped — see
+/// `canonical_entity_id` for why). The `kind` argument is retained for
+/// call-site compatibility but no longer affects the id.
+fn deterministic_entity_id(name: &str, _kind: &crate::graph::EntityKind, namespace: &str) -> Uuid {
+    crate::graph::canonical_entity_id(name, namespace)
 }
 
 // ---------------------------------------------------------------------------
@@ -1528,12 +1511,20 @@ mod deterministic_id_tests {
     }
 
     #[test]
-    fn iss209_kind_discriminates() {
-        // Same name, different kind → different entity (a Person named
-        // "Mercury" is not the Place named "Mercury").
+    fn iss209_kind_does_not_discriminate() {
+        // ISS-209 identity contract: the entity id keys on
+        // `lowercase(name)|namespace` ONLY. Kind is deliberately NOT part
+        // of the key, so the same name in the same namespace always
+        // collapses to one node regardless of how either writer classified
+        // it. This is what lets the legacy mention-path node (kind stored
+        // as `entity_type`) and the resolution structural node (kind stored
+        // as `_legacy_kind`) unify. A name-level homonym (Person "Mercury"
+        // vs Place "Mercury") collapsing is the accepted, documented
+        // tradeoff — kind-level disambiguation belongs in a later
+        // resolution pass, not the id hash.
         let person = deterministic_entity_id("Mercury", &EntityKind::Person, "default");
         let place = deterministic_entity_id("Mercury", &EntityKind::Place, "default");
-        assert_ne!(person, place);
+        assert_eq!(person, place);
     }
 
     #[test]
@@ -1544,14 +1535,15 @@ mod deterministic_id_tests {
     }
 
     #[test]
-    fn iss209_other_kind_normalized() {
-        // EntityKind::other normalizes its inner string; same logical kind
-        // collapses, distinct kinds stay distinct.
-        let robot1 = deterministic_entity_id("R2D2", &EntityKind::other("Robot"), "default");
-        let robot2 = deterministic_entity_id("R2D2", &EntityKind::other(" robot "), "default");
-        assert_eq!(robot1, robot2);
+    fn iss209_kind_ignored_across_taxonomies() {
+        // The crux of the bug: the two writers use divergent kind
+        // taxonomies. The id must be identical whatever kind is passed, so
+        // both writers land on one node even when they disagree on kind.
+        let p = deterministic_entity_id("R2D2", &EntityKind::Person, "default");
+        let robot = deterministic_entity_id("R2D2", &EntityKind::other("Robot"), "default");
         let droid = deterministic_entity_id("R2D2", &EntityKind::other("Droid"), "default");
-        assert_ne!(robot1, droid);
+        assert_eq!(p, robot);
+        assert_eq!(robot, droid);
     }
 
     #[test]
