@@ -932,12 +932,7 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                 };
                 let result = exec_result.ok();
                 let items: Vec<HybridItem> = result
-                    .map(|r| {
-                        r.memories
-                            .into_iter()
-                            .map(|m| HybridItem::Memory(m.memory_id))
-                            .collect()
-                    })
+                    .map(|r| partition_factual_reserved_first(r.memories))
                     .unwrap_or_default();
                 log::info!(
                     target: "engramai::retrieval",
@@ -1721,6 +1716,40 @@ fn run_associative_fallback(
     (scored, final_outcome)
 }
 
+/// Partition a Factual sub-plan's emitted memories into hybrid items so
+/// that reserved rows lead, then edge_seeded, then the rest — preserving
+/// each tier's incoming order.
+///
+/// ISS-205: the hybrid fuser ([`crate::retrieval::plans::hybrid::fuse_rrf`])
+/// is purely rank-based (`1/(k+rank)`); it ignores per-item scores entirely.
+/// The `reserved`/`edge_seeded` graph_score privilege computed in
+/// `factual_to_scored` (the pure-Factual route) therefore NEVER reaches the
+/// hybrid ranking. To honor the "dated episode must survive top-K
+/// truncation" contract on the hybrid-via-factual path, we instead express
+/// the privilege as *rank position*: reserved rows get the lowest ranks
+/// (largest RRF reciprocal-rank contribution), so the dated source episode
+/// is carried into the fused top-K.
+fn partition_factual_reserved_first(
+    memories: Vec<crate::retrieval::plans::factual::FactualMemoryRow>,
+) -> Vec<crate::retrieval::plans::hybrid::HybridItem> {
+    use crate::retrieval::plans::hybrid::HybridItem;
+    let mut reserved = Vec::new();
+    let mut edge_seeded = Vec::new();
+    let mut rest = Vec::new();
+    for m in memories {
+        if m.reserved {
+            reserved.push(HybridItem::Memory(m.memory_id));
+        } else if m.edge_seeded {
+            edge_seeded.push(HybridItem::Memory(m.memory_id));
+        } else {
+            rest.push(HybridItem::Memory(m.memory_id));
+        }
+    }
+    reserved.extend(edge_seeded);
+    reserved.extend(rest);
+    reserved
+}
+
 // ---------------------------------------------------------------------------
 // 5. Tests
 // ---------------------------------------------------------------------------
@@ -1749,6 +1778,89 @@ mod tests {
     use tempfile::TempDir;
 
     const MODEL: &str = "ollama/nomic-embed-text";
+
+    // ISS-205: reserved-first partition for the hybrid-via-factual path.
+    // The hybrid RRF fuser is rank-only, so the graph_score privilege must
+    // be expressed as rank position. This pins the ordering contract.
+    mod partition_factual_reserved_first_tests {
+        use super::super::partition_factual_reserved_first;
+        use crate::retrieval::plans::factual::FactualMemoryRow;
+        use crate::retrieval::plans::hybrid::HybridItem;
+        use std::collections::BTreeSet;
+
+        fn row(id: &str, reserved: bool, edge_seeded: bool) -> FactualMemoryRow {
+            FactualMemoryRow {
+                memory_id: id.to_string(),
+                seen_via: BTreeSet::new(),
+                edge_seeded,
+                reserved,
+            }
+        }
+
+        fn ids(items: &[HybridItem]) -> Vec<String> {
+            items
+                .iter()
+                .map(|it| match it {
+                    HybridItem::Memory(id) => id.clone(),
+                    other => panic!("unexpected non-Memory item: {other:?}"),
+                })
+                .collect()
+        }
+
+        #[test]
+        fn reserved_leads_then_edge_seeded_then_rest() {
+            // Incoming order is BTreeMap (memory_id) order; the gold
+            // reserved row "z" trails by id but must surface first.
+            let input = vec![
+                row("a", false, false),
+                row("b", false, true),
+                row("c", false, false),
+                row("z", true, false),
+            ];
+            let out = partition_factual_reserved_first(input);
+            assert_eq!(ids(&out), vec!["z", "b", "a", "c"]);
+        }
+
+        #[test]
+        fn intra_tier_order_is_preserved() {
+            let input = vec![
+                row("r1", true, false),
+                row("e1", false, true),
+                row("n1", false, false),
+                row("r2", true, false),
+                row("e2", false, true),
+                row("n2", false, false),
+            ];
+            let out = partition_factual_reserved_first(input);
+            assert_eq!(ids(&out), vec!["r1", "r2", "e1", "e2", "n1", "n2"]);
+        }
+
+        #[test]
+        fn no_reserved_no_edge_seeded_is_passthrough() {
+            let input = vec![
+                row("a", false, false),
+                row("b", false, false),
+                row("c", false, false),
+            ];
+            let out = partition_factual_reserved_first(input);
+            assert_eq!(ids(&out), vec!["a", "b", "c"]);
+        }
+
+        #[test]
+        fn reserved_takes_priority_over_edge_seeded_flag() {
+            // A row that is BOTH reserved and edge_seeded lands in the
+            // reserved tier (reserved is the stronger, always-on privilege).
+            let input = vec![row("x", true, true), row("y", false, true)];
+            let out = partition_factual_reserved_first(input);
+            assert_eq!(ids(&out), vec!["x", "y"]);
+        }
+
+        #[test]
+        fn empty_input_yields_empty() {
+            let out = partition_factual_reserved_first(Vec::new());
+            assert!(out.is_empty());
+        }
+    }
 
     fn open_storage() -> (TempDir, Storage) {
         let dir = tempfile::tempdir().unwrap();
