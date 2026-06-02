@@ -4,9 +4,20 @@ title: Temporal queries lose the dated episode to same-entity top-K crowding —
 status: open
 priority: P1
 severity: retrieval-quality
-tags: [retrieval, ranking, temporal, top-k, factual-plan, locomo]
+tags:
+- retrieval
+- ranking
+- temporal
+- top-k
+- factual-plan
+- locomo
 created: 2026-06-01
-relates_to: [ISS-190, ISS-191, ISS-201, ISS-204]
+relates_to:
+- ISS-190
+- ISS-191
+- ISS-201
+- ISS-204
+- .gid/issues/ISS-206/issue.md
 depends_on: ISS-204
 ---
 
@@ -117,11 +128,22 @@ Open design questions:
   (interval-overlap ranked) even when a flat relevance sort would have
   evicted them. Unit test seeds a synthetic anchor with K+N dated episodes
   and asserts the gold-date episode survives.
-- **AC-3** — q0 retrieval: conv-26 q0 (Caroline support-group date) flips
-  0→1 with the reservation on, under the locked ISS-190 envelope (K=10,
-  temp=0, HyDE/MMR/entity off, FACTUAL_REWEIGHT off, pipeline_pool=1,
-  POPULATE off). The gold edge is already present (ISS-204); this AC proves
-  retrieval now uses it.
+- **AC-3** — q0 retrieval (RANKING ONLY): conv-26 q0's gold dated episode
+  (Caroline support-group, gold `2023-05-07`) is provably lifted into the
+  top-K seed pool with the reservation on, under the locked ISS-190 envelope
+  (K=10, temp=0, HyDE/MMR/entity off, FACTUAL_REWEIGHT off, pipeline_pool=1,
+  POPULATE off). Verified by the fused-pool probe: with the scoped
+  reservation privilege the gold episode clears the top-10 cutoff on the
+  graph axis (it already holds the pool's highest `vector_score`).
+  **NOTE (2026-06-02):** the end-to-end q0 score flip 0→1 was RE-SCOPED to
+  **ISS-206 AC-2** after the fused-pool probe (STAMP `20260602T024240Z`)
+  proved the gold episode *is* retrieved into top-10 by this fix but still
+  cannot be answered: its content string *"Caroline attended a LGBTQ support
+  group"* carries **no in-text date** (the date lives only in the
+  `occurred_on` edge / temporal mark, which the generator does not read).
+  ISS-205 owns the ranking half; ISS-206 owns making the date legible to the
+  generator. q0 flips only when BOTH land. This AC therefore proves the
+  ranking lever works, not the end-to-end answer.
 - **AC-4** — q11 cross-corpus: conv-44 q11 (`2023-06-11` episode) flips 0→1
   under the same envelope, proving the fix is corpus-general, not a conv-26
   artefact.
@@ -221,8 +243,9 @@ A/B clears AC-3..5.
    survives (AC-2). Also assert byte-identity when off (AC-1).
 3. Wire `ENGRAM_BENCH_TEMPORAL_RESERVATION` env in engram-bench (mirror the
    existing knob env vars).
-4. A/B on conv-26 (AC-3: q0 flips) + conv-44 (AC-4: q11 flips) under the
-   locked ISS-190 envelope, regression gate AC-5.
+4. A/B on conv-26 (AC-3: q0 gold lifted into top-K — flip gated on ISS-206)
+   + conv-44 (AC-4: q11 flips — ranking-only, no ISS-206 dependency) under
+   the locked ISS-190 envelope, regression gate AC-5.
 
 ## Notes
 
