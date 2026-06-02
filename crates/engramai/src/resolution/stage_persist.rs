@@ -115,12 +115,16 @@ pub struct EntityResolution {
     /// pointed at non-existent rows. With `assigned_id` set once at
     /// resolution time, all downstream consumers reuse the same id.
     ///
-    /// - `CreateNew` → freshly minted `Uuid::new_v4()`.
+    /// - `CreateNew` → a **deterministic** id derived from the
+    ///   case-folded canonical key `lowercase(name)|kind|namespace`
+    ///   (ISS-209 — was `Uuid::new_v4()`, which fragmented `Caroline` vs
+    ///   `caroline` into two nodes). See
+    ///   `ResolutionPipeline::deterministic_entity_id`.
     /// - `MergeInto { candidate_id }` → equal to `candidate_id`.
     /// - `DeferToLlm { candidate_id }` → depends on
     ///   `PipelineConfig::on_tiebreak_failure` (ISS-135 / design §8.1):
-    ///   under `Conservative` (default) it is a freshly minted
-    ///   `Uuid::new_v4()` (Conservative fallback materializes the draft
+    ///   under `Conservative` (default) it is the same deterministic
+    ///   case-folded id (Conservative fallback materializes the draft
     ///   as a low-confidence `CreateNew`); under `Abort` it equals
     ///   `candidate_id` (placeholder — persist records
     ///   `unresolved_defer` and skips the entry).

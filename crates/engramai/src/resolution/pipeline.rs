@@ -86,6 +86,48 @@ use super::worker::{JobProcessor, ProcessError};
 
 use crate::graph::delta::GraphDelta;
 
+/// Derive a deterministic entity id from the case-folded canonical key
+/// `lowercase(name)|kind|namespace` (ISS-209).
+///
+/// Previously `CreateNew` minted a random `Uuid::new_v4()`. That made the
+/// resolution-pipeline entity id non-deterministic across ingests AND
+/// case-sensitive: `Caroline` and `caroline` produced different UUIDs, so
+/// the same person fragmented into two nodes (the structural/`occurred_on`
+/// edges hung off one, the mention/provenance edges off the other). See
+/// ISS-209 AC-0.
+///
+/// This produces a deterministic, casing-invariant UUID (SHA-256 over the
+/// canonical key, first 16 bytes → UUID — the same content-addressed
+/// primitive as `substrate::backfill::uuid_from_hash`). It satisfies the
+/// graph store's UUID-format invariant (`nodes.id` is a 36-char hyphenated
+/// UUID) while collapsing `Caroline`/`caroline`/`CAROLINE` to one id.
+///
+/// The kind is serialized via serde (`rename_all = "lowercase"`, stable),
+/// so two drafts with the same name+kind+namespace always collapse, and a
+/// `Person` named "Mercury" stays distinct from a `Place` named "Mercury".
+fn deterministic_entity_id(name: &str, kind: &crate::graph::EntityKind, namespace: &str) -> Uuid {
+    use sha2::{Digest, Sha256};
+    // Stable string form of the kind (serde lowercases canonical variants;
+    // `Other(s)` round-trips its normalized inner string).
+    let kind_str = serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| match v {
+            serde_json::Value::String(s) => Some(s),
+            // `Other` serializes as {"other": "robot"} — fold to "robot".
+            serde_json::Value::Object(m) => m
+                .into_iter()
+                .next()
+                .map(|(_, val)| val.as_str().unwrap_or_default().to_string()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let key = format!("{}|{}|{}", name.trim().to_lowercase(), kind_str, namespace);
+    let digest = Sha256::digest(key.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    Uuid::from_bytes(bytes)
+}
+
 // ---------------------------------------------------------------------------
 // PipelineError — surface for the migration backfill handoff (§6.5 +
 // v03-migration §5.2). Distinct from `ProcessError` (worker-pool surface)
@@ -689,10 +731,14 @@ impl<S: GraphStore + Send + ?Sized + 'static> ResolutionPipeline<S> {
             // `assigned_id = candidate_id` (a placeholder; persist
             // records `unresolved_defer` and skips the entry).
             let assigned_id = match &outcome.decision {
-                Decision::CreateNew => uuid::Uuid::new_v4(),
+                Decision::CreateNew => {
+                    deterministic_entity_id(&draft.canonical_name, &draft.kind, ctx.namespace.as_str())
+                }
                 Decision::MergeInto { candidate_id } => *candidate_id,
                 Decision::DeferToLlm { candidate_id } => match self.config.on_tiebreak_failure {
-                    OnTiebreakFailure::Conservative => uuid::Uuid::new_v4(),
+                    OnTiebreakFailure::Conservative => {
+                        deterministic_entity_id(&draft.canonical_name, &draft.kind, ctx.namespace.as_str())
+                    }
                     OnTiebreakFailure::Abort => *candidate_id,
                 },
             };
@@ -1449,6 +1495,72 @@ mod backfill_tests {
 // ---------------------------------------------------------------------------
 // ISS-048 — lift_novel_endpoints unit tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod deterministic_id_tests {
+    use super::deterministic_entity_id;
+    use crate::graph::entity::EntityKind;
+
+    #[test]
+    fn iss209_case_fold_collapses_to_one_id() {
+        // The whole point of ISS-209: Caroline / caroline / CAROLINE are
+        // the same person and must produce the same entity id.
+        let a = deterministic_entity_id("Caroline", &EntityKind::Person, "default");
+        let b = deterministic_entity_id("caroline", &EntityKind::Person, "default");
+        let c = deterministic_entity_id("CAROLINE", &EntityKind::Person, "default");
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    #[test]
+    fn iss209_whitespace_trimmed() {
+        let a = deterministic_entity_id("Caroline", &EntityKind::Person, "default");
+        let b = deterministic_entity_id("  Caroline  ", &EntityKind::Person, "default");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn iss209_deterministic_across_calls() {
+        // Same inputs → same id every time (no Uuid::new_v4 randomness).
+        let first = deterministic_entity_id("Melanie", &EntityKind::Person, "default");
+        let second = deterministic_entity_id("Melanie", &EntityKind::Person, "default");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn iss209_kind_discriminates() {
+        // Same name, different kind → different entity (a Person named
+        // "Mercury" is not the Place named "Mercury").
+        let person = deterministic_entity_id("Mercury", &EntityKind::Person, "default");
+        let place = deterministic_entity_id("Mercury", &EntityKind::Place, "default");
+        assert_ne!(person, place);
+    }
+
+    #[test]
+    fn iss209_namespace_discriminates() {
+        let a = deterministic_entity_id("Caroline", &EntityKind::Person, "default");
+        let b = deterministic_entity_id("Caroline", &EntityKind::Person, "tenant-x");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn iss209_other_kind_normalized() {
+        // EntityKind::other normalizes its inner string; same logical kind
+        // collapses, distinct kinds stay distinct.
+        let robot1 = deterministic_entity_id("R2D2", &EntityKind::other("Robot"), "default");
+        let robot2 = deterministic_entity_id("R2D2", &EntityKind::other(" robot "), "default");
+        assert_eq!(robot1, robot2);
+        let droid = deterministic_entity_id("R2D2", &EntityKind::other("Droid"), "default");
+        assert_ne!(robot1, droid);
+    }
+
+    #[test]
+    fn iss209_distinct_names_distinct_ids() {
+        let caroline = deterministic_entity_id("Caroline", &EntityKind::Person, "default");
+        let melanie = deterministic_entity_id("Melanie", &EntityKind::Person, "default");
+        assert_ne!(caroline, melanie);
+    }
+}
 
 #[cfg(test)]
 mod lift_tests {
