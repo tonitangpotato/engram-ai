@@ -280,9 +280,20 @@ impl<'a> EntityResolver for GraphEntityResolver<'a> {
                 let matches = match self.graph.search_candidates(&candidate_query) {
                     Ok(rows) => rows,
                     // Per-namespace / per-mention failure is non-fatal —
-                    // keep scanning. An erroring lookup is observably
-                    // identical to "no candidates here".
-                    Err(_) => continue,
+                    // keep scanning. But surface it (ISS-210): a NULL
+                    // `last_seen` projection once made `search_candidates`
+                    // error for a real anchor (Caroline), and this silent
+                    // `continue` masked it for weeks. An erroring lookup is
+                    // semantically "no candidates here", but it is NOT the
+                    // same as a clean empty result — log so the next
+                    // schema/projection drift is observable.
+                    Err(e) => {
+                        eprintln!(
+                            "[graph_entity_resolver] search_candidates failed for \
+                             mention {mention:?} in ns {ns:?}: {e}"
+                        );
+                        continue;
+                    }
                 };
 
                 for m in matches {

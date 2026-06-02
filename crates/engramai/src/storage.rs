@@ -2933,16 +2933,25 @@ impl Storage {
             |r| r.get(0),
         )?;
 
+        // `first_seen` / `last_seen` MUST be populated here, mirroring the
+        // resolution-pipeline write path in `graph/store.rs`. The candidate
+        // reader (`GraphStore::map_candidate_row`) reads `last_seen` as a
+        // non-null f64; an entity node with NULL `last_seen` raises
+        // `InvalidColumnType` and is silently dropped as an anchor candidate
+        // (ISS-210). Seed both timestamps from the row's create/update times,
+        // which is the same initial-write semantics the pipeline uses.
         let rows = tx.execute(
             r#"
             INSERT OR IGNORE INTO nodes (
                 id, node_kind, namespace,
                 content, summary, attributes,
+                first_seen, last_seen,
                 created_at, updated_at,
                 fts_rowid
             ) VALUES (
                 ?, 'entity', ?,
                 ?, '', ?,
+                ?, ?,
                 ?, ?,
                 ?
             )
@@ -2952,6 +2961,8 @@ impl Storage {
                 namespace,
                 name,
                 attributes_json,
+                created_at,
+                updated_at,
                 created_at,
                 updated_at,
                 next_fts_rowid,
@@ -13052,6 +13063,41 @@ mod tests {
             after.as_deref(),
             Some("mem-idem"),
             "ISS-202: backfill must be idempotent"
+        );
+    }
+
+    /// ISS-210 AC-1: `upsert_entity` projects the entity into the unified
+    /// `nodes` table with a non-NULL `last_seen` (and `first_seen`). A NULL
+    /// `last_seen` crashes `map_candidate_row` and silently drops the entity
+    /// as an anchor candidate — that was the residual conv-26-q0 blocker after
+    /// the ISS-209 id unification.
+    #[test]
+    fn iss210_upsert_entity_populates_last_seen() {
+        let storage = test_storage();
+        let id = storage
+            .upsert_entity("Caroline", "person", "default", None)
+            .expect("upsert_entity");
+
+        let (first_seen, last_seen): (Option<f64>, Option<f64>) = storage
+            .conn
+            .query_row(
+                "SELECT first_seen, last_seen FROM nodes WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("entity node row exists");
+
+        assert!(
+            last_seen.is_some(),
+            "ISS-210: entity nodes-projection must set last_seen (got NULL)"
+        );
+        assert!(
+            first_seen.is_some(),
+            "ISS-210: entity nodes-projection must set first_seen (got NULL)"
+        );
+        assert!(
+            last_seen.unwrap() > 0.0,
+            "last_seen should be a real timestamp, not 0"
         );
     }
 }

@@ -899,11 +899,17 @@ impl<'a> SqliteGraphStore<'a> {
     /// `GraphError`.
     fn map_candidate_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CandidateRowProjection> {
         Ok((
-            row.get::<_, String>(1)?,          // kind
-            row.get::<_, String>(2)?,          // canonical_name
-            row.get::<_, f64>(3)?,             // last_seen
-            row.get::<_, f64>(4)?,             // identity_confidence
-            row.get::<_, Option<Vec<u8>>>(5)?, // embedding blob
+            row.get::<_, String>(1)?, // kind
+            row.get::<_, String>(2)?, // canonical_name
+            // Coalesce a NULL `last_seen` to 0.0 (ISS-210). The resolution
+            // pipeline always seeds `last_seen`, but the legacy storage.rs
+            // entity write path historically left it NULL; reading it as a
+            // bare f64 raised `InvalidColumnType` and silently dropped the
+            // entity as an anchor candidate. A 0.0 floor is the right "no
+            // recency signal" semantics and never halts mapping.
+            row.get::<_, Option<f64>>(3)?.unwrap_or(0.0), // last_seen
+            row.get::<_, f64>(4)?,                        // identity_confidence
+            row.get::<_, Option<Vec<u8>>>(5)?,            // embedding blob
         ))
     }
 
@@ -8531,6 +8537,41 @@ mod tests {
         assert_eq!(got[0].entity_id, e.id);
         assert!(got[0].alias_match, "alias path");
         assert!(got[0].embedding_score.is_none(), "no mention emb → None");
+    }
+
+    /// ISS-210 AC-2: a NULL `last_seen` in the unified `nodes` table must NOT
+    /// crash `map_candidate_row`. The legacy storage.rs entity write path once
+    /// projected entity nodes with NULL `last_seen`; reading it as a bare f64
+    /// raised `InvalidColumnType` and `search_candidates` returned `Err`, which
+    /// the resolver silently swallowed — dropping a real anchor (Caroline).
+    /// After the fix, `map_candidate_row` coalesces NULL → 0.0 and the
+    /// candidate maps cleanly.
+    #[test]
+    fn iss210_search_candidates_tolerates_null_last_seen() {
+        let mut conn = fresh_conn();
+        let now = Utc::now();
+        let mut store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+        // Insert through the normal path (satisfies the graph_entities FK that
+        // the alias table references), then forcibly NULL out the node's
+        // last_seen to reproduce the historic storage.rs projection bug.
+        let e = insert_test_entity(&mut store, "Caroline", EntityKind::Person, now, None);
+        store.upsert_alias("caroline", "Caroline", e.id, None).unwrap();
+        conn.execute(
+            "UPDATE nodes SET last_seen = NULL WHERE id = ?1",
+            rusqlite::params![e.id.to_string()],
+        )
+        .expect("null out last_seen on the unified node");
+
+        let mut store = SqliteGraphStore::new(&mut conn).with_unified_substrate(true);
+        let q = make_query("Caroline", None, 10, now);
+        // The whole point: this must NOT return Err(InvalidColumnType).
+        let got = store
+            .search_candidates(&q)
+            .expect("ISS-210: NULL last_seen must not crash candidate mapping");
+
+        assert_eq!(got.len(), 1, "the null-last_seen entity is still a candidate");
+        assert_eq!(got[0].entity_id, e.id);
+        assert!(got[0].alias_match, "alias path");
     }
 
     #[test]
