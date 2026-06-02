@@ -87,11 +87,49 @@ flip plus the temporal/single-hop aggregate as a regression gate.
 ## Acceptance criteria
 
 - [ ] AC-1: conv-26-q0 flips 0→1 (model answers ~2023-05-07 from the
-      rank-0 dated line).
+      rank-0 dated line). **Pending bench confirmation arm.**
 - [ ] AC-2: no regression on conv-26 aggregate (overall ≥ 0.3092 within
-      ingest-noise band; temporal category does not drop).
-- [ ] AC-3: the prompt change is gated to date-asking queries (reuses
+      ingest-noise band; temporal category does not drop). **Pending.**
+- [x] AC-3: the prompt change is gated to date-asking queries (reuses
       `asks_for_date`), leaving non-temporal synthesis byte-identical.
+      Verified by `non_date_asking_query_is_byte_identical_to_base` —
+      a plain query renders the byte-identical base template.
+
+## Implementation (lever 1 — date-asking prompt clause)
+
+The answer-extraction prompt lives in **engram-bench**
+(`src/answer_gen/`), not engramai — LoCoMo short-answer synthesis is the
+benchmark's job. Wiring:
+
+1. **`engramai::query_classifier::asks_for_date`** promoted from
+   `pub(crate)` to `pub` so the bench can gate on the *same* signal the
+   retrieval reservation (ISS-205/211) uses — retrieval and generation
+   stay aligned on "is this a date-asking query".
+2. **`locomo_date_guidance.txt`** (new, engram-bench): a guidance block
+   instructing the model to scan `[YYYY-MM-DD]` lines, match the
+   question's **full action phrase** (not just the same person/topic —
+   "support group" ≠ "counseling workshop" ≠ "pride parade"), answer with
+   that date, and only emit `UNKNOWN` if no dated line matches the
+   specific event.
+3. **`render_prompt`** appends the guidance after the base template
+   **only** when `asks_for_date(query)` is true. Plain queries get the
+   byte-identical base prompt (SHA unchanged). The augmented variant's
+   SHA is reported via `locomo_date_prompt_sha256` for repro honesty.
+
+The base `locomo_prompt.txt` is untouched, so its committed
+`prompt_sha256` (design §6.1) is preserved for every non-date-asking
+question — the gating is the key to AC-3.
+
+Tests: 5 new in `answer_gen::prompt::tests`
+(`date_asking_query_gets_guidance`,
+`non_date_asking_query_is_byte_identical_to_base`,
+`base_and_date_prompt_shas_differ_and_are_stable`,
+`guidance_block_matches_event_phrase_not_just_subject`, plus the existing
+suite). 211 engram-bench lib + 2133 engramai lib green.
+
+AC-1/AC-2 pending the conv-26 confirmation bench arm (re-run with the
+date-guidance binary; the delivery probe already proved gold is at rank 0,
+so the only variable is whether the guidance makes the model use it).
 
 ## Why this is separate from ISS-211
 
