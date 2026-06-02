@@ -453,3 +453,67 @@ an opt-in correctness improvement for entity-anchored workloads.
    `approx` golds (q35, the q33 distractor `1626c463`) with year-only start/end
    and the real day buried in `note`. Extractor must pin the resolved day into
    start/end. q20 and q62 do NOT need this — their dates are already clean.
+
+---
+
+## conv-44 cross-validation (L3) — the follow-up #1 DB-verification, DONE 2026-06-01 (opus-4.8)
+
+The conv-26 verdict above left two things inferred-not-verified: (a) whether the
+multi-hop regression reproduces on a second corpus, and (b) the crowding
+mechanism itself (the conv-26 arm DBs were reaped). Both are now settled with
+live DB queries. Run `ISS203-L1-{A,B}-conv44-20260601T201437Z`, envelope ISS-190.
+
+Arm DBs recovered (the bench `fresh_in_memory_db` path DID persist to temp dirs;
+matched to arms by ingest timestamp + content = Andrew/Audrey = conv-44):
+- Arm A (V2 off): `.tmpx40rjJ/substrate.db` (703 memories)
+- Arm B (V2 on):  `.tmpXHAFMU/substrate.db` (700 memories)
+
+### Scores (within-sweep A vs B)
+- overall     0.2683 → 0.2358  (**-3.25pp**)
+- single-hop  0.3000 → 0.2333  (**-6.67pp**)  ← the conv-26 +6.25pp did NOT reproduce; it INVERTED
+- multi-hop   0.1667 → 0.0833  (**-8.33pp**)  ← matches conv-26 -8.11pp almost exactly
+- open-domain / temporal: flat
+- flips: 6 gains / 10 losses / net -4
+
+The multi-hop regression **reproduces** across two independent corpora at ~-8pp.
+The single-hop "lift" was a conv-26 artefact — on conv-44 it is a -6.67pp loss.
+
+### Two DB facts that correct the conv-26 mechanism story
+1. **The V2-specific predicates produced ZERO edges.** `belongs_to` and
+   `associated_with` (the two predicates V2 adds for possessive/prepositional
+   decomposition) count **0** in BOTH arms' `graph_edges`. The model is not
+   emitting them, or they are dropped at normalize/persist (not in the canonical
+   predicate set). So V2's *explicit* new mechanism is INERT.
+2. **V2's real effect is entity MERGING, and that is what hurts retrieval.**
+   distinct `graph_entities`: A=819 → B=646 (**-173, -21%**). V2 successfully
+   collapses fragments ("Caroline's paintings" → paintings), which is its design
+   goal. But fewer, denser entities means each surviving entity carries more
+   edges → the Factual-plan seed pool around a queried entity gets more crowded →
+   dated episodes get pushed out of top-K. Mechanism = "merge → density →
+   crowding", NOT "new edges → density" (the conv-26 inference was directionally
+   right about the ranking layer but wrong about the cause).
+
+### Crowding confirmed on a concrete loss
+conv-44-q11 (gold "June 11, 2023"): Arm A recalled BOTH the 06-11 and 06-13
+rock-climbing episodes and answered correctly; Arm B recalled ONLY 06-13 (06-11
+pushed out of top-K) and answered "06-13" = miss. Entity edge density shifted:
+Arm A top subjects = Audrey 177 / Andrew 146; Arm B = Audrey 179 / Andrew gone
+from top-5 (Andrew's edges redistributed by the merge). q13 is judge wobble
+(both arms gave the same 06-26 answer).
+
+### Final verdict on V2
+- **REJECT V2; `ENGRAM_TRIPLE_PROMPT_V2` stays default OFF** (already gated; no
+  code revert needed). Two corpora, both multi-hop -8pp; the lone conv-26
+  single-hop upside does not generalise (inverts to -6.67pp on conv-44).
+- **Half of V2's design is dead** (belongs_to/associated_with = 0 edges) and the
+  half that works (entity merge -21%) actively *amplifies* the pre-existing
+  crowding weakness rather than helping.
+- **The real lever is the ranking layer, not the extraction prompt.** Crowding
+  is now DB-verified (q11 concrete case + density shift). The fix is a
+  temporal-query top-K reservation for date-bearing episodes — same conclusion
+  as the conv-26 follow-up #1, now with the DB evidence it asked for.
+
+- [x] follow-up #1 (DB-verify crowding): DONE — conv-44 arm-B DB queried,
+  crowding confirmed (q11 06-11 episode pushed out of top-K; entity merge -21%
+  raises per-entity edge density). V2 rejected; ranking-layer reservation is the
+  gate-clearing work, to be filed as a new ISS off the ISS-190/191/201 track.

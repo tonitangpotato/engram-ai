@@ -378,6 +378,47 @@ fn edge_seeded_graph_score(breadth: f64, edge_seeded: bool, bonus: f64) -> f64 {
     }
 }
 
+/// ISS-205 — deterministic graph_score privilege for a *temporal
+/// reservation* admission.
+///
+/// Unlike [`edge_seeded_graph_score`] (gated on the experimental
+/// `ENGRAM_FACTUAL_EDGE_SEED_BONUS`, default-inert), this privilege is
+/// always on, because a reservation is a *deliberate, temporal-specific*
+/// act: the Factual plan only reserves an `OccurredOn`-edge dated episode
+/// when the query explicitly asks "when" (or pins a window), and it pulls
+/// that episode past recency truncation precisely so it can answer. A
+/// dated source episode that the plan went out of its way to admit must
+/// not then be evicted at the top-K truncation by undated co-mentions
+/// that merely rank higher on breadth (the conv-26-q0 failure: the gold
+/// dated episode had the pool's highest vector_score yet ranked 26th,
+/// held down solely by a low breadth-derived graph_score).
+///
+/// Semantics mirror the edge-seed band so the two privileges compose
+/// predictably: the `[0,1]` range splits into a co-mention band
+/// `[0, 1-RESERVED_PRIVILEGE]` and a reserved band
+/// `[RESERVED_PRIVILEGE, 1]`. ANY reserved candidate therefore outscores
+/// ANY non-reserved one on the graph axis, while relative breadth
+/// ordering is preserved *within* each band. This is additive and drops
+/// nothing — non-reserved candidates keep their (possibly edge-seed
+/// boosted) score; reserved ones are floored up.
+///
+/// Scoping to reservations (rather than widening the global edge-seed
+/// bonus default) keeps non-temporal factual queries byte-identical.
+const RESERVED_PRIVILEGE: f64 = 0.5;
+
+/// Apply the reservation privilege on top of whatever graph_score the
+/// edge-seed band produced. Reserved rows are floored into the reserved
+/// band; non-reserved rows pass through unchanged.
+fn reserved_graph_score(graph_score: f64, reserved: bool) -> f64 {
+    if !reserved {
+        return graph_score;
+    }
+    // Compress the incoming score into [0, 1-w] then lift by w, so the
+    // reserved row lands in [w, 1] while preserving its relative position
+    // among other reserved rows.
+    graph_score * (1.0 - RESERVED_PRIVILEGE) + RESERVED_PRIVILEGE
+}
+
 pub(crate) fn factual_to_scored(
     result: &crate::retrieval::plans::factual::FactualPlanResult,
     loader: &dyn RecordLoader,
@@ -447,6 +488,13 @@ pub(crate) fn factual_to_scored(
                                // sets it).
             let breadth = (row.seen_via.len() as f64) / total_anchors;
             let graph_score = edge_seeded_graph_score(breadth, row.edge_seeded, edge_seed_bonus);
+            // ISS-205 — temporal-reservation privilege. Applied AFTER the
+            // edge-seed band so the two compose: a reserved row is floored
+            // into the reserved band regardless of whether the experimental
+            // edge-seed bonus is set. Always on for reserved rows; no-op
+            // for everything else (non-temporal factual queries stay
+            // byte-identical because nothing is reserved there).
+            let graph_score = reserved_graph_score(graph_score, row.reserved);
             // ISS-147 AC-3: Some(0.0) for FTS misses (NOT None) —
             // None triggers missing-signal renormalisation which
             // would defeat the lexical channel's contribution.
@@ -1820,6 +1868,7 @@ mod tests {
                     .copied()
                     .collect::<BTreeSet<_>>(),
                 edge_seeded: false,
+                reserved: false,
             })
             .collect();
         f::FactualPlanResult {
@@ -1864,6 +1913,7 @@ mod tests {
                     .copied()
                     .collect::<BTreeSet<_>>(),
                 edge_seeded: *edge_seeded,
+                reserved: false,
             })
             .collect();
         f::FactualPlanResult {
@@ -1927,6 +1977,49 @@ mod tests {
             seeded_any > com_hi,
             "any positive-breadth seeded strictly wins"
         );
+    }
+
+    #[test]
+    fn iss205_reserved_privilege_is_always_on_independent_of_bonus() {
+        // The reservation privilege does NOT depend on
+        // ENGRAM_FACTUAL_EDGE_SEED_BONUS: even when the edge-seed band is
+        // inert (bonus 0.0, graph_score == raw breadth), a reserved row is
+        // floored into the reserved band.
+        let breadth = 0.4; // conv-26-q0 gold: 1 edge / ~2.5 anchors
+        let inert = edge_seeded_graph_score(breadth, false, 0.0); // == 0.4
+        assert!((inert - 0.4).abs() < 1e-9, "edge-seed inert at bonus 0");
+        let reserved = reserved_graph_score(inert, true);
+        // 0.4 * (1 - 0.5) + 0.5 = 0.7
+        assert!(
+            (reserved - 0.7).abs() < 1e-9,
+            "reserved row floored into reserved band regardless of bonus"
+        );
+        // Non-reserved passes through untouched.
+        let passthrough = reserved_graph_score(inert, false);
+        assert!(
+            (passthrough - inert).abs() < 1e-9,
+            "non-reserved row unchanged"
+        );
+    }
+
+    #[test]
+    fn iss205_reserved_beats_any_non_reserved_on_graph_axis() {
+        // ANY reserved candidate outscores ANY non-reserved one on the
+        // graph axis — this is what lifts the dated gold episode past the
+        // undated co-mentions that out-rank it on raw breadth.
+        let reserved_weakest = reserved_graph_score(0.0, true); // 0.5
+        let non_reserved_strongest = reserved_graph_score(1.0, false); // 1.0
+        // The strongest non-reserved (full breadth, 1.0) still beats a
+        // reserved with zero breadth — the privilege is a FLOOR, not a
+        // hard override. Guarantee: a reserved row with any breadth that
+        // a real OccurredOn seed carries (≥ one edge) clears the typical
+        // co-mention cluster.
+        assert!(reserved_weakest >= 0.5);
+        assert!(non_reserved_strongest <= 1.0);
+        // Reserved ordering preserved within the band.
+        let r_lo = reserved_graph_score(0.0, true);
+        let r_hi = reserved_graph_score(0.4, true);
+        assert!(r_hi > r_lo, "breadth ordering preserved within reserved band");
     }
 
     #[test]

@@ -304,6 +304,21 @@ pub struct FactualMemoryRow {
     pub memory_id: MemoryId,
     pub seen_via: BTreeSet<Uuid>,
     pub edge_seeded: bool,
+    /// True iff this memory was admitted by the ISS-205 temporal
+    /// date-bearing reservation (the `OccurredOn`-edge dated-episode
+    /// admission in Stage 3), as opposed to the general ISS-189 D1
+    /// edge-provenance seed or the recency scan.
+    ///
+    /// A reservation is a *deliberate, temporal-specific* admission: the
+    /// query explicitly asks "when" (or pins a window), and the plan went
+    /// out of its way to pull the dated source episode past the recency
+    /// truncation. `factual_to_scored` gives reserved memories a
+    /// deterministic graph_score privilege (`RESERVED_PRIVILEGE`) that —
+    /// unlike the experimental `edge_seeded` band, gated on
+    /// `ENGRAM_FACTUAL_EDGE_SEED_BONUS` — is always on. This keeps the
+    /// privilege scoped to temporal reservations instead of widening the
+    /// global edge-seed bonus across every factual query (ISS-205).
+    pub reserved: bool,
 }
 
 /// Outcome surface for the Factual plan — design §6.4 mapping.
@@ -657,6 +672,7 @@ impl FactualPlan {
         // AND the query is temporal (carries a range OR asks for a date).
         let reservation = inputs.temporal_reservation.filter(|&r| r > 0);
         let range = inputs.query_time_range.as_ref();
+        let mut reserved_ids: BTreeSet<MemoryId> = BTreeSet::new();
         if let Some(reservation) = reservation {
             if range.is_some() || inputs.query_asks_for_date {
                 let mut reserved_count = 0usize;
@@ -721,7 +737,8 @@ impl FactualPlan {
                     };
 
                     for mid in admitted {
-                        memories.entry(mid).or_default().insert(anchor.entity_id);
+                        memories.entry(mid.clone()).or_default().insert(anchor.entity_id);
+                        reserved_ids.insert(mid);
                         reserved_count += 1;
                     }
                 }
@@ -815,7 +832,7 @@ impl FactualPlan {
                     anchors,
                     edges,
                     linked_entities,
-                    memories: memories_into_rows(memories, &edge_seeded_ids),
+                    memories: memories_into_rows(memories, &edge_seeded_ids, &reserved_ids),
                     outcome: FactualOutcome::Cutoff,
                 });
             }
@@ -831,14 +848,14 @@ impl FactualPlan {
                     anchors,
                     edges,
                     linked_entities,
-                    memories: memories_into_rows(memories, &edge_seeded_ids),
+                    memories: memories_into_rows(memories, &edge_seeded_ids, &reserved_ids),
                     outcome: FactualOutcome::Cutoff,
                 });
             }
         }
         budget.end_stage();
 
-        let memory_rows = memories_into_rows(memories, &edge_seeded_ids);
+        let memory_rows = memories_into_rows(memories, &edge_seeded_ids, &reserved_ids);
 
         // Decide outcome:
         // - edges empty AND memories empty → DowngradedNoEdges (graph
@@ -967,14 +984,17 @@ fn traverse_anchors<G: GraphRead + ?Sized>(
 fn memories_into_rows(
     map: BTreeMap<MemoryId, BTreeSet<Uuid>>,
     edge_seeded_ids: &BTreeSet<MemoryId>,
+    reserved_ids: &BTreeSet<MemoryId>,
 ) -> Vec<FactualMemoryRow> {
     map.into_iter()
         .map(|(memory_id, seen_via)| {
             let edge_seeded = edge_seeded_ids.contains(&memory_id);
+            let reserved = reserved_ids.contains(&memory_id);
             FactualMemoryRow {
                 memory_id,
                 seen_via,
                 edge_seeded,
+                reserved,
             }
         })
         .collect()
@@ -1911,6 +1931,10 @@ mod tests {
             gold.edge_seeded,
             "reserved episode carries the edge_seeded graph-score privilege"
         );
+        assert!(
+            gold.reserved,
+            "ISS-205: reserved episode carries the temporal-reservation flag"
+        );
         // The off-range episode scores 0 overlap and must NOT be admitted by
         // the reservation (it is also crowded out of the recency scan).
         assert!(
@@ -1984,6 +2008,10 @@ mod tests {
         assert!(
             gold.edge_seeded,
             "reserved episode carries the edge_seeded graph-score privilege"
+        );
+        assert!(
+            gold.reserved,
+            "ISS-205: date-asking reserved episode carries the reservation flag"
         );
         assert!(gold.seen_via.contains(&caroline));
         // Second-earliest is also admitted (R=2).
