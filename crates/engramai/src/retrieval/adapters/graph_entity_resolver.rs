@@ -237,7 +237,34 @@ impl<'a> EntityResolver for GraphEntityResolver<'a> {
             return Vec::new();
         }
 
-        let mut hits: Vec<ResolvedAnchor> = Vec::new();
+        // ISS-205: recency must break ties ACROSS the merged candidate
+        // pool, not per isolated lookup. Each `search_candidates` call
+        // resolves a single mention to (in v0) at most one alias hit, so
+        // the per-call `recency_score` is computed over a one-element set
+        // and is *always* 0.0 (min_last_seen == max_last_seen). That made
+        // every alias hit tie at exactly 0.7, and the final order fell to
+        // the deterministic `entity_id ASC` secondary sort — an arbitrary
+        // UUID ordering with no relationship to anchor quality. For
+        // conv-26 q0 ("When did Caroline go to the LGBTQ support group?")
+        // this pushed the SUBJECT entity `Caroline` (which owns all the
+        // dated `OccurredOn` edges) to index 5, below the Factual plan's
+        // `max_anchors = 5` truncation, while five object-phrase fragments
+        // ("Go", "group", "support", …) that own zero edges survived.
+        //
+        // Fix: collect raw candidates with their projected `last_seen`,
+        // then recompute recency over the full deduped pool so the most
+        // recently-touched entity (the live subject of the conversation)
+        // outranks stale phrase fragments. This is the cross-pool tiebreak
+        // the original doc-comment promised but the per-call computation
+        // could never deliver.
+        struct RawHit {
+            entity_id: uuid::Uuid,
+            canonical_name: String,
+            alias_boost: f32,
+            last_seen: f64,
+        }
+
+        let mut raw: Vec<RawHit> = Vec::new();
         for ns in namespaces.into_iter().take(MAX_NAMESPACES_SCANNED) {
             for mention in &mentions {
                 let candidate_query = CandidateQuery {
@@ -259,48 +286,83 @@ impl<'a> EntityResolver for GraphEntityResolver<'a> {
                 };
 
                 for m in matches {
-                    // Score combines alias match (binary boost) +
-                    // embedding (none here) + recency. We don't have
-                    // embedding so the alias bit is dominant — this is
-                    // fine for the Factual plan (it's a name-resolution
-                    // step, not vector retrieval; see
-                    // `HybridSeedRecaller` for the embedding path).
-                    let alias_boost: f32 = if m.alias_match { 0.7 } else { 0.0 };
-                    let recency_score = m.recency_score; // [0.0, 1.0]
-                                                         // Final strength in [0.0, 1.0]: weight alias 70%,
-                                                         // recency 30%. Tuned to keep alias-only hits above
-                                                         // 0.5 (so the default `min_confidence` filter in
-                                                         // Factual keeps them) while letting recency break
-                                                         // ties between two equally alias-matched candidates.
-                    let match_strength = alias_boost + 0.3 * recency_score;
-
-                    // Skip candidates with neither signal — they're an
-                    // artifact of search_candidates returning
-                    // embedding-only hits we can't use here. (No
-                    // embedding was sent → no embedding score → skip.)
-                    if !m.alias_match && match_strength == 0.0 {
+                    // We resolve by exact alias match only (no mention
+                    // embedding is sent — this is a name-resolution step,
+                    // not vector retrieval; see `HybridSeedRecaller` for
+                    // the embedding path). Candidates that did NOT alias-
+                    // match are embedding-only artifacts we can't score
+                    // here, so skip them.
+                    if !m.alias_match {
                         continue;
                     }
-
-                    hits.push(ResolvedAnchor {
+                    raw.push(RawHit {
                         entity_id: m.entity_id,
                         canonical_name: m.canonical_name,
-                        match_strength,
+                        alias_boost: 0.7,
+                        last_seen: m.last_seen,
                     });
                 }
             }
         }
 
-        // Dedupe by entity_id, keeping the highest match_strength. Sort
-        // by (match_strength desc, entity_id asc) for determinism.
+        // Dedupe by entity_id first, keeping the freshest `last_seen`
+        // (and, defensively, the highest alias_boost — currently uniform).
+        // We dedupe BEFORE computing the recency span so a high-degree
+        // entity reached via several mentions doesn't distort the scale.
+        raw.sort_by(|a, b| {
+            a.entity_id.cmp(&b.entity_id).then_with(|| {
+                b.last_seen
+                    .partial_cmp(&a.last_seen)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+        raw.dedup_by_key(|h| h.entity_id);
+
+        if raw.is_empty() {
+            return Vec::new();
+        }
+
+        // Pool-wide recency scale. Single-candidate pools have a zero span
+        // → every candidate gets recency 0.0, which collapses to the
+        // alias-only score (0.7) — correct, there's nothing to break.
+        let (min_ls, max_ls) = raw
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), h| {
+                (lo.min(h.last_seen), hi.max(h.last_seen))
+            });
+        let span = max_ls - min_ls;
+
+        let mut hits: Vec<ResolvedAnchor> = raw
+            .into_iter()
+            .map(|h| {
+                // Linear recency in [0.0, 1.0] over the deduped pool span.
+                let recency_score = if span > 0.0 {
+                    ((h.last_seen - min_ls) / span) as f32
+                } else {
+                    0.0
+                };
+                // Final strength in [0.0, 1.0]: alias 70% + recency 30%.
+                // Alias-only hits stay >= 0.5 (so the default
+                // `min_confidence` filter in Factual keeps them); recency
+                // breaks ties between equally alias-matched candidates by
+                // favouring the most recently-touched entity.
+                let match_strength = h.alias_boost + 0.3 * recency_score;
+                ResolvedAnchor {
+                    entity_id: h.entity_id,
+                    canonical_name: h.canonical_name,
+                    match_strength,
+                }
+            })
+            .collect();
+
+        // Final ordering: (match_strength desc, entity_id asc) for
+        // determinism. Already deduped above.
         hits.sort_by(|a, b| {
             b.match_strength
                 .partial_cmp(&a.match_strength)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.entity_id.cmp(&b.entity_id))
         });
-        let mut seen = std::collections::HashSet::new();
-        hits.retain(|a| seen.insert(a.entity_id));
 
         hits
     }
@@ -325,6 +387,28 @@ mod tests {
         // search_candidates does not match by canonical_name alone — it
         // requires a row in graph_entity_aliases (normalized form). Mirror
         // the production path by upserting a self-alias.
+        store
+            .upsert_alias(&canonical_name.to_lowercase(), canonical_name, id, None)
+            .expect("upsert alias");
+        id
+    }
+
+    /// Like [`write_entity`] but with an explicit `last_seen`, so tests can
+    /// exercise the ISS-205 pool-wide recency tiebreak. `secs` is unix
+    /// seconds; larger = more recent.
+    fn write_entity_at(
+        store: &mut SqliteGraphStore,
+        canonical_name: &str,
+        kind: EntityKind,
+        secs: i64,
+    ) -> uuid::Uuid {
+        use chrono::TimeZone;
+        let now = Utc.timestamp_opt(secs, 0).single().expect("valid ts");
+        let mut e = Entity::new_random_id(canonical_name.to_string(), kind, now);
+        let id = e.id;
+        e.identity_confidence = 1.0;
+        e.last_seen = now;
+        store.insert_entity(&e).expect("insert entity");
         store
             .upsert_alias(&canonical_name.to_lowercase(), canonical_name, id, None)
             .expect("upsert alias");
@@ -482,6 +566,89 @@ mod tests {
         assert!(
             hits.is_empty(),
             "expected empty result for query naming no known entity; got {hits:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // ISS-205: pool-wide recency tiebreak. Before the fix, every alias
+    // hit tied at exactly 0.7 (per-call recency was always 0 over a
+    // one-element set) and the final order fell to an arbitrary
+    // `entity_id ASC` UUID sort. A high-degree SUBJECT entity could be
+    // pushed below the Factual plan's max_anchors=5 truncation by
+    // object-phrase fragments. The fix recomputes recency over the merged
+    // pool so the most recently-touched entity ranks first.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn iss205_recency_breaks_ties_subject_ranks_first() {
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        // The query subject "Caroline" is the most recently touched.
+        // Five generic phrase fragments are older. All are exact alias
+        // hits, so all share the 0.7 alias_boost — only recency can
+        // separate them.
+        let caroline = write_entity_at(&mut store, "Caroline", EntityKind::Person, 1_780_412_301);
+        let _ = write_entity_at(&mut store, "support", EntityKind::Concept, 1_780_412_290);
+        let _ = write_entity_at(&mut store, "group", EntityKind::Organization, 1_780_411_885);
+        let _ = write_entity_at(
+            &mut store,
+            "support group",
+            EntityKind::Organization,
+            1_780_411_490,
+        );
+        let _ = write_entity_at(
+            &mut store,
+            "LGBTQ support group",
+            EntityKind::Organization,
+            1_780_411_483,
+        );
+        let _ = write_entity_at(&mut store, "Go", EntityKind::Concept, 1_780_411_990);
+
+        let resolver = GraphEntityResolver::new(&store);
+        let hits = resolver.resolve("When did Caroline go to the LGBTQ support group?");
+
+        // Caroline (newest) must rank FIRST, ahead of the phrase fragments,
+        // so it survives the downstream max_anchors=5 truncation.
+        assert!(!hits.is_empty(), "expected anchors; got none");
+        assert_eq!(
+            hits[0].entity_id, caroline,
+            "subject 'Caroline' (most recent) must rank first; got {hits:?}"
+        );
+        // Newest gets full recency → 0.7 + 0.3*1.0 = 1.0.
+        assert!(
+            (hits[0].match_strength - 1.0).abs() < 1e-4,
+            "newest entity should score ~1.0; got {}",
+            hits[0].match_strength
+        );
+        // Strictly descending strengths prove recency actually separated
+        // the otherwise-tied alias hits (not an arbitrary UUID sort).
+        for w in hits.windows(2) {
+            assert!(
+                w[0].match_strength >= w[1].match_strength,
+                "strengths must be non-increasing; got {hits:?}"
+            );
+        }
+        assert!(
+            hits[0].match_strength > hits[1].match_strength,
+            "recency must produce a strict gap at the top; got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn iss205_single_alias_hit_collapses_to_alias_only_score() {
+        // Degenerate pool (one candidate): span is 0, recency contributes
+        // nothing, score collapses to the alias-only 0.7 — no divide-by-zero,
+        // no spurious boost.
+        let mut conn = fresh_conn();
+        let mut store = SqliteGraphStore::new(&mut conn);
+        let _ = write_entity_at(&mut store, "Caroline", EntityKind::Person, 1_780_412_301);
+        let resolver = GraphEntityResolver::new(&store);
+        let hits = resolver.resolve("Caroline");
+        assert_eq!(hits.len(), 1, "expected exactly one anchor; got {hits:?}");
+        assert!(
+            (hits[0].match_strength - 0.7).abs() < 1e-4,
+            "single hit should score exactly 0.7 (alias only); got {}",
+            hits[0].match_strength
         );
     }
 

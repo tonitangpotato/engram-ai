@@ -18,6 +18,7 @@ relates_to:
 - ISS-201
 - ISS-204
 - .gid/issues/ISS-206/issue.md
+- .gid/issues/ISS-208/issue.md
 depends_on: ISS-204
 ---
 
@@ -258,3 +259,149 @@ A/B clears AC-3..5.
   *separate* defect — the dated episode does not exist as an edge at all.
   That is an extraction-coverage problem, not a ranking problem. Track
   separately; this issue assumes the gold edge exists.
+
+## probe5 update (2026-06-02) — crowding premise REFINED + new anchor-miss bug
+
+Decisive trace from probe5 (PID 67705, conv-26, R=5, ISS-190 envelope, DB
+`.tmpK8lZyN`) with per-anchor/per-edge instrumentation in the reservation
+loop. This **corrects** two assumptions in the original framing:
+
+### 1. The gold episode is NOT crowded out of top-K
+
+The fused-pool dump for `conv-26-q0` shows the gold episode
+(`a838a102`, *"Caroline attended a LGBTQ support group"*) at **rank 6 of
+217** — comfortably inside top-10 — with `vector_score=0.90` (pool's
+highest), `score=0.53`, and `graph_score=0.2`. It is **not** evicted by
+truncation. So the "31 siblings crowd the gold out of the seed pool" premise
+does not hold for q0: the gold survives on vector strength alone. The
+reservation's job here is not to *re-admit* an evicted episode; it is to
+*lift its graph_score* (0.2 → reserved 0.7) so it ranks higher — and even
+that turns out not to be the q0 blocker (see ISS-206).
+
+This does NOT invalidate the reservation for genuinely high-degree evict
+cases (conv-44 q11 may still be a true eviction — confirm in A/B), but the
+conv-26 q0 instance is a *graph_score-not-lifted* case, not an *evicted*
+case.
+
+### 2. NEW BUG: the reservation never anchors on the query subject
+
+For q0 *"When did Caroline go to the LGBTQ support group?"* the reservation
+block entered correctly (`R=5 asks_for_date=true range=false anchors=5`) but
+resolved its 5 anchors to: `Go`, `group`, `support`, `LGBTQ support group`,
+`support group` — **all object/phrase fragments, every one with
+`occurred_on_edges=0`**. The `Caroline` node (`d7f9a67a`, owner of all 31
+dated `occurred_on` edges incl the gold) was **NOT among the resolved
+anchors**. So `edges_of(Caroline, OccurredOn)` was never called and the
+reserved privilege never fired for the gold episode — its graph_score stayed
+0.2.
+
+The Melanie queries show the same shape: they resolve to the `Melanie` node
+but `edges_of` returns only **1** of Melanie's 17 dated edges at query time
+(the most-recent by `recorded_at`), even though the worker-pool drain
+reported `jobs_in_flight: 0, jobs_processed: 456`. The 17 edges' `recorded_at`
+span a 722s window — i.e. canonical-node edge population is still settling
+well past the drain-complete marker. **This is a latent edge-visibility /
+drain-accounting concern** (the drain decrements in-flight after
+`process()` returns incl `insert_edge` commit, so the accounting looks
+correct, yet the query sees an undercount). Filed as a follow-up (see
+ISS-207 / new issue) — it is NOT the q0 blocker but it weakens the
+reservation on dense anchors generally.
+
+### Net effect on ISS-205 scope
+
+- AC-3 (q0) remains correctly re-scoped to ISS-206 (date legibility) — gold
+  is already retrieved; ranking is not the q0 gate.
+- The **anchor-resolution miss** must be fixed for the reservation to work at
+  all on subject-of-"when" queries: the reservation needs to resolve and
+  anchor on the query's *subject entity* (Caroline), not only the object
+  phrases. This is a prerequisite for AC-2/AC-4 to mean anything.
+- The **edge-visibility undercount on dense anchors** (Melanie 1-of-17 at
+  query time) is a separate reliability bug that can silently starve the
+  reservation; track it explicitly before relying on the reservation in
+  production.
+
+### Cleanup
+
+The `[ISS205-PROBE]` eprintlns added to `factual.rs` for this trace were
+reverted (`git checkout`); the engramai tree is clean.
+
+---
+
+## Anchor-resolution miss FIXED (2026-06-02)
+
+### Root cause (proven, not reasoned)
+
+Built `crates/engramai/examples/iss205_anchor_probe.rs` to run the REAL
+`GraphEntityResolver::resolve()` against the forensic DB
+(`.tmpK8lZyN/substrate.db`) on the live q0 query string. Result before fix:
+
+```
+resolver returned 6 anchor(s):
+  [ 0] strength=0.7000  Go
+  [ 1] strength=0.7000  group
+  [ 2] strength=0.7000  support
+  [ 3] strength=0.7000  LGBTQ support group
+  [ 4] strength=0.7000  support group
+  [ 5] strength=0.7000  Caroline  <== BELOW max_anchors=5
+```
+
+Every alias hit tied at **exactly 0.7000**. The resolver computes
+`match_strength = alias_boost(0.7) + 0.3*recency_score`, but each mention is
+an **isolated** `search_candidates` call returning a single alias hit. With a
+one-element candidate set, `min_last_seen == max_last_seen`, so
+`recency_score = (ls - ls)/span = 0.0` — *always*. Recency could never break
+ties. The final order fell to the resolver's deterministic secondary sort
+`entity_id ASC`, an arbitrary UUID ordering. Caroline's UUID `d7f9a67a` sorts
+last among the six, so the SUBJECT entity that owns all 31 `occurred_on`
+edges (incl gold) was truncated below `max_anchors=5`, while five
+object-phrase fragments owning **zero** edges survived. Pure UUID accident.
+
+This was NOT entity fragmentation (one Caroline canonical confirmed), NOT a
+missing alias (`caroline → d7f9a67a` confirmed), NOT a missing
+`graph_entities`/`nodes` row (both present).
+
+### Fix
+
+`graph_entity_resolver.rs::resolve()` now collects raw candidates carrying
+their projected `last_seen`, dedupes by `entity_id`, then **recomputes
+recency across the merged deduped pool** before the final sort. This is the
+cross-pool tiebreak the original doc-comment always promised but the per-call
+computation could never deliver. Single-candidate pools have a zero span →
+recency 0.0 → score collapses to the alias-only 0.7 (no divide-by-zero, no
+spurious boost).
+
+After fix (same probe, same DB):
+
+```
+resolver returned 6 anchor(s):
+  [ 0] strength=1.0000  Caroline   <== now rank 0 (newest last_seen)
+  [ 1] strength=0.9984  support
+  [ 2] strength=0.8861  Go
+  [ 3] strength=0.8474  group
+  [ 4] strength=0.7027  support group
+  [ 5] strength=0.7000  LGBTQ support group
+```
+
+Caroline rises to index 0 (full recency: 0.7 + 0.3*1.0 = 1.0), comfortably
+inside `max_anchors=5`. The reservation will now anchor on Caroline and
+`edges_of(Caroline, OccurredOn)` returns all 31 edges (DB-verified), so the
+date-asking branch admits the earliest (gold) episode.
+
+### Tests
+
+- 2 new regression tests in `graph_entity_resolver.rs`:
+  - `iss205_recency_breaks_ties_subject_ranks_first` — six exact alias hits,
+    asserts the most-recently-touched subject ranks first with strength ~1.0
+    and a strict gap at the top (proving recency separated the otherwise-tied
+    hits, not a UUID sort).
+  - `iss205_single_alias_hit_collapses_to_alias_only_score` — degenerate
+    one-candidate pool scores exactly 0.7 (zero-span guard).
+- 19/19 resolver tests pass; full engramai lib suite 2113/2113 pass.
+
+### Remaining
+
+This unblocks the reservation anchoring. AC-3 (q0 end-to-end) still depends on
+ISS-206 (date legibility) — gold has no in-text date — and a controlled
+ranking A/B should be run on a date-BEARING query after ISS-208
+(edge-visibility undercount on dense anchors) is fixed, to avoid a confounded
+measurement.
