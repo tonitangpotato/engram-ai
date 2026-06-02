@@ -1,14 +1,51 @@
 ---
 id: ISS-206
 title: Resolved event dates are stranded in temporal metadata, absent from memory text — generator cannot answer "when" even when the dated episode is retrieved
-status: open
-priority: P1
+status: verify-only
+resolution: already-satisfied-by-ISS-190/191-surfacing
+priority: P3
 severity: retrieval-quality
 tags: [retrieval, temporal, extraction, generation, date-stranding, locomo]
 created: 2026-06-02
-relates_to: [ISS-190, ISS-191, ISS-204, ISS-205, ISS-201]
+relates_to: [ISS-190, ISS-191, ISS-204, ISS-205, ISS-201, ISS-207]
 depends_on: []
 ---
+
+> **RE-SCOPED (2026-06-02): the date is NOT stranded — Option C is already
+> live.** The original premise ("the generator reads memory `content`, not
+> the temporal dimension") is contradicted by the running code.
+> `engram-bench` `format_context_block` (drivers/locomo.rs:1063, 1135) builds
+> each generator line as `[{when}] {content}` where `when =
+> derived_temporal_value(record).or(occurred_at)`, and
+> `derived_temporal_value` reads `metadata./engram/dimensions/temporal/value`.
+> The production retrieval read path (`Storage::get_by_ids` →
+> `row_to_record_from_node_impl`, storage.rs:9649) parses the `attributes`
+> column into `MemoryRecord.metadata`, so the temporal dimension survives to
+> the generator. Surfacing defaults **ON**
+> (`temporal_surface_enabled`, locomo.rs:1001).
+>
+> **Probe proof** (`examples/iss206_date_surface_probe.rs`, forensic DB
+> `.tmpK8lZyN`, gold node `a838a102`):
+> ```
+> content       : "Caroline attended a LGBTQ support group"
+> metadata None?: false
+> derived_temporal_value: Some("2023-05-07")
+> generator line (surfacing ON):
+>     [2023-05-07] Caroline attended a LGBTQ support group
+> ```
+> The gold episode's resolved date (`2023-05-07`, correct — `occurred_at` is
+> the off-by-one conversation timestamp `2023-05-08`) **already surfaces** into
+> the generator prompt. ISS-206's proposed Option C is implemented.
+>
+> **Therefore q0's residual blocker is RETRIEVAL DELIVERY, not date legibility:**
+> the gold line is answerable *once it reaches the generator's top-K*. Getting
+> it there is ISS-205 (reservation) + ISS-207 (hybrid factual sub-plan emits
+> candidates in memory_id order, bypassing the reservation's graph-score
+> privilege). This issue is downgraded to **verify-only**: no extractor /
+> content-mutation work (Option A/B) is needed. Keep open only to (a) confirm
+> the surfaced date persists through the *production* (non-bench) generation
+> path if/when one exists, and (b) re-run AC-2 after ISS-207 lands to confirm
+> q0 flips once delivery is fixed.
 
 # ISS-206: dated episodes carry their date only in temporal metadata, not in the memory text the generator reads
 
@@ -163,3 +200,22 @@ real chokepoint.
   (`engram-bench/src/drivers/locomo.rs` generation step) before choosing B/C
   vs A — the chokepoint location decides whether this is an engramai-side or
   bench-side fix.
+
+## probe5 confirmation (2026-06-02)
+
+Re-confirmed on a fresh ingest (probe5, PID 67705, DB `.tmpK8lZyN`). The
+gold episode `a838a102` *"Caroline attended a LGBTQ support group"* reached
+the fused pool at **rank 6 of 217** (improved from rank-26 in the earlier
+probe — vector strength alone carried it into top-10), `vector_score=0.90`,
+`graph_score=0.2`, `score=0.53`. SQL on the final DB confirms the memory
+content is literally *"Caroline attended a LGBTQ support group"* with **no
+date substring**. The date `2023-05-07` exists only as an `occurred_on`
+edge.
+
+This strengthens the ISS-206 thesis: retrieval is **not** the q0 gate — the
+gold episode is already at rank 6, inside any reasonable top-K. The gate is
+purely date-legibility in the text the generator reads. ISS-205's reserved
+privilege (graph_score → 0.7) would only move it from rank 6 to a few slots
+higher; it cannot make the date appear in the content. ISS-206 is therefore
+the **necessary** fix for conv-26 q0 and all "when did X" queries whose gold
+episode carries its date only in structured metadata.
