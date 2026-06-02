@@ -2,7 +2,7 @@
 id: ISS-209
 title: Case-fold entity split (caroline vs Caroline) survives ISS-203 — reservation works only because anchor resolution lands on the edge-owning node by luck; fragile + aggregate-suppressing
 status: open
-priority: P1
+priority: P0
 severity: data-quality
 tags:
 - unified-substrate
@@ -17,6 +17,11 @@ relates_to:
 - ISS-203
 - ISS-205
 - ISS-207
+labels:
+- blocker
+- entity-canonicalization
+- proven-blocker
+- ac0-done
 ---
 
 # ISS-209: case-fold entity split survives ISS-203
@@ -157,8 +162,77 @@ temporal path.
       wobble; flag any multi-hop regression for the same crowding analysis
       ISS-203 did.
 
+## AC-0 DIAGNOSIS (resolved 2026-06-02) — the merge gate is a red herring
+
+The issue premise ("WHY did caroline/Caroline not merge despite
+Jaro-Winkler ~1.0 / which signal pulled them below 0.85") is a **wrong
+hypothesis. The probabilistic merge gate never ran.** The split is not a
+threshold/scoring problem — it is two independent id schemes for the same
+entity that never enter the same candidate pool.
+
+### The two writers (both in `default` namespace)
+
+1. **Legacy entities path** — `Storage::upsert_entity` (storage.rs:6116)
+   derives the id via `generate_entity_id(name, type, namespace)`
+   (storage.rs:311): an **FNV-1a hash of `lowercase(name)|lowercase(type)|ns`**,
+   formatted `{:016x}`. **This path already case-folds correctly.**
+   Verified by recomputation: `caroline`, `Caroline`, `CAROLINE` ALL hash
+   to `1d11ce4c7b5c12d8` — exactly the lowercase node's id. (`melanie` →
+   `8fd5fe104ddd2ad4`, `go` → `2f61644ae102c34a` — the only 3 legacy
+   `entities` rows, all matching.) The T23 backfill
+   (`backfill_memory_entities_to_edges`, substrate/backfill.rs:1475)
+   projects this `entities` row verbatim into `nodes` and hangs the
+   `provenance/mentions` edges off it.
+
+2. **Resolution pipeline path** — drafts a `DraftEntity` and on
+   `Decision::CreateNew` mints a fresh **`Uuid::new_v4()`** (random). This
+   becomes `Caroline` (original case, UUID `d7f9a67a`) and owns **all 31
+   `occurred_on` + structural edges**. The graph store *requires*
+   UUID-format ids (`graph/store.rs:716` — "nodes.id is the 36-char
+   hyphenated UUID TEXT").
+
+### Why they never merge
+
+The resolution pipeline **never consults `generate_entity_id` / the
+legacy `entities` table** before minting its random UUID. The legacy
+path's deterministic FNV id and the pipeline's random UUID are different
+strings for the same person, so the two nodes coexist. `candidate_retrieval`
+only compares entities the pipeline itself produced — the FNV/mention node
+is invisible to it. No shared candidate pool → `decision.rs` never compares
+them → no merge, *regardless of name similarity*. Jaro-Winkler is
+irrelevant.
+
+### Revised root-fix direction — supersedes (A)/(B)/(C) above
+
+The clean root fix is **make the resolution pipeline's `CreateNew` derive a
+deterministic id from the case-folded canonical key instead of
+`Uuid::new_v4()`**. To satisfy the graph store's UUID invariant, use
+**UUIDv5** (content-addressed SHA-1 over a fixed namespace + the canonical
+key `lowercase(name)|type|namespace`). Then:
+
+- `Caroline`, `caroline`, `CAROLINE` → the same UUIDv5 → one node,
+  deterministically, with no merge-gate, no Jaro-Winkler, no threshold
+  tuning. (Strictly better than `Uuid::new_v4()` and than approach (A)'s
+  ExactCanonical signal, which would still be probabilistic-pool-dependent.)
+- The legacy FNV path and the resolution path should ALSO be reconciled so
+  the mention/provenance node and the structural node share one id. Two
+  sub-options: (i) make the legacy `upsert_entity` for already-resolved
+  entities reuse the pipeline's UUIDv5 instead of the FNV id, or (ii) have
+  the resolution pipeline look up / adopt the existing legacy entity id
+  when one exists for the case-folded name. Decide during implementation.
+
+**Decision needed from potato before implementing:** the UUIDv5 namespace
+seed + whether to migrate existing 16-hex FNV legacy ids or only fix
+forward (new ingests). Existing DBs with the split would need a one-time
+merge migration; fix-forward alone fixes new ingests but leaves historical
+DBs fragmented.
+
 ## Notes
 
+- AC-0 verification: `generate_entity_id` recomputation (FNV-1a) confirms
+  legacy path case-folds; resolution `CreateNew` uses `Uuid::new_v4()`
+  (non-deterministic). The split is write-path divergence, not a merge
+  scoring failure.
 - Today's verification artifacts:
   `crates/engramai/examples/iss205_anchor_probe.rs` (anchor lands on
   edge owner rank 0) and
