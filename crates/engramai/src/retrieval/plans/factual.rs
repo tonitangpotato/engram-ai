@@ -70,7 +70,7 @@ const LOG_TARGET: &str = "engramai::retrieval::factual";
 
 use crate::graph::edge::{Edge, EdgeEnd};
 use crate::graph::error::GraphError;
-use crate::graph::schema::Predicate;
+use crate::graph::schema::{CanonicalPredicate, Predicate};
 use crate::graph::store::GraphRead;
 use crate::retrieval::budget::{BudgetController, Stage};
 use crate::retrieval::plans::bitemporal::{project_edges, AsOfMode, ProjectedEdge};
@@ -218,6 +218,14 @@ pub struct FactualPlanInputs<'a> {
     /// (default) ⇒ no-op, byte-identical seed pool. Threaded from
     /// [`crate::retrieval::api::GraphQuery::temporal_reservation_override`].
     pub temporal_reservation: Option<usize>,
+
+    /// ISS-205 — parsed temporal constraint of the query (from
+    /// [`crate::query_classifier::extract_time_range`]), used to rank the
+    /// reserved `OccurredOn` edges by interval overlap. `None` ⇒ the
+    /// query carries no date constraint, so the reservation path is a
+    /// no-op regardless of `temporal_reservation` (a reservation with no
+    /// target range has nothing to rank toward).
+    pub query_time_range: Option<crate::query_classifier::TimeRange>,
 }
 
 /// Default caps used by [`FactualPlanInputs`] in tests / placeholder
@@ -597,6 +605,84 @@ impl FactualPlan {
                     .entry(mid.clone())
                     .or_default()
                     .insert(edge.anchor_id);
+            }
+        }
+
+        // ISS-205 — temporal date-bearing reservation.
+        //
+        // The D1 seed above only admits memories whose edge was *returned*
+        // by Stage-2 traversal, and traversal is bounded (`max_anchors`,
+        // result caps). For a temporal query the answer lives on an
+        // `OccurredOn` edge whose source episode the recency scan below
+        // would evict on a dense anchor (e.g. Caroline carries 31
+        // `OccurredOn` edges; a top-K of 10 cannot hold them and the gold
+        // dated episode ranks far down the recency list).
+        //
+        // When the query carries a date constraint and a reservation `R` is
+        // requested, pull ALL of each anchor's `OccurredOn` edges (uncapped
+        // via `edges_of`), rank them by interval overlap against the query
+        // range (shared `interval_overlap_score`, same curve as
+        // `Memory::temporal_score` — ISS-191 AC-3), and force-admit the
+        // `source_memory_id` of the top-`R` into the candidate pool. This
+        // happens BEFORE `edge_seeded_ids` is captured so reserved memories
+        // also receive the ISS-192 graph_score numerator privilege.
+        //
+        // No-op (byte-identical pool) when either knob is absent: a missing
+        // `R` means the feature is off; a missing range means there is no
+        // target to rank toward.
+        if let (Some(reservation), Some(range)) =
+            (inputs.temporal_reservation, inputs.query_time_range.as_ref())
+        {
+            if reservation > 0 {
+                let mut reserved_count = 0usize;
+                for anchor in &anchors {
+                    // Uncapped: slot semantics needs the complete set of
+                    // dated edges to rank before truncating to `R`.
+                    let dated_edges = graph.edges_of(
+                        anchor.entity_id,
+                        Some(&Predicate::Canonical(CanonicalPredicate::OccurredOn)),
+                        false,
+                    )?;
+                    // Score each edge by how close its literal date sits to
+                    // the query range. Edges whose literal does not parse as
+                    // an ISO date, or that carry no source memory, are
+                    // skipped (they cannot seed a candidate).
+                    let mut scored: Vec<(f64, MemoryId)> = dated_edges
+                        .iter()
+                        .filter_map(|edge| {
+                            let mid = edge.memory_id.as_ref()?;
+                            let date = edge.object_literal_date()?;
+                            let dt = DateTime::<Utc>::from_naive_utc_and_offset(
+                                date.and_hms_opt(0, 0, 0).unwrap(),
+                                Utc,
+                            );
+                            let score = crate::query_classifier::interval_overlap_score(
+                                dt, dt, range,
+                            );
+                            if score > 0.0 {
+                                Some((score, mid.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    // Highest overlap first; break ties deterministically by
+                    // memory id so the reservation is reproducible.
+                    scored.sort_by(|a, b| {
+                        b.0.partial_cmp(&a.0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| a.1.cmp(&b.1))
+                    });
+                    for (_score, mid) in scored.into_iter().take(reservation) {
+                        memories.entry(mid).or_default().insert(anchor.entity_id);
+                        reserved_count += 1;
+                    }
+                }
+                debug!(
+                    target: LOG_TARGET,
+                    "stage3 temporal-reservation: admitted {} dated episode(s) (R={})",
+                    reserved_count, reservation
+                );
             }
         }
 
@@ -1075,6 +1161,7 @@ mod tests {
             requested_k: 0,
             entity_filter: None,
             temporal_reservation: None,
+            query_time_range: None,
         }
     }
 
@@ -1626,6 +1713,159 @@ mod tests {
         assert!(
             result.memories.iter().any(|r| r.memory_id == "answer_ep"),
             "answer episode must survive recency truncation via edge seeding"
+        );
+    }
+
+    // ---- ISS-205 temporal reservation ----------------------------------
+
+    /// Build an `OccurredOn` edge whose literal object is the ISO date
+    /// `yyyy-mm-dd`, sourced from memory `mid`.
+    fn occurred_on_edge(anchor: Uuid, date: &str, mid: &str) -> Edge {
+        let mut e = Edge::new(
+            anchor,
+            Predicate::Canonical(CanonicalPredicate::OccurredOn),
+            EdgeEnd::Literal {
+                value: serde_json::Value::String(date.to_string()),
+            },
+            None,
+            ts(150),
+        );
+        e.memory_id = Some(mid.to_string());
+        e
+    }
+
+    fn time_range(start: &str, end: &str) -> crate::query_classifier::TimeRange {
+        use chrono::TimeZone;
+        let parse = |s: &str| {
+            let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+            chrono::Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
+        };
+        crate::query_classifier::TimeRange {
+            start: parse(start),
+            end: parse(end),
+        }
+    }
+
+    /// ISS-205 AC-1 — reservation off is byte-identical to legacy.
+    ///
+    /// With `temporal_reservation = None` (or no query range), the dated
+    /// episode that the recency scan would evict must NOT be rescued — the
+    /// seed pool is unchanged from pre-ISS-205 behaviour.
+    #[test]
+    fn iss205_ac1_reservation_off_is_noop() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+        let caroline = Uuid::from_u128(1);
+
+        // The gold dated episode + many recent un-dated mentions that crowd
+        // it out of the recency scan.
+        graph.add_edge_for(
+            caroline,
+            occurred_on_edge(caroline, "2023-05-07", "gold_dated"),
+        );
+        let mut mentions: Vec<&str> = (0..50)
+            .map(|i| Box::leak(format!("recent_{i:02}").into_boxed_str()) as &str)
+            .collect();
+        mentions.push("gold_dated");
+        graph.add_memories(caroline, mentions);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: caroline,
+            canonical_name: "Caroline".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut inputs = make_inputs("when did Caroline attend the support group");
+        inputs.requested_k = 3; // α·K = 9 < 51 → gold cut by recency scan
+        inputs.memory_limit_per_entity = 100;
+        // Constrain Stage-2 traversal to a predicate the anchor has no
+        // edges for, so the `OccurredOn` dated edges do NOT leak into the
+        // D1 traversal seed. This mirrors production: a temporal query
+        // routes to the Factual plan but the dated episode rides an
+        // `OccurredOn` edge that the bounded 1-hop traversal does not
+        // surface — the reservation is the only path that can admit it.
+        inputs.predicate_filter = Some(Predicate::Canonical(CanonicalPredicate::MemberOf));
+        // Reservation OFF (default). A range is present but R is None.
+        inputs.temporal_reservation = None;
+        inputs.query_time_range = Some(time_range("2023-05-01", "2023-05-31"));
+
+        let mut b = budget();
+        let result = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+
+        assert!(
+            !result.memories.iter().any(|r| r.memory_id == "gold_dated"),
+            "with reservation OFF the dated episode stays evicted (no-op)"
+        );
+    }
+
+    /// ISS-205 AC-2 — reservation rescues the gold dated episode.
+    ///
+    /// Same crowded anchor as AC-1, but with `temporal_reservation = Some(2)`
+    /// and a query range overlapping the gold date. The reservation must
+    /// pull the `OccurredOn` edge's source memory into the seed pool even
+    /// though the recency scan evicts it, AND prefer the date that overlaps
+    /// the query range over a same-anchor dated episode that does not.
+    #[test]
+    fn iss205_ac2_reservation_rescues_dated_episode() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+        let caroline = Uuid::from_u128(1);
+
+        // Two dated episodes: one in range (the answer), one far out of
+        // range. The reservation should rank the in-range one first.
+        graph.add_edge_for(
+            caroline,
+            occurred_on_edge(caroline, "2023-05-07", "gold_dated"),
+        );
+        graph.add_edge_for(
+            caroline,
+            occurred_on_edge(caroline, "2022-01-01", "off_range_dated"),
+        );
+        let mut mentions: Vec<&str> = (0..50)
+            .map(|i| Box::leak(format!("recent_{i:02}").into_boxed_str()) as &str)
+            .collect();
+        mentions.push("gold_dated");
+        mentions.push("off_range_dated");
+        graph.add_memories(caroline, mentions);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: caroline,
+            canonical_name: "Caroline".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut inputs = make_inputs("when did Caroline attend the support group");
+        inputs.requested_k = 3;
+        inputs.memory_limit_per_entity = 100;
+        // Isolate the reservation as the sole admission path for the dated
+        // episodes (see AC-1 for rationale): constrain Stage-2 to a
+        // predicate the anchor lacks so the `OccurredOn` edges only reach
+        // the candidate pool through the reservation loop.
+        inputs.predicate_filter = Some(Predicate::Canonical(CanonicalPredicate::MemberOf));
+        inputs.temporal_reservation = Some(2);
+        inputs.query_time_range = Some(time_range("2023-05-01", "2023-05-31"));
+
+        let mut b = budget();
+        let result = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+
+        let gold = result
+            .memories
+            .iter()
+            .find(|r| r.memory_id == "gold_dated")
+            .expect("reservation must admit the in-range dated episode");
+        assert!(
+            gold.seen_via.contains(&caroline),
+            "reserved episode attributed to its anchor"
+        );
+        assert!(
+            gold.edge_seeded,
+            "reserved episode carries the edge_seeded graph-score privilege"
+        );
+        // The off-range episode scores 0 overlap and must NOT be admitted by
+        // the reservation (it is also crowded out of the recency scan).
+        assert!(
+            !result.memories.iter().any(|r| r.memory_id == "off_range_dated"),
+            "out-of-range dated episode is not reserved (zero overlap)"
         );
     }
 

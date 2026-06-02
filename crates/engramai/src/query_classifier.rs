@@ -165,6 +165,44 @@ pub struct TimeRange {
     pub end: DateTime<Utc>,
 }
 
+/// Score how well a temporal interval `[item_start, item_end]` matches a
+/// query [`TimeRange`], on a `[0.0, 1.0]` scale.
+///
+/// Returns `0.0` when the intervals do not overlap. When they overlap, the
+/// score is driven by the proximity of the item-interval *midpoint* to the
+/// query-range center: `1.0` at the center, floored at `0.5` for any
+/// in-range hit (matching the pre-ISS-191 behaviour where overlapping edges
+/// scored `0.5`). A degenerate query range (`start == end`) scores `1.0` on
+/// any overlap.
+///
+/// This is the single source of truth for date-interval proximity scoring:
+/// [`Memory::temporal_score`] uses it for memory-vs-query ranking, and the
+/// ISS-205 Factual-plan temporal reservation uses it to rank `OccurredOn`
+/// edges. Do not re-implement the curve elsewhere.
+pub fn interval_overlap_score(
+    item_start: DateTime<Utc>,
+    item_end: DateTime<Utc>,
+    range: &TimeRange,
+) -> f64 {
+    // Overlap test: [item_start, item_end] and [range.start, range.end]
+    // intersect iff each starts no later than the other ends. A point
+    // (item_start == item_end) reduces to a containment check.
+    if item_start <= range.end && item_end >= range.start {
+        let item_center = item_start + (item_end - item_start) / 2;
+        let range_duration = (range.end - range.start).num_seconds() as f64;
+        let range_center = range.start + (range.end - range.start) / 2;
+        let distance = (item_center - range_center).num_seconds().abs() as f64;
+        let half_range = range_duration / 2.0;
+        if half_range > 0.0 {
+            (1.0 - (distance / half_range) * 0.5).max(0.5)
+        } else {
+            1.0
+        }
+    } else {
+        0.0 // No overlap
+    }
+}
+
 impl QueryAnalysis {
     /// Neutral analysis — all modifiers at 1.0, no time range, General intent.
     pub fn neutral() -> Self {
@@ -467,7 +505,7 @@ fn is_semantic_query(query: &str) -> bool {
 
 // ── Time range extraction ──────────────────────────────────────────
 
-fn extract_time_range(query: &str) -> Option<TimeRange> {
+pub(crate) fn extract_time_range(query: &str) -> Option<TimeRange> {
     let now = Utc::now();
     let lower = query.to_lowercase();
 

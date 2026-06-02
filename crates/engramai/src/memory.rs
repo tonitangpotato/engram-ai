@@ -5014,32 +5014,9 @@ impl Memory {
                 // later date. Memories with no interval mark keep the exact
                 // point behavior (byte-identical to pre-AC-3).
                 let (m_start, m_end) = Self::memory_temporal_extent(record);
-                // Overlap test: intervals [m_start, m_end] and [range.start,
-                // range.end] intersect iff each starts no later than the other
-                // ends. A point (m_start == m_end) reduces to the old check.
-                if m_start <= range.end && m_end >= range.start {
-                    // Score by proximity of the memory-interval *center* to the
-                    // query-range center — same curve as before, now using the
-                    // interval midpoint so an approximate year scores by where
-                    // it sits, not its raw ingest timestamp.
-                    let event_time = m_start + (m_end - m_start) / 2;
-                    let range_duration = (range.end - range.start).num_seconds() as f64;
-                    let range_center = range.start + (range.end - range.start) / 2;
-                    let distance = (event_time - range_center).num_seconds().abs() as f64;
-                    let half_range = range_duration / 2.0;
-                    if half_range > 0.0 {
-                        // 1.0 at center, clamped at 0.5 floor for in-range hits
-                        // (matches pre-AC-3: edges scored 0.5). An interval
-                        // whose center sits outside the query range but still
-                        // overlaps stays in [0.5, 1.0] rather than going
-                        // negative.
-                        (1.0 - (distance / half_range) * 0.5).max(0.5)
-                    } else {
-                        1.0
-                    }
-                } else {
-                    0.0 // No overlap
-                }
+                // ISS-205: single source of truth for date-interval proximity
+                // (shared with the Factual-plan temporal reservation).
+                crate::query_classifier::interval_overlap_score(m_start, m_end, range)
             }
             None => {
                 // No temporal query: gentle recency signal (complement ACT-R)

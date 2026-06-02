@@ -206,6 +206,25 @@ impl Edge {
     }
 
     /// True iff this edge is currently live — i.e. has not been invalidated.
+
+    /// Parse this edge's literal object as an ISO-8601 calendar date
+    /// (`YYYY-MM-DD`), if it is one.
+    ///
+    /// Date-valued edges (notably `OccurredOn`, ISS-204) store the date as
+    /// a JSON string literal on the object side. Returns `None` when the
+    /// object is an entity, the literal is not a string, or the string does
+    /// not parse as a date. Used by the ISS-205 Factual-plan temporal
+    /// reservation to rank dated episodes by interval overlap.
+    pub fn object_literal_date(&self) -> Option<chrono::NaiveDate> {
+        match &self.object {
+            EdgeEnd::Literal { value } => {
+                let s = value.as_str()?;
+                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+            }
+            EdgeEnd::Entity { .. } => None,
+        }
+    }
+
     /// Per §3.2 invalidation is signalled by `invalidated_at`; `valid_to`
     /// alone (the real-world end of the fact) does **not** make the edge
     /// "invalidated" in the GUARD-3 sense — a fact can stop being true
