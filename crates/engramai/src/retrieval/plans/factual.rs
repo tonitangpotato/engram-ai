@@ -221,11 +221,24 @@ pub struct FactualPlanInputs<'a> {
 
     /// ISS-205 — parsed temporal constraint of the query (from
     /// [`crate::query_classifier::extract_time_range`]), used to rank the
-    /// reserved `OccurredOn` edges by interval overlap. `None` ⇒ the
-    /// query carries no date constraint, so the reservation path is a
-    /// no-op regardless of `temporal_reservation` (a reservation with no
-    /// target range has nothing to rank toward).
+    /// reserved `OccurredOn` edges by interval overlap. When `Some`, the
+    /// reservation ranks dated episodes by overlap against this range.
+    /// When `None`, the reservation falls back to the date-asking path
+    /// (see [`Self::query_asks_for_date`]).
     pub query_time_range: Option<crate::query_classifier::TimeRange>,
+
+    /// ISS-205 — `true` when the query asks for a date as its answer
+    /// (a "when did X" / "which year" question, per
+    /// [`crate::query_classifier::asks_for_date`]). Such queries carry no
+    /// `query_time_range`, yet their gold answer lives on an `OccurredOn`
+    /// edge that the recency scan evicts on a dense anchor. When this is
+    /// set (and `query_time_range` is `None`), the reservation admits the
+    /// anchor's earliest `R` dated episodes regardless of date — the gold
+    /// episode is recovered into the pool and downstream embedding
+    /// similarity selects the matching one. Together with
+    /// `query_time_range`, this forms the reservation trigger: the path is
+    /// a no-op only when BOTH are absent.
+    pub query_asks_for_date: bool,
 }
 
 /// Default caps used by [`FactualPlanInputs`] in tests / placeholder
@@ -618,70 +631,106 @@ impl FactualPlan {
         // `OccurredOn` edges; a top-K of 10 cannot hold them and the gold
         // dated episode ranks far down the recency list).
         //
-        // When the query carries a date constraint and a reservation `R` is
-        // requested, pull ALL of each anchor's `OccurredOn` edges (uncapped
-        // via `edges_of`), rank them by interval overlap against the query
-        // range (shared `interval_overlap_score`, same curve as
-        // `Memory::temporal_score` — ISS-191 AC-3), and force-admit the
-        // `source_memory_id` of the top-`R` into the candidate pool. This
-        // happens BEFORE `edge_seeded_ids` is captured so reserved memories
-        // also receive the ISS-192 graph_score numerator privilege.
+        // Two admission strategies, by whether the query pins a window:
         //
-        // No-op (byte-identical pool) when either knob is absent: a missing
-        // `R` means the feature is off; a missing range means there is no
-        // target to rank toward.
-        if let (Some(reservation), Some(range)) =
-            (inputs.temporal_reservation, inputs.query_time_range.as_ref())
-        {
-            if reservation > 0 {
+        //  • RANGE-CONSTRAINED ("what did X do in May 2023"): rank each
+        //    anchor's dated edges by interval overlap against the query
+        //    range (shared `interval_overlap_score`, same curve as
+        //    `Memory::temporal_score` — ISS-191 AC-3) and admit the
+        //    top-`R`. Only edges whose literal overlaps the range
+        //    (score > 0) are eligible.
+        //
+        //  • DATE-ASKING ("when did X go to the support group"): the query
+        //    has no range to rank toward — it is *asking for* the date.
+        //    Admit the anchor's `R` EARLIEST dated episodes (date ascending).
+        //    The gold answer for a "when did X first/ever" question is the
+        //    earliest occurrence, and for any "when did" question the gold
+        //    episode is one of the anchor's dated episodes; recovering them
+        //    into the pool lets downstream embedding similarity pick the
+        //    matching one. Date-ascending ordering guarantees the earliest
+        //    (the most common gold) is admitted for any R ≥ 1.
+        //
+        // Both run BEFORE `edge_seeded_ids` is captured so reserved
+        // memories also receive the ISS-192 graph_score numerator privilege.
+        //
+        // No-op (byte-identical pool) unless a reservation `R` > 0 is set
+        // AND the query is temporal (carries a range OR asks for a date).
+        let reservation = inputs.temporal_reservation.filter(|&r| r > 0);
+        let range = inputs.query_time_range.as_ref();
+        if let Some(reservation) = reservation {
+            if range.is_some() || inputs.query_asks_for_date {
                 let mut reserved_count = 0usize;
                 for anchor in &anchors {
                     // Uncapped: slot semantics needs the complete set of
-                    // dated edges to rank before truncating to `R`.
+                    // dated edges to rank/order before truncating to `R`.
                     let dated_edges = graph.edges_of(
                         anchor.entity_id,
                         Some(&Predicate::Canonical(CanonicalPredicate::OccurredOn)),
                         false,
                     )?;
-                    // Score each edge by how close its literal date sits to
-                    // the query range. Edges whose literal does not parse as
-                    // an ISO date, or that carry no source memory, are
-                    // skipped (they cannot seed a candidate).
-                    let mut scored: Vec<(f64, MemoryId)> = dated_edges
+                    // Parse each edge to (date, memory id). Edges whose
+                    // literal does not parse as an ISO date, or that carry
+                    // no source memory, are skipped (cannot seed a candidate).
+                    let dated: Vec<(chrono::NaiveDate, MemoryId)> = dated_edges
                         .iter()
                         .filter_map(|edge| {
                             let mid = edge.memory_id.as_ref()?;
                             let date = edge.object_literal_date()?;
-                            let dt = DateTime::<Utc>::from_naive_utc_and_offset(
-                                date.and_hms_opt(0, 0, 0).unwrap(),
-                                Utc,
-                            );
-                            let score = crate::query_classifier::interval_overlap_score(
-                                dt, dt, range,
-                            );
-                            if score > 0.0 {
-                                Some((score, mid.clone()))
-                            } else {
-                                None
-                            }
+                            Some((date, mid.clone()))
                         })
                         .collect();
-                    // Highest overlap first; break ties deterministically by
-                    // memory id so the reservation is reproducible.
-                    scored.sort_by(|a, b| {
-                        b.0.partial_cmp(&a.0)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| a.1.cmp(&b.1))
-                    });
-                    for (_score, mid) in scored.into_iter().take(reservation) {
+
+                    let admitted: Vec<MemoryId> = if let Some(range) = range {
+                        // Range-constrained: rank by interval overlap, keep
+                        // only overlapping edges, take top-`R`. Ties broken
+                        // deterministically by memory id.
+                        let mut scored: Vec<(f64, MemoryId)> = dated
+                            .into_iter()
+                            .filter_map(|(date, mid)| {
+                                let dt = DateTime::<Utc>::from_naive_utc_and_offset(
+                                    date.and_hms_opt(0, 0, 0).unwrap(),
+                                    Utc,
+                                );
+                                let score = crate::query_classifier::interval_overlap_score(
+                                    dt, dt, range,
+                                );
+                                (score > 0.0).then_some((score, mid))
+                            })
+                            .collect();
+                        scored.sort_by(|a, b| {
+                            b.0.partial_cmp(&a.0)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| a.1.cmp(&b.1))
+                        });
+                        scored
+                            .into_iter()
+                            .take(reservation)
+                            .map(|(_, mid)| mid)
+                            .collect()
+                    } else {
+                        // Date-asking: no range to rank toward. Admit the
+                        // `R` earliest dated episodes (date ascending, ties
+                        // broken by memory id for reproducibility).
+                        let mut by_date = dated;
+                        by_date.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+                        by_date
+                            .into_iter()
+                            .take(reservation)
+                            .map(|(_, mid)| mid)
+                            .collect()
+                    };
+
+                    for mid in admitted {
                         memories.entry(mid).or_default().insert(anchor.entity_id);
                         reserved_count += 1;
                     }
                 }
                 debug!(
                     target: LOG_TARGET,
-                    "stage3 temporal-reservation: admitted {} dated episode(s) (R={})",
-                    reserved_count, reservation
+                    "stage3 temporal-reservation: admitted {} dated episode(s) (R={}, mode={})",
+                    reserved_count,
+                    reservation,
+                    if range.is_some() { "range" } else { "date-asking" }
                 );
             }
         }
@@ -1162,6 +1211,7 @@ mod tests {
             entity_filter: None,
             temporal_reservation: None,
             query_time_range: None,
+            query_asks_for_date: false,
         }
     }
 
@@ -1866,6 +1916,130 @@ mod tests {
         assert!(
             !result.memories.iter().any(|r| r.memory_id == "off_range_dated"),
             "out-of-range dated episode is not reserved (zero overlap)"
+        );
+    }
+
+    /// ISS-205 AC-3 — date-asking ("when did X") path with NO range.
+    ///
+    /// This is the real conv-26 q0 scenario: "When did Caroline go to the
+    /// LGBTQ support group?" carries no date constraint
+    /// (`extract_time_range` → None) so the range-overlap branch cannot
+    /// fire. The gold answer is the EARLIEST `OccurredOn` episode
+    /// (2023-05-07). With `query_asks_for_date = true` and a reservation,
+    /// the date-ascending branch must admit the earliest `R` dated
+    /// episodes — recovering the gold into the pool even though the recency
+    /// scan evicts it and no range is present.
+    #[test]
+    fn iss205_ac3_date_asking_admits_earliest_dated_episode() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+        let caroline = Uuid::from_u128(1);
+
+        // Many dated episodes spanning the timeline; gold is the earliest.
+        // Mirrors Caroline's 31 occurred_on edges (May → Oct) in prod.
+        let dated = [
+            ("2023-05-07", "gold_dated"),
+            ("2023-06-09", "ep_jun"),
+            ("2023-07-15", "ep_jul"),
+            ("2023-08-25", "ep_aug"),
+            ("2023-10-20", "ep_oct"),
+        ];
+        for (d, mid) in dated {
+            graph.add_edge_for(caroline, occurred_on_edge(caroline, d, mid));
+        }
+        let mut mentions: Vec<&str> = (0..50)
+            .map(|i| Box::leak(format!("recent_{i:02}").into_boxed_str()) as &str)
+            .collect();
+        for (_, mid) in dated {
+            mentions.push(mid);
+        }
+        graph.add_memories(caroline, mentions);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: caroline,
+            canonical_name: "Caroline".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut inputs = make_inputs("When did Caroline go to the LGBTQ support group?");
+        inputs.requested_k = 3; // α·K = 9 < 55 → all dated cut by recency
+        inputs.memory_limit_per_entity = 100;
+        // Isolate the reservation as the sole admission path (see AC-1).
+        inputs.predicate_filter = Some(Predicate::Canonical(CanonicalPredicate::MemberOf));
+        // No range — this is a "when did X" question. Reservation R=2 means
+        // the two EARLIEST dated episodes are admitted: 2023-05-07 (gold)
+        // and 2023-06-09. Date-ascending guarantees the gold is included.
+        inputs.temporal_reservation = Some(2);
+        inputs.query_time_range = None;
+        inputs.query_asks_for_date = true;
+
+        let mut b = budget();
+        let result = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+
+        let gold = result
+            .memories
+            .iter()
+            .find(|r| r.memory_id == "gold_dated")
+            .expect("date-asking reservation must admit the earliest dated episode");
+        assert!(
+            gold.edge_seeded,
+            "reserved episode carries the edge_seeded graph-score privilege"
+        );
+        assert!(gold.seen_via.contains(&caroline));
+        // Second-earliest is also admitted (R=2).
+        assert!(
+            result.memories.iter().any(|r| r.memory_id == "ep_jun"),
+            "R=2 admits the two earliest dated episodes"
+        );
+        // The later episodes (beyond R) are NOT reserved.
+        assert!(
+            !result.memories.iter().any(|r| r.memory_id == "ep_oct"),
+            "episodes beyond the R earliest are not reserved"
+        );
+    }
+
+    /// ISS-205 AC-4 — date-asking path is a no-op without the flag.
+    ///
+    /// A reservation is set and the query has no range, but
+    /// `query_asks_for_date = false` (e.g. a non-date question). The
+    /// reservation must NOT fire — confirming the trigger requires a
+    /// positive temporal signal, not merely a set `R`.
+    #[test]
+    fn iss205_ac4_no_date_signal_is_noop() {
+        let plan = FactualPlan::new();
+        let mut graph = StubGraph::default();
+        let caroline = Uuid::from_u128(1);
+
+        graph.add_edge_for(
+            caroline,
+            occurred_on_edge(caroline, "2023-05-07", "gold_dated"),
+        );
+        let mut mentions: Vec<&str> = (0..50)
+            .map(|i| Box::leak(format!("recent_{i:02}").into_boxed_str()) as &str)
+            .collect();
+        mentions.push("gold_dated");
+        graph.add_memories(caroline, mentions);
+
+        let resolver = FixedResolver(vec![ResolvedAnchor {
+            entity_id: caroline,
+            canonical_name: "Caroline".into(),
+            match_strength: 1.0,
+        }]);
+
+        let mut inputs = make_inputs("what did Caroline say about her job");
+        inputs.requested_k = 3;
+        inputs.memory_limit_per_entity = 100;
+        inputs.predicate_filter = Some(Predicate::Canonical(CanonicalPredicate::MemberOf));
+        inputs.temporal_reservation = Some(5);
+        inputs.query_time_range = None;
+        inputs.query_asks_for_date = false; // no positive temporal signal
+
+        let mut b = budget();
+        let result = plan.execute(&inputs, &resolver, &graph, &mut b).unwrap();
+
+        assert!(
+            !result.memories.iter().any(|r| r.memory_id == "gold_dated"),
+            "no range and not date-asking → reservation is a no-op"
         );
     }
 

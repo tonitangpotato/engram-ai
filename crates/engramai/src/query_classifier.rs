@@ -505,6 +505,47 @@ fn is_semantic_query(query: &str) -> bool {
 
 // ── Time range extraction ──────────────────────────────────────────
 
+/// ISS-205 — phrases that ask for a *date* as the answer ("when did X
+/// happen", "which year was Y"). Distinct from [`extract_time_range`]
+/// (which detects a date *constraint* the query carries) and from
+/// [`is_temporal_query`] (whose `TEMPORAL_EN` list is relative-time
+/// keywords like "yesterday"/"ago"). A "when did Caroline go to the
+/// support group?" question carries no range and no relative-time
+/// keyword, so neither of those fire — yet the answer lives on an
+/// `OccurredOn` edge that the Factual seed's recency scan can evict on a
+/// dense anchor. This predicate is the trigger that lets the temporal
+/// reservation force-admit the anchor's dated episodes for such queries.
+const ASKS_FOR_DATE_EN: &[&str] = &[
+    "when did",
+    "when was",
+    "when were",
+    "when has",
+    "when have",
+    "what year",
+    "which year",
+    "what date",
+    "which date",
+    "what day",
+    "which day",
+    "what month",
+    "which month",
+    "in what year",
+    "in which year",
+];
+
+/// Chinese counterparts of [`ASKS_FOR_DATE_EN`].
+const ASKS_FOR_DATE_ZH: &[&str] = &["什么时候", "何时", "哪一年", "哪年", "哪一天", "几月", "什么时间"];
+
+/// ISS-205 — `true` when the query asks for a date as its answer (a
+/// "when did X" / "which year" question). See [`ASKS_FOR_DATE_EN`] for
+/// why this is a dedicated predicate rather than reusing the existing
+/// temporal classifiers.
+pub(crate) fn asks_for_date(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    ASKS_FOR_DATE_EN.iter().any(|p| lower.contains(p))
+        || ASKS_FOR_DATE_ZH.iter().any(|p| query.contains(p))
+}
+
 pub(crate) fn extract_time_range(query: &str) -> Option<TimeRange> {
     let now = Utc::now();
     let lower = query.to_lowercase();
@@ -1016,6 +1057,42 @@ fn classify_query_inner(
 #[allow(clippy::needless_borrows_for_generic_args)]
 mod tests {
     use super::*;
+
+    /// ISS-205 — `asks_for_date` fires on real LoCoMo "when did X" gold
+    /// queries that neither `extract_time_range` nor `is_temporal_query`
+    /// detect, and stays quiet on queries that merely mention an entity
+    /// or carry a relative-time constraint.
+    #[test]
+    fn iss205_asks_for_date_matches_when_questions() {
+        // Real LoCoMo gold queries (conv-26 q0, conv-44 q0/q11).
+        for q in [
+            "When did Caroline go to the LGBTQ support group?",
+            "When did Andrew go rock climbing?",
+            "Which year did Audrey adopt the first three of her dogs?",
+            "When was the party?",
+            "什么时候去的支持小组？",
+        ] {
+            assert!(asks_for_date(q), "should ask for a date: {q:?}");
+            // These carry no range expression — confirming the reservation
+            // guard cannot rely on extract_time_range here.
+            assert!(
+                extract_time_range(q).is_none(),
+                "when-question should carry no range: {q:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn iss205_asks_for_date_quiet_on_non_date_questions() {
+        for q in [
+            "Where did Caroline move from 4 years ago?",
+            "What did Caroline say about her job?",
+            "Who is Caroline's partner?",
+            "Tell me about the support group",
+        ] {
+            assert!(!asks_for_date(q), "should NOT ask for a date: {q:?}");
+        }
+    }
 
     #[test]
     fn test_classify_temporal_english() {

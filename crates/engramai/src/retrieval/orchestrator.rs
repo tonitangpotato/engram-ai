@@ -865,6 +865,9 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                     query_time_range: crate::query_classifier::extract_time_range(
                         &self.query.text,
                     ),
+                    query_asks_for_date: crate::query_classifier::asks_for_date(
+                        &self.query.text,
+                    ),
                 };
                 let plan = crate::retrieval::plans::factual::FactualPlan::new();
                 let resolver = self.collaborators.entity_resolver;
@@ -1138,6 +1141,7 @@ pub(crate) fn execute_plan(
                 entity_filter: query.entity_filter.as_deref(),
                 temporal_reservation: query.temporal_reservation_override,
                 query_time_range: crate::query_classifier::extract_time_range(&query.text),
+                query_asks_for_date: crate::query_classifier::asks_for_date(&query.text),
             };
             let plan = crate::retrieval::plans::factual::FactualPlan::new();
             let resolver = collaborators.entity_resolver;
@@ -1494,6 +1498,7 @@ fn run_factual_fallback_for_hybrid(
         entity_filter: query.entity_filter.as_deref(),
         temporal_reservation: query.temporal_reservation_override,
         query_time_range: crate::query_classifier::extract_time_range(&query.text),
+        query_asks_for_date: crate::query_classifier::asks_for_date(&query.text),
     };
     let plan = crate::retrieval::plans::factual::FactualPlan::new();
     let resolver = collaborators.entity_resolver;
