@@ -182,3 +182,75 @@ both buckets.
 - `benchmarks/runs/ISS198-smoke-conv26-20260531T170624Z/.../locomo_per_query.jsonl`
 - `benchmarks/runs/ISS161-A-conv26-20260526T121230Z/locomo_per_query.jsonl` (baseline 0.362)
 - Live substrate `/var/folders/48/.../.tmp0VvSQB/substrate.db` (ephemeral — re-create via `/tmp/iss198_smoke.sh`)
+
+## ISS-201 retrieval-short-circuit: ROOT CAUSE = INGEST WINDOWING + PROVEN FIX (2026-06-03)
+
+The 30-query retrieval-short-circuit bucket was further decomposed (embedding-cosine
+gold detection, `iss201_shortcircuit_classify2.rs`, GOLD_COS=0.65) into 3 sub-buckets:
+**8 OK-gold-retrieved / 6 REACHABLE-misrouted / 18 SEMANTIC-GAP**. The dominant
+SEMANTIC-GAP sub-bucket was traced to a **bench-driver ingest defect**, not retrieval.
+
+### Shape-scan (the ceiling)
+
+Mapped all SEMANTIC-GAP gold-turns back to the fixture (questions carry
+`evidence: ["Dx:y"]`; 19 sessions D1-D19 = distinct `occurred_at` groups).
+**14/14 mappable gold-turns are COREF-DEPENDENT** — the gold fact lives in a bare
+reply turn whose subject/object is established in a *preceding* turn (7/14 even
+start "Yeah/Thanks/Aww" + pronoun). E.g. q3 "What did Caroline research?" gold turn
+is `Caroline: Researching adoption agencies` (no actor in turn); q52 gold is
+`Luna and Oliver! They are so sweet` ("their" → question turn). The bench driver
+(`engram-bench/src/drivers/locomo.rs:1213`) extracted each turn **in isolation**, so
+the bare reply lost its referent and the self-contained gold fact was never stored.
+
+### Fix: sliding-window ingest (env-gated A/B)
+
+`ENGRAM_BENCH_INGEST_WINDOW=N` prepends the N preceding turns as a *reference-only*
+context block ("do NOT extract from these — resolve coref against them; extract ONLY
+this turn"), `occurred_at` anchored to the answer turn. N=0/unset = byte-identical.
+
+**LLM-level verify (before re-ingest): 4/4 RETRIEVABLE** via exact production framing
+(`iss201_window_verify.rs`): q3→"Caroline is researching adoption agencies",
+q52→"Melanie has...a cat named Bailey and a cat named Oliver", q122/q140 coref
+resolved. Context turns were NOT double-extracted.
+
+### A/B result (conv-26, same binary, STAMP 20260603T141337Z)
+
+| metric | A (window=0) | B (window=4) | delta |
+|---|---|---|---|
+| **overall J** | 0.2697 | **0.3882** | **+11.85pp (+44%)** |
+| single-hop | 0.031 | 0.156 | +12.5pp (5x) |
+| open-domain | 0.077 | 0.308 | +23.1pp (4x) |
+| temporal | 0.400 | 0.514 | +11.4pp |
+| multi-hop | 0.297 | 0.378 | +8.1pp |
+| SEMANTIC-GAP (classify2) | 18 | **13** | -5 converted |
+| OK-gold-retrieved | 9 | 11 | +2 |
+
+Smoking-gun q90/q95/q98 ALL flipped SEMANTIC-GAP→OK (cos 0.63/0.60/0.59 →
+0.66/0.76/0.74). **This is the FIRST conv-26 retrieval lever that did not falsify**
+(ISS-159/164/178/HyDE/MMR all falsified) — because it fixes the data at INGEST,
+upstream of retrieval ranking.
+
+### Residual 13 SEMANTIC-GAP (window=4 ceiling)
+
+- q109/q110/q111/q112 — single-session (D8) short-noun gold ("pots","painting"); stored
+  correctly but short generic gold keeps embedding-cosine <0.65 = **classify2 measurement
+  artifact**, not a real miss (LLM-judge lifted single-hop 5x).
+- q33/q45/q49/q76 — gold is a DATE; **temporal-extraction** track (ISS-190/215), not windowing.
+- q3 — stored correctly, query↔gold cosine low = **ranking** track.
+- q65 — cross-session multi-evidence (D16+D11), referent >4 turns / cross-session = needs
+  larger or cross-session window.
+
+### Recommendation
+
+The windowing belongs in the LIBRARY at ingest, not as a bench-driver flag. This is the
+concrete first use-case for **ISS-162 ExtractionContext** — thread a bounded ring of
+recent turns into `store_raw`/extractor so any conversational ingest (not just LoCoMo)
+resolves coref. The bench flag stays as the A/B harness to validate the engramai
+implementation against the +11.85pp baseline.
+
+### Artifacts (windowing)
+
+- `engram-bench/src/drivers/locomo.rs:1213` — sliding-window ingest (ENGRAM_BENCH_INGEST_WINDOW)
+- `crates/engramai/examples/iss201_window_verify.rs` — LLM-level proof (4/4)
+- `/tmp/iss201_window_ab.sh` — A/B harness
+- substrate dirs: A=.tmpW2ZHx0 B=.tmpmKeySN (ephemeral); runs ISS201-WIN{A,B}-conv26-20260603T141337Z
