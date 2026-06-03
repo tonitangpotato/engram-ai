@@ -41,6 +41,7 @@ fn store_with_old_occurred_at(mem: &mut Memory, ns: &str) -> String {
         occurred_at: Some(event_time),
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let out = mem
@@ -124,6 +125,7 @@ fn iss103_bulk_ingest_with_old_occurred_at_all_survive_decay() {
             occurred_at: Some(event_time),
             emotion: None,
             domain: None,
+            context: Vec::new(),
         };
         let out = mem
             .store_raw(&format!("Bulk fact {} from May 2023.", i), meta)

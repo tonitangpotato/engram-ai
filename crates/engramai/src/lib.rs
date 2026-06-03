@@ -124,6 +124,7 @@ pub mod temporal_dim;
 pub mod temporal_grounding;
 pub mod triple;
 pub mod triple_extractor;
+pub mod turn_window;
 pub mod type_weights;
 pub mod types;
 pub mod write_stats;

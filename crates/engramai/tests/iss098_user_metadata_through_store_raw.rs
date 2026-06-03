@@ -127,6 +127,7 @@ fn iss098_user_metadata_through_fact_path() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let query = "Caroline went to the LGBTQ support group yesterday.";
@@ -171,6 +172,7 @@ fn iss098_user_metadata_through_no_fact_path() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let query = "a short chitchat the extractor will skip";
@@ -215,6 +217,7 @@ fn iss098_user_metadata_path_b_no_extractor() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let query = "path B store with no extractor";
@@ -257,6 +260,7 @@ fn iss098_null_user_metadata_does_not_synthesize_keys() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let query = "null um stays null";

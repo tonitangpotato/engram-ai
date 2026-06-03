@@ -453,6 +453,31 @@ reference at all, OMIT the temporal field entirely — do NOT fabricate one.\n\n
     }
 }
 
+/// Assemble the windowed extraction input (ISS-162).
+///
+/// Prepends the preceding conversation turns (oldest-first) as
+/// **coreference context only**, explicitly quarantined from extraction,
+/// ahead of the current turn. This is the byte-for-byte framing proven in
+/// `examples/iss201_window_verify.rs` (4/4 retrievable, context turns NOT
+/// double-extracted) and validated end-to-end by the ISS-201 / ISS-162
+/// isolation sweeps (conv-26 overall J 0.2697 → 0.3882 at window=4).
+///
+/// When `context` is empty, returns `turn` unchanged — the write path is
+/// then byte-identical to the pre-ISS-162 behaviour.
+pub(crate) fn assemble_with_context(context: &[String], turn: &str) -> String {
+    if context.is_empty() {
+        return turn.to_string();
+    }
+    format!(
+        "Prior conversation context (for coreference resolution ONLY \
+— do NOT extract facts from these lines; they are already stored):\n{}\n\n\
+Extract facts ONLY from this final turn, resolving any pronouns or \
+references against the context above so each core_fact is self-contained:\n{}",
+        context.join("\n"),
+        turn
+    )
+}
+
 /// The extraction prompt template (dimensional format).
 ///
 /// Uses structured output with 11 semantic dimensions. LLM fills only dimensions

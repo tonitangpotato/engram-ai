@@ -1,7 +1,7 @@
 ---
 title: 'Ingest path: extractor sees single turn, missing conversation context window'
-status: open
-priority: P3
+status: in_review
+priority: P1
 severity: architecture-gap
 category: ingestion
 created: 2026-05-26
@@ -214,3 +214,65 @@ should not be implementation-priority.
 3. ISS-179 AC-5a target redefine (Options A/B/C/D) is resolved — if Option C
    is taken (move SF target off conv-26), the conv-26-derived motivation for
    this issue weakens.
+
+---
+
+## RE-PROMOTED + IMPLEMENTED — 2026-06-03
+
+**Hold criteria satisfied** by ISS-201:
+
+1. *Different context source proposed* → sliding **window=4** (oldest-first
+   preceding turns as coreference-only context), not ISS-178's slim single
+   prev-turn.
+2. *Cheap probe shows no ISS-178 pruning pattern* → `iss201_window_verify.rs`
+   4/4 RETRIEVABLE at the LLM level, context turns NOT double-extracted.
+3. *Empirical lift* → ISS-201 conv-26 A/B (STAMP 20260603T141337Z): overall J
+   **0.2697 → 0.3882 (+11.85 pp / +44 %)**, single-hop 0.031 → 0.156 (5×),
+   open-domain 0.077 → 0.308 (4×), SEMANTIC-GAP 18 → 13.
+
+**Confound isolated** (STAMP 20260603T171256Z, see
+`artifacts/isolation-result-2026-06-03.md`):
+
+- Arm C (window=1, my envelope) → 0.3421: window-size alone is the lever
+  (+7.24 pp over baseline with a single context turn), NOT the
+  `FACTUAL_REWEIGHT` envelope.
+- Arm D (window=4, canonical `FACTUAL_REWEIGHT=on`, reservation off) → 0.3421,
+  single-hop **0.219** (best of all arms), SEMANTIC-GAP **11** (lowest): the
+  lift **survives the canonical envelope** → safe to build in the library.
+- Lift is dose-dependent (window=4 > window=1 on single-hop & SEMANTIC-GAP) →
+  **default N=4** pinned.
+
+### Design delta vs original AC-1/AC-3
+
+The original AC-1 (`extract_in_context` trait method) and AC-3 (per-namespace
+`SessionState` + rolling-summary LLM) were **not** implemented. Blast-radius
+audit found 16 `MemoryExtractor` impls — changing the trait is unjustified
+"while I'm here" growth. Instead:
+
+- **Trait UNCHANGED.** The coreference preamble is assembled at the `store_raw`
+  ingest call site (`crate::extractor::assemble_with_context`) and prepended to
+  the extraction input only; the stored memory body remains the bare turn.
+- **`StorageMeta.context: Vec<String>`** — one additive, serde-skipped-when-empty
+  field. Empty = byte-identical to the pre-ISS-162 write path.
+- **`Memory::ingest_turn(text, occurred_at, context)`** — new public entry.
+- **`turn_window::TurnWindow`** — bounded oldest-first ring buffer
+  (`DEFAULT_WINDOW = 4`, `capacity = 0` disables) for callers to maintain the
+  window; `clear()` for session boundaries.
+- No rolling summary / no summary LLM call — the proven lever is raw preceding
+  turns, not a compressed summary. Summary remains out of scope (re-open only
+  if window alone plateaus).
+
+### Status
+
+Library mechanism shipped + tested:
+- 4 store-path tests (`memory.rs`): empty-context byte-identity, preamble
+  prepended but bare turn stored, `ingest_turn` applies context, `TurnWindow`
+  end-to-end.
+- 5 `TurnWindow` unit tests.
+- Full suite: **2141 engramai lib tests pass**; affected integration tests
+  (iss019/iss090/iss098/iss103/iss089) green; workspace builds clean.
+
+**Remaining (AC-4 / AC-5):** swap the engram-bench LoCoMo driver from the
+env-flag (`ENGRAM_BENCH_INGEST_WINDOW`, committed a5bce14) to
+`TurnWindow` + `ingest_turn`, then re-run conv-26 + conv-44 to confirm the
+library path reproduces the bench-flag's +11.85 pp and does not regress conv-44.

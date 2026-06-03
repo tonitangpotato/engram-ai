@@ -89,6 +89,7 @@ fn store_raw_without_extractor_uses_minimal_dimensions() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let out = mem
@@ -131,6 +132,7 @@ fn store_raw_user_metadata_is_preserved() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
     let out = mem
         .store_raw("user meta round-trip", meta)
@@ -233,6 +235,7 @@ fn store_raw_extractor_error_persists_quarantine_row() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let out = mem
@@ -305,6 +308,7 @@ fn retry_quarantined_recovers_transient_failure() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let first = mem

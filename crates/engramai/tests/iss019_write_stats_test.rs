@@ -37,6 +37,7 @@ fn default_meta() -> StorageMeta {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     }
 }
 

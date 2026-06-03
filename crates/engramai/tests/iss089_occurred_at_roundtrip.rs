@@ -74,6 +74,7 @@ fn iss089_path_b_no_extractor_honors_occurred_at() {
         occurred_at: Some(backfill_time),
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let out = mem
@@ -130,6 +131,7 @@ fn iss089_path_a_extracted_facts_inherit_occurred_at() {
         occurred_at: Some(backfill_time),
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let out = mem
@@ -190,6 +192,7 @@ fn iss089_path_a_no_facts_fallback_honors_occurred_at() {
         occurred_at: Some(backfill_time),
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let out = mem
@@ -239,6 +242,7 @@ fn iss089_no_occurred_at_falls_back_to_now() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
 
     let out = mem
@@ -280,6 +284,7 @@ fn iss089_storage_meta_default_has_no_occurred_at() {
         occurred_at: None,
         emotion: None,
         domain: None,
+        context: Vec::new(),
     };
     assert!(
         m.occurred_at.is_none(),

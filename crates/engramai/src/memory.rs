@@ -1010,6 +1010,7 @@ impl Memory {
             occurred_at: ep.when,
             emotion: None,
             domain: None,
+            context: Vec::new(),
         };
 
         // Admit the row. store_raw consumes `pending_caller_id` on the
@@ -2849,6 +2850,7 @@ impl Memory {
             occurred_at: None,
             emotion: None,
             domain: None,
+            context: Vec::new(),
         };
 
         let outcome = self.store_raw(content, meta).map_err(|e| match e {
@@ -3424,6 +3426,7 @@ impl Memory {
             occurred_at,
             emotion: Some(emotion),
             domain: Some(domain.to_string()),
+            context: Vec::new(),
         };
 
         let outcome =
@@ -3600,7 +3603,15 @@ impl Memory {
 
         // Path A: extractor present.
         if let Some(ref extractor) = self.extractor {
-            match extractor.extract(content, meta.occurred_at) {
+            // ISS-162: when the caller supplied preceding turns as
+            // coreference context, assemble the windowed extraction input
+            // (preamble + current turn). The preamble is fed to the
+            // extractor ONLY — the stored memory content remains the bare
+            // `content`. Empty context → `extraction_input == content`
+            // (byte-identical to the pre-ISS-162 path).
+            let extraction_input =
+                crate::extractor::assemble_with_context(&meta.context, content);
+            match extractor.extract(&extraction_input, meta.occurred_at) {
                 Ok(facts) if facts.is_empty() => {
                     // ISS-068: the extractor produced zero facts, but
                     // we still admit the raw content into memory so
@@ -4092,6 +4103,7 @@ impl Memory {
                 occurred_at: None,
                 emotion: None,
                 domain: None,
+                context: Vec::new(),
             };
 
             // Re-run store_raw on the preserved content.
@@ -7665,6 +7677,69 @@ impl Memory {
             .into()),
         }
     }
+
+    /// Ingest a single conversation turn with preceding turns supplied as
+    /// **coreference context** (ISS-162).
+    ///
+    /// `context` is the oldest-first list of preceding turns. They are fed
+    /// to the extractor as reference-only material (explicitly quarantined
+    /// from extraction) so a bare reply turn ("Luna and Oliver!") can have
+    /// its referent resolved into a self-contained `core_fact` at store
+    /// time. Only facts about `text` are extracted and stored; the context
+    /// turns are not re-stored.
+    ///
+    /// `occurred_at` anchors the stored memory's event time (as in
+    /// [`Memory::ingest_with_stats_at`]). Callers should maintain a bounded
+    /// window via [`crate::turn_window::TurnWindow`].
+    ///
+    /// `context.is_empty()` is exactly equivalent to
+    /// [`Memory::ingest_with_stats_at`] — purely additive.
+    ///
+    /// All error semantics match `ingest_with_stats`.
+    pub fn ingest_turn(
+        &mut self,
+        text: &str,
+        occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+        context: Vec<String>,
+    ) -> Result<
+        (
+            crate::store_api::MemoryId,
+            crate::resolution::ResolutionStats,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        use crate::store_api::{RawStoreOutcome, StorageMeta};
+
+        let meta = StorageMeta {
+            occurred_at,
+            context,
+            ..StorageMeta::default()
+        };
+
+        let outcome = self
+            .store_raw(text, meta)
+            .map_err(|e| -> Box<dyn std::error::Error> { format!("{e}").into() })?;
+
+        match outcome {
+            RawStoreOutcome::Stored(outcomes) => {
+                let id = outcomes
+                    .first()
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "ingest_turn: store_raw returned Stored([]) — invariant violated".into()
+                    })?
+                    .id()
+                    .clone();
+                let stats = crate::resolution::ResolutionStats::default();
+                Ok((id, stats))
+            }
+            RawStoreOutcome::Skipped { reason, .. } => {
+                Err(format!("ingest_turn: store_raw returned Skipped({reason:?})").into())
+            }
+            RawStoreOutcome::Quarantined { reason, .. } => {
+                Err(format!("ingest_turn: store_raw returned Quarantined({reason:?})").into())
+            }
+        }
+    }
 }
 
 /// Aggregate report of one Knowledge-Compiler run (§5bis / §6.2).
@@ -9027,6 +9102,168 @@ mod confidence_tests {
         assert_eq!(json["valence"].as_f64(), Some(0.0));
         assert_eq!(json["confidence"].as_str(), Some("likely"));
         assert_eq!(json["domain"].as_str(), Some("general"));
+    }
+
+    // -----------------------------------------------------------------
+    // ISS-162: sliding-window coreference context at ingest
+    // -----------------------------------------------------------------
+
+    /// Extractor double that records the exact text it was handed, so a
+    /// test can assert whether the ISS-162 coreference preamble was
+    /// assembled. Returns one fixed fact echoing the *current* turn so
+    /// the store path proceeds normally.
+    struct CapturingExtractor {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        fact: String,
+    }
+
+    impl MemoryExtractor for CapturingExtractor {
+        fn extract(
+            &self,
+            text: &str,
+            _reference: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> Result<Vec<crate::extractor::ExtractedFact>, Box<dyn std::error::Error + Send + Sync>>
+        {
+            self.seen.lock().unwrap().push(text.to_string());
+            Ok(vec![crate::extractor::ExtractedFact {
+                core_fact: self.fact.clone(),
+                confidence: "confident".into(),
+                domain: "general".into(),
+                ..Default::default()
+            }])
+        }
+    }
+
+    fn mem_with_capture(
+        fact: &str,
+    ) -> (Memory, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut mem = Memory::new(":memory:", None).unwrap();
+        mem.set_extractor(Box::new(CapturingExtractor {
+            seen: seen.clone(),
+            fact: fact.into(),
+        }));
+        (mem, seen)
+    }
+
+    /// Empty context → the extractor sees the bare content unchanged
+    /// (byte-identical to the pre-ISS-162 path); no preamble is assembled.
+    #[test]
+    fn test_iss162_empty_context_is_byte_identical() {
+        use crate::store_api::StorageMeta;
+
+        let (mut mem, seen) = mem_with_capture("Caroline adopted two cats");
+        let content = "Luna and Oliver!";
+        mem.store_raw(content, StorageMeta::default())
+            .expect("store_raw");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "extractor called exactly once");
+        assert_eq!(
+            seen[0], content,
+            "with empty context the extractor must see the bare turn, no preamble"
+        );
+    }
+
+    /// Non-empty context → the extractor sees the coreference preamble
+    /// (containing the preceding turns) followed by the current turn, but
+    /// the *stored memory content* remains the bare turn (not the preamble).
+    #[test]
+    fn test_iss162_context_prepends_preamble_but_stores_bare_turn() {
+        use crate::store_api::{RawStoreOutcome, StorageMeta};
+
+        let (mut mem, seen) = mem_with_capture("Caroline named her cats Luna and Oliver");
+        let content = "Luna and Oliver!";
+        let meta = StorageMeta {
+            context: vec![
+                "Did you end up adopting?".to_string(),
+                "Yes, two kittens from the shelter.".to_string(),
+            ],
+            ..StorageMeta::default()
+        };
+
+        let outcome = mem.store_raw(content, meta).expect("store_raw");
+
+        // Extractor input carried the preamble + both context turns + the turn.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let input = &seen[0];
+        assert!(
+            input.contains("coreference resolution ONLY"),
+            "preamble framing present: {input}"
+        );
+        assert!(input.contains("Did you end up adopting?"));
+        assert!(input.contains("Yes, two kittens from the shelter."));
+        assert!(
+            input.trim_end().ends_with(content),
+            "current turn is last in the extraction input: {input}"
+        );
+
+        // Stored memory body is the bare turn, NOT the preamble.
+        match outcome {
+            RawStoreOutcome::Stored(outcomes) => {
+                assert_eq!(outcomes.len(), 1);
+                let rec = mem
+                    .storage
+                    .get(outcomes[0].id().as_str())
+                    .expect("get")
+                    .expect("record exists");
+                assert!(
+                    !rec.content.contains("coreference resolution ONLY"),
+                    "stored content must not include the preamble: {}",
+                    rec.content
+                );
+            }
+            other => panic!("expected Stored, got {other:?}"),
+        }
+    }
+
+    /// `ingest_turn` threads the supplied context into the extraction
+    /// preamble and returns a stored id.
+    #[test]
+    fn test_iss162_ingest_turn_applies_context() {
+        let (mut mem, seen) = mem_with_capture("the kittens are named Luna and Oliver");
+        let context = vec![
+            "What did you name the kittens?".to_string(),
+            "We finally decided!".to_string(),
+        ];
+
+        let (_id, _stats) = mem
+            .ingest_turn("Luna and Oliver!", None, context)
+            .expect("ingest_turn");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].contains("coreference resolution ONLY"));
+        assert!(seen[0].contains("What did you name the kittens?"));
+    }
+
+    /// End-to-end: a `TurnWindow` feeds successive turns' context through
+    /// `ingest_turn`. The first turn has no context; the second sees the
+    /// first as its coreference window.
+    #[test]
+    fn test_iss162_turn_window_integration() {
+        use crate::turn_window::TurnWindow;
+
+        let (mut mem, seen) = mem_with_capture("a fact");
+        let mut win = TurnWindow::new(crate::turn_window::DEFAULT_WINDOW);
+
+        let turns = ["Did you adopt?", "Yes — Luna and Oliver!"];
+        for turn in turns {
+            let ctx = win.context();
+            mem.ingest_turn(turn, None, ctx).expect("ingest_turn");
+            win.push(turn);
+        }
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        // First turn: no context → bare turn, no preamble.
+        assert_eq!(seen[0], "Did you adopt?");
+        assert!(!seen[0].contains("coreference resolution ONLY"));
+        // Second turn: window carried the first turn as context.
+        assert!(seen[1].contains("coreference resolution ONLY"));
+        assert!(seen[1].contains("Did you adopt?"));
+        assert!(seen[1].trim_end().ends_with("Yes — Luna and Oliver!"));
     }
 }
 

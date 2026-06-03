@@ -134,6 +134,24 @@ pub struct StorageMeta {
     /// B applies it directly to the single admitted record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+
+    /// Preceding conversation turns (oldest-first) supplied as
+    /// **coreference context only** for extraction (ISS-162).
+    ///
+    /// A bare reply turn ("Researching adoption agencies", "Luna and
+    /// Oliver!") loses its referent when extracted in isolation, so the
+    /// self-contained gold fact is never stored. When this is non-empty,
+    /// `store_raw` prepends a reference-only preamble (the preceding
+    /// turns, explicitly quarantined from extraction) ahead of `content`
+    /// before calling the unchanged `MemoryExtractor::extract`. The
+    /// extractor resolves the referent but only emits facts about the
+    /// current turn.
+    ///
+    /// Empty (default) → byte-identical to the pre-ISS-162 write path:
+    /// no preamble is assembled, `content` is passed through unchanged.
+    /// Callers maintain a bounded window via [`crate::turn_window::TurnWindow`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<String>,
 }
 
 // ---------------------------------------------------------------------

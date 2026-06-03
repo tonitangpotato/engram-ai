@@ -109,6 +109,7 @@ fn iss090_path_b_emotion_applied_directly() {
         occurred_at: None,
         emotion: Some(-0.7),
         domain: Some("trading".into()),
+        context: Vec::new(),
     };
 
     let out = mem
@@ -148,6 +149,7 @@ fn iss090_path_a_caller_emotion_fills_when_extractor_neutral() {
         occurred_at: None,
         emotion: Some(0.5),
         domain: Some("coding".into()),
+        context: Vec::new(),
     };
 
     let out = mem
@@ -188,6 +190,7 @@ fn iss090_path_a_extractor_judgment_wins() {
         occurred_at: None,
         emotion: Some(0.9),
         domain: Some("life".into()),
+        context: Vec::new(),
     };
 
     let out = mem

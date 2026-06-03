@@ -1410,6 +1410,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     occurred_at: occurred_at_dt,
                     emotion,
                     domain: domain.clone(),
+                    context: Vec::new(),
                 };
                 match mem
                     .store_raw(&content, storage_meta)
