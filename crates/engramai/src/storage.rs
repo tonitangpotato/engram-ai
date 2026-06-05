@@ -1377,24 +1377,57 @@ impl Storage {
         // (memory_entities.entity_id stays pointed at the live `entities`
         // table, which is not on the drop set).
         let new_table = format!("{table}_iss198_new");
-        let rebuilt_create = create_sql
-            .replacen(
-                &format!("CREATE TABLE IF NOT EXISTS {table}"),
-                &format!("CREATE TABLE {new_table}"),
-                1,
-            )
-            .replacen(
-                &format!("CREATE TABLE {table}"),
-                &format!("CREATE TABLE {new_table}"),
-                1,
-            )
-            .replace("REFERENCES memories(", "REFERENCES nodes(")
-            .replace("REFERENCES memories ", "REFERENCES nodes ");
+        // SQLite re-emits a table's DDL with a QUOTED identifier after any
+        // ALTER TABLE … RENAME (e.g. the v1→v2 embeddings migration), so the
+        // stored `sql` may read `CREATE TABLE "memory_embeddings"` rather than
+        // the unquoted form we originally created. Match the CREATE prefix for
+        // ALL four spellings (quoted / unquoted × IF-NOT-EXISTS / plain), but
+        // apply EXACTLY ONE substitution — the first that matches — otherwise a
+        // later pattern would re-match the freshly-inserted new name and double
+        // the suffix (`…_iss198_new_iss198_new`), leaving the INSERT target
+        // table uncreated.
+        let create_prefixes = [
+            format!("CREATE TABLE IF NOT EXISTS \"{table}\""),
+            format!("CREATE TABLE IF NOT EXISTS {table}"),
+            format!("CREATE TABLE \"{table}\""),
+            format!("CREATE TABLE {table}"),
+        ];
+        let renamed = create_prefixes
+            .iter()
+            .find(|p| create_sql.contains(p.as_str()))
+            .map(|p| create_sql.replacen(p.as_str(), &format!("CREATE TABLE {new_table}"), 1));
+        let rebuilt_create = match renamed {
+            Some(s) => s
+                .replace("REFERENCES memories(", "REFERENCES nodes(")
+                .replace("REFERENCES memories ", "REFERENCES nodes "),
+            // No recognizable CREATE prefix — refuse rather than guess.
+            None => {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                    Some(format!(
+                        "rebuild_table_fk_to_nodes({table}): unrecognized CREATE \
+                         prefix in stored DDL; refusing to run. sql: {create_sql}"
+                    )),
+                ));
+            }
+        };
 
-        // Defensive: the rewrite must have actually produced the new name
-        // and removed every `memories` parent reference.
-        debug_assert!(rebuilt_create.contains(&new_table));
-        debug_assert!(!rebuilt_create.contains("REFERENCES memories"));
+        // Hard invariant (NOT debug_assert — release builds must not execute a
+        // botched rewrite): the rewrite MUST have produced the new table name
+        // and removed every `memories` parent reference. If either fails, the
+        // resulting CREATE would collide with the live table and abort the
+        // whole `Storage::new` open. Fail the migration loudly instead.
+        if !rebuilt_create.contains(&new_table)
+            || rebuilt_create.contains("REFERENCES memories")
+        {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some(format!(
+                    "rebuild_table_fk_to_nodes({table}): DDL rewrite failed to \
+                     rename/repoint; refusing to run. original sql: {create_sql}"
+                )),
+            ));
+        }
 
         // Column list for an explicit-column INSERT…SELECT (preserves order,
         // tolerates differing column counts across schema versions).
@@ -12745,6 +12778,90 @@ mod tests {
                 "ISS-198: {table} must reference nodes"
             );
         }
+    }
+
+    /// Regression (live rustclaw DB, 2026-06-04): SQLite re-emits a table's
+    /// DDL with a QUOTED identifier (`CREATE TABLE "memory_embeddings"`) after
+    /// any `ALTER TABLE … RENAME` — which the v1→v2 embeddings migration does.
+    /// The original `rebuild_table_fk_to_nodes` only matched the UNQUOTED
+    /// `CREATE TABLE memory_embeddings` prefix, so the rename-to-`_iss198_new`
+    /// silently no-opped and the migration re-created the original quoted name
+    /// → `table "memory_embeddings" already exists`, aborting `Storage::new`.
+    /// This froze every store on the affected DB. Reproduce the quoted DDL and
+    /// assert the migration now succeeds, re-points, and preserves rows.
+    #[test]
+    fn iss198_fk_repoint_handles_quoted_ddl_from_prior_rename() {
+        let s = iss198_unified_storage();
+        iss198_seed_node(&s, "n_q", 9801);
+
+        // Force SQLite to re-store memory_embeddings' DDL with a QUOTED name,
+        // exactly as a prior ALTER TABLE RENAME would (the live-DB state).
+        s.connection()
+            .execute_batch(
+                "ALTER TABLE memory_embeddings RENAME TO memory_embeddings_tmp; \
+                 ALTER TABLE memory_embeddings_tmp RENAME TO memory_embeddings;",
+            )
+            .unwrap();
+        let ddl_before: String = s
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='memory_embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            ddl_before.contains("\"memory_embeddings\""),
+            "test precondition: DDL must be quoted after rename, got: {ddl_before}"
+        );
+
+        // Seed a row that should survive the rebuild.
+        s.connection()
+            .execute(
+                "INSERT INTO memory_embeddings \
+                 (memory_id, model, embedding, dimensions, created_at) \
+                 VALUES ('n_q', 'nomic', X'01', 1, '2026-06-04')",
+                [],
+            )
+            .unwrap();
+
+        // The migration must NOT error on the quoted DDL.
+        Storage::migrate_memory_embeddings_fk_to_nodes(s.connection())
+            .expect("ISS-198: migration must handle quoted DDL from a prior rename");
+
+        let ddl_after: String = s
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='memory_embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            ddl_after.contains("REFERENCES nodes") && !ddl_after.contains("REFERENCES memories"),
+            "memory_embeddings must reference nodes after rebuild, got: {ddl_after}"
+        );
+        let rows: i64 = s
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = 'n_q'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "quoted-DDL rebuild must preserve rows");
+
+        // No leftover scratch table.
+        let scratch: i64 = s
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='table' AND name='memory_embeddings_iss198_new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(scratch, 0, "scratch table must be renamed away, not left behind");
     }
 
     /// Re-running the migrations on an already-re-pointed schema is a no-op
