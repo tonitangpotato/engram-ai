@@ -10,6 +10,8 @@ relates:
 - ISS-161
 - ISS-163
 - ISS-164
+- ISS-216
+- .gid/issues/ISS-217/issue.md
 discovered_in: ISS-161 root-cause audit 2026-05-26
 downgrade_reason:
 - ISS-178 slim-prev-turn falsification — slim variant actively harmful on conv-26 (Δsh −2
@@ -112,6 +114,16 @@ book did Melanie read from Caroline's suggestion?" → "Becoming
 Nicole").
 
 ## Acceptance criteria
+
+> **⚠️ SUPERSEDED 2026-06-03.** The AC-1..AC-5 block below was written
+> 2026-05-26 against an *unvalidated* heavy design (`extract_in_context`
+> trait change + per-namespace `SessionState` + rolling-summary LLM).
+> Implementation (commit `580ba3b5`) deliberately did **not** build that
+> design — see "Design delta vs original AC-1/AC-3" under RE-PROMOTED.
+> The original block is kept verbatim for history. The **live acceptance
+> gate is the REVISED AC at the bottom of this file** (`## REVISED
+> ACCEPTANCE CRITERIA — 2026-06-03`). Do not validate against the
+> superseded block.
 
 **AC-1 (mechanism)**: Extractor accepts a context bundle, not a
 single string. Concretely: replace
@@ -276,3 +288,131 @@ Library mechanism shipped + tested:
 env-flag (`ENGRAM_BENCH_INGEST_WINDOW`, committed a5bce14) to
 `TurnWindow` + `ingest_turn`, then re-run conv-26 + conv-44 to confirm the
 library path reproduces the bench-flag's +11.85 pp and does not regress conv-44.
+
+---
+
+## REVISED ACCEPTANCE CRITERIA — 2026-06-03 (LIVE GATE)
+
+These replace the superseded AC-1..AC-5 block. They describe the mechanism
+actually shipped (`580ba3b5`) and correct the AC-4 measurement error
+(see note on the 11/27 target below).
+
+**AC-1′ (mechanism — shipped).** Coreference context is supplied at ingest
+without changing the `MemoryExtractor` trait. Verified:
+- `StorageMeta.context: Vec<String>` — additive, `skip_serializing_if` empty,
+  byte-identical write path when empty.
+- `crate::extractor::assemble_with_context` prepends preceding turns to the
+  *extraction input only*; the stored memory body remains the bare turn.
+- `Memory::ingest_turn(text, occurred_at, context)` public entry.
+- `turn_window::TurnWindow` bounded oldest-first ring buffer
+  (`DEFAULT_WINDOW = 4`, `capacity = 0` disables, `clear()` for session
+  boundaries).
+- 4 store-path tests + 5 `TurnWindow` unit tests; 2141 engramai lib tests pass;
+  iss019/iss090/iss098/iss103/iss089 integration green.
+
+> **Why the heavy design was dropped (not deferred-by-accident):** blast-radius
+> audit found 16 `MemoryExtractor` impls — changing the trait is unjustified
+> "while-I'm-here" growth (karpathy-guidelines). The empirically proven lever
+> is *raw preceding turns*, not a compressed rolling summary. The original
+> `extract_in_context` + `SessionState` + summary-LLM design is **not dead** —
+> it is re-scoped to **ISS-216** (P2/deferred) with explicit trigger conditions.
+
+**AC-2′ (ingest wiring — shipped).** `ingest_turn` carries the window; callers
+maintain `TurnWindow`. Non-conversational callers omit context and behave
+exactly as today (proved by empty-context byte-identity test).
+
+**AC-3′ (no rolling summary — by design).** Per-namespace `SessionState` +
+rolling-summary LLM are **out of scope** and tracked in ISS-216. Re-open only
+if raw-window lift plateaus. (Original AC-3 superseded.)
+
+**AC-4′ (LoCoMo measurement — corrected).**
+- *Measurement-error correction:* the original AC-4 target "single-fact
+  ≥ 11/27" was calibrated under the **ISS-201/161 bare envelope** (HyDE on,
+  reweight off, reservation/unified off). The shipped mechanism is validated
+  under the **canonical envelope** (FACTUAL_REWEIGHT on, reservation/unified
+  on, HyDE off). These are *different measurement bases* — the 11/27 figure
+  is not transferable and is **void**.
+- *Library-path gate (RAN — LIB run `20260604T124723Z`, `TurnWindow` +
+  `ingest_turn`, canonical envelope, A = window-off / B = window-on):*
+
+  | metric | conv-26 A (off) | conv-26 B (on) | Δ |
+  |---|---|---|---|
+  | overall | 0.2829 | **0.3487** | **+6.58 pp** |
+  | single-hop | 0.125 | 0.1875 | +6.25 pp |
+  | temporal | 0.3429 | **0.5143** | **+17.14 pp** |
+  | multi-hop | 0.2973 | 0.2162 | −8.11 pp |
+  | open-domain | 0.3077 | 0.2308 | −7.69 pp |
+
+  Verdict: overall +6.58 pp ✓ (≈ the env-flag direction, smaller magnitude is
+  run-to-run + lib-path noise). single-hop **0.1875 < 0.20** — narrowly misses
+  the AC-4′ floor. The lift is **temporal-driven, not broad** (see §A/B
+  per-query diagnosis below).
+
+**AC-5′ (cross-validation — RAN, conv-44, same LIB run).**
+
+  | metric | conv-44 A (off) | conv-44 B (on) | Δ |
+  |---|---|---|---|
+  | overall | 0.2195 | **0.3089** | **+8.94 pp** |
+  | single-hop | 0.2333 | 0.2667 | +3.34 pp |
+  | temporal | 0.2581 | **0.4355** | **+17.74 pp** |
+  | multi-hop | 0.125 | 0.125 | 0 |
+  | open-domain | 0.1429 | **0.0** | **−14.29 pp** |
+
+  Verdict: overall +8.94 pp ✓ and **direction reproduces on conv-44** (not a
+  conv-26 artefact) — the temporal +17.7 pp is the same engine as conv-26.
+  **BUT** conv-44 open-domain collapses to 0.0 (−14.29 pp), exceeding the
+  ~10 % no-regression gate. AC-5′ is therefore **conditionally met**: net
+  overall non-regression holds on both convs, but there is a real
+  open-domain / multi-hop regression that the gate flags.
+
+---
+
+## §A/B per-query diagnosis — 2026-06-08
+
+Direct A↔B flip analysis on conv-26 LIB run `20260604T124723Z` (152 q):
+
+- **WIN (A fail → B pass): 24** — temporal **18**, single-hop 5, multi-hop 1.
+- **LOSS (A pass → B fail): 14** — temporal 6, multi-hop 4, single-hop 3,
+  open-domain 1. Net **+10 q**.
+
+**The window does not raise recall broadly — it *reallocates* it.** It buys
+temporal questions (preceding turns supply the missing time anchor: +18 wins)
+at the cost of independent single-fact questions. The LOSS signature is almost
+uniformly **"A answered correctly → B says *I don't know*"** (e.g. q104
+*Becoming Nicole*, q129 *Brave*, q20, q47, q65).
+
+**Recall failures are genuine, not unanswerable questions.** Every "I don't
+know" gold was verified to have a source turn in the fixture
+(`conversations.jsonl` conv-26): Sweden = ep60 ("my home country, Sweden"),
+*Becoming Nicole* = ep118, adoption agencies = ep25/27/253, clarinet = ep331,
+*Summer Sounds* = ep321. The fact is in the dialogue; the LLM answers IDK ⇒ the
+gold memory did not enter top-K ⇒ true recall failure.
+
+**Root cause is the EXTRACTION layer, not the vector layer.** `memory.rs:3609-
+3614` confirms ISS-162 already decoupled the two: the windowed
+`extraction_input` is fed to `extractor.extract()` *only*; the stored +
+embedded body is the bare `content`. So the bare-turn embedding is unchanged —
+the "window pollutes the embedding" hypothesis is **falsified**. The 14
+A→IDK flips therefore come from the extractor producing *different facts /
+structured entities* once it sees the preceding turns, which shifts
+**factual/entity-plan anchor recall** — an extraction-layer side effect, not a
+ranking-layer one.
+
+**Open question (needs the ISS-217 candidate-dump probe to close):** for the
+14 LOSS questions under window-on, is the gold memory (a) absent from the
+candidate pool, or (b) present but ranked/selected wrong? `CandidateDump`
+(`ENGRAM_BENCH_DUMP_CANDIDATES=1`) carries rank + per-signal subscores and will
+settle this. Tracked in **ISS-217**.
+
+**Resolve condition (updated).** AC-1′/AC-2′/AC-3′ met (code shipped). AC-4′/
+AC-5′ bench RAN: net overall lift confirmed on both convs (+6.58 / +8.94 pp),
+direction reproduces. Two open blockers before flipping `resolved`:
+1. single-hop 0.1875 < 0.20 floor on conv-26 (narrow miss).
+2. open-domain / multi-hop regression (conv-44 open-domain → 0.0) exceeds the
+   no-regression gate.
+Both trace to the same extraction-layer reallocation. **Recommendation:** keep
+`in_review`; close ISS-217 (candidate-dump root cause) first, decide whether a
+selective-window fix (apply window only to temporal-class ingest, or N=4→2) can
+keep the temporal win without the independent-fact loss, then re-bench and
+resolve. `fixed_by` to pin at that time: `580ba3b5` + driver-swap commit + any
+selective-window fix.
