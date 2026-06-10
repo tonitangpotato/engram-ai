@@ -254,3 +254,54 @@ implementation against the +11.85pp baseline.
 - `crates/engramai/examples/iss201_window_verify.rs` — LLM-level proof (4/4)
 - `/tmp/iss201_window_ab.sh` — A/B harness
 - substrate dirs: A=.tmpW2ZHx0 B=.tmpmKeySN (ephemeral); runs ISS201-WIN{A,B}-conv26-20260603T141337Z
+
+## Part 2 re-bench verdict (2026-06-10, run ISS201-P2-conv26-20260610T154234Z)
+
+Single-arm conv-26 under unified new defaults (window-preserve default-on 7af00c6d +
+date-pinning 7e0287c2), ISS-218 envelope (K=10, INGEST_WINDOW=4, FACTUAL_REWEIGHT=on).
+Compared against ISS218-B-conv26-20260609T155222Z (preserve=on, no pinning).
+
+| metric | ISS218-B (no pin) | P2 (pin) | delta |
+|---|---|---|---|
+| **overall J** | 0.3289 | 0.3158 | **-1.3pp** |
+| multi-hop | 0.243 | 0.324 | +8.1pp |
+| open-domain | 0.231 | 0.308 | +7.7pp |
+| single-hop | 0.125 | 0.031 | -9.4pp |
+| temporal | 0.486 | 0.443 | -4.3pp |
+
+7 gains / 9 losses. **Expected +5-8pp from date-stranding fix did NOT materialize at
+bench level** — delta is within known re-ingestion noise (~22/152 flips between
+identical-config runs; here 16 flips, cross-ingestion comparison).
+
+### What the pin DID do (q0 evidence)
+
+q0 (gold "7 May 2023") candidate text now reads:
+`"[2023-05-08] Caroline feels accepted by the support group ... (2023-05-07)"` —
+the resolved day IS in the memory text (pin works, date no longer stranded in note).
+But generation still answers IDK with a pedantic refusal: *"this describes her feeling
+accepted, not when she went to"*. **Date-stranding converted from an extraction miss
+into a generation-conservatism miss.** Several temporal losses (q82/q122/q123/q139/q143)
+are re-ingestion churn (q123 lost the guinea-pig memory entirely), not pin regressions.
+
+### Three-bucket sizing on this run (104 misses / 152)
+
+- gold-evidence present in retrieved candidates but wrong/IDK answer
+  (**generation/judge bucket**): 35 (23% of all queries) — multi-hop 14, temporal 12,
+  single-hop 7, open-domain 2
+- gold NOT in candidates (**retrieval/extraction bucket**): 69 (45%) — temporal 27,
+  single-hop 24, multi-hop 11, open-domain 7
+- 68/104 misses are IDK predictions → generation is over-conservative even when
+  evidence is at rank ≤10
+
+### Conclusion
+
+1. Pin fix is correct and kept (dates now surface in memory text) but its score impact
+   is gated by generation conservatism — the bucket moved, the score didn't.
+2. Generation/judge bucket is now sized at ~23% of queries = up to +23pp headroom.
+   Per ranked plan step 3, generation-layer work IS justified (prompt: answer from
+   dated evidence even when phrasing differs; stop pedantic entailment refusals).
+3. Retrieval/extraction bucket still the largest (45%) — temporal (27) and single-hop
+   (24) dominate.
+4. Single-run cross-ingestion comparisons are too noisy (±2pp overall, category swings
+   ±9pp) to measure <5pp effects; future A/Bs of ingest-side changes need same-DB or
+   multi-run protocols.
