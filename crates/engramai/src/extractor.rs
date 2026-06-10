@@ -493,9 +493,10 @@ references against the context above so each core_fact is self-contained:\n{}",
 /// explicit date the final turn already states. Empty context returns `turn`
 /// unchanged (byte-identical to the no-window path), same as the bare variant.
 ///
-/// Opt-in: the single call site selects this variant when `ENGRAM_WINDOW_PRESERVE`
-/// is set truthy, so the proven default framing stays byte-identical until this
-/// variant is benched (ISS-218 ACs).
+/// Default since 2026-06-10: ISS-218 benched this variant at conv-26 +3.95pp /
+/// conv-44 +4.07pp with all ACs passing. The single call site falls back to
+/// the bare ISS-162 framing only when `ENGRAM_WINDOW_PRESERVE` is set falsy
+/// (opt-out escape hatch for A/B comparisons).
 pub(crate) fn assemble_with_context_preserving(context: &[String], turn: &str) -> String {
     if context.is_empty() {
         return turn.to_string();

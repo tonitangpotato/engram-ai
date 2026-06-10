@@ -148,3 +148,45 @@ Net flips: **+16 gained / −10 lost = +6 net.**
 Lever B (preservation clause) is effective. Next: AC-4 conv-44 cross-validation,
 then decide whether to flip `ENGRAM_WINDOW_PRESERVE` to default-on (and unblock
 ISS-162). Lever A (selective injection) NOT needed — preservation alone meets ACs.
+
+---
+
+## AC-4 — conv-44 cross-validation PASS (2026-06-09)
+
+Same envelope, both arms window=4, only `ENGRAM_WINDOW_PRESERVE` toggled. Same
+rebuilt binary (engram 1f640412). conv-44 = 706 ep / 123 queries.
+- Arm A off: `benchmarks/runs/ISS218-cv44-A-conv44-20260609T215612Z`
+- Arm B on:  `benchmarks/runs/ISS218-cv44-B-conv44-20260609T215612Z`
+
+| category    | A (off) | B (on)  | Δ          |
+|-------------|---------|---------|------------|
+| overall     | 0.2846  | 0.3252  | **+4.07pp** |
+| multi-hop   | 0.1667  | 0.2917  | **+12.50pp**|
+| open-domain | 0.0000  | 0.1429  | **+14.29pp**|
+| single-hop  | 0.2667  | 0.2667  | 0.0        |
+| temporal    | 0.3710  | 0.3871  | +1.61pp    |
+
+**Verdict: AC-4 PASS — and stronger than conv-26.**
+- The +4.07pp overall lift **reproduces** the conv-26 +3.95pp almost exactly →
+  not a conv-26 artifact, it's a machine-level fix.
+- Multi-hop recovers even more strongly (+12.50pp vs +8.11pp on conv-26).
+- ⭐ **The open-domain regression is REVERSED.** ISS-162's data showed plain
+  window-on collapsed conv-44 open-domain to 0.0 (−14.29pp). Preservation pulls
+  it back to 0.143 (+14.29pp) — exactly cancelling the regression. This was the
+  single biggest worry about shipping the window; preservation resolves it.
+- Temporal positive, no regression on any category.
+
+### All ACs now met
+- AC-1 ✅ (q129 + 3 recall-miss recovered, conv-26)
+- AC-2 ✅ (temporal no-regress, both convs)
+- AC-3 ✅ (overall ≥+2pp: conv-26 +3.95, conv-44 +4.07)
+- AC-4 ✅ (conv-44 cross-validation reproduces + reverses open-domain collapse)
+- AC-5 ✅ (unit test)
+
+### Recommendation: flip `ENGRAM_WINDOW_PRESERVE` default-on
+Preservation is a strict improvement on both convs across overall/multi-hop/
+open-domain/temporal with no category regression. The only reason it's
+default-off is the opt-in-until-benched discipline — that bar is now cleared on
+two conversations. Flipping default-on makes the ISS-162 window net-positive
+across the board and unblocks ISS-162 (which can then resolve once re-benched
+with preservation on by default).
