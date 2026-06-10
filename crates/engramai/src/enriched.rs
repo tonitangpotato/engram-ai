@@ -124,7 +124,43 @@ impl EnrichedMemory {
         namespace: Option<String>,
         user_metadata: serde_json::Value,
     ) -> Result<Self, ConstructionError> {
-        let core_fact = NonEmptyString::new(fact.core_fact.clone())?;
+        // ISS-201: parse the temporal mark FIRST so a resolved date can be
+        // pinned into the fact text. The extractor's prompt routes resolved
+        // dates ONLY into the `temporal` field (never `core_fact`), which
+        // strands the date outside the text the generation layer reads —
+        // 16-20 conv-26 queries fail purely because the answer date never
+        // appears in any retrieved candidate's content ("date-stranding",
+        // ISS-201 AC-4). Appending a derived suffix (e.g. " (2022)",
+        // " (~2020)", " (2023-05-07)") closes that gap at the enrichment
+        // seam without touching the extraction prompt or the structured
+        // temporal dimension.
+        let temporal_mark = fact.temporal.as_deref().map(parse_temporal_mark);
+
+        // Reject empty/whitespace facts BEFORE pinning — otherwise an
+        // appended date suffix (e.g. " (2026-04-22)") would let a blank
+        // core_fact slip past the NonEmptyString check below.
+        if fact.core_fact.trim().is_empty() {
+            return Err(ConstructionError::EmptyCoreFact);
+        }
+
+        let pinned_core_fact = match (&temporal_mark, fact.temporal.as_deref()) {
+            (Some(mark), Some(raw)) => {
+                match derived_date_pin(mark, raw) {
+                    // Idempotency: never double-append. Skip when the pin
+                    // text already appears in the fact (covers re-extraction,
+                    // merge replays, and extractor occasionally inlining the
+                    // date despite the prompt). Mirrors the
+                    // `already_annotated` guard in temporal_grounding.
+                    Some(pin) if !fact.core_fact.contains(&pin) => {
+                        format!("{} ({})", fact.core_fact.trim_end(), pin)
+                    }
+                    _ => fact.core_fact.clone(),
+                }
+            }
+            _ => fact.core_fact.clone(),
+        };
+
+        let core_fact = NonEmptyString::new(pinned_core_fact)?;
         let type_weights = infer_type_weights(&fact);
 
         let mut tags = std::collections::BTreeSet::new();
@@ -138,7 +174,7 @@ impl EnrichedMemory {
         let dimensions = Dimensions {
             core_fact,
             participants: fact.participants.clone(),
-            temporal: fact.temporal.as_deref().map(parse_temporal_mark),
+            temporal: temporal_mark,
             location: fact.location.clone(),
             context: fact.context.clone(),
             causation: fact.causation.clone(),
@@ -570,16 +606,48 @@ fn first_embedded_day(s: &str) -> Option<NaiveDate> {
     None
 }
 
-/// Parse an approximate / year-granular / ongoing temporal string into a
-/// [`TemporalMark::Approx`]. Returns `None` when no leading year is found, so
-/// the caller falls back to [`TemporalMark::Vague`].
+/// Derive the date-pin suffix text for a parsed temporal mark (ISS-201).
 ///
-/// Grammar (lenient): an optional fuzz prefix (`~`, "around", "about",
-/// "approximately", "circa", "c."), a 4-digit year (1000–9999), then an
-/// optional ` (note)` tail capturing the derivation provenance. "ongoing" /
-/// "present" / "since" / "now" anywhere in the tail (or a `since`-prefixed
-/// source) marks the interval open-ended (`end: None`); otherwise the year is
-/// treated as a single approximate year (start = Jan 1, end = Dec 31).
+/// Returns the string appended (parenthesised) to `core_fact` by
+/// [`EnrichedMemory::from_extracted`] so the resolved date survives into the
+/// content text the generation layer reads:
+///
+/// - [`TemporalMark::Day`] → `"YYYY-MM-DD"` — a fully resolved calendar day
+///   (e.g. "yesterday" resolved at extraction time) that the prompt routed
+///   only into the temporal field.
+/// - [`TemporalMark::Approx`] → `"~YYYY"` when the raw extractor string
+///   carries an explicit fuzz marker (`~`, "around", "about",
+///   "approximately", "circa", "c.") — e.g. "owned for 3 years" resolved
+///   to "~2020"; the tilde preserves the stated uncertainty. A bare year
+///   (`"2022"`) pins as `"YYYY"` with no tilde, even though
+///   `parse_approx_year` maps it to `Approx { approximate: true }` —
+///   the extractor asserted the year plainly, so the pin mirrors that.
+/// - [`TemporalMark::Exact`] / [`Range`](TemporalMark::Range) /
+///   [`Vague`](TemporalMark::Vague) → `None`. Exact timestamps come from
+///   already-dated source text (inline grounding in `temporal_grounding`
+///   covers deixis), Range only enters via merge/backfill (never this
+///   seam), and Vague carries no resolved date worth pinning.
+fn derived_date_pin(mark: &TemporalMark, raw: &str) -> Option<String> {
+    match mark {
+        TemporalMark::Day(d) => Some(d.format("%Y-%m-%d").to_string()),
+        TemporalMark::Approx { start, .. } => {
+            let lower = raw.to_ascii_lowercase();
+            let fuzzy = lower.contains('~')
+                || lower.contains("around")
+                || lower.contains("about")
+                || lower.contains("approximately")
+                || lower.contains("circa")
+                || lower.contains("c.");
+            if fuzzy {
+                Some(format!("~{}", start.format("%Y")))
+            } else {
+                Some(start.format("%Y").to_string())
+            }
+        }
+        TemporalMark::Exact(_) | TemporalMark::Range { .. } | TemporalMark::Vague(_) => None,
+    }
+}
+
 fn parse_approx_year(s: &str) -> Option<TemporalMark> {
     let lower = s.to_ascii_lowercase();
 
@@ -717,7 +785,9 @@ mod tests {
         let f = sample_fact("kickoff meeting happened");
         let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
         assert!(em.invariants_hold());
-        assert_eq!(em.content, "kickoff meeting happened");
+        // ISS-201: Day-precision temporal marks are pinned into the content
+        // text so the resolved date survives into what generation reads.
+        assert_eq!(em.content, "kickoff meeting happened (2026-04-22)");
         assert_eq!(em.dimensions.participants.as_deref(), Some("alice, bob"));
         assert!(matches!(em.dimensions.temporal, Some(TemporalMark::Day(_))));
         assert_eq!(em.dimensions.domain, Domain::Coding);
@@ -777,6 +847,89 @@ mod tests {
         f.valence = f64::NAN;
         let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
         assert_eq!(em.dimensions.valence.get(), 0.0);
+    }
+
+    // -- ISS-201: date pinning at the enrichment seam --
+
+    #[test]
+    fn from_extracted_pins_bare_year() {
+        let mut f = sample_fact("Caroline adopted her dogs");
+        f.temporal = Some("2022".to_string());
+        let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
+        assert_eq!(em.content, "Caroline adopted her dogs (2022)");
+        assert!(matches!(
+            em.dimensions.temporal,
+            Some(TemporalMark::Approx { .. })
+        ));
+        assert!(em.invariants_hold());
+    }
+
+    #[test]
+    fn from_extracted_pins_approx_year_with_tilde() {
+        let mut f = sample_fact("Audrey started painting");
+        f.temporal = Some("~2020".to_string());
+        let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
+        assert_eq!(em.content, "Audrey started painting (~2020)");
+        assert!(em.invariants_hold());
+    }
+
+    #[test]
+    fn from_extracted_pins_day_precision_date() {
+        let mut f = sample_fact("Caroline attended a LGBTQ support group");
+        f.temporal = Some("2023-05-07".to_string());
+        let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
+        assert_eq!(
+            em.content,
+            "Caroline attended a LGBTQ support group (2023-05-07)"
+        );
+        assert!(matches!(em.dimensions.temporal, Some(TemporalMark::Day(_))));
+        assert!(em.invariants_hold());
+    }
+
+    #[test]
+    fn from_extracted_does_not_double_pin_already_annotated_content() {
+        // Idempotency guard: re-extraction / merge replays where the date is
+        // already present in the content must not append a second copy.
+        let mut f = sample_fact("kickoff meeting happened (2026-04-22)");
+        f.temporal = Some("2026-04-22".to_string());
+        let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
+        assert_eq!(em.content, "kickoff meeting happened (2026-04-22)");
+        assert!(em.invariants_hold());
+    }
+
+    #[test]
+    fn from_extracted_no_temporal_leaves_content_unchanged() {
+        let mut f = sample_fact("an undated fact");
+        f.temporal = None;
+        let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
+        assert_eq!(em.content, "an undated fact");
+        assert!(em.dimensions.temporal.is_none());
+        assert!(em.invariants_hold());
+    }
+
+    #[test]
+    fn from_extracted_vague_temporal_not_pinned() {
+        // Vague marks carry no resolved date — nothing to pin.
+        let mut f = sample_fact("they chatted about the weekend");
+        f.temporal = Some("recently".to_string());
+        let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
+        assert_eq!(em.content, "they chatted about the weekend");
+        assert!(matches!(
+            em.dimensions.temporal,
+            Some(TemporalMark::Vague(_))
+        ));
+        assert!(em.invariants_hold());
+    }
+
+    #[test]
+    fn from_extracted_pinned_content_matches_core_fact_invariant() {
+        // The content == dimensions.core_fact invariant (memory.rs) must hold
+        // after pinning: dimensions are built from the pinned string.
+        let mut f = sample_fact("Melanie went camping");
+        f.temporal = Some("2023-08".to_string());
+        let em = EnrichedMemory::from_extracted(f, None, None, serde_json::Value::Null).unwrap();
+        assert_eq!(em.content, em.dimensions.core_fact.as_str());
+        assert!(em.invariants_hold());
     }
 
     // -- minimal --
