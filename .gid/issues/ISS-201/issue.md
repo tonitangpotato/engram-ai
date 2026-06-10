@@ -305,3 +305,38 @@ are re-ingestion churn (q123 lost the guinea-pig memory entirely), not pin regre
 4. Single-run cross-ingestion comparisons are too noisy (±2pp overall, category swings
    ±9pp) to measure <5pp effects; future A/Bs of ingest-side changes need same-DB or
    multi-run protocols.
+
+## Answer-guidance same-pool A/B verdict (2026-06-10, STAMP 20260610T190847Z)
+
+Harness: `ENGRAM_BENCH_ANSWER_GUIDANCE_AB=1` — ingest ONCE, judge each question
+TWICE on the byte-identical candidate pool (arm A guidance=off, arm B=on).
+Eliminates re-ingestion noise entirely. engram-bench commit `218782b`.
+
+| | arm A (off) | arm B (on) | Δ |
+|---|---|---|---|
+| overall | 0.3553 | 0.3618 | **+0.66pp** |
+| multi-hop | 0.3243 | 0.3514 | +2.7pp |
+| open-domain | 0.4615 | 0.5385 | +7.7pp |
+| single-hop | 0.0625 | 0.0312 | -3.1pp (1 flip) |
+| temporal | 0.4857 | 0.4857 | 0 |
+
+Flips: **4 gains / 3 losses** (152q, same pool — every flip is purely
+prompt-induced).
+
+Gains: q81/q88 = IDK→correct (exactly the over-conservatism lever); q63/q74 =
+vague-hedge→committed-specific.
+
+Losses: q44 = real regression (guidance pushed commit-to-a-date, picked Aug 12 vs
+gold Aug 13 — celebrated-day-before ambiguity); q55/q100 = judge wobble (B answers
+arguably equal or better than A).
+
+**q116-style IDK→confident-WRONG risk did NOT materialize: zero such conversions.**
+
+Decision per pre-registered rule (gains > losses): **guidance stays default-on**.
+No per-category gating needed. Matches IDK-exemplar probe prediction (~+2-3pp,
+not +10pp): guidance only converts misses where gold is already in candidates AND
+the failure was pure refusal — a minority of the 35-question generation bucket.
+Remaining generation-bucket misses (~31q) are wrong-pick/synthesis, not refusal.
+
+Next lever: Step-2 retrieval autopsy on the 69q unretrieved bucket
+(A=ranked-out / B=degraded / C=never-ingested / D=fragmented).
