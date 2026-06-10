@@ -96,3 +96,55 @@ a cheaper coarse gate. Bench both; B alone may suffice.
   generation-prompt note.
 - ISS-216 (heavy SessionState / rolling-summary design) remains the deferred
   alternative if selective+preservation proves insufficient.
+
+---
+
+## RESULTS — Lever B implemented + benched (2026-06-09)
+
+**Implementation (flag-gated, default-off):**
+- `extractor::assemble_with_context_preserving` — adds the PRESERVATION clause
+  to the ISS-162 windowed framing (forbids paraphrasing away proper nouns /
+  titles / explicit dates the final turn states).
+- `memory::window_preserve_enabled()` — reads `ENGRAM_WINDOW_PRESERVE`
+  (1/true/on/yes); call site at memory.rs selects the variant. Default-off →
+  the proven ISS-162 framing stays byte-identical (`iss162_assemble_matches_isolation_framing` still green).
+- Unit test `iss218_preserving_framing_keeps_specificity_tokens` (AC-5) ✅.
+- 2144 engramai lib tests green.
+
+**A/B bench (both window=4, conv-26, canonical envelope FACTUAL_REWEIGHT=on
+HYDE=off MMR=1.0 ENTITY_CHANNEL=off PIPELINE_POOL=1 POPULATE=off TOP_K=10,
+DUMP_CANDIDATES=1, same rebuilt binary):**
+- Arm A `ENGRAM_WINDOW_PRESERVE=off`: `benchmarks/runs/ISS218-A-conv26-20260609T155222Z`
+- Arm B `ENGRAM_WINDOW_PRESERVE=on`:  `benchmarks/runs/ISS218-B-conv26-20260609T155222Z`
+
+| category    | A (off) | B (on)  | Δ        |
+|-------------|---------|---------|----------|
+| overall     | 0.2895  | 0.3289  | **+3.95pp** |
+| multi-hop   | 0.1622  | 0.2432  | **+8.11pp** |
+| single-hop  | 0.0938  | 0.1250  | +3.13pp  |
+| temporal    | 0.4571  | 0.4857  | +2.86pp  |
+| open-domain | 0.2308  | 0.2308  | 0.0      |
+
+Net flips: **+16 gained / −10 lost = +6 net.**
+
+### AC verdict
+- **AC-1 ✅** ISS-217 recall-miss qids recovered: q20, q82, q91, **q129 (0.0→1.0,
+  the smoking gun)** = 4/6 (needed q129 + ≥2). q6 + q141 still fail (q141 was the
+  flagged-weak case; q6's planning-memory churn not resolved by preservation alone).
+- **AC-2 ✅** temporal Δ +2.86pp (≥ −2pp) — preservation does NOT cost the
+  ISS-162 temporal gain; it slightly raises it.
+- **AC-3 ✅** overall Δ +3.95pp (≥ +2pp).
+- **AC-5 ✅** unit test passes.
+- **AC-4** (conv-44 cross-validation) — PENDING.
+
+### Notes
+- The +16/−10 churn includes re-ingestion noise + a few generation-miss cases
+  (q13, q100) that were never window-fixable flipping the other way. The targeted
+  recall-misses recovered and the net is clearly positive across single/multi/temporal.
+- Multi-hop fully recovers the ISS-217 window-on regression (−8.11pp) back to the
+  window-off baseline level — preservation removes the independent-fact penalty.
+
+### Recommendation
+Lever B (preservation clause) is effective. Next: AC-4 conv-44 cross-validation,
+then decide whether to flip `ENGRAM_WINDOW_PRESERVE` to default-on (and unblock
+ISS-162). Lever A (selective injection) NOT needed — preservation alone meets ACs.

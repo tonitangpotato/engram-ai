@@ -54,6 +54,20 @@ pub fn is_insight(record: &MemoryRecord) -> bool {
         .unwrap_or(false)
 }
 
+/// ISS-218: whether specificity-preserving windowed extraction is enabled.
+///
+/// Controlled by the `ENGRAM_WINDOW_PRESERVE` env var. Treated truthy when set
+/// to `1`, `true`, `on`, or `yes` (case-insensitive). Default-off so the proven
+/// ISS-162 window framing stays byte-identical until the preserving variant is
+/// benched (ISS-218 ACs). Read per-call (cheap; the extract path is already
+/// network-bound) so a bench harness can toggle it via the environment without
+/// reconstructing `Memory`.
+fn window_preserve_enabled() -> bool {
+    std::env::var("ENGRAM_WINDOW_PRESERVE")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+        .unwrap_or(false)
+}
+
 /// Placeholder sink used only long enough for `Memory::new*`
 /// constructors to return a value. Immediately replaced by
 /// `install_default_counting_sink` before the `Memory` escapes the
@@ -3609,8 +3623,18 @@ impl Memory {
             // extractor ONLY — the stored memory content remains the bare
             // `content`. Empty context → `extraction_input == content`
             // (byte-identical to the pre-ISS-162 path).
-            let extraction_input =
-                crate::extractor::assemble_with_context(&meta.context, content);
+            //
+            // ISS-218: when ENGRAM_WINDOW_PRESERVE is set truthy, use the
+            // specificity-preserving framing instead — it forbids the
+            // extractor from paraphrasing away proper nouns / titles / dates
+            // the final turn already states (ISS-217 recall-miss root cause).
+            // Default-off keeps the proven ISS-162 framing byte-identical
+            // until ISS-218 benches the variant.
+            let extraction_input = if window_preserve_enabled() {
+                crate::extractor::assemble_with_context_preserving(&meta.context, content)
+            } else {
+                crate::extractor::assemble_with_context(&meta.context, content)
+            };
             match extractor.extract(&extraction_input, meta.occurred_at) {
                 Ok(facts) if facts.is_empty() => {
                     // ISS-068: the extractor produced zero facts, but

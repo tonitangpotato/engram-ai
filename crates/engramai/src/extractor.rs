@@ -478,6 +478,43 @@ references against the context above so each core_fact is self-contained:\n{}",
     )
 }
 
+/// Specificity-preserving windowed extraction framing (ISS-218).
+///
+/// Identical to [`assemble_with_context`] but adds an explicit PRESERVATION
+/// clause to the final-turn instruction. ISS-217's candidate-dump probe proved
+/// the bare windowed framing's "make each core_fact self-contained" instruction
+/// causes the LLM to *rewrite* the final turn and drop discriminating tokens —
+/// proper-noun titles (q129 "Brave by Sara Bareilles" → dropped) and explicit
+/// dates (q6/q20 → date anchor dropped) — which then re-embed differently and
+/// churn the gold-bearing memory out of top-K (6 of 10 conv-26 window-losses).
+///
+/// The fix: the window may only ADD a resolved antecedent/date the final turn
+/// lacked; it must NEVER replace or paraphrase a proper noun, title, or
+/// explicit date the final turn already states. Empty context returns `turn`
+/// unchanged (byte-identical to the no-window path), same as the bare variant.
+///
+/// Opt-in: the single call site selects this variant when `ENGRAM_WINDOW_PRESERVE`
+/// is set truthy, so the proven default framing stays byte-identical until this
+/// variant is benched (ISS-218 ACs).
+pub(crate) fn assemble_with_context_preserving(context: &[String], turn: &str) -> String {
+    if context.is_empty() {
+        return turn.to_string();
+    }
+    format!(
+        "Prior conversation context (for coreference resolution ONLY \
+— do NOT extract facts from these lines; they are already stored):\n{}\n\n\
+Extract facts ONLY from this final turn, resolving any pronouns or \
+references against the context above so each core_fact is self-contained.\n\
+PRESERVE VERBATIM every proper noun, title, name, and explicit date that \
+already appears in this final turn — you may ADD a resolved antecedent or date \
+drawn from the context above, but you must NEVER replace, omit, or paraphrase a \
+specific token (a book/song title, a person's name, a calendar date) the final \
+turn itself states:\n{}",
+        context.join("\n"),
+        turn
+    )
+}
+
 /// The extraction prompt template (dimensional format).
 ///
 /// Uses structured output with 11 semantic dimensions. LLM fills only dimensions
@@ -1049,6 +1086,104 @@ fn parse_extraction_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISS-218: the specificity-preserving framing must (a) keep the empty-context
+    /// byte-identity contract (no window → bare turn), (b) carry the preservation
+    /// clause, and (c) leave every proper noun / title / explicit date the final
+    /// turn states intact in the assembled input (the extractor input must never
+    /// be the lossy side — ISS-217 proved the lossiness happens at extraction, so
+    /// the input must at minimum still contain the tokens for the LLM to preserve).
+    #[test]
+    fn iss218_preserving_framing_keeps_specificity_tokens() {
+        // (a) empty context → bare turn, byte-identical to no-window path.
+        assert_eq!(
+            assemble_with_context_preserving(&[], "Caroline loves 'Brave' by Sara Bareilles"),
+            "Caroline loves 'Brave' by Sara Bareilles"
+        );
+
+        let ctx = vec!["What song means the most to you?".to_string()];
+        let turn = "It's 'Brave' by Sara Bareilles, released on 2013-04-23";
+        let out = assemble_with_context_preserving(&ctx, turn);
+
+        // (b) preservation clause is present and explicit.
+        assert!(
+            out.contains("PRESERVE VERBATIM"),
+            "preserving framing must carry the preservation clause"
+        );
+        assert!(
+            out.to_lowercase().contains("never replace")
+                || out.to_lowercase().contains("must never"),
+            "clause must forbid replacing specific tokens"
+        );
+
+        // (c) every discriminating token the final turn states survives into the input.
+        for tok in ["Brave", "Sara Bareilles", "2013-04-23"] {
+            assert!(
+                out.contains(tok),
+                "specificity token {tok:?} must remain in the assembled input"
+            );
+        }
+
+        // The context preamble must still be quarantined from extraction.
+        assert!(out.contains("for coreference resolution ONLY"));
+        // And it must differ from the bare ISS-162 framing (the clause is additive).
+        assert_ne!(out, assemble_with_context(&ctx, turn));
+    }
+
+    /// ISS-162 path-equivalence: the LIBRARY windowing framing
+    /// (`assemble_with_context`) must be byte-identical to the ISS-201
+    /// ISOLATION framing (`examples/iss201_window_verify.rs::windowed`),
+    /// which produced the +11.85pp conv-26 lift. If these ever drift, the
+    /// library no longer reproduces the proven prompt and any lift delta is a
+    /// code defect rather than an envelope difference.
+    #[test]
+    fn iss162_assemble_matches_isolation_framing() {
+        // Verbatim transcription of the isolation `windowed()` body. Kept
+        // here so the test detects drift on EITHER side.
+        fn isolation_windowed(context: &[String], turn: &str) -> String {
+            if context.is_empty() {
+                return turn.to_string();
+            }
+            format!(
+                "Prior conversation context (for coreference resolution ONLY \
+— do NOT extract facts from these lines; they are already stored):\n{}\n\n\
+Extract facts ONLY from this final turn, resolving any pronouns or \
+references against the context above so each core_fact is self-contained:\n{}",
+                context.join("\n"),
+                turn
+            )
+        }
+
+        let cases: Vec<(Vec<String>, &str)> = vec![
+            // Turn 0: empty context → bare turn (the driver hits this every
+            // conversation; the isolation example never did, so this is the
+            // most important branch to pin).
+            (vec![], "Luna and Oliver!"),
+            // Single preceding turn.
+            (
+                vec!["Have you thought about adopting?".to_string()],
+                "Researching adoption agencies",
+            ),
+            // Full window=4 (DEFAULT_WINDOW) context.
+            (
+                vec![
+                    "Caroline asked about pet names.".to_string(),
+                    "I suggested some options.".to_string(),
+                    "What did you decide?".to_string(),
+                    "We narrowed it down.".to_string(),
+                ],
+                "Luna and Oliver!",
+            ),
+        ];
+
+        for (ctx, turn) in &cases {
+            assert_eq!(
+                assemble_with_context(ctx, turn),
+                isolation_windowed(ctx, turn),
+                "library framing diverged from isolation framing for ctx={ctx:?} turn={turn:?}"
+            );
+        }
+    }
 
     #[test]
     fn iss190_reference_preamble_resolves_relative_time() {
