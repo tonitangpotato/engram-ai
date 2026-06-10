@@ -340,3 +340,90 @@ Remaining generation-bucket misses (~31q) are wrong-pick/synthesis, not refusal.
 
 Next lever: Step-2 retrieval autopsy on the 69q unretrieved bucket
 (A=ranked-out / B=degraded / C=never-ingested / D=fragmented).
+
+## Step-2 retrieval-miss autopsy (2026-06-10, run ISS201-P2-conv26-20260610T154234Z)
+
+### Input set
+
+Locked retrieval-miss set = **72 qids**: 62 core + 7 disputed-retrieval
+(q9/q20/q28/q32/q38/q39/q76) + 3 fuzzy-only (q40/q75/q111). Disputed final
+assignment: **generation=28 / retrieval=7** (`/tmp/iss201_disputed_assignment.json`).
+Substrate inspected: P2 run's substrate.db (479 memory nodes). Evidence refs
+resolved as D{day}:{turn}, 1-based, against the 19-day occurred_at grouping of
+conv-26's 419 episodes.
+
+### Method
+
+Classifier `/tmp/iss201_autopsy.py`, per-qid output
+`/tmp/iss201_autopsy_results.json`. "Ingested" heuristic = token-overlap ≥0.45
+between evidence episode text and best memory (verbatim LIKE unusable — only
+111/419 episodes survive verbatim through extraction). Buckets:
+
+- **A ranked-out** — gold fact exists in DB but absent from top-10 candidates
+- **B evidence-degraded** — evidence partially ingested, lossy/below threshold
+- **C never-ingested** — zero evidence content made it into any memory
+- **D fragmented** — gold tokens only covered across ≥2 memories (list answers)
+
+### Spot-check of 6 anomalous qids → 4 manual overrides
+
+- **q123 A confirmed** — "Caroline owns a guinea pig named Oscar" is in DB, not in candidates.
+- **q90 C confirmed** — D3:16 "5 years already!" (married 5 years) never extracted.
+- **q111 B→A** — precise memory "Melanie and her kids paint together, especially
+  nature-inspired paintings (2023-07-08)" exists in DB but unretrieved;
+  gold_in_cand=True was a generic-token false positive (bare "painting" at r7/r10).
+- **q19 B→D** — both gold facts in DB (dinosaur-exhibit memory + kids-love-nature
+  memory), neither retrieved; D-detection missed it because "dinosaurs" ≠ "dinosaur"
+  (no stemming).
+- **q148 A→C** — its only gold_mem was a false token match ("happy and thankful"
+  matched Caroline's LGBTQ-group memory, wrong person/topic); the Grand Canyon
+  reaction was never ingested (ev_best 0.19).
+- **q143 C→generation-side (removed from set)** — exact memory "Melanie's son got
+  into an accident during a roadtrip past weekend; he was okay..." IS in DB
+  (ov=0.37, just under the 0.45 threshold) and a related accident memory was
+  retrieved at r4; the prediction even cites it but refuses over the "road trip"
+  linkage. Pure generation refusal.
+
+Heuristic limitations exposed: (1) no stemming suppresses D detection,
+(2) single-token golds make gold_in_cand unreliable, (3) gold-token matching can
+hit wrong-person memories, (4) the 0.45 ingestion threshold has edge cases
+(q143 at 0.37 was actually a faithful extraction).
+
+### Final tally (n=71 after q143 → generation)
+
+| bucket | n | share |
+|---|---|---|
+| **A ranked-out** | **33** | **46%** |
+| B evidence-degraded | 15 | 21% |
+| C never-ingested | 12 | 17% |
+| D fragmented | 11 | 15% |
+
+Per-category:
+
+| category | A | B | C | D | n |
+|---|---|---|---|---|---|
+| single-hop | 11 | 7 | 1 | 10 | 29 |
+| temporal | 16 | 6 | 8 | 0 | 30 |
+| open-domain | 1 | 2 | 3 | 1 | 7 |
+| multi-hop | 5 | 0 | 0 | 0 | 5 |
+
+### Conclusions
+
+1. **A (ranked-out) dominates at ~46%** — the gold memory is in the DB but loses
+   the top-10 race. This is a **ranking** problem, not extraction. Next lever:
+   **ISS-159 cross-encoder reranker** (CrossEncoderReranker already shipped behind
+   feature flag, MiniLM-L-6 @ K_fusion=50) — re-bench it against this run's
+   envelope; the 33 A-qids are the direct target population.
+2. **D (fragmented, 11q, almost all single-hop list answers)** is the secondary
+   lever — extraction splits list facts across memories and top-10 can't cover all
+   shards. Candidates: list-aware extraction merging or higher K for list questions.
+3. **C (12q)** is irreducible at retrieval time — extractor dropped the fact
+   entirely (8 of 12 are temporal; consistent with the date-stranding family,
+   ISS-190/191/204 lineage).
+4. **B (15q)** = lossy extraction; partially addressable by extraction-quality
+   work, but lower priority than A+D.
+5. Temporal splits A16/C8 — half ranking, half never-ingested; single-hop is the
+   D hotspot (10/11 of all D).
+
+Net: ranking work (cross-encoder rerank over an expanded fusion pool) is the
+single biggest lever on the unretrieved bucket, worth up to ~33/152 ≈ 22pp of
+ceiling if perfectly fixed (realistically a fraction of that).
