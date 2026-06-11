@@ -402,3 +402,27 @@ without any reranker.
 - `artifacts/step5-v2-A-per_query.jsonl` / `step5-v2-B-per_query.jsonl`
 - `artifacts/step5-v2-master.log`
 - `artifacts/step5-sweep-v2.sh` / `step5-autorun-v2.sh`
+
+## 2026-06-10: Falsification REVERSED in P2 envelope — CE wins +5.3pp
+
+The 2026-05-26 falsification was envelope-specific. Re-tested via same-DB
+A/B (one ingestion, dual retrieval+judge) in the ISS-201 P2 envelope
+(conv-26, INGEST_WINDOW=4, K=10, FACTUAL_REWEIGHT=on, HyDE/MMR/entity off):
+
+- overall 0.3355 → **0.3882** (+5.3pp), 13 gains / 5 losses, no category regression
+- single-hop +9.4pp, open-domain +15.4pp, multi-hop +5.4pp, temporal +1.4pp
+- Run `ISS159-CE-AB-conv26-20260610T222430Z`, harness commit engram-bench `463cc52`
+
+Why the reversal: the old envelope (HyDE=per_category, MMR=0.7, no reweight,
+no windowed ingest) produced candidate pools where the gold rarely reached
+k_in=50. P2's windowed ingestion + factual reweighting fixed pool quality
+upstream, giving CE real signal. Lesson: a reranker's value is conditional
+on pool recall — falsifications of downstream stages don't transfer across
+ingest/fusion changes.
+
+Limit found: of 33 ranked-out (A-bucket) qids only 3 flipped — CE cannot
+rescue golds absent from the fusion pool. Next lever is pool widening /
+per-qid ingest+embedding fixes (tracked in ISS-201).
+
+Decision: CE default-on in bench envelope; engramai lib keeps opt-in flag.
+conv-44 cross-validation skipped per potato (2026-06-10).

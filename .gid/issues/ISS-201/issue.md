@@ -427,3 +427,53 @@ Per-category:
 Net: ranking work (cross-encoder rerank over an expanded fusion pool) is the
 single biggest lever on the unretrieved bucket, worth up to ~33/152 ≈ 22pp of
 ceiling if perfectly fixed (realistically a fraction of that).
+
+## Cross-encoder same-DB A/B verdict (2026-06-10, STAMP 20260610T222430Z)
+
+Follow-up to the Step-2 autopsy: A-bucket (ranked-out) was 33/71 of the
+retrieval misses, so we re-tested the ISS-159 cross-encoder (ms-marco-MiniLM-L-6-v2,
+k_in=50, post-fusion C.5 hook) **inside the P2 envelope** (conv-26,
+INGEST_WINDOW=4, K=10, FACTUAL_REWEIGHT=on, HyDE/MMR/entity off,
+PIPELINE_POOL=1). Same-DB harness: one ingestion, retrieval+generation+judge
+twice per question (arm A CE-off, arm B CE-on). Run
+`ISS159-CE-AB-conv26-20260610T222430Z`, harness commit engram-bench `463cc52`.
+
+### Result: CE WINS (+5.3pp overall, no category regression)
+
+| | arm A (off) | arm B (on) | Δ |
+|---|---|---|---|
+| overall | 0.3355 | **0.3882** | **+5.3pp** |
+| single-hop (n=32) | 0.0938 | 0.1875 | +9.4pp |
+| open-domain (n=13) | 0.2308 | 0.3846 | +15.4pp |
+| multi-hop (n=37) | 0.2973 | 0.3514 | +5.4pp |
+| temporal (n=70) | 0.4857 | 0.5000 | +1.4pp |
+
+18 flips: 13 gains (4 multi-hop, 4 single-hop, 3 temporal, 2 open-domain) vs
+5 losses (2 multi-hop, 1 single-hop, 2 temporal). Arm A sanity-matches the
+P2 baseline 0.3158 within rejudge wobble (+2pp).
+
+Note this **reverses the ISS-159 2026-05-26 falsification** — that test ran
+in the old envelope (HyDE=per_category, MMR=0.7, no FACTUAL_REWEIGHT, no
+ingest windowing). The P2 envelope's windowed ingestion + factual reweighting
+changed the candidate pool enough that CE now has real signal to work with.
+
+### A-bucket impact: only 3/33 rescued
+
+Of the 33 A-bucket (ranked-out) qids from the Step-2 autopsy, CE flipped
+**3 gains, 0 losses**: q4, q20, q141. The other 30 stayed missed. Combined
+with q0's flip (gold at rank 1 with CE), the interpretation:
+
+**CE only rescues golds that already reach the k_in=50 fusion pool.** Most
+ranked-out golds never enter the pool at all, so no reranker can save them.
+The next retrieval lever is therefore upstream of CE: fusion-pool widening
+(k_seed/K_fusion 50→100+) and/or per-qid root-cause fixes (embedding misses,
+query phrasing, extraction gaps). Per-qid autopsy of the 30 unfixed A-bucket
+qids is the immediate next step (potato directive 2026-06-10: skip conv-44
+cross-validation, investigate WHY specific golds aren't recalled).
+
+### Recommendation
+
+- Bench envelope: CE **default-on** going forward (P2+CE = new baseline 0.3882).
+- engramai lib: CE stays opt-in (feature flag + GraphQuery knob) — no change.
+- Artifacts: `benchmarks/runs/ISS159-CE-AB-conv26-20260610T222430Z/`
+  (`locomo_ce_ab_diff.json`, per-arm jsonl/summaries), log `/tmp/iss159-ce-ab/master.log`.
