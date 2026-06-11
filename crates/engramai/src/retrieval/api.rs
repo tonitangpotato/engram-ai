@@ -352,6 +352,22 @@ pub struct GraphQuery {
     /// Intended consumers: bench drivers running ISS-221 A/B sweeps
     /// on conv-26/conv-44. Normal callers should leave this `None`.
     pub ppr_weight_override: Option<f64>,
+
+    /// ISS-221 B2 — post-cross-encoder PPR blend toggle.
+    ///
+    /// When `None` (default) or `Some(false)`, the Stage C.5a blend is
+    /// off — byte-identical pipeline. When `Some(true)`, candidates
+    /// carrying `SubScores::ppr_score` have their post-CE score
+    /// blended as `0.7 * ce_score + 0.3 * ppr_score` (then re-sorted)
+    /// immediately after the C.5 cross-encoder rerank and before the
+    /// C.5 MMR hook. Rows without a PPR annotation keep their CE (or
+    /// fusion-tail) score untouched. Enabling this also triggers PPR
+    /// computation in the Factual plan and the Hybrid Factual
+    /// sub-plan, independent of `ppr_weight_override`.
+    ///
+    /// Intended consumers: bench drivers running ISS-221 B2 A/B
+    /// sweeps on conv-26/conv-44. Normal callers leave this `None`.
+    pub ppr_ce_blend_override: Option<bool>,
 }
 
 impl std::fmt::Debug for GraphQuery {
@@ -393,6 +409,7 @@ impl std::fmt::Debug for GraphQuery {
                 &self.populate_embeddings_for_diversity_override,
             )
             .field("ppr_weight_override", &self.ppr_weight_override)
+            .field("ppr_ce_blend_override", &self.ppr_ce_blend_override)
             .finish()
     }
 }
@@ -423,6 +440,7 @@ impl GraphQuery {
             factual_reweight_override: None,
             populate_embeddings_for_diversity_override: None,
             ppr_weight_override: None,
+            ppr_ce_blend_override: None,
         }
     }
 
@@ -582,6 +600,16 @@ impl GraphQuery {
     /// (currently `0.0` — channel inert).
     pub fn with_ppr_weight(mut self, weight: Option<f64>) -> Self {
         self.ppr_weight_override = weight;
+        self
+    }
+
+    /// Builder: toggle the post-cross-encoder PPR blend (ISS-221 B2).
+    ///
+    /// See [`GraphQuery::ppr_ce_blend_override`] for semantics. Pass
+    /// `None` to fall back to the locked default (off — byte-identical
+    /// pipeline).
+    pub fn with_ppr_ce_blend(mut self, enabled: Option<bool>) -> Self {
+        self.ppr_ce_blend_override = enabled;
         self
     }
 }
@@ -853,6 +881,7 @@ impl Memory {
         let cross_encoder_override = query.cross_encoder_override.clone();
         let factual_reweight_override = query.factual_reweight_override;
         let ppr_weight_override = query.ppr_weight_override;
+        let ppr_ce_blend = query.ppr_ce_blend_override.unwrap_or(false);
         let populate_embeddings_for_diversity = query
             .populate_embeddings_for_diversity_override
             .unwrap_or_else(|| {
@@ -1047,6 +1076,47 @@ impl Memory {
         // fusion on the head). Tail scores stay on the fusion scale.
         if let Some(ce) = cross_encoder_override.as_ref() {
             ranked = ce.rerank(&query_text, &ranked)?;
+        }
+
+        // Stage C.5a (ISS-221 B2): optional post-CE PPR blend.
+        //
+        // For candidates annotated with `SubScores::ppr_score` (set by
+        // the Factual plan / Hybrid Factual sub-plan when PPR is
+        // enabled), blend the structural multi-hop signal into the
+        // post-CE score: `final = 0.7 * ce + 0.3 * ppr`, then re-sort.
+        // Rows without a PPR annotation (tail rows, non-Factual
+        // candidates, topics) keep their score untouched.
+        //
+        // Placed AFTER the cross-encoder because CE REPLACES head
+        // scores (sigmoid(logit)) — blending before CE would be
+        // discarded. Placed BEFORE MMR so diversity picks operate on
+        // the blended quality ordering. Gated on
+        // `ppr_ce_blend_override` — off by default, byte-identical.
+        if ppr_ce_blend {
+            /// CE weight in the blend; PPR gets `1.0 - PPR_CE_BLEND_ALPHA`.
+            /// Hardcoded per ISS-221 spec (α = 0.7); revisit via AC-6 if
+            /// the conv-26 A/B suggests tuning.
+            const PPR_CE_BLEND_ALPHA: f64 = 0.7;
+            let mut blended_any = false;
+            for item in ranked.iter_mut() {
+                if let ScoredResult::Memory {
+                    score, sub_scores, ..
+                } = item
+                {
+                    if let Some(ppr) = sub_scores.ppr_score {
+                        *score = PPR_CE_BLEND_ALPHA * *score
+                            + (1.0 - PPR_CE_BLEND_ALPHA) * ppr;
+                        blended_any = true;
+                    }
+                }
+            }
+            if blended_any {
+                ranked.sort_by(|a, b| {
+                    b.score()
+                        .partial_cmp(&a.score())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
         }
 
         // Stage C.5 (ISS-139): optional post-fusion MMR reranker.

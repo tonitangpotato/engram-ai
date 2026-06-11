@@ -847,6 +847,7 @@ pub(crate) fn hybrid_to_scored(
     result: &crate::retrieval::plans::hybrid::HybridPlanResult,
     topics_by_uuid: &HashMap<Uuid, crate::graph::KnowledgeTopic>,
     loader: &dyn RecordLoader,
+    ppr_mass: Option<&HashMap<String, f64>>,
 ) -> Vec<ScoredResult> {
     use crate::retrieval::plans::hybrid::HybridItem;
 
@@ -878,10 +879,19 @@ pub(crate) fn hybrid_to_scored(
             HybridItem::Memory(id) => {
                 let record = loader.load(id)?;
                 let embedding = embeddings_by_id.get(id.as_str()).cloned();
+                // ISS-221 B2: annotate PPR mass (computed by the Factual
+                // sub-plan, side-channeled through the executor) so the
+                // Stage C.5a post-CE blend in api.rs can reach
+                // Hybrid-routed candidates. None when the blend is off
+                // (default) — SubScores stays all-default, byte-identical.
+                let sub_scores = SubScores {
+                    ppr_score: ppr_mass.and_then(|m| m.get(id.as_str()).copied()),
+                    ..SubScores::default()
+                };
                 Some(ScoredResult::Memory {
                     record,
                     score: ranked.rrf_score,
-                    sub_scores: SubScores::default(),
+                    sub_scores,
                     embedding,
                     reserved: false, // ISS-211: only the Factual adapter reserves
                 })
@@ -952,6 +962,17 @@ pub(crate) struct HybridDispatchExecutor<'a> {
     /// post-Hybrid `hybrid_to_scored` adapter can hydrate
     /// `ScoredResult::Topic` rows.
     pub topics_by_uuid: &'a mut HashMap<Uuid, crate::graph::KnowledgeTopic>,
+    /// ISS-221 B2: PPR mass computed from the Factual sub-plan's anchor
+    /// set, keyed by memory id. Populated as a side effect of
+    /// `run(SubPlanKind::Factual)` when the post-CE blend is enabled
+    /// (`GraphQuery::ppr_ce_blend_override == Some(true)`) or the PPR
+    /// fusion weight is active. `hybrid_to_scored` reads this to
+    /// annotate `SubScores::ppr_score` on Memory rows so the Stage
+    /// C.5a blend in `api.rs` can reach Hybrid-routed candidates.
+    /// At most one Factual sub-plan runs per Hybrid dispatch; if it
+    /// were ever re-run the later computation overwrites (last-write
+    /// wins — both derive from the same query so the mass is identical).
+    pub ppr_mass: &'a mut Option<HashMap<String, f64>>,
     /// Optional self-state for the Affective sub-plan. `None` causes that
     /// sub-plan to surface `DowngradedNoSelfState`, which Hybrid renders
     /// as an empty `items` list — correct behavior when cognitive state
@@ -1014,6 +1035,21 @@ impl crate::retrieval::plans::hybrid::HybridSubPlanExecutor for HybridDispatchEx
                     Ok(r) => format!("{:?}", r.outcome),
                     Err(e) => format!("err:{e}"),
                 };
+                // ISS-221 B2: compute PPR mass from the sub-plan's
+                // anchors before `.ok()` consumes the result. Gated on
+                // the blend override (or an active fusion weight) so the
+                // default path stays byte-identical and pays zero cost.
+                let ppr_active = self.query.ppr_ce_blend_override == Some(true)
+                    || self.query.ppr_weight_override.map_or(false, |w| w > 0.0);
+                if ppr_active {
+                    if let Ok(r) = &exec_result {
+                        *self.ppr_mass = compute_factual_ppr(
+                            r,
+                            self.graph,
+                            self.query.namespace.as_deref(),
+                        );
+                    }
+                }
                 let result = exec_result.ok();
                 let items: Vec<HybridItem> = result
                     .map(|r| partition_factual_reserved_first(r.memories))
@@ -1284,8 +1320,9 @@ pub(crate) fn execute_plan(
                     // via api.rs but does not trigger computation here —
                     // phase-1 limitation recorded in the issue).
                     let ppr_by_id: Option<HashMap<String, f64>> = if query
-                        .ppr_weight_override
-                        .map_or(false, |w| w > 0.0)
+                        .ppr_ce_blend_override
+                        == Some(true)
+                        || query.ppr_weight_override.map_or(false, |w| w > 0.0)
                     {
                         compute_factual_ppr(&result, graph, query.namespace.as_deref())
                     } else {
@@ -1533,12 +1570,16 @@ pub(crate) fn execute_plan(
                 )
             });
             let mut topics_by_uuid: HashMap<Uuid, crate::graph::KnowledgeTopic> = HashMap::new();
+            // ISS-221 B2: side-channel for PPR mass computed by the
+            // Factual sub-plan (at most one Factual run per dispatch).
+            let mut hybrid_ppr_mass: Option<HashMap<String, f64>> = None;
             let mut executor = HybridDispatchExecutor {
                 graph,
                 query: &query,
                 now,
                 _factual_budget: &mut budget,
                 topics_by_uuid: &mut topics_by_uuid,
+                ppr_mass: &mut hybrid_ppr_mass,
                 self_state,
                 collaborators,
             };
@@ -1556,7 +1597,7 @@ pub(crate) fn execute_plan(
             };
             let hybrid_plan = crate::retrieval::plans::hybrid::HybridPlan::new();
             let result = hybrid_plan.execute(inputs, &mut executor);
-            let scored = hybrid_to_scored(&result, &topics_by_uuid, loader);
+            let scored = hybrid_to_scored(&result, &topics_by_uuid, loader, hybrid_ppr_mass.as_ref());
             // ISS-083: when every Hybrid sub-plan returned empty, try a
             // Factual re-dispatch of the same query before surfacing
             // `EmptyResultSet`. Factual is the always-available best-
