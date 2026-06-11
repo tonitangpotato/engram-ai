@@ -1,6 +1,6 @@
 ---
 title: 'PPR ablation arm: HippoRAG2-style Personalized PageRank over unified entity+memory graph to replace BFS+fixed-weight fusion ranking'
-status: open
+status: resolved
 priority: P1
 severity: major
 labels: [v04-unified-substrate, locomo, retrieval, ranking, ppr, ablation]
@@ -91,17 +91,91 @@ ISS-202 (source_memory_id on structural edges) is already fixed.
 
 # Acceptance criteria
 
-- [ ] AC-1: PPR ranking implemented behind config knob (default off),
-      byte-identical retrieval when off.
-- [ ] AC-2: Unit tests — PPR convergence, seed handling, disconnected
-      components, deterministic given seed set.
-- [ ] AC-3: Ablation A/B on conv-26, P2+CE envelope (INGEST_WINDOW=4,
-      K=10, FACTUAL_REWEIGHT=on, CE=1, k_in=250): arm A = lever-2 config,
-      arm B = +PPR. Report per-category deltas + flips.
-- [ ] AC-4: Specific probe on residual ranked-out qids (q3/q11 family):
-      does gold's final rank improve?
-- [ ] AC-5: Cross-validate on conv-44 (no regression beyond wobble).
-- [ ] AC-6: Decision recorded: channel weight / default on-off / drop.
+- [x] AC-1: PPR ranking implemented behind config knob (default off),
+      byte-identical retrieval when off. — commits 93c91384 (ppr.rs),
+      6fae0192 (load_adjacency), 457c386f (fusion plumbing), 77ac3b30
+      (factual wiring), 3f83f7dc (B2 blend + Hybrid side-channel).
+      All knobs serde-default inert.
+- [x] AC-2: Unit tests — PPR convergence, seed handling, disconnected
+      components, deterministic given seed set. — 9 tests in
+      retrieval/ppr.rs, all green.
+- [x] AC-3: Ablation on conv-26, LEVER2 envelope. **B1 (fusion channel)
+      skipped as provably inert** — see decision record §B1. **B2
+      (post-CE blend, α=0.7, ppr_weight=0.15): overall 0.500 vs arm-A
+      baseline 0.5197 (ISS201-LEVER2-conv26-20260611T043611Z) — null
+      result, within re-ingestion wobble (±2pp), no category lift.**
+      Run: ISS221-B2-armB-conv26-20260611T172915Z.
+- [x] AC-4: q3/q11 probe — **neither flipped.** Root-caused: golds never
+      enter the 50-candidate Hybrid pool, so no post-pool re-ranking
+      (PPR, CE, or otherwise) can ever surface them. See §AC-6.
+- [x] AC-5: conv-44 cross-val — **skipped by decision** (potato,
+      2026-06-11): with conv-26 null + recall-stage root cause
+      identified, cross-validating an inert blend buys nothing.
+- [x] AC-6: Decision recorded below.
+
+# AC-6 Decision record (2026-06-11)
+
+**Decision: DROP the PPR channel as a lift lever for now. Keep the code
+(all knobs default-inert, zero risk). Do NOT flip any default. Re-test
+only after ISS-222 lands.**
+
+## B1 — fusion channel arm: skipped, provably inert in the LEVER2 envelope
+
+Routing histogram on the probe run (152 queries): 121 → Factual,
+29 → Hybrid, 2 → abstract. Two structural facts make B1 a control re-run:
+
+1. The 121 Factual-routed queries run with `FACTUAL_REWEIGHT=on` →
+   `combine_factual_v2`, which **ignores `FusionWeights.ppr`** (the new
+   channel only exists in v1 `combine()`).
+2. The 29 Hybrid queries bypass `fuse_and_rank` entirely (RRF over
+   sub-plan lists, api.rs ~:950).
+
+So arm B1 ≡ arm A byte-for-byte under this envelope. Not run.
+
+## B2 — post-CE blend arm: mechanically correct, empirically inert
+
+Probe instrumentation (11 sites, since reverted) verdict = **branch (b)
+computed-but-inert**: all 144 `compute_factual_ppr` calls returned OK,
+the side-channel (HybridDispatchExecutor.ppr_mass → hybrid_to_scored
+annotation → api.rs C.5a blend) works end-to-end. But PPR mass covered
+only 1–5 of 50 hybrid-pool rows per query, and blending re-ranked
+nothing that mattered: overall 0.500 ≈ baseline 0.5197 (wobble), q3/q11
+unflipped.
+
+## Root cause of the null result (full chain)
+
+The blend can't work because **the golds never enter the pool** — and
+the pool is broken by a substrate bug, not a ranking-algorithm gap:
+
+1. golds ARE ingested (verified: adoption→ep[25], Sweden→ep[47]/[60];
+   embeddings present, 484 rows in node_embeddings);
+2. `Storage::get_embeddings_for_ids` (storage.rs:4917) unified branch
+   JOINs the legacy `memories` table — **empty since T32/T34a** → every
+   per-memory embedding fetch returns nothing (missed ISS-199 cutover;
+   siblings :4992/:5033 were fixed);
+3. → `vector_score=Some(0.0)` on every Factual row (q32 dump: 267/267);
+4. → Factual ranking collapses to graph-score tie tiers broken by
+   memory_id hex order; q32 gold lands at rank 83;
+5. → Hybrid pool = top-50 truncation of that degenerate list (RRF over
+   effectively one sub-plan: Abstract/Affective both downgraded);
+6. → gold absent from pool → B2 blend (and CE, and any re-ranker)
+   mathematically cannot recover it.
+
+**Filed as ISS-222 (P0)** — fix is mirroring the ISS-199 JOIN
+(`JOIN nodes m ... WHERE m.node_kind='memory'`) in
+`get_embeddings_for_ids`. Blast radius: Factual vector channel + MMR
+have been dead in ALL benches since T32 — every result since then
+(incl. LEVER2 0.5197) was achieved without vector scoring.
+
+## Caveat on this null result
+
+This ablation does NOT falsify PPR-as-signal. It measured PPR on top of
+a pool built with a dead vector channel and a 50-cap. After ISS-222:
+re-run B2 (and consider B1 under a combine_factual_v2 ppr channel) —
+the deviation-from-design knobs to remember: α=0.7 hardcoded
+(PPR_CE_BLEND_ALPHA, api.rs), arm-B weight 0.15 carved uniformly (not
+proportionally as D7 specified — recorded deviation), DumpRow has no
+ppr_score field (observability gap).
 
 # Bench context (2026-06-11)
 
