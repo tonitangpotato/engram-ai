@@ -78,12 +78,21 @@ pub struct FusionWeights {
     pub actr: f64,
     /// Weight on `affect_similarity` (Affective plan only).
     pub affect: f64,
+    /// Weight on `ppr_score` (ISS-221 — Personalized PageRank channel).
+    ///
+    /// `0.0` in every locked plan literal (channel inert by default).
+    /// At runtime, `fuse_and_rank` carves this proportionally from the
+    /// other channels when `FusionConfig::ppr_weight > 0.0` — the locked
+    /// matrix itself is never re-baked. Serde-defaults to `0.0` so
+    /// older reproducibility records still deserialize.
+    #[serde(default)]
+    pub ppr: f64,
 }
 
 impl FusionWeights {
     /// Sum of all weights (must be `1.0` for a well-formed plan).
     pub fn sum(&self) -> f64 {
-        self.text + self.vector + self.graph + self.recency + self.actr + self.affect
+        self.text + self.vector + self.graph + self.recency + self.actr + self.affect + self.ppr
     }
 }
 
@@ -221,6 +230,26 @@ pub struct FusionConfig {
     /// deserialize to the locked behaviour.
     #[serde(default = "default_populate_embeddings_for_diversity")]
     pub populate_embeddings_for_diversity: bool,
+    /// ISS-221 — Personalized PageRank fusion channel weight.
+    ///
+    /// When `> 0.0`, `fuse_and_rank` activates the PPR channel: the
+    /// orchestrator computes a Personalized PageRank over the unified
+    /// entity+memory graph (seeded on query-resolved anchor entities,
+    /// see `retrieval::ppr`), max-normalizes the steady-state mass
+    /// within the candidate pool, and `combine()` blends it via the
+    /// `FusionWeights::ppr` component. The weight is carved
+    /// proportionally from the other live channels at runtime — the
+    /// locked weight matrix is never re-baked.
+    ///
+    /// When `0.0` (default), `SubScores::ppr_score` stays `None`
+    /// everywhere and fusion output is byte-identical to the
+    /// pre-ISS-221 pipeline (AC-1 byte-identity gate).
+    ///
+    /// Serde-defaults to `0.0` so older reproducibility records still
+    /// deserialize to the legacy behavior. Callers flip via
+    /// `GraphQuery::with_ppr_weight` / `ENGRAM_BENCH_PPR_WEIGHT`.
+    #[serde(default = "default_ppr_weight")]
+    pub ppr_weight: f64,
     /// Semantic version pin — bumped on weight changes.
     pub version: &'static str,
 }
@@ -265,6 +294,17 @@ fn default_populate_embeddings_for_diversity() -> bool {
     false
 }
 
+/// Serde default for [`FusionConfig::ppr_weight`] (ISS-221).
+///
+/// Defaults to `0.0` — the PPR channel is inert and fusion output is
+/// byte-identical to the pre-ISS-221 pipeline (AC-1). The bench harness
+/// flips this via `GraphQuery::with_ppr_weight` /
+/// `ENGRAM_BENCH_PPR_WEIGHT` to A/B the channel without re-baking
+/// `FusionConfig::locked()`.
+fn default_ppr_weight() -> f64 {
+    0.0
+}
+
 impl FusionConfig {
     /// Canonical, frozen fusion configuration. **Pure**: no env, no files.
     /// Returns byte-identical output on every call within an `engramai`
@@ -280,6 +320,7 @@ impl FusionConfig {
             recency: 0.15,
             actr: 0.0,
             affect: 0.0,
+            ppr: 0.0,
         };
 
         // Episodic: 0.55 text + 0.30 recency + 0.15 graph
@@ -290,6 +331,7 @@ impl FusionConfig {
             recency: 0.30,
             actr: 0.0,
             affect: 0.0,
+            ppr: 0.0,
         };
 
         // Abstract: 0.60 text + 0.25 actr + 0.15 source_coverage (≈recency)
@@ -300,6 +342,7 @@ impl FusionConfig {
             recency: 0.15,
             actr: 0.25,
             affect: 0.0,
+            ppr: 0.0,
         };
 
         // Affective: 0.50 text + 0.35 affect + 0.15 recency
@@ -310,6 +353,7 @@ impl FusionConfig {
             recency: 0.15,
             actr: 0.0,
             affect: 0.35,
+            ppr: 0.0,
         };
 
         // Hybrid: weights unused (RRF), but must sum to 1.0 to satisfy
@@ -321,6 +365,7 @@ impl FusionConfig {
             recency: 0.0,
             actr: 0.0,
             affect: 0.0,
+            ppr: 0.0,
         };
 
         FusionConfig {
@@ -337,6 +382,7 @@ impl FusionConfig {
             entity_channel_enabled: default_entity_channel_enabled(),
             factual_reweight: default_factual_reweight(),
             populate_embeddings_for_diversity: default_populate_embeddings_for_diversity(),
+            ppr_weight: default_ppr_weight(),
             version: "v0.3.0-locked-r3",
         }
     }
@@ -375,13 +421,14 @@ pub fn combine(intent: Intent, sub: &SubScores, weights: &FusionWeights) -> f64 
     // Pair (weight, value) for each component the weight matrix knows
     // about. A component is "present" iff its weight > 0 AND its
     // sub-score is `Some(_)`.
-    let components: [(f64, Option<f64>); 6] = [
+    let components: [(f64, Option<f64>); 7] = [
         (weights.text, text_score),
         (weights.vector, sub.vector_score),
         (weights.graph, sub.graph_score),
         (weights.recency, sub.recency_score),
         (weights.actr, sub.actr_score),
         (weights.affect, sub.affect_similarity),
+        (weights.ppr, sub.ppr_score),
     ];
 
     // Sum of weights for components that are actually present. This is
@@ -424,6 +471,16 @@ pub fn combine(intent: Intent, sub: &SubScores, weights: &FusionWeights) -> f64 
 /// Pure function of inputs — no clock, no RNG. The `intent` parameter
 /// is implicit (Factual); callers must dispatch on the flag in
 /// `fuse_and_rank` before invoking.
+///
+/// ISS-221 phase-1 note: this v2 formula is deliberately NOT extended
+/// with a PPR component. The PPR fusion channel (`FusionConfig.ppr_weight`,
+/// see `fuse_and_rank`) only affects the locked-matrix `combine()` path;
+/// when `factual_reweight` is on, Factual candidates take this 4-component
+/// formula and ignore `ppr_score`. In the LEVER2 bench envelope
+/// (FACTUAL_REWEIGHT=on) PPR therefore reaches Factual results via the
+/// post-CE blend sub-arm (ENGRAM_BENCH_PPR_CE_BLEND), not via fusion.
+/// Extending v2 with a carved 5th component is deferred until the A/B
+/// shows the channel earns its weight (AC-6 decision record).
 pub fn combine_factual_v2(sub: &SubScores) -> f64 {
     // Locked v2 weights (sum to 1.0):
     const W_TEXT: f64 = 0.25;
@@ -490,7 +547,26 @@ pub fn fuse_and_rank(
     cfg: &FusionConfig,
     mut candidates: Vec<ScoredResult>,
 ) -> Vec<ScoredResult> {
-    let weights = cfg.signal_weights.get(intent);
+    let weights = {
+        let mut w = cfg.signal_weights.get(intent);
+        // ISS-221 — runtime PPR carve. When the PPR channel is active
+        // (`cfg.ppr_weight > 0.0`), scale every locked component by
+        // `(1 - ppr_weight)` and assign the remainder to `ppr`, so the
+        // sum-to-1.0 invariant holds without re-baking the locked
+        // matrix. At `ppr_weight == 0.0` (default) `w` is byte-identical
+        // to the locked weights (AC-1).
+        if cfg.ppr_weight > 0.0 {
+            let p = cfg.ppr_weight.clamp(0.0, 1.0);
+            w.text *= 1.0 - p;
+            w.vector *= 1.0 - p;
+            w.graph *= 1.0 - p;
+            w.recency *= 1.0 - p;
+            w.actr *= 1.0 - p;
+            w.affect *= 1.0 - p;
+            w.ppr = p;
+        }
+        w
+    };
 
     // ISS-175 — Factual path may opt into the reweighted v2 fusion via
     // `cfg.factual_reweight`. All other intents always use `combine`.
@@ -658,6 +734,7 @@ mod tests {
             recency_score: Some(0.4),
             actr_score: Some(0.3),
             affect_similarity: Some(0.2),
+            ppr_score: None,
         }
     }
 
@@ -687,6 +764,118 @@ mod tests {
         let a = FusionConfig::locked();
         let b = FusionConfig::locked();
         assert_eq!(a, b);
+    }
+
+    /// ISS-221 — PPR channel defaults to inert.
+    ///
+    /// `default_ppr_weight()` is the serde default and the locked
+    /// value; both must be `0.0` so the v0.3 §5.4 reproducibility
+    /// envelope is preserved until the conv-26 A/B validates the lift.
+    #[test]
+    fn locked_ppr_weight_defaults_to_zero() {
+        assert_eq!(default_ppr_weight(), 0.0);
+        assert_eq!(
+            FusionConfig::locked().ppr_weight,
+            0.0,
+            "FusionConfig::locked().ppr_weight must default to 0.0 \
+             until the ISS-221 bench validates the lift"
+        );
+    }
+
+    /// ISS-221 AC-1 — byte-identity at `ppr_weight == 0`.
+    ///
+    /// Two halves of the invariant:
+    /// 1. With locked weights (`ppr == 0.0`), a populated `ppr_score`
+    ///    must not change `combine()`'s output by a single bit — the
+    ///    zero-weight component is skipped entirely (no live-weight
+    ///    or renormalization effect).
+    /// 2. The `fuse_and_rank` carve is gated on `cfg.ppr_weight > 0.0`,
+    ///    so at the default the locked weights pass through untouched.
+    ///    We assert that here by replaying the carve expression.
+    #[test]
+    fn ppr_weight_zero_is_byte_identical() {
+        let sub_without = SubScores {
+            vector_score: Some(0.62),
+            bm25_score: Some(0.25),
+            graph_score: Some(0.33),
+            recency_score: Some(0.5),
+            actr_score: None,
+            affect_similarity: None,
+            ppr_score: None,
+        };
+        let sub_with = SubScores {
+            ppr_score: Some(0.91),
+            ..sub_without.clone()
+        };
+
+        let cfg = FusionConfig::locked();
+        for intent in [
+            Intent::Factual,
+            Intent::Episodic,
+            Intent::Abstract,
+            Intent::Affective,
+        ] {
+            let w = cfg.signal_weights.get(intent);
+            assert_eq!(w.ppr, 0.0, "locked ppr weight must be 0 for {intent:?}");
+            let a = combine(intent, &sub_without, &w);
+            let b = combine(intent, &sub_with, &w);
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "Intent::{intent:?}: ppr_score must be inert at weight 0 \
+                 (a={a} b={b})"
+            );
+        }
+
+        // Carve gate: at ppr_weight == 0.0 the locked weights are
+        // passed through bit-for-bit (the carve branch never fires).
+        assert_eq!(cfg.ppr_weight, 0.0);
+        let locked = cfg.signal_weights.get(Intent::Factual);
+        let carved = {
+            let mut w = cfg.signal_weights.get(Intent::Factual);
+            if cfg.ppr_weight > 0.0 {
+                let p = cfg.ppr_weight.clamp(0.0, 1.0);
+                w.text *= 1.0 - p;
+                w.vector *= 1.0 - p;
+                w.graph *= 1.0 - p;
+                w.recency *= 1.0 - p;
+                w.actr *= 1.0 - p;
+                w.affect *= 1.0 - p;
+                w.ppr = p;
+            }
+            w
+        };
+        assert_eq!(locked, carved);
+    }
+
+    /// ISS-221 — the carve preserves the sum-to-1.0 invariant when the
+    /// PPR channel is active.
+    #[test]
+    fn ppr_carve_preserves_weight_sum() {
+        let cfg = FusionConfig::locked();
+        for p in [0.05_f64, 0.15, 0.5, 1.0] {
+            for intent in [
+                Intent::Factual,
+                Intent::Episodic,
+                Intent::Abstract,
+                Intent::Affective,
+                Intent::Hybrid,
+            ] {
+                let mut w = cfg.signal_weights.get(intent);
+                w.text *= 1.0 - p;
+                w.vector *= 1.0 - p;
+                w.graph *= 1.0 - p;
+                w.recency *= 1.0 - p;
+                w.actr *= 1.0 - p;
+                w.affect *= 1.0 - p;
+                w.ppr = p;
+                let s = w.sum();
+                assert!(
+                    (s - 1.0).abs() < 1e-9,
+                    "Intent::{intent:?} p={p}: carved weights sum {s} != 1.0"
+                );
+            }
+        }
     }
 
     /// ISS-164 — `entity_channel_enabled` default and serde default.
@@ -800,6 +989,7 @@ mod tests {
             recency_score: Some(0.4),
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let s = combine(Intent::Factual, &sub, &w);
         let expected = 0.38 / 0.55;
@@ -819,6 +1009,7 @@ mod tests {
             recency_score: None,
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let s = combine(Intent::Factual, &sub, &w);
         // Live weights = 0.45 (graph). Renormalized: 0.45*0.7 / 0.45 = 0.7.
@@ -891,6 +1082,7 @@ mod tests {
             recency_score: None,
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let leader = SubScores {
             vector_score: Some(0.67),
@@ -899,6 +1091,7 @@ mod tests {
             recency_score: None,
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let weights = FusionConfig::locked().signal_weights.get(Intent::Factual);
 
@@ -935,6 +1128,7 @@ mod tests {
             recency_score: None,
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let s = combine_factual_v2(&sub);
         assert!(
@@ -953,6 +1147,7 @@ mod tests {
             recency_score: Some(0.5),
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         // bm25 just above threshold: bonus fires.
         let above = SubScores {
@@ -962,6 +1157,7 @@ mod tests {
             recency_score: Some(0.5),
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let s_below = combine_factual_v2(&below);
         let s_above = combine_factual_v2(&above);
@@ -983,6 +1179,7 @@ mod tests {
             recency_score: None,
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         assert_eq!(combine_factual_v2(&sub), 0.0);
     }
@@ -1002,6 +1199,7 @@ mod tests {
             recency_score: None,
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let mk_record = || MemoryRecord {
             id: "test-mem-id".to_string(),
@@ -1069,6 +1267,7 @@ mod tests {
             recency_score: Some(0.4),
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let mk_record = || MemoryRecord {
             id: "test-mem-id".to_string(),
@@ -1156,6 +1355,7 @@ mod tests {
             recency: 0.15,
             actr: 0.0,
             affect: 0.0,
+            ppr: 0.0,
         };
         assert!((w.sum() - 1.0).abs() < 1e-9);
     }

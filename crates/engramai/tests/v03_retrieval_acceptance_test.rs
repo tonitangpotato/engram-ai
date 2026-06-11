@@ -633,6 +633,7 @@ fn fuse_and_rank_is_pure_repeated_call_byte_identical() {
                 recency_score: Some(0.3),
                 actr_score: Some(0.2),
                 affect_similarity: Some(0.1),
+                ppr_score: None,
             },
             embedding: None,
             reserved: false,
@@ -691,6 +692,7 @@ fn fuse_and_rank_tie_break_is_memory_id_ascending() {
                 recency_score: None,
                 actr_score: None,
                 affect_similarity: None,
+                ppr_score: None,
             },
             embedding: None,
             reserved: false,
@@ -741,6 +743,7 @@ proptest! {
             recency_score: r,
             actr_score: a,
             affect_similarity: af,
+            ppr_score: None,
         };
         let cfg = FusionConfig::locked();
         let weights = cfg.signal_weights.get(Intent::Factual);

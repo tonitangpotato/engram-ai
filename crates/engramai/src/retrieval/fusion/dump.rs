@@ -459,6 +459,7 @@ mod tests {
             recency_score: None,
             actr_score: None,
             affect_similarity: None,
+            ppr_score: None,
         };
         let c = mem("mem-1", 0.81, sub);
         let row = project_row("q40", "factual", 1, &c);

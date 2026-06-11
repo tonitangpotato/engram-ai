@@ -338,6 +338,20 @@ pub struct GraphQuery {
     /// on the 10 LIST-type SF queries. Normal callers leave this
     /// `None`.
     pub populate_embeddings_for_diversity_override: Option<bool>,
+
+    /// ISS-221 — per-query override for [`FusionConfig::ppr_weight`].
+    ///
+    /// When `None` (default), falls back to
+    /// `FusionConfig::locked().ppr_weight` (currently `0.0` — PPR
+    /// channel inert, byte-identical fusion). When `Some(w)` with
+    /// `w > 0.0`, enables the personalized-PageRank fusion channel
+    /// with that weight (the remaining live weights renormalize in
+    /// `combine()`). `Some(0.0)` pins the channel off even if a
+    /// future locked default flips.
+    ///
+    /// Intended consumers: bench drivers running ISS-221 A/B sweeps
+    /// on conv-26/conv-44. Normal callers should leave this `None`.
+    pub ppr_weight_override: Option<f64>,
 }
 
 impl std::fmt::Debug for GraphQuery {
@@ -378,6 +392,7 @@ impl std::fmt::Debug for GraphQuery {
                 "populate_embeddings_for_diversity_override",
                 &self.populate_embeddings_for_diversity_override,
             )
+            .field("ppr_weight_override", &self.ppr_weight_override)
             .finish()
     }
 }
@@ -407,6 +422,7 @@ impl GraphQuery {
             entity_channel_override: None,
             factual_reweight_override: None,
             populate_embeddings_for_diversity_override: None,
+            ppr_weight_override: None,
         }
     }
 
@@ -557,6 +573,17 @@ impl GraphQuery {
         self.populate_embeddings_for_diversity_override = enabled;
         self
     }
+
+    /// Builder: per-query override for the PPR fusion-channel weight
+    /// (ISS-221).
+    ///
+    /// See [`GraphQuery::ppr_weight_override`] for semantics. Pass
+    /// `None` to fall back to `FusionConfig::locked().ppr_weight`
+    /// (currently `0.0` — channel inert).
+    pub fn with_ppr_weight(mut self, weight: Option<f64>) -> Self {
+        self.ppr_weight_override = weight;
+        self
+    }
 }
 
 impl Default for GraphQuery {
@@ -580,6 +607,12 @@ pub struct SubScores {
     pub recency_score: Option<f64>,
     pub actr_score: Option<f64>,
     pub affect_similarity: Option<f64>,
+    /// Personalized-PageRank mass for this candidate, max-normalized within
+    /// the candidate pool (ISS-221 D5). `None` when PPR is disabled
+    /// (`ppr_weight == 0.0`), when the plan resolves no anchors, or when
+    /// the memory is absent from the unified graph — renormalization in
+    /// `combine()` means absence is never a penalty.
+    pub ppr_score: Option<f64>,
 }
 
 /// Heterogeneous result row — design §6.2.
@@ -819,6 +852,7 @@ impl Memory {
         let mmr_lambda_override = query.mmr_lambda_override;
         let cross_encoder_override = query.cross_encoder_override.clone();
         let factual_reweight_override = query.factual_reweight_override;
+        let ppr_weight_override = query.ppr_weight_override;
         let populate_embeddings_for_diversity = query
             .populate_embeddings_for_diversity_override
             .unwrap_or_else(|| {
@@ -936,6 +970,13 @@ impl Memory {
         let mut cfg = crate::retrieval::fusion::FusionConfig::locked();
         if let Some(enabled) = factual_reweight_override {
             cfg.factual_reweight = enabled;
+        }
+        // ISS-221 — apply per-query PPR-weight override. Like
+        // factual_reweight, this flows INTO scoring (combine() reads
+        // FusionWeights.ppr carved by `cfg.ppr_weight`). `None` keeps
+        // the locked default (0.0 = channel inert, byte-identity).
+        if let Some(w) = ppr_weight_override {
+            cfg.ppr_weight = w;
         }
 
         // ISS-187 — Stage-B (pre-fusion) candidate-survival dump.
