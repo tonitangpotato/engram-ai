@@ -30,6 +30,7 @@ pub mod metrics;
 pub mod orchestrator;
 pub mod outcomes;
 pub mod plans;
+pub mod ppr;
 
 pub use api::{
     EntityId, GraphQuery, GraphQueryResponse, MemoryTier, ScoredResult, SubScores, TimeWindow,
