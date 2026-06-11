@@ -110,3 +110,65 @@ ISS-202 (source_memory_id on structural edges) is already fixed.
   beat.
 - Envelope: conv-26, INGEST_WINDOW=4, TOP_K=10, FACTUAL_REWEIGHT=on,
   HyDE/MMR/entity off, PIPELINE_POOL=1, CE=1, **CE_K_IN=250**.
+
+# Design (2026-06-11, decided with potato: option (a) fusion channel)
+
+## Decisions
+
+- **D1 — Integration shape: new fusion channel**, NOT graph_score
+  replacement. `SubScores` (api.rs:576) gains `ppr_score: Option<f64>`;
+  `FusionWeights` (combiner.rs:67) gains `ppr: f64` (default **0.0** =
+  inert; `combine()`'s live-weight renormalization makes a missing/
+  zero-weight channel byte-identical — same pattern every prior knob
+  used). Replacement of graph_score becomes a follow-up only if the
+  channel shows lift.
+- **D2 — Defect (b) measure-first**: run PPR on the current graph
+  (phrase-entity nodes included). The ablation itself quantifies the
+  dilution; do NOT build a head-noun-stripping fix speculatively.
+- **D3 — Algorithm**: standard PPR power iteration, damping `d = 0.85`,
+  `tol = 1e-6`, `max_iters = 50`. Personalization vector: uniform over
+  query-resolved **anchor entity nodes** (same anchors the Factual/
+  Associative plans already resolve). Phase 1 does NOT seed memory
+  nodes from vector hits (HippoRAG2's passage seeding) — keep the arm
+  minimal; note as phase-2 knob.
+- **D4 — Graph**: unified `nodes`/`edges`, entity + memory nodes
+  jointly, **undirected** walk (edge direction is extraction artifact,
+  not semantic for proximity), uniform edge weights across edge kinds
+  in phase 1 (kind-weighting = phase-2 knob). conv-26 scale ≈ 1.2k
+  nodes / few-k edges → power iteration is sub-ms; load adjacency once
+  per query after anchor resolution.
+- **D5 — Score extraction**: candidates are memory nodes; a candidate's
+  `ppr_score` = its steady-state mass **max-normalized within the
+  candidate pool** → [0,1]. Memories absent from the graph get `None`
+  (renormalization handles it; no penalty-by-zero).
+- **D6 — Determinism**: iterate nodes in sorted-id order; fixed seeds →
+  bit-identical output (AC-2).
+- **D7 — Config**: `FusionConfig.ppr_weight` (serde-default 0.0) +
+  `GraphQuery::with_ppr_weight` override + bench env
+  `ENGRAM_BENCH_PPR_WEIGHT`. Initial arm-B weight: **0.15** carved
+  proportionally from existing Associative/Factual weights (exact split
+  recorded in the bench script, not hardcoded as a new matrix).
+
+## Known risk — CE masking (record up front)
+
+The envelope runs CE with k_in=250, and CE **overwrites** fused scores
+for the head it rescores. So a pre-CE fusion channel mostly affects
+*which* candidates enter the CE head, not the final top-10 order when
+pool ≤ 250. If arm B shows ~0 delta, that is NOT proof PPR carries no
+signal — it may be CE masking. Mitigation already planned as sub-arm
+**B2**: blend post-CE (`final = α·CE + (1−α)·PPR_norm`, α=0.7) behind
+`ENGRAM_BENCH_PPR_CE_BLEND`. Run B1 (fusion channel) first; only run B2
+if B1 is flat AND per-query inspection shows gold's *fused* rank
+improved but CE re-buried it.
+
+## Module plan
+
+- `retrieval/ppr.rs` — pure: `fn personalized_pagerank(adj: &Adjacency,
+  seeds: &[NodeId], cfg: &PprConfig) -> HashMap<NodeId, f64>` + unit
+  tests (convergence, dangling nodes, disconnected components,
+  determinism, empty seeds → None short-circuit).
+- `graph/store.rs` — `load_adjacency(namespace)` read helper (one SQL
+  pass over `edges`, both endpoints; reuse existing read patterns).
+- Wire point: orchestrator, after anchor resolution, before plan
+  fusion — compute scores map once, thread into plan→`SubScores`
+  annotation. Plans without anchors (Abstract/Affective) skip entirely.
