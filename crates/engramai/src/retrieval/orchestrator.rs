@@ -424,6 +424,7 @@ pub(crate) fn factual_to_scored(
     loader: &dyn RecordLoader,
     bm25_by_id: &HashMap<String, f64>,
     query_embedding: Option<&[f32]>,
+    ppr_by_id: Option<&HashMap<String, f64>>,
 ) -> Vec<ScoredResult> {
     if result.memories.is_empty() {
         return Vec::new();
@@ -517,10 +518,17 @@ pub(crate) fn factual_to_scored(
                     .unwrap_or(0.0);
                 cosine.clamp(0.0, 1.0)
             });
+            // ISS-221 D5: PPR mass max-normalized over the candidate
+            // pool by the caller. Candidates absent from the graph
+            // snapshot get `None` (channel-absent → fusion renormalizes
+            // the remaining weight mass) — NOT 0.0, which would be a
+            // penalty for memories that simply have no graph projection.
+            let ppr_score = ppr_by_id.and_then(|m| m.get(record.id.as_str()).copied());
             let sub_scores = SubScores {
                 graph_score: Some(graph_score.clamp(0.0, 1.0)),
                 bm25_score: Some(bm25),
                 vector_score,
+                ppr_score,
                 ..Default::default()
             };
             Some(ScoredResult::Memory {
@@ -535,6 +543,74 @@ pub(crate) fn factual_to_scored(
             })
         })
         .collect()
+}
+
+/// ISS-221 step 4 — compute the PPR fusion channel for a Factual plan
+/// result.
+///
+/// Returns `memory_id → max-normalized PPR mass` over the candidate
+/// pool (D5), or `None` when the channel is absent:
+///
+/// * adjacency load failed (channel degrades silently — a graph read
+///   error must never fail the query),
+/// * the graph snapshot is empty / no anchor resolves into it,
+/// * no candidate memory appears in the graph (nothing to score), or
+/// * every candidate's mass is zero (no signal to normalize).
+///
+/// Seeds are the plan's resolved anchors; `edges.source_id/target_id`
+/// store TEXT UUIDs (written via `Uuid::to_string()` in
+/// `dual_write_edge_to_edges`), so `entity_id.to_string()` is the
+/// matching key format. Max-normalization is **within the candidate
+/// pool**, not over all graph nodes — the channel expresses *relative*
+/// structural proximity among the memories fusion is actually ranking.
+/// Candidates absent from the returned map get `ppr_score: None` in
+/// `factual_to_scored` (channel-absent renormalization, never a
+/// penalty).
+fn compute_factual_ppr(
+    result: &crate::retrieval::plans::factual::FactualPlanResult,
+    graph: &dyn crate::graph::store::GraphRead,
+    namespace: Option<&str>,
+) -> Option<HashMap<String, f64>> {
+    use crate::retrieval::ppr::{personalized_pagerank, PprConfig};
+
+    if result.anchors.is_empty() || result.memories.is_empty() {
+        return None;
+    }
+
+    let adj = graph.load_adjacency(namespace.unwrap_or("default")).ok()?;
+
+    let seeds: Vec<String> = result
+        .anchors
+        .iter()
+        .map(|a| a.entity_id.to_string())
+        .collect();
+
+    let mass = personalized_pagerank(&adj, &seeds, &PprConfig::default())?;
+
+    // Extract candidate-pool masses, then max-normalize to [0,1] (D5).
+    let raw: Vec<(&str, f64)> = result
+        .memories
+        .iter()
+        .filter_map(|row| {
+            mass.get(row.memory_id.as_str())
+                .map(|m| (row.memory_id.as_str(), *m))
+        })
+        .collect();
+
+    let max = raw
+        .iter()
+        .map(|(_, m)| *m)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !(max > 0.0) {
+        // No candidate in graph, or all-zero mass → no signal.
+        return None;
+    }
+
+    Some(
+        raw.into_iter()
+            .map(|(id, m)| (id.to_string(), m / max))
+            .collect(),
+    )
 }
 
 /// Episodic plan adapter: time-windowed memory ids → ScoredResult.
@@ -1202,8 +1278,26 @@ pub(crate) fn execute_plan(
                 Option<&'static str>,
             ) = match plan.execute(&inputs, resolver, graph, &mut budget) {
                 Ok(result) => {
-                    let scored =
-                        factual_to_scored(&result, loader, &bm25_by_id, query_embedding.as_deref());
+                    // ISS-221 step 4 — PPR channel (opt-in, gated on the
+                    // runtime override so the default path stays
+                    // zero-cost; config-file `ppr_weight` reaches fusion
+                    // via api.rs but does not trigger computation here —
+                    // phase-1 limitation recorded in the issue).
+                    let ppr_by_id: Option<HashMap<String, f64>> = if query
+                        .ppr_weight_override
+                        .map_or(false, |w| w > 0.0)
+                    {
+                        compute_factual_ppr(&result, graph, query.namespace.as_deref())
+                    } else {
+                        None
+                    };
+                    let scored = factual_to_scored(
+                        &result,
+                        loader,
+                        &bm25_by_id,
+                        query_embedding.as_deref(),
+                        ppr_by_id.as_ref(),
+                    );
                     let outcome = result.outcome.to_retrieval_outcome(scored.is_empty());
                     // ISS-063: pick fallback trigger reason based on the
                     // typed outcome variant. Empty `scored` is necessary
@@ -1575,7 +1669,11 @@ fn run_factual_fallback_for_hybrid(
         .embedding_provider
         .and_then(|p| p.embed(&query.text).ok());
     let scored = match plan.execute(&inputs, resolver, graph, &mut budget) {
-        Ok(result) => factual_to_scored(&result, loader, &bm25_by_id, query_embedding.as_deref()),
+        // ISS-221: the fallback recovery path skips PPR (phase 1 wires
+        // the channel into the primary Factual arm only).
+        Ok(result) => {
+            factual_to_scored(&result, loader, &bm25_by_id, query_embedding.as_deref(), None)
+        }
         Err(_) => Vec::new(),
     };
 
@@ -2229,7 +2327,7 @@ mod tests {
         let loader = StorageLoader::new(&storage, MODEL);
         let result = fake_factual_result(1, &[("m1", 1)]);
         let bm25 = HashMap::new();
-        let scored = factual_to_scored(&result, &loader, &bm25, None);
+        let scored = factual_to_scored(&result, &loader, &bm25, None, None);
         assert_eq!(scored.len(), 1, "one memory in, one scored out");
         match &scored[0] {
             ScoredResult::Memory { sub_scores, .. } => {
@@ -2253,7 +2351,7 @@ mod tests {
         let result = fake_factual_result(1, &[("m1", 1)]);
         let bm25 = HashMap::new();
         let q = [1.0_f32, 0.0_f32];
-        let scored = factual_to_scored(&result, &loader, &bm25, Some(&q));
+        let scored = factual_to_scored(&result, &loader, &bm25, Some(&q), None);
         assert_eq!(scored.len(), 1);
         match &scored[0] {
             ScoredResult::Memory { sub_scores, .. } => {
@@ -2288,7 +2386,7 @@ mod tests {
         let result = fake_factual_result(1, &[("m1", 1), ("m2", 1)]);
         let bm25 = HashMap::new();
         let q = [1.0_f32, 0.0_f32];
-        let scored = factual_to_scored(&result, &loader, &bm25, Some(&q));
+        let scored = factual_to_scored(&result, &loader, &bm25, Some(&q), None);
         assert_eq!(scored.len(), 2);
         let by_id: HashMap<&str, f64> = scored
             .iter()
