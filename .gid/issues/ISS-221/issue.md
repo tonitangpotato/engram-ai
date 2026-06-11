@@ -7,7 +7,7 @@ labels: [v04-unified-substrate, locomo, retrieval, ranking, ppr, ablation]
 feature: v04-unified-substrate
 created: 2026-06-11
 relates_to: [ISS-201, ISS-159, ISS-186]
-depends_on: [ISS-203]
+depends_on: [ISS-209]
 ---
 
 # Summary
@@ -69,16 +69,23 @@ HippoRAG2 (arxiv 2502.14802) mechanisms and where they land here:
 4. **Edge weights**: uniform vs edge-kind-weighted (structural vs
    provenance vs associative) vs confidence-weighted.
 
-# Prerequisite — ISS-203 (HARD BLOCKER)
+# Prerequisite — canonicalization status (updated 2026-06-11)
 
 PPR on a fragmented entity graph measures the fragmentation, not the
-algorithm. Known defects that MUST be fixed first:
+algorithm. Status of the known defects:
 
-- `caroline` / `Caroline` split (two separate nodes, probabilistic merge
-  failed at 0.85 threshold)
-- ~20 phrase-entities per person ("Caroline's art", "support from
-  Caroline") never stripped to head noun nor linked — these strand PPR
-  mass on junk nodes and disconnect gold memories from anchors.
+- ✅ **`caroline`/`Caroline` base-name split — FIXED & VERIFIED**
+  (ISS-209, root fix ce9075fd `graph::canonical_entity_id`). Verified
+  2026-06-11 by SQL on the LEVER2 run's substrate DB: 1 node, 47
+  occurred_on edges, zero duplicate base-names across 778 entity nodes.
+  (Original filing wrongly pointed at ISS-203, which was already
+  resolved/falsified — the live carrier was ISS-209.)
+- ⚠️ **Phrase-entity fragmentation — STILL OPEN** (ISS-203 defect (b)):
+  ~45 `Caroline's X` nodes on the verified conv-26 graph ("Caroline's
+  art", "Caroline's journey", ...). These strand PPR mass on junk nodes.
+  No working fix exists (V2 extraction prompt was falsified). Options:
+  fix before the PPR arm, OR run PPR anyway and let the ablation
+  quantify how much fragmentation costs — decide at design time.
 
 ISS-202 (source_memory_id on structural edges) is already fixed.
 

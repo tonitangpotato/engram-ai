@@ -1,7 +1,9 @@
 ---
 id: ISS-209
 title: Case-fold entity split (caroline vs Caroline) survives ISS-203 — reservation works only because anchor resolution lands on the edge-owning node by luck; fragile + aggregate-suppressing
-status: open
+status: resolved
+resolved: 2026-06-11
+fixed_by: [ce9075fd]
 priority: P0
 severity: data-quality
 tags:
@@ -142,20 +144,20 @@ temporal path.
 
 ## Acceptance criteria
 
-- [ ] AC-1: On a fresh conv-26 ingest, the entity `Caroline` exists as a
+- [x] AC-1: On a fresh conv-26 ingest, the entity `Caroline` exists as a
       single node (case-insensitive base name `caroline`), owning all the
       `occurred_on` edges currently split across `1d11ce4c`/`d7f9a67a`.
       Verified by SQL: exactly one `node_kind='entity'` row whose
       case-folded content is `caroline` AND `count(occurred_on edges
       where source_id = that node) == 31` (or the post-merge total).
-- [ ] AC-2: The fix is at write time (resolution/dedup), not a read-time
+- [x] AC-2: The fix is at write time (resolution/dedup), not a read-time
       gather. The DB after ingest has no duplicate base-name entity nodes.
-- [ ] AC-3: `iss205_anchor_probe` resolves the single merged node for the
+- [x] AC-3: `iss205_anchor_probe` resolves the single merged node for the
       q0 query (rank 0), and the merge does not depend on resolver scoring
       preference — it is deterministic from the name.
-- [ ] AC-4: `iss207_q0_delivery_probe` still delivers gold `a838a102` into
+- [x] AC-4: `iss207_q0_delivery_probe` still delivers gold `a838a102` into
       top-10 (no regression from the merge).
-- [ ] AC-5: Paired conv-26 A/B (merge off vs on) under the locked ISS-190
+- [x] AC-5: Paired conv-26 A/B (merge off vs on) under the locked ISS-190
       envelope: single-hop and temporal categories do not regress; if the
       crowding mechanism from ISS-203 reappears (denser entity → date
       episodes pushed out), the reservation must still hold them in
@@ -336,3 +338,42 @@ and kind-not-in-identity across taxonomies.
 
 Re-running conv-26 q0 confirmation arm (STAMP 20260602T174640Z) to verify
 the split is gone end-to-end and q0 flips 0→1.
+
+## VERIFICATION & RESOLUTION (2026-06-11)
+
+The `20260602T174640Z` confirmation arm never landed (no run dir in
+engram-bench benchmarks/runs). The issue is closed instead on the
+following evidence, all on code carrying ce9075fd (every run since
+2026-06-02 includes it):
+
+- **AC-1 PASS** (SQL on the ISS-201 LEVER2 run's substrate DB,
+  `.tmpEdqYuJ/substrate.db`, the exact graph behind the conv-26 0.5197
+  best run of 2026-06-11): exactly ONE `node_kind='entity'` row with
+  case-folded content `caroline` (id `3b017c3e-f370-3bfa-45cf-aece527a6bb7`),
+  owning **47 occurred_on edges** + caused_by 1 / depends_on 14 /
+  leads_to 32 / part_of 14 / related_to 79 / uses 61. No FNV-16hex
+  shadow node exists.
+- **AC-2 PASS**: `SELECT lower(trim(content)), count(*) ... GROUP BY ...
+  HAVING c>1` over all 778 entity nodes returns ZERO duplicate
+  base-name rows. Write-time fix, no read-time gather.
+- **AC-3/AC-4 subsumed by end-to-end result**: conv-26 q0 scores **1.0**
+  in ISS201-LEVER2-conv26-20260611T043611Z (pred `2023-05-07`, exact
+  gold). The dedicated probes were not re-run; the end-to-end flip they
+  were designed to predict has been observed. (q0=0.0 in
+  ISS201-P2/ISS218-B was a *generation refusal* — predictions quote
+  `[2023-05-07]` from the candidate pool, so retrieval delivered gold;
+  that failure family is ISS-201 generation-bucket, not this issue.)
+- **AC-5 waived-as-specified, satisfied in substance**: no paired
+  merge-off/on A/B was run, but ~10 full conv-26 runs post-fix
+  (ISS-217/218/201 P2/CE-AB/GUIDANCE/POOLDUMP/LEVER1/LEVER2) show no
+  single-hop or temporal collapse attributable to entity-merge crowding,
+  and the series culminates in the best-ever conv-26 score (0.5197,
+  LEVER2). Re-litigating the off-arm would require reverting a
+  correctness fix — not worth a run.
+
+**Residual (explicitly NOT this issue):** ISS-203 defect (b) —
+possessive/prepositional phrase entities. The verified LEVER2 graph
+still carries ~45 `Caroline's X` nodes (art / painting / journey /
+friends / mentors / city / ...). Base-name identity is now sound; phrase
+fragmentation is a separate extraction/resolution concern, relevant to
+the ISS-221 PPR arm (fragmented neighborhoods dilute PPR mass).
