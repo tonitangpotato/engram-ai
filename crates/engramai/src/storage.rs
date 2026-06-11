@@ -762,7 +762,12 @@ impl Storage {
     ///
     /// Schema version is **not** bumped here — T09 lands that after the full
     /// T05–T08 set is in place.
-    fn migrate_unified_edges(conn: &Connection) -> SqlResult<()> {
+    ///
+    /// `pub(crate)` (like `migrate_unified_nodes`) so the graph-layer unit
+    /// tests (`graph::store::tests`) can bootstrap the real `edges` schema
+    /// for `load_adjacency` tests (ISS-221 step 2) instead of a hand-rolled
+    /// copy that could drift from production.
+    pub(crate) fn migrate_unified_edges(conn: &Connection) -> SqlResult<()> {
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS edges (

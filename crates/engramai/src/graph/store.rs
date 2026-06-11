@@ -406,6 +406,34 @@ pub trait GraphRead {
 
     // -------------------------------------- Namespaces (§4.1 lifecycle)
     fn list_namespaces(&self) -> Result<Vec<String>, GraphError>;
+
+    // ------------------------------------ PPR adjacency (ISS-221 step 2)
+    /// Bulk-load the unified-graph adjacency for `namespace` as input to
+    /// personalized PageRank (`crate::retrieval::ppr`).
+    ///
+    /// Semantics (ISS-221 design D4):
+    /// - Reads the unified `edges` table — ALL `edge_kind`s (structural /
+    ///   provenance / associative / containment) participate in the walk.
+    /// - Node-to-node edges only: rows with `target_id IS NULL` (literal
+    ///   targets) are excluded.
+    /// - Invalidated edges (`invalidated_at IS NOT NULL`) are excluded.
+    /// - The walk is UNDIRECTED with uniform weights; direction-folding and
+    ///   dedup happen inside [`Adjacency::from_edges`].
+    ///
+    /// Default impl returns an empty [`Adjacency`] ("no graph signal"),
+    /// following the `get_topic_in` default-impl precedent so existing
+    /// mocks and non-Sqlite backends keep compiling. An empty adjacency
+    /// makes `personalized_pagerank` return `None` (no seeds resolvable),
+    /// which fusion treats as channel-absent — never a penalty.
+    fn load_adjacency(
+        &self,
+        namespace: &str,
+    ) -> Result<crate::retrieval::ppr::Adjacency, GraphError> {
+        let _ = namespace;
+        Ok(crate::retrieval::ppr::Adjacency::from_edges(
+            std::iter::empty::<(String, String)>(),
+        ))
+    }
 }
 
 /// Mutating write surface for the v0.3 graph layer (design §5.1).
@@ -4801,6 +4829,34 @@ impl<'a> GraphRead for SqliteGraphStore<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+
+    // ------------------------------------ PPR adjacency (ISS-221 step 2)
+    fn load_adjacency(
+        &self,
+        namespace: &str,
+    ) -> Result<crate::retrieval::ppr::Adjacency, GraphError> {
+        // One bulk pass over the unified `edges` table (D4): all edge_kinds,
+        // node-to-node only (`target_id IS NOT NULL` — literal-target rows
+        // are entity→value attributes, not walkable graph structure), live
+        // edges only (`invalidated_at IS NULL`). Served by
+        // idx_edges_namespace + the partial idx_edges_target index.
+        //
+        // Determinism (AC-2): row order doesn't matter — Adjacency::from_edges
+        // interns node ids via BTreeSet (sorted) and dedups undirected pairs,
+        // so two loads of the same DB state are bit-identical.
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT source_id, target_id FROM edges
+             WHERE namespace = ?1
+               AND target_id IS NOT NULL
+               AND invalidated_at IS NULL",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![namespace], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::retrieval::ppr::Adjacency::from_edges(rows))
+    }
 }
 
 impl<'a> GraphWrite for SqliteGraphStore<'a> {
@@ -6909,6 +6965,9 @@ mod tests {
         // FK to resolve at write time. Re-use the production DDL (idempotent)
         // rather than a hand-rolled minimal copy that could drift.
         crate::storage::Storage::migrate_unified_nodes(&conn).expect("init nodes table");
+        // ISS-221 step 2: `load_adjacency` reads the unified `edges` table;
+        // bootstrap it with the production DDL too (same drift rationale).
+        crate::storage::Storage::migrate_unified_edges(&conn).expect("init edges table");
         init_graph_tables(&conn).expect("init graph tables");
         conn
     }
@@ -12099,5 +12158,149 @@ mod tests {
             "Mel present"
         );
         let _ = bob;
+    }
+
+    // --------------------------------- load_adjacency (ISS-221 step 2)
+
+    /// Insert a bare `nodes` row so `edges` endpoint FKs resolve.
+    fn insert_adj_node(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO nodes (id, node_kind, content, created_at, updated_at) \
+             VALUES (?1, 'entity', ?2, 0.0, 0.0)",
+            rusqlite::params![id, format!("node-{id}")],
+        )
+        .expect("insert adj node");
+    }
+
+    /// Insert an `edges` row. `target` and `literal` are mutually
+    /// exclusive (mirrors the table CHECK).
+    fn insert_adj_edge(
+        conn: &Connection,
+        id: &str,
+        source: &str,
+        target: Option<&str>,
+        literal: Option<&str>,
+        namespace: &str,
+        invalidated_at: Option<f64>,
+    ) {
+        conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, target_literal, \
+                                edge_kind, predicate, recorded_at, \
+                                invalidated_at, namespace, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'structural', 'relates_to', 0.0, ?5, ?6, 0.0, 0.0)",
+            rusqlite::params![id, source, target, literal, invalidated_at, namespace],
+        )
+        .expect("insert adj edge");
+    }
+
+    #[test]
+    fn load_adjacency_happy_path_loads_live_node_edges() {
+        let mut conn = fresh_conn();
+        insert_adj_node(&conn, "a");
+        insert_adj_node(&conn, "b");
+        insert_adj_node(&conn, "c");
+        insert_adj_edge(&conn, "e1", "a", Some("b"), None, "default", None);
+        insert_adj_edge(&conn, "e2", "b", Some("c"), None, "default", None);
+
+        let store = SqliteGraphStore::new(&mut conn);
+        let adj = store.load_adjacency("default").unwrap();
+
+        assert_eq!(adj.len(), 3, "three nodes interned");
+        assert!(adj.index_of("a").is_some());
+        assert!(adj.index_of("b").is_some());
+        assert!(adj.index_of("c").is_some());
+        assert!(adj.index_of("zzz").is_none());
+    }
+
+    #[test]
+    fn load_adjacency_excludes_literal_target_edges() {
+        let mut conn = fresh_conn();
+        insert_adj_node(&conn, "a");
+        insert_adj_node(&conn, "b");
+        // Walkable node-to-node edge.
+        insert_adj_edge(&conn, "e1", "a", Some("b"), None, "default", None);
+        // Literal-target attribute edge: not walkable, must be excluded.
+        insert_adj_edge(&conn, "e2", "a", None, Some("\"42\""), "default", None);
+
+        let store = SqliteGraphStore::new(&mut conn);
+        let adj = store.load_adjacency("default").unwrap();
+
+        // Only a and b appear; the literal endpoint contributes nothing.
+        assert_eq!(adj.len(), 2, "literal-target edge excluded");
+    }
+
+    #[test]
+    fn load_adjacency_excludes_invalidated_edges() {
+        let mut conn = fresh_conn();
+        insert_adj_node(&conn, "a");
+        insert_adj_node(&conn, "b");
+        insert_adj_node(&conn, "c");
+        insert_adj_edge(&conn, "e1", "a", Some("b"), None, "default", None);
+        // Retired edge: invalidated_at set → excluded from the walk.
+        insert_adj_edge(&conn, "e2", "b", Some("c"), None, "default", Some(123.0));
+
+        let store = SqliteGraphStore::new(&mut conn);
+        let adj = store.load_adjacency("default").unwrap();
+
+        assert_eq!(adj.len(), 2, "invalidated edge excluded");
+        assert!(
+            adj.index_of("c").is_none(),
+            "c only reachable via invalidated edge"
+        );
+    }
+
+    #[test]
+    fn load_adjacency_isolates_namespaces() {
+        let mut conn = fresh_conn();
+        insert_adj_node(&conn, "a");
+        insert_adj_node(&conn, "b");
+        insert_adj_node(&conn, "x");
+        insert_adj_node(&conn, "y");
+        insert_adj_edge(&conn, "e1", "a", Some("b"), None, "default", None);
+        insert_adj_edge(&conn, "e2", "x", Some("y"), None, "other-ns", None);
+
+        let store = SqliteGraphStore::new(&mut conn);
+
+        let adj_default = store.load_adjacency("default").unwrap();
+        assert_eq!(adj_default.len(), 2);
+        assert!(adj_default.index_of("a").is_some());
+        assert!(adj_default.index_of("x").is_none(), "other-ns edge invisible");
+
+        let adj_other = store.load_adjacency("other-ns").unwrap();
+        assert_eq!(adj_other.len(), 2);
+        assert!(adj_other.index_of("x").is_some());
+        assert!(adj_other.index_of("a").is_none());
+
+        let adj_empty = store.load_adjacency("nonexistent").unwrap();
+        assert!(adj_empty.is_empty(), "unknown namespace → empty adjacency");
+    }
+
+    #[test]
+    fn load_adjacency_is_deterministic() {
+        let mut conn = fresh_conn();
+        // Insert in an order unrelated to sorted ids to exercise the
+        // BTreeSet interning path.
+        for id in ["zeta", "alpha", "mid", "beta"] {
+            insert_adj_node(&conn, id);
+        }
+        insert_adj_edge(&conn, "e1", "zeta", Some("alpha"), None, "default", None);
+        insert_adj_edge(&conn, "e2", "mid", Some("beta"), None, "default", None);
+        insert_adj_edge(&conn, "e3", "alpha", Some("mid"), None, "default", None);
+        // Duplicate pair (reverse direction): from_edges dedups undirected.
+        insert_adj_edge(&conn, "e4", "alpha", Some("zeta"), None, "default", None);
+
+        let store = SqliteGraphStore::new(&mut conn);
+        let adj1 = store.load_adjacency("default").unwrap();
+        let adj2 = store.load_adjacency("default").unwrap();
+
+        // Bit-identical snapshots: structural equality covers interned ids,
+        // index map, and neighbor lists.
+        assert_eq!(adj1.len(), adj2.len());
+        assert_eq!(adj1, adj2);
+        // Sorted interning: alpha < beta < mid < zeta.
+        assert_eq!(adj1.index_of("alpha"), Some(0));
+        assert_eq!(adj1.index_of("beta"), Some(1));
+        assert_eq!(adj1.index_of("mid"), Some(2));
+        assert_eq!(adj1.index_of("zeta"), Some(3));
     }
 }

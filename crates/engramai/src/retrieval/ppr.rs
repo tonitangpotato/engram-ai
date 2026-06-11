@@ -61,7 +61,7 @@ impl Default for PprConfig {
 /// `(a, b)` produces neighbor entries in both directions. Self-loops
 /// and duplicate edges are deduplicated (uniform weights make
 /// duplicates meaningless and self-loops only delay convergence).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Adjacency {
     /// Sorted node ids; index in this Vec == node index everywhere else.
     ids: Vec<String>,
