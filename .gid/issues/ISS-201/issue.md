@@ -477,3 +477,81 @@ cross-validation, investigate WHY specific golds aren't recalled).
 - engramai lib: CE stays opt-in (feature flag + GraphQuery knob) — no change.
 - Artifacts: `benchmarks/runs/ISS159-CE-AB-conv26-20260610T222430Z/`
   (`locomo_ce_ab_diff.json`, per-arm jsonl/summaries), log `/tmp/iss159-ce-ab/master.log`.
+
+## Step-4 pool-dump classification of the 31 unfixed A-bucket qids (2026-06-10)
+
+Run: `ISS201-POOLDUMP-conv26-20260611T012504Z` (P2+CE envelope +
+`ENGRAM_BENCH_DUMP_CANDIDATES=1`, dumps in `/tmp/iss201_fused_dumps/`,
+275 files). Run overall = 0.4408 vs CE A/B arm-B 0.3882 — cross-ingestion
+re-ingest + judge wobble (±2pp overall / ±9pp per-cat documented at P2
+re-bench); within-run classification is unaffected.
+
+Classifier: `/tmp/iss201_pool_classify.py` → results
+`/tmp/iss201_pool_classify_results.json`. Gold matched against
+prefusion/fused `content_head` + final `retrieved_candidates` via
+date-substring OR ≥0.8 gold-token coverage (content_head truncates at
+~200 chars, full containment too strict).
+
+### Bucket table (n=31)
+
+| bucket | n | qids |
+|---|---|---|
+| pool-miss (hybrid-anomaly) | 10 | q3 q11 q37 q49 q76 q83 q118 q119 q128 q150 |
+| pool-miss (true, gold absent from 100–350-cand prefusion pool) | 8 | q7 q9 q14 q66 q110 q142 q144 q148 |
+| CE-ranked-below-top-10 | 9 | q28 q43 q47 q48 q67 q71 q94 q103 q104 |
+| in-top-10 (generation/judge-side) | 4 | q82 q85 q106 q123 |
+
+By category: temporal {hybrid:5, ce-below:3, pool-miss:4, in-top10:4},
+single-hop {hybrid:4, pool-miss:2, ce-below:4}, multi-hop {pool-miss:1,
+ce-below:2, hybrid:1}, open-domain {pool-miss:1}.
+
+### Mechanics
+
+**Hybrid anomaly (10 qids, biggest single bucket).** `PlanKind::Hybrid`
+bypasses `fuse_and_rank` entirely (`retrieval/api.rs` ~line 950 match arm),
+so (a) `maybe_dump_fused_pool` (`fusion/combiner.rs:536`) never fires —
+these qids only have a `prefusion-hybrid` dump — and (b) **the hybrid
+candidate pool is genuinely only 10 candidates** (RRF hybrid path), vs
+100–350 for Factual-plan queries. Gold absent from a 10-candidate pool is
+a real retrieval failure with no CE/fusion recourse downstream.
+
+**CE-below-top-10 (9 qids).** Gold IS in the fused pool but at rank
+17–293 (q94=17, q47=83, q28=95, q43=105, q103=127, q48=131, q67=202,
+q104=292, q71=293, pool sizes 219–352). CE `k_in` default = **50**
+(`fusion/cross_encoder.rs:117`) — 8/9 golds sit beyond the rerank window,
+CE never scores them. Only q94 (rank 17) was inside the window and still
+lost. This bucket is mostly "CE window too shallow," not "CE wrong."
+
+**True pool-miss (8 qids).** Gold absent even from 100–350-candidate
+prefusion pools — vector/BM25 channels never surface it. These need
+per-qid root-cause (embedding miss, extraction gap, paraphrase distance);
+pool-widening alone may not reach them. Caveat: q9/q66/q142/q144/q148
+show partial coverage 0.25–0.67, some may be content_head-truncation
+false negatives.
+
+**In-top-10 (4 qids).** Gold text reaches the final top-10; q82/q123
+actually scored 1.0 this run (re-judge flips), q85/q106 are
+generation/judge misses, not retrieval.
+
+Note: q37/q14/q142 scored 1.0 despite gold-absent-from-pool
+classification — judge leniency / paraphrase acceptance; their "unfixed"
+status is stale per-run.
+
+### Lever recommendation (ordered by coverage)
+
+1. **Widen the Hybrid plan's candidate pool 10 → 50+** (api.rs Hybrid
+   match arm / RRF path). Covers 10 qids — the largest bucket — incl. 4
+   temporal + 4 single-hop. Also add a fused-dump hook to the Hybrid arm
+   for observability.
+2. **Deepen the CE rerank window** `k_in` 50 → 200–350 (or full pool).
+   Covers up to 8 of the 9 ce-below qids whose golds CE currently never
+   sees. Latency: ~1.5ms/pair × 300 ≈ 0.45s/query — acceptable for bench.
+   Must pair with checking *why* fusion ranks golds at 80–300 (BM25/vector
+   score starvation), since CE quality on deep candidates is unproven.
+3. **Per-qid root-cause for the 8 true pool-misses** — pure
+   k_seed/K_fusion widening (50→100) helps at most these 8, and several
+   look like extraction/paraphrase gaps rather than pool-size issues.
+4. In-top-10 bucket (4) belongs to the generation/judge track, not
+   retrieval.
+
+Levers 1+2 together address 19/31 (61%) of the unfixed A-bucket misses.
