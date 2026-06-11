@@ -948,7 +948,14 @@ impl Memory {
         crate::retrieval::fusion::dump::maybe_dump_prefusion_pool(intent, &candidates);
 
         let mut ranked = match plan_kind {
-            crate::retrieval::dispatch::PlanKind::Hybrid => candidates,
+            crate::retrieval::dispatch::PlanKind::Hybrid => {
+                // ISS-201 lever 1: Hybrid bypasses `fuse_and_rank`, so the
+                // combiner's fused-pool dump (combiner.rs) never fires for
+                // it. Mirror the dump here on the RRF output so Hybrid
+                // queries produce comparable `fused` stage artifacts.
+                crate::retrieval::fusion::dump::maybe_dump_fused_pool(intent, &candidates);
+                candidates
+            }
             _ => crate::retrieval::fusion::fuse_and_rank(intent, &cfg, candidates),
         };
 

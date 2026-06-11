@@ -1451,7 +1451,14 @@ pub(crate) fn execute_plan(
             let inputs = crate::retrieval::plans::hybrid::HybridPlanInputs {
                 signals: &signals,
                 tau_high: 0.7,
-                top_k: query.limit,
+                // ISS-201 lever 1: Hybrid's post-RRF cap previously
+                // inherited `query.limit` (10 in bench), starving the
+                // downstream cross-encoder of candidates — 10/31 unfixed
+                // A-bucket misses were hybrid-anomaly qids whose gold sat
+                // outside this cap. Widen the pool to ≥50; Stage C's
+                // final `ranked.truncate(limit)` restores the caller's
+                // requested K after CE/MMR rerank.
+                top_k: query.limit.max(50),
             };
             let hybrid_plan = crate::retrieval::plans::hybrid::HybridPlan::new();
             let result = hybrid_plan.execute(inputs, &mut executor);
