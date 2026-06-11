@@ -555,3 +555,60 @@ status is stale per-run.
    retrieval.
 
 Levers 1+2 together address 19/31 (61%) of the unfixed A-bucket misses.
+
+## Lever 1 + Lever 2 results (2026-06-11)
+
+Both levers from the Step-4 recommendation were implemented and benched
+serially on conv-26 (P2 envelope + CE=1, fresh ingestion per run).
+
+### Lever 1 — Hybrid pool 10 → 50 (committed `8253f478`)
+
+- `retrieval/orchestrator.rs` ~1451: Hybrid plan `top_k = query.limit.max(50)`
+- `retrieval/api.rs` Hybrid arm: added `maybe_dump_fused_pool` hook
+  (observability parity with fuse_and_rank path)
+- Run `ISS201-LEVER1-conv26-20260611T035733Z`: **overall 0.4342**
+  (single-hop 0.25, multi 0.324, open 0.385, temporal 0.586)
+- vs POOLDUMP 0.4408 = flat (within ±2pp re-ingest wobble) → **no regression,
+  committed**. All 10 hybrid-anomaly qids now produce 50-candidate fused
+  dumps.
+- Per-qid: q3/q37/q150 flipped to 1.0. q3/q11 golds entered pool at rank
+  33–34 (CE k_in=50 didn't lift them — handed to lever 2).
+  q49/q76/q83/q118/q119/q128 golds **still absent from the 50-pool** —
+  these are fusion/ingest gaps, not pool-cap, reassigned to the
+  true-pool-miss family.
+
+### Lever 2 — CE k_in 50 → 250 (env `ENGRAM_BENCH_CROSS_ENCODER_K_IN`)
+
+- engram-bench `locomo.rs:807` env override; no engramai code change
+  (`CrossEncoderConfig.k_in` was already configurable).
+- Run `ISS201-LEVER2-conv26-20260611T043611Z`: **overall 0.5197 — new best**
+  - single-hop **0.4375** (+18.75pp vs lever-1; the weakest category
+    nearly doubled)
+  - temporal 0.671, open 0.462, multi 0.324
+  - vs lever-1 0.4342 = **+8.6pp**, far beyond ±2pp noise
+  - vs ISS201-P2 baseline 0.3158 = +20.4pp cumulative
+- Flips vs lever-1: **20 gains / 7 losses, net +13**.
+- Target ce-below qids: q43/q47/q103 → 1.0. q28/q67 moved from IDK to
+  concrete-but-wrong dates (gold-adjacent content now in top-10 →
+  reclassified generation-side). q3 regressed (k_in=250 introduced
+  competing candidates that displaced lever-1's rank-33 CE lift).
+
+**Decision: `ENGRAM_BENCH_CROSS_ENCODER_K_IN=250` becomes the bench
+default envelope going forward.** The CE finally consumes the deep
+candidate pool it was designed for (ISS-159); k_in=50 was the binding
+constraint all along.
+
+### Residual misses after lever 1+2 (next lever = PPR)
+
+- **Ranked-out residue** (q3/q11 family): gold in pool, CE can't
+  discriminate at depth → structural ranking fix needed, not more depth.
+- **True pool-miss** (q49/q76/q83/q118/q119/q128 + original 8): gold never
+  surfaces in any channel — extraction/paraphrase/fusion-seed gaps.
+- Generation bucket unchanged (~35q): IDK over-caution + entailment
+  refusals.
+
+Next structural lever: **PPR ablation arm** (HippoRAG2-style Personalized
+PageRank over the unified entity+memory node graph, replacing BFS 1-hop +
+fixed-weight fusion in the Associative/Hybrid channels). Filed separately
+— see ISS-221. **Prerequisite: ISS-203 entity canonicalization** (PPR on a
+fragmented entity graph measures the fragmentation, not the algorithm).
