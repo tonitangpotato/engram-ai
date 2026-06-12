@@ -4911,9 +4911,10 @@ impl Storage {
     /// (~100). Empty input short-circuits to an empty map without
     /// touching SQL.
     ///
-    /// **Liveness**: routes through `memories` JOIN so deleted / superseded
+    /// **Liveness**: routes through a liveness JOIN (unified: `nodes` with
+    /// `node_kind = 'memory'`; legacy: `memories`) so deleted / superseded
     /// rows are excluded — matches the existing `get_embedding` semantics
-    /// under unified-substrate mode.
+    /// under unified-substrate mode (ISS-222).
     pub fn get_embeddings_for_ids(
         &self,
         ids: &[&str],
@@ -4931,11 +4932,19 @@ impl Storage {
             .join(",");
 
         let sql = if self.unified_substrate {
+            // ISS-222 (missed ISS-199 Phase E read-cutover site): join the
+            // unified `nodes` table, NOT the legacy `memories` table. Under
+            // unified mode T34a removed the legacy `memories` write, so the
+            // old JOIN returned zero rows for every call — silently killing
+            // the Factual plan's vector_score (every row scored 0.0) and
+            // degrading MMR (ISS-139) to relevance-only. Mirrors the fixed
+            // pattern in `get_all_embeddings` / `get_embeddings_in_namespace`.
             format!(
                 r#"SELECT e.node_id, e.embedding
                    FROM node_embeddings e
-                   JOIN memories m ON e.node_id = m.id
-                   WHERE e.model = ?
+                   JOIN nodes m ON e.node_id = m.id
+                   WHERE m.node_kind = 'memory'
+                     AND e.model = ?
                      AND e.node_id IN ({placeholders})
                      AND m.deleted_at IS NULL
                      AND (m.superseded_by IS NULL OR m.superseded_by = '')"#
@@ -12137,6 +12146,55 @@ mod tests {
             .get_embeddings_for_ids(&["m1", "m2"], model)
             .unwrap();
         assert_eq!(l, u);
+    }
+
+    #[test]
+    fn iss222_get_embeddings_for_ids_unified_works_with_empty_legacy_memories() {
+        // ISS-222 regression: under unified mode (default since T32) the
+        // T34a gate skips the legacy `memories` write, so production DBs
+        // have memories=0 rows while nodes/node_embeddings are fully
+        // populated. The pre-fix unified branch JOINed `memories` and
+        // silently returned an empty map — killing the Factual plan's
+        // vector_score and MMR. The dual-write test fixture masked this
+        // (it populates BOTH tables), so this test explicitly empties
+        // `memories` to reproduce the production shape.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut legacy, unified) = t29_3_open_pair(dir.path());
+        let model = "ollama/nomic-embed-text";
+        t29_3_seed_embedding(&mut legacy, "m1", "default", model, &[0.1, 0.2]);
+        t29_3_seed_embedding(&mut legacy, "m2", "default", model, &[0.3, 0.4]);
+
+        // Simulate T34a: legacy `memories` table is empty; unified
+        // `nodes` + `node_embeddings` carry the data.
+        legacy.conn.execute("DELETE FROM memories", []).unwrap();
+
+        let out = unified
+            .get_embeddings_for_ids(&["m1", "m2"], model)
+            .unwrap();
+        assert_eq!(
+            out.len(),
+            2,
+            "unified read must not depend on the legacy `memories` table"
+        );
+        assert_eq!(out["m1"], vec![0.1f32, 0.2]);
+        assert_eq!(out["m2"], vec![0.3f32, 0.4]);
+
+        // Liveness filters must still apply via `nodes`.
+        legacy
+            .conn
+            .execute(
+                "UPDATE nodes SET deleted_at=? WHERE id='m1'",
+                params![now_f64()],
+            )
+            .unwrap();
+        let out2 = unified
+            .get_embeddings_for_ids(&["m1", "m2"], model)
+            .unwrap();
+        assert!(
+            !out2.contains_key("m1"),
+            "soft-deleted node must be filtered in unified mode"
+        );
+        assert_eq!(out2["m2"], vec![0.3f32, 0.4]);
     }
 
     // =============================================================
