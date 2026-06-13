@@ -787,3 +787,31 @@ Ran the blunt global-K A/B (runs `ISS201-LISTK-{A,B}-conv26-20260613T060852Z`): 
 **Open questions before shipping:**
 1. **conv-44 cross-validation** — is K=30 a conv-26 overfit, or corpus-general? (MMR λ=0.5 looked good on conv-26 then died on conv-44 — must not repeat that mistake.) Run the same A/B on conv-44 next.
 2. **global K=30 vs targeted list-aware K** — given ZERO atomic regression, global K=30 may simply be strictly better (no need to detect list intent). But it inflates generator context cost on the ~80% non-list queries. Decide after conv-44: if the lift replicates with no regression, ship global K=30; if atomic regresses on conv-44, build the targeted detector (enumeration-intent → widen K only for list questions).
+
+### lever-(a) conv-44 cross-validation (2026-06-13): FALSIFIED as corpus-general — K=30 was conv-26 overfit
+
+Ran the identical global-K A/B on conv-44 (inverted ratio 13 list / 17 atomic, harder atomic guard set). Runs `ISS201-LISTK44-{A,B}-conv44-20260613T073119Z`, same LEVER2 envelope, only `ENGRAM_BENCH_TOP_K` differs (A=10, B=30). conv-44 fixture = 675 ep, 123 q, sha 4a87346d.
+
+| metric | A (K=10) | B (K=30) | Δ |
+|---|---|---|---|
+| overall | 0.5366 | 0.5366 | **+0.0pp** |
+| single-hop | 0.5667 | 0.5667 | +0.0pp |
+| multi-hop | 0.3333 | 0.2917 | −4.2pp |
+| open-domain | 0.1429 | 0.0000 | −14.3pp |
+| temporal | 0.6452 | 0.6774 | +3.2pp |
+
+**Per-bucket flip analysis (the decisive signal):**
+- **LIST (13 ids): A_won=5 → B_won=6 = net +1.** Single gain q31, zero losses. +1 on n=13 is within judge/ingestion noise — NOT the net+5 conv-26 produced.
+- **ATOMIC guard (17 ids): A_won=12 → B_won=11 = net −1.** Loss: q48 (A=1→B=0). **The atomic guard REGRESSED.** On conv-26 the guard had zero regression; here wider K demoted a previously-correct atomic answer below the cut.
+
+**Verdict: K=30 is a conv-26 overfit. Both falsification conditions in the pre-committed decision rule fire:**
+1. LIST flat (net +1 ≈ noise, not the conv-26 net+5)
+2. ATOMIC guard regresses (−1)
+
+This is exactly the MMR λ=0.5 trap — a knob that looks like the biggest lever of the campaign on conv-26, then evaporates (and mildly harms) on the cross-validation corpus. The +21.9pp single-hop / +7.9pp overall conv-26 lift does NOT replicate: conv-44 single-hop and overall are byte-flat. The conv-26 gains were specific to how conv-26's list items happened to scatter into ranks 11–30; conv-44's list items do not sit in that band, and the extra 20 candidates only add noise that costs an atomic question.
+
+**Why the divergence:** conv-26 is list-heavy (21 list / 9 atomic) and its scattered list items clustered in the 11–30 rank band — K=30 swept them in. conv-44 is atomic-heavy (13 list / 17 atomic); its list items are either already in top-10 or scattered beyond rank 30, so widening to 30 gains almost no lists but adds 20 distractors that occasionally outrank a precise atomic gold. Global wider-K is therefore not corpus-general.
+
+**Decision — PIVOT to lever (b) aggregate-memory extraction.** A window widening cannot solve item scatter that exceeds the window; the robust fix is to make the *set* a single high-ranking candidate at ingestion/consolidation time (synthesize "person's hobbies: X, Y, Z" memories), so list answers retrieve as one unit regardless of where individual mentions scatter. This also avoids the per-query generator context-cost inflation that global K=30 would impose on the ~80% non-list queries.
+
+A *targeted* enumeration-intent detector (widen K only for list questions) is NOT worth building given conv-44 shows the lift doesn't even hold for lists on a second corpus — the scatter-beyond-window failure mode is what kills it, and a targeted K=30 would hit the same wall. Lever (b) is the next concrete step; lever (c) interrogative-turn filter remains a cheap parallel cleanup.
