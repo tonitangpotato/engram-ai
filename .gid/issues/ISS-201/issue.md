@@ -1168,3 +1168,44 @@ partly explains the persistent ~0.50–0.53 plateau independent of ranking work.
 **ISS-201 retrieval-side levers are exhausted.** Remaining upside is
 MMR-diversity for scatter + accepting a sub-1.0 grounded ceiling. Extraction
 recall is a separate concern only for the genuine event-vs-preference subset.
+
+---
+
+## temporal + IDK-拒答 桶诊断 (2026-06-13)
+
+底座 `ISS222-LEVER2-conv26-20260612T002433Z` (overall **0.5329**, vector channel
+已修)，对失败做了结构化分桶。
+
+### 失败结构
+
+- **IDK 拒答失败：36 条** — temporal 18 / single-hop 9 / open-domain 5 / multi-hop 4
+- **temporal 失败 25/70** — 其中 **18 条是 IDK 拒答**，仅 7 条是真答错
+
+### 关键修正：temporal-IDK 几乎全是检索问题，不是生成端可修的 prompt 问题
+
+之前 q0-root-cause 的假设是"证据到手却被生成器拒答"。把 18 条 temporal-IDK
+用今天的 bi-encoder top-200 recall 探针交叉后：
+
+- **13 条 gold 完全召回不到 top-200** → 纯检索/grounding。
+- **5 条看似在 top-10**（q93/q94/q104/q106/q128）—— 但逐条看生成输出，它们
+  **也是检索问题**：探针的模糊匹配命中了**同一 entity 的别的记忆**，而不是 gold
+  那条。例：
+  - q93（问 grandma 送的礼物，gold "necklace"）：生成器召回到"朋友送的手绘碗"
+    那条，诚实回答"没提 grandma 的礼物"。
+  - q94（gold "art and self-expression"）：召回到 Melanie 的碗/画，但**没召回到**
+    那条明说"碗让我想起 art and self-expression"的记忆（即 ep62 Caroline 那条）。
+  - q104（gold ""Becoming Nicole""）：召回到"Melanie 在读 Caroline 推荐的书"，
+    但书名那条没召回。
+
+**生成器的 IDK 在这些 case 里是诚实且正确的** —— 它手上确实没有 gold 那条记忆。
+"生成端拒答 → 改 prompt" 这个可修子桶**基本不存在**。
+
+### 结论（与 list 诊断一致，殊途同归）
+
+temporal-IDK 桶 ≈ 全是 **recall/grounding** 瓶颈。具体两个检索难点：
+1. **date-stranding** — 事件记忆召回到了，但文本不带日期；temporal 查询匹配不上。
+2. **同-entity-多记忆选错** — 召回到了正确的人/物，但具体那条 gold 记忆没进 top-10。
+
+这跟 list 诊断的结论收敛到同一处：**真正的前沿是检索召回 + grounding，不是排序、
+不是 K-sizing、不是生成 prompt。** ISS-201 retrieval-side 至此彻底封板；下一步
+应转向 recall/extraction 的独立 issue（date-grounding + entity-记忆消歧）。
