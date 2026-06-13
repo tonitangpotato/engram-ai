@@ -693,3 +693,32 @@ Three independent measurements now converge:
 The only remaining layer is **generation**: the model receives candidates containing the gold (top-200, post-CE likely top-10) but answers wrong/IDK because it won't perform secondary reasoning (date subtraction, count aggregation, inference). This is exactly thesis-layer 3 (generation over-caution).
 
 **Next lever = answer-guidance (prompt the model to reason from dated/counted evidence), NOT ranking, NOT recall, NOT embedder swap.** Do not re-tune k_seed — falsified here.
+
+### answer-guidance A/B result (2026-06-13) — MARGINAL/INERT, within noise
+
+Ran the same-DB A/B (`ENGRAM_BENCH_ANSWER_GUIDANCE_AB`, run `ISS201-GUIDANCE-AB-conv26-20260610T190847Z`, ingest once / judge twice, LEVER2 envelope):
+
+| arm | overall | single-hop | multi-hop | open-domain |
+|---|---|---|---|---|
+| A (guidance OFF) | 0.3553 | 0.0625 | 0.324 | 0.462 |
+| B (guidance ON)  | 0.3618 | 0.0313 | 0.351 | 0.538 |
+
+**Net +0.66pp overall = inside the ±2pp cross-ingestion noise floor.** Flip ledger: **4 gains, 3 losses = net +1 question.**
+
+- Gains (0→1): q63/q74 (multi-hop, date phrasing nudge), **q81/q88 (IDK→committed inference — clean wins, guidance working as designed)**.
+- Losses (1→0): q44 (B emitted wrong date Aug-12 vs gold Aug-13 — date extraction, not guidance), q55 (sunset/sunrise judge wobble), q100 (pure judge wobble — both answers semantically equivalent).
+
+**Single-hop floored in BOTH arms (2/32 vs 1/32).** The guidance cannot move single-hop because single-hop misses are **retrieval/extraction surface-form** problems (the gold fact never surfaces in an answerable form), not generation-reasoning. Guidance only helps multi-hop/open-domain, where the model needs *permission to infer* — and even there the net is judge-wobble-sized.
+
+**Verdict:** answer-guidance is a marginal lever. Keep gated OFF by default (preserves ISS-100 mem0-parity envelope); opt-in only. It converts real IDK→answer cases but induces equal-magnitude judge wobble, so the net sits in the noise.
+
+### Updated bottleneck map (all three layers now measured)
+
+| layer | lever tried | result |
+|---|---|---|
+| recall | bi-encoder top-50 probe | gold @50 = 0.81 — recall ✓ not the bottleneck |
+| ranking | k_seed 10→250 A/B | zero gain — ranking ✓ not the bottleneck |
+| ranking | MMR λ<1.0 (ISS-223) | falsified on xval — not the lever |
+| generation | answer-guidance A/B | +0.66pp, within noise — marginal |
+
+**The residual deficit concentrates in SINGLE-HOP, which is floored at ~3–6% and is immune to recall-widening, ranking-widening, and prompting.** This points the next investigation at the single-hop **extraction surface-form**: the gold fact is recalled (in the candidate pool) but stored in a form the generator cannot map to the question's surface (e.g. dated event with date stranded out of text, possessive/phrase-entity fragmentation, atomic fact buried in a multi-clause summary). That is an *extraction/representation* problem, not retrieval, ranking, or generation-prompting. Candidate next levers: (a) atomic single-fact extraction (one fact per memory), (b) date-into-text pinning (already partly done ISS-190/191/204 — verify it reaches single-hop golds), (c) entity-mention canonicalization (ISS-203) so single-hop anchor resolution lands on the right node.
