@@ -861,3 +861,13 @@ The enumerable sets EXIST in the graph but are NOT separable by deterministic gr
 
 ### Next concrete step
 Implement `synthesize_entity_sets` behind the flag + the bucketing prompt, then run the conv-26 + conv-44 A/B. Do NOT ship on a single corpus.
+
+### lever-(b) IMPLEMENTATION integration points (verified 2026-06-13)
+
+Confirmed the bench DOES build the full graph before queries, so set-memories can be synthesized in-band:
+
+- **bench callsite:** `engram-bench/src/drivers/locomo.rs` `replay_conversation`, immediately AFTER `memory.shutdown_pipeline(...)` (line ~1445, which drains the resolution pipeline so `graph_entities`/edges are fully populated) and BEFORE the gold-question query loop (line ~1467). Gate on `ENGRAM_BENCH_ENTITY_SETS`. This is the same structural slot ISS-106's reverted `compile_knowledge` used — but lever-(b) clusters by ENTITY not embedding-topic, so it does NOT hit the single-super-cluster degeneration that killed ISS-106.
+- **engram callsite (production parity):** new `Memory::synthesize_entity_sets(namespace)` also wired as "Phase 2b" in `sleep_cycle` (memory.rs ~7107, after the existing `synthesize()` Phase 2), gated by a `SynthesisSettings.entity_sets` flag so production consolidation gets the same behavior, not just the bench.
+- **emit pattern to mirror:** the existing insight path in `synthesis/engine.rs` (transaction boundary, provenance edges, `clusters_auto_updated` idempotent-update logic) — reuse the storage/provenance plumbing, replace the clustering key (entity, not Infomap) and the prompt (enumerate, not abstract).
+
+ISS-106 cautionary note carried in locomo.rs already documents WHY a naive embedding-topic compile regressed; lever-(b)'s entity-keyed clustering is the deliberate avoidance of that failure mode.
