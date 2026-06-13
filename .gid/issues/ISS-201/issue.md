@@ -946,3 +946,68 @@ for, but it landed on LIST instead.
   `ENGRAM_BENCH_ANSWER_GUIDANCE` same-pool A/B harness. This is cheap (no
   re-ingest, judge-twice on one pool) and directly targets the observed loss
   mode (B dropping members the evidence contained).
+
+---
+
+## lever-(a) global-K widening — CROSS-VALIDATION FALSIFIED + Hybrid-pool premise corrected (2026-06-13)
+
+Investigated the compaction-flagged "widen the Hybrid candidate pool (capped
+~10, bypasses fuse_and_rank)" lever. Two corrections + a decisive cross-val.
+
+### The Hybrid-pool premise was STALE
+
+Re-read `crates/engramai/src/retrieval/{orchestrator.rs,api.rs,plans/hybrid.rs}`:
+
+- The ~10 truncate cap **no longer exists** — the Hybrid arm already sets RRF
+  `top_k = query.limit.max(50)` (ISS-201 lever-1, previously committed).
+- Hybrid bypassing `fuse_and_rank` is **by design** (§5.2): RRF already produced
+  a fused score; re-fusing would double-count. Hybrid candidates still flow
+  through the **cross-encoder + MMR at Stage C.5** like every other plan.
+- q51/q52's `prefusion-hybrid` dumps show 10 candidates because the **sub-plans
+  themselves only emitted 10** — pool starvation is at the sub-plan retrieval
+  source, not at a truncation cap. There is **no Hybrid-cap code fix to make.**
+- q51 gold member "horse painting" is genuinely **absent from the pool** (only
+  sunset/sunrise present) — corpus/pool-completeness limited, not rankable.
+
+### KSEED A/B (cross-encoder seed pool k_seed 10→250) — NULL RESULT
+
+`ISS201-KSEED-{A,B}-conv26-20260613T043653Z`: overall 0.513 → 0.500 (flat),
+**every category unchanged**. Gold candidates are NOT sitting in ranks 11-250
+waiting for the CE — deeper reranking / seed-pool widening buys nothing. The
+bottleneck is not CE seed starvation.
+
+### LISTK A/B (final TOP_K 10→30) — conv-26 looked great…
+
+`ISS201-LISTK-{A,B}-conv26-20260613T060852Z`: overall +7.9pp (0.507→0.586),
+**single-hop +21.9pp** (0.344→0.563), LIST bucket **net +5** (gains
+q15/q24/q34/q38/q39/q52, one wobble-loss q51), ATOMIC guard **zero regression**
+(+1, q3). Because KSEED-deeper was flat, this lift is **generation-side** — the
+generator simply sees more candidates in context and enumerates more list
+members.
+
+### LISTK44 conv-44 cross-validation — FALSIFIES global K=30
+
+`ISS201-LISTK44-{A,B}-conv44-20260613T073119Z` (same K=10→K=30 change):
+overall **FLAT** (0.5366 = 0.5366, 8 gains / 8 losses pure churn), LIST net
+**+1** (q31 only; noise on n=13), ATOMIC guard **net −1 (q48 regressed)**.
+
+conv-44 has the inverted ratio (13 list / 17 atomic) and stresses the atomic
+guard harder — and the guard **broke**. Global K=30 is **conv-26 overfit**: it
+trades a home-corpus single-hop win for conv-44 atomic regression with no
+generalizable net gain.
+
+### Decision
+
+- **Do NOT ship global K=30.** Falsified on cross-validation.
+- **No Hybrid-pool code fix** — the cap was already removed; the dumps that
+  motivated the lever predate lever-1.
+- **Confirmed lever across (a)+(b)+KSEED:** the conv-26 LIST/single-hop deficit
+  is **generation-completeness + pool-completeness** limited, NOT
+  retrieval-rank or CE-seed limited.
+- **Candidate next lever (un-launched):** *targeted* list-intent K widening —
+  detect enumeration intent and widen **only the final top-K passed to the
+  generator** for list questions (leave atomic at K=10). This could capture the
+  conv-26 LIST gains without the conv-44 atomic regression, because the regress
+  source (atomic questions seeing more distractors) is excluded by construction.
+  Requires an enumeration-intent detector + a per-query generation-boundary K
+  override, and must be cross-validated on BOTH corpora before shipping.
