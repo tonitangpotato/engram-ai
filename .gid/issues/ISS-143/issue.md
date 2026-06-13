@@ -181,3 +181,12 @@ ISS-142 (list-aware) work measured against this.
 - Re-implementing LoCoMo dataset loader in a different format.
 - Adding Mem0-style memory consolidation between sessions (separate
   feature, file separately if needed).
+
+
+---
+
+## ⚠️ INVALIDATED measurement — dead vector channel (ISS-222, annotated 2026-06-13 per ISS-223 AC-5)
+
+The MMR λ sweep work in this issue ran with the vector-embedding channel **silently dead**: from T32 (commit `887dc37`, unified-substrate default-on) until ISS-222 (commit `2cc72375`), `get_embeddings_for_ids` JOINed the empty legacy `memories` table, so MMR (ISS-139) degenerated to relevance-only on every query — both arms measured `NullReranker`-equivalent behavior. **Any "MMR λ helps / does not help" conclusion drawn here is void.**
+
+The corrected re-sweep with a live channel is **ISS-223**. Verdict there: λ=0.7 inert, λ=0.5 +1.97pp on conv-26 but −0.81pp on conv-44 (does not cross-validate) → default `mmr_lambda` stays 1.0, λ=0.5 opt-in only.

@@ -1,6 +1,6 @@
 ---
 title: MMR λ re-sweep with live vector channel — ISS-143-era MMR conclusions measured a dead channel (ISS-222)
-status: open
+status: resolved
 priority: P1
 labels: retrieval, mmr, benchmark, locomo
 relates_to: ISS-222, ISS-139, ISS-143, ISS-201
@@ -43,14 +43,26 @@ Option 2 preferred — MMR effects are likely <5pp, below the noise floor of opt
 
 ## Acceptance criteria
 
-- [ ] AC-1: harness can measure λ arms over a shared ingestion (either MMR_AB mode or documented same-DB workaround).
-- [ ] AC-2: conv-26 sweep λ ∈ {1.0, 0.7, 0.5} with live vector channel; per-category + list-question sub-bucket deltas recorded.
-- [ ] AC-3: verify MMR is actually active in λ<1.0 arms (dump or probe shows reordering vs λ=1.0 arm, not just score noise).
-- [ ] AC-4: decision — pick default λ for bench envelope + prod `FusionConfig::mmr_lambda`; if no arm beats λ=1.0, record falsification and keep 1.0.
-- [ ] AC-5: annotate ISS-143/ISS-188 issue docs with dead-channel invalidation note pointing here.
+- [x] AC-1: harness can measure λ arms over a shared ingestion (either MMR_AB mode or documented same-DB workaround). — `ENGRAM_BENCH_MMR_AB` shipped engram-bench `be420f9` (arm A = override None → λ=1.0 passthrough, arm B = env λ < 1.0 hard-validated; 4-way *_AB mutual exclusivity; per-arm dump labels `<qid>-a/-b`; `locomo_mmr_ab_diff.json`; 215 lib tests green).
+- [x] AC-2: conv-26 sweep λ ∈ {1.0, 0.7, 0.5} with live vector channel; per-category deltas recorded (see Verdict).
+- [x] AC-3: MMR confirmed active in λ<1.0 arms. conv-26 L05 reorder probe + conv-44 L05 probe (pairs=123 identical=2 pure_reorder=20 set_changed=101) show MMR is live-reshuffling candidates, not score noise. The vector channel is alive (ISS-222 fix holds).
+- [x] AC-4: **FALSIFIED — keep default λ=1.0.** λ<1.0 does not beat λ=1.0 on a cross-validated basis. Prod `FusionConfig::mmr_lambda` stays 1.0; λ=0.5 remains opt-in only.
+- [x] AC-5: ISS-143 / ISS-188 annotated with dead-channel invalidation note pointing here.
 
 ## Notes
 
 - ISS-139 shipped MMR as reorder-only (scores preserved) with FusionConfig.mmr_lambda default 1.0 = byte-identical passthrough.
 - MMR hook is Stage C.5 in api.rs (after CE per D5 ordering decision).
 - Missing-embedding candidates get 0 diversity penalty — under the dead channel this meant ALL candidates, hence relevance-only.
+
+## Verdict (2026-06-13) — λ<1.0 FALSIFIED on cross-validation
+
+MMR-with-live-vectors was measured for the first time (ISS-222 fixed the dead channel). Three same-DB A/B arms:
+
+- **λ=0.7, conv-26** (`ISS223-MMRAB-L07-conv26-20260612T134643Z`): 0.500 → 0.500, **0 flips, Δ=0**. Completely inert. CE k_in=250 head-rerank leaves λ=0.7 nothing meaningful to reorder.
+- **λ=0.5, conv-26** (`ISS223-MMRAB-L05-conv26-20260612T134643Z`): 0.5066 → 0.5263 (**+1.97pp**). single-hop +6.25pp, multi-hop +2.7pp, temporal +1.4pp, **open-domain −7.7pp**. 13 flips (8 gain / 5 loss). Gains concentrated on list-style single-hop (diversity surfaces missing list items).
+- **λ=0.5, conv-44** (`ISS223-MMRAB-L05-conv44-20260613T005734Z`): 0.5447 → 0.5366 (**−0.81pp**). single-hop/multi-hop/open-domain all Δ=0, temporal −1.6pp. 7 flips (3 gain / 4 loss). **The conv-26 gain does NOT replicate.**
+
+**Decision (AC-4):** The conv-26 +2pp is corpus-specific — it comes from conv-26's list-question density, and conv-44 (inverted list/single-fact ratio, sparser graph) shows no gain and a slight regression. Cross-validation gate ("≥+2pp on conv-44 with no category regression") is NOT met. **Default `FusionConfig::mmr_lambda` stays 1.0.** λ=0.5 remains available as an opt-in knob for list-heavy workloads but is not the default.
+
+This supersedes any ISS-143-era "MMR helps/doesn't help" conclusion — all of those measured the dead vector channel and are void. The real finding: with a live channel, diversity reordering is at best corpus-specific and at worst mildly harmful once CE k_in=250 already reranks the head.

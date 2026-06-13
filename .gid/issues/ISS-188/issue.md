@@ -159,3 +159,12 @@ hypothesis that it would help list-questions is what was falsified.
 **resolved (falsified) 2026-05-29.** AC-3 λ-sweep shows no real lift on
 list-questions; bottleneck is judge/generation, not retrieval. Code
 kept default-off as opt-in. Next: ISS-179 (SF axis redefinition).
+
+
+---
+
+## ⚠️ INVALIDATED measurement — dead vector channel (ISS-222, annotated 2026-06-13 per ISS-223 AC-5)
+
+The populate-embeddings λ=0.7/0.5 arms in this issue reported **lift 0** — now explained: the vector channel was dead (empty-`memories` JOIN bug, T32→ISS-222), so the MMR diversity term had no embeddings to diversify against in the Factual path. The "lift 0" was a measurement artifact, not a real null result. **Do not cite the λ arms here as evidence about MMR.**
+
+Corrected measurement: **ISS-223** (live channel). Verdict: λ<1.0 falsified on cross-validation, default `mmr_lambda` stays 1.0.
