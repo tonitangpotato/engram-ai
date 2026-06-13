@@ -1011,3 +1011,52 @@ generalizable net gain.
   source (atomic questions seeing more distractors) is excluded by construction.
   Requires an enumeration-intent detector + a per-query generation-boundary K
   override, and must be cross-validated on BOTH corpora before shipping.
+
+---
+
+## Correction + targeted-K lever ALSO killed (2026-06-13, deeper conv-44 read)
+
+On closer per-query inspection the "conv-44 atomic guard broke" claim was
+**wrong** — and the correction kills the *targeted* list-K lever too.
+
+### The conv-44 "regression" was judge wobble, not distractors
+
+- **q48** (single-hop, gold "Family"): A(K10) "friends, confidantes, and
+  **family** members" → 1.0; B(K30) "friends and confidantes who listen,
+  provide comfort" → 0.0. **Same memory, B just omitted the word "family".**
+  Judge wobble on an equivalent answer, not a distractor-induced retrieval miss.
+- Of the 16 conv-44 flips, **9 are temporal** (cross-ingestion judge noise) plus
+  multi-hop wobble. There is **no coherent atomic-degradation signal** — the
+  premise behind "exclude atomics and the regression goes away" is unfounded.
+
+### The real conv-44 LIST result: K=30 does nothing for the hard cases
+
+LIST bucket (n=13): A=5.0 → B=6.0, a **single** gain (q31). The 7 hard zeros
+stayed **0.0 at both K=10 and K=30**. Inspecting their predictions shows the
+failure is **pool/extraction completeness, not final-K sizing**:
+
+- **q3** (gold: cafes, eateries, hike-space, pet shelter, wine, park):
+  generator enumerated cafes/parks/wine — missed 3 members entirely.
+- **q12** (gold: rock climbing, fishing, camping): got rock climbing, then
+  hallucinated "kayaking, bungee jumping" — fishing/camping **not in pool**.
+- **q2** (gold: boardgames, volunteering, wine, growing flowers): got 3 of 4 —
+  **"growing flowers" member pool-absent**.
+
+A candidate that is never retrieved (or never extracted into a memory) cannot
+be enumerated no matter how wide K is. That is exactly why K=30 was flat on
+conv-44's hard list questions.
+
+### Decision — the entire "widen the pool / widen K" family is closed
+
+- Global K=30: conv-26 overfit (falsified).
+- **Targeted list-intent K (generation-boundary override): NOT WORTH BUILDING.**
+  Its only justification was "exclude atomics to dodge the conv-44 regression"
+  — but that regression was judge wobble, and widening K did **nothing** for the
+  hard list cases on conv-44. The lever would add an intent detector + per-query
+  K plumbing to capture, at best, the few already-borderline conv-26 questions
+  that K=30 flipped — with no benefit on the genuinely-hard cases.
+- **Root cause of the hard list deficit = pool-completeness + extraction**, not
+  retrieval-rank, not CE-seed, not final-K. The members are missing from the
+  candidate set (scatter beyond any reasonable window) or were never extracted
+  into memories. **The next real lever must target retrieval recall / extraction
+  coverage of list members — not K sizing.**
