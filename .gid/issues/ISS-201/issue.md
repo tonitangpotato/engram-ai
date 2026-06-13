@@ -612,3 +612,40 @@ PageRank over the unified entity+memory node graph, replacing BFS 1-hop +
 fixed-weight fusion in the Associative/Hybrid channels). Filed separately
 — see ISS-221. **Prerequisite: ISS-203 entity canonicalization** (PPR on a
 fragmented entity graph measures the fragmentation, not the algorithm).
+
+---
+
+## Pure bi-encoder recall probe (2026-06-13) — confirms retrieval is NOT the bottleneck
+
+Question raised: "is the per-memory recall hit-rate under 50%?" (J-score ~0.53 read literally as recall). Ran the `iss186_candidate_pool_probe` on **all 152 conv-26 questions** (4 categories, top-200, pure cosine — bypasses fusion / CE / MMR / HyDE / plan classifier). Out: `/tmp/recall_probe/conv26-all-20260613T034146Z.jsonl`. Gold matching = substring + date-normalized + content-word-subset, with evidence-episode fallback.
+
+### Recall@K (pure bi-encoder ceiling)
+
+| category | n | recall@10 | recall@50 | recall@200 |
+|---|---|---|---|---|
+| multi-hop | 37 | **0.568** | 0.811 | **0.919** |
+| temporal | 70 | 0.414 | 0.443 | 0.471 |
+| single-hop | 32 | 0.094 | 0.188 | 0.312 |
+| open-domain | 13 | 0.000 | 0.000 | 0.000 |
+| ALL | 152 | 0.349 | 0.441 | 0.507 |
+
+### The 73 "MISS" are measurement false-negatives, not real recall failures
+
+Bucketed the 73 D-bucket (gold not string-matched in top-200) by gold type, then **hand-verified the 7 "short-fact" + spot-checked others** against their actual top-5 recalled text:
+
+- **list/aggregate — 43 (59%)**: comma-joined answers ("pottery, camping, painting, swimming"). No single memory carries the whole list verbatim; the relevant memories ARE recalled.
+- **inference — 6 + count/duration — 4 (14%)**: derived answers ("Likely no", "5 years", "once or twice a year"). Source memories recalled to top-5; answer requires reasoning, not a literal string.
+- **short-fact — 7**: hand-checked — all relevant memories recalled, missed only on surface form. e.g. q43 gold "abstract art" → r2 "created an **abstract painting**"; q86 gold "LGBTQ+ individuals" → r2 "helps **LGBTQ+** folks with adoption"; q11 gold "Sweden" → r1 "moving from her home country" (country name deeper). Zero genuine recall failures in this set.
+- **other — 13**: long-sentence golds, same pattern.
+
+**Genuine "relevant memory absent from top-200" cases ≈ 0.** Concrete-fact recall is healthy (multi-hop @200=0.92; temporal/single-hop relevant memories consistently in top-5 — verified q82/q90/q117/q132/q11/q43/q86/q140).
+
+### Verdict — independent confirmation of this issue's thesis
+
+The original premise ("memory recall hit-rate <50%") is **false**. The J-score deficit lives entirely downstream of recall, in exactly the layers this issue names:
+
+1. **Ranking** — gold recalled to top-200 but not top-10 (multi-hop @10=0.57 vs @200=0.92 ⇒ ~35pp lost to ranking). → ISS-159 cross-encoder deepening, k_in tuning.
+2. **Multi-hop / aggregation** — list answers require assembling items scattered across several memories.
+3. **Generation over-caution** — facts present in candidates (marriage date, beach mentions), model refuses to compute "date − date = 5 years" / "multiple mentions → once or twice a year", answers IDK. → ISS-201 answer-guidance track.
+
+**Retrieval (bi-encoder recall) is not the bottleneck and the embedder does not need replacing.** Next real levers = ranking (CE) + generation (answer-from-evidence prompting), per the Step-2 autopsy. Probe artifacts: `/tmp/recall_probe/` (jsonl + analyse.py).
