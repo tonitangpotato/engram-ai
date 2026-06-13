@@ -154,11 +154,66 @@ Guardrails (mirror ISS-206/ISS-204 discipline):
 - Default-off serde knob until A/B clears the regression gate, matching
   ISS-139/ISS-205/ISS-206 default-off discipline.
 
+## AC-1 VERDICT (2026-06-13) — LEVER CONFIRMED, well above gate
+
+Forensic SQL probe on a settled conv-26 substrate (`.tmpC27eKq/substrate.db`,
+457 memory nodes, ISS222-LEVER2 ingest, no live writer). Read-only, no
+re-ingest, no token.
+
+**Mechanism is even cleaner than hypothesized — and the day is NOT in a
+separate `note` field.** The resolved day is stranded *inside the
+`temporal.value` string itself*, while `temporal.kind` is mistyped:
+
+```
+temporal kind distribution (457 memory nodes):
+  (none)  288
+  vague   169
+  day/approx/range/exact  0   ← NOTHING reaches day-precision
+```
+
+Of the 169 `vague` marks, **31 carry a resolvable `YYYY-MM-DD` inside the
+value string** (GLOB `*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*`).
+The gold q0 memory is textbook:
+
+```json
+"temporal": {"kind": "vague", "value": "yesterday (2023-05-07)"}
+```
+
+The exact day `2023-05-07` is resolved and present — but `kind="vague"`,
+so ISS-204's producer (requires day-precision) emits **no `occurred_on`
+edge** (probe: 0 occurred_on edges in the entire graph; predicate vocab is
+`mentions` only). The mark degrades to vector recall — exactly the
+ISS-204 needle-in-haystack.
+
+**Pinnable classification of the 31:**
+- **~25 cleanly pinnable** — precise resolved day mistyped `vague`:
+  "yesterday (2023-05-07)", "yesterday (2023-07-05)",
+  "last week (2023-06-19)", "this week (2023-08-21)",
+  "yesterday (2023-10-21)", etc. These should be `kind=day`.
+- **5 EXCLUDED (cross-year placeholder)** — "last year (2022-01-01)":
+  the `2022-01-01` is a synthetic Jan-1 placeholder, not a resolved day.
+  This is the cross-year-gap bucket already fenced out of scope; correctly
+  not pinnable.
+- **~1 borderline multi-cue** — "next month (2023-06-01), summer break,
+  ongoing planning"; lead day still extractable but lower confidence.
+
+**Gate: ~25 pinnable ≫ the ≥8 threshold → LEVER IS REAL. Proceed to fix.**
+
+**Fix re-framed by the evidence:** the defect is the extractor (or
+`parse_temporal_mark`) typing a mark as `vague` when its value contains a
+fully-resolved `YYYY-MM-DD`. The fix is to **classify these as
+`day`-precision** (so ISS-191's `Day` variant + ISS-204's producer +
+ISS-205 reservation + ISS-206 surfacing all engage with zero new
+plumbing), NOT a separate `note`→`start/end` promotion. Guardrail
+unchanged: a placeholder day like `2022-01-01` derived from "last year"
+must STAY `vague` (do not fabricate day-precision from a year-granular
+cue) — so the promotion must trigger on the *relative-cue resolved day*,
+not on any string that happens to match the date GLOB.
+
 ## Acceptance criteria
 
-- **AC-1** — Forensic probe sizes the pinnable denominator (how many of
-  the 18 RELATIVE golds have a `note`-resolved day with full-year
-  `start`/`end`). Written into this issue. (Gate decision happens here.)
+- **AC-1** — ✅ DONE (verdict above). Pinnable denominator ≈ 25/31
+  vague-with-resolved-day marks; gate cleared.
 - **AC-2** — If the lever is confirmed: temporal-mark construction
   promotes a `note`-resolved day into day-precision `start`/`end`; unit
   test asserts a relative expression with a resolved day yields a
