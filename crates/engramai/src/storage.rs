@@ -291,6 +291,37 @@ pub struct EmbeddingStats {
     pub dimensions: Option<usize>,
 }
 
+/// One outgoing structural edge of an entity-set candidate (ISS-201 lever-(b)).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EntitySetObject {
+    /// Edge predicate (e.g. `related_to`, `uses`, `part_of`).
+    pub predicate: String,
+    /// Object surface text (target node content, or decoded `target_literal`).
+    pub object: String,
+    /// Memory the edge was extracted from (provenance); `None` for legacy NULL.
+    pub source_memory_id: Option<String>,
+}
+
+/// A subject entity whose outgoing structural edges may contain an enumerable
+/// attribute-set (ISS-201 lever-(b)). The LLM bucketing pass groups
+/// `objects` into typed sets and discards noise.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EntitySetCandidate {
+    pub entity_id: String,
+    pub entity_name: String,
+    pub objects: Vec<EntitySetObject>,
+}
+
+/// Decode an edge object string: `target_literal` is stored as JSON, so a
+/// bare JSON string `"Pepper"` decodes to `Pepper`; node `content` is already
+/// plain text and round-trips unchanged.
+fn decode_object_literal(raw: &str) -> String {
+    if let Ok(serde_json::Value::String(s)) = serde_json::from_str::<serde_json::Value>(raw) {
+        return s;
+    }
+    raw.to_string()
+}
+
 /// A record from the `entities` table.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EntityRecord {
@@ -6889,6 +6920,117 @@ impl Storage {
         ))
     }
 
+    /// Gather entity-set synthesis candidates (ISS-201 lever-(b)).
+    ///
+    /// Returns, for every entity node whose outgoing structural-edge count is
+    /// `>= min_degree` AND whose distinct object count is `>= min_objects`, the
+    /// flat list of its outgoing `(predicate, object_text, source_memory_id)`
+    /// edges (capped at `max_objects_per_entity` by descending edge weight).
+    ///
+    /// This deliberately reads the `edges` table directly rather than the
+    /// canonical `entity_relations` shim: the LoCoMo graph collapses most
+    /// fine-grained relations into `related_to` object literals/nodes, and the
+    /// answerable set ("Audrey's pets: Pepper, Precious, Panda") lives in that
+    /// flat bag. The LLM bucketing pass (synthesis::entity_sets) is responsible
+    /// for separating genuine attribute-sets from noise — SQL cannot.
+    ///
+    /// `object_text` is the target entity's `content` when the edge points at a
+    /// node, else the raw `target_literal` (JSON-decoded to its string form when
+    /// possible). `source_memory_id` may be `None` for legacy NULL rows.
+    #[allow(clippy::type_complexity)]
+    pub fn gather_entity_set_candidates(
+        &self,
+        namespace: Option<&str>,
+        min_degree: usize,
+        min_objects: usize,
+        max_objects_per_entity: usize,
+    ) -> Result<Vec<EntitySetCandidate>, rusqlite::Error> {
+        // 1. Find qualifying subject entities (degree + distinct-object gates).
+        let ns_clause = if namespace.is_some() {
+            "AND s.namespace = ?4"
+        } else {
+            ""
+        };
+        let subj_sql = format!(
+            r#"
+            SELECT s.id, s.content,
+                   COUNT(*) AS deg,
+                   COUNT(DISTINCT COALESCE(t.content, e.target_literal)) AS objs
+            FROM edges e
+            JOIN nodes s ON s.id = e.source_id AND s.node_kind = 'entity'
+            LEFT JOIN nodes t ON t.id = e.target_id
+            WHERE e.edge_kind = 'structural'
+              AND s.deleted_at IS NULL
+              {ns_clause}
+            GROUP BY s.id, s.content
+            HAVING deg >= ?1 AND objs >= ?2
+            ORDER BY deg DESC
+            "#
+        );
+        let mut subj_stmt = self.conn.prepare(&subj_sql)?;
+        let subjects: Vec<(String, String)> = {
+            let map = |row: &rusqlite::Row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            };
+            let rows = if let Some(ns) = namespace {
+                subj_stmt.query_map(
+                    params![min_degree as i64, min_objects as i64, 0i64, ns],
+                    map,
+                )?
+            } else {
+                subj_stmt.query_map(params![min_degree as i64, min_objects as i64], map)?
+            };
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        // 2. For each subject, pull its outgoing structural edges (object text +
+        //    predicate + source memory), capped by descending weight.
+        let mut obj_stmt = self.conn.prepare(
+            r#"
+            SELECT e.predicate,
+                   COALESCE(t.content, e.target_literal) AS obj,
+                   e.source_memory_id
+            FROM edges e
+            LEFT JOIN nodes t ON t.id = e.target_id
+            WHERE e.edge_kind = 'structural'
+              AND e.source_id = ?1
+              AND COALESCE(t.content, e.target_literal) IS NOT NULL
+            ORDER BY e.weight DESC
+            LIMIT ?2
+            "#,
+        )?;
+
+        let mut out = Vec::with_capacity(subjects.len());
+        for (entity_id, entity_name) in subjects {
+            let rows = obj_stmt.query_map(
+                params![entity_id, max_objects_per_entity as i64],
+                |row| {
+                    let predicate: String = row.get(0)?;
+                    let raw_obj: String = row.get(1)?;
+                    let src: Option<String> = row.get(2)?;
+                    Ok((predicate, decode_object_literal(&raw_obj), src))
+                },
+            )?;
+            let objects: Vec<EntitySetObject> = rows
+                .filter_map(|r| r.ok())
+                .filter(|(_, obj, _)| !obj.trim().is_empty())
+                .map(|(predicate, object, source_memory_id)| EntitySetObject {
+                    predicate,
+                    object,
+                    source_memory_id,
+                })
+                .collect();
+            if objects.len() >= min_objects {
+                out.push(EntitySetCandidate {
+                    entity_id,
+                    entity_name,
+                    objects,
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// Delete an entity and all its relations/links (CASCADE handles it).
     pub fn delete_entity(&self, entity_id: &str) -> Result<bool, rusqlite::Error> {
         let affected = self
@@ -7726,7 +7868,149 @@ impl Storage {
         Ok(())
     }
 
-    /// Convert a database row into a ProvenanceRecord.
+    /// Whether a memory/node with this id currently exists (entity-set
+    /// idempotency check). Reads `nodes` under unified substrate, else
+    /// `memories`.
+    pub fn memory_exists(&self, id: &str) -> Result<bool, rusqlite::Error> {
+        let table = if self.unified_substrate {
+            "nodes"
+        } else {
+            "memories"
+        };
+        let n: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE id = ?1"),
+            params![id],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Insert-or-replace a set-memory (ISS-201 lever-(b)).
+    ///
+    /// Unlike [`store_raw`] (which tags rows `node_kind='insight'` /
+    /// `source='synthesis'`), a set-memory is a NORMAL memory
+    /// (`node_kind='memory'`, `source='entity_set'`) so it participates in
+    /// retrieval indistinguishably from ingested facts — the whole point is
+    /// that a list question retrieves "Audrey's pets: ..." as one candidate.
+    ///
+    /// Idempotent on the deterministic `(entity_id, attribute)` id: on
+    /// re-synthesis the row is rewritten in place (content + metadata +
+    /// FTS refreshed) rather than duplicated. Manages its own transaction.
+    pub fn upsert_set_memory(
+        &self,
+        id: &str,
+        content: &str,
+        importance: f64,
+        metadata: Option<&str>,
+        namespace: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = datetime_to_f64(&Utc::now());
+        let ns = namespace.unwrap_or("default");
+        let needs_tx = self.conn.is_autocommit();
+        if needs_tx {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        }
+
+        let result: Result<(), Box<dyn std::error::Error>> = (|| {
+            let exists = self.memory_exists(id)?;
+            if exists {
+                // Refresh content/importance/metadata in place.
+                self.conn.execute(
+                    "UPDATE nodes SET content = ?2, importance = ?3, \
+                     attributes = COALESCE(?4, '{}'), updated_at = ?5 WHERE id = ?1",
+                    params![id, content, importance, metadata, now],
+                )?;
+                if !self.unified_substrate {
+                    self.conn.execute(
+                        "UPDATE memories SET content = ?2, importance = ?3, \
+                         metadata = ?4 WHERE id = ?1",
+                        params![id, content, importance, metadata],
+                    )?;
+                }
+                // Refresh FTS: delete the old row by rowid, then reinsert
+                // the new content. Use the canonical `DELETE ... WHERE rowid`
+                // idiom (cf. update_content / update_importance) — the FTS5
+                // `('delete', rowid, content)` special command requires the
+                // *exact previously-indexed content* and otherwise leaves the
+                // row in place, so a same-rowid reinsert collides (1555).
+                if let Ok(rowid) = self.conn.query_row(
+                    "SELECT rowid FROM memories WHERE id = ?1",
+                    params![id],
+                    |r| r.get::<_, i64>(0),
+                ) {
+                    let tok = tokenize_cjk_boundaries(content);
+                    self.conn.execute(
+                        "DELETE FROM memories_fts WHERE rowid = ?1",
+                        params![rowid],
+                    )?;
+                    self.conn.execute(
+                        "INSERT INTO memories_fts(rowid, content) VALUES (?1, ?2)",
+                        params![rowid, tok],
+                    )?;
+                }
+                return Ok(());
+            }
+
+            // Fresh insert — mirror store_raw's dual-write, but as a memory.
+            let next_fts_rowid: i64 = self.conn.query_row(
+                "UPDATE fts_rowid_counter SET next_value = next_value + 1 \
+                 WHERE singleton = 0 RETURNING next_value - 1",
+                [],
+                |r| r.get(0),
+            )?;
+            self.conn.execute(
+                r#"
+                INSERT INTO nodes (
+                    id, node_kind, namespace, layer, memory_type,
+                    content, summary, attributes,
+                    occurred_at, created_at, updated_at, last_consolidated,
+                    working_strength, core_strength, importance,
+                    consolidation_count, pinned, source, superseded_by, fts_rowid
+                ) VALUES (
+                    ?1, 'memory', ?7, 'core', 'factual',
+                    ?2, '', COALESCE(?3, '{}'),
+                    NULL, ?4, ?4, NULL,
+                    0.5, 0.5, ?5,
+                    0, 0, 'entity_set', NULL, ?6
+                )
+                "#,
+                params![id, content, metadata, now, importance, next_fts_rowid, ns],
+            )?;
+            self.conn.execute(
+                r#"INSERT INTO memories (
+                    id, content, memory_type, importance, layer,
+                    working_strength, core_strength, source, created_at,
+                    last_consolidated, consolidation_count, pinned, metadata, namespace
+                ) VALUES (?1, ?2, 'factual', ?3, 'core', 0.5, 0.5, 'entity_set', ?4, NULL, 0, 0, ?5, ?6)"#,
+                params![id, content, importance, now, metadata, ns],
+            )?;
+            self.conn.execute(
+                "INSERT INTO access_log (memory_id, accessed_at) VALUES (?, ?)",
+                params![id, now],
+            )?;
+            let rowid: i64 = self.conn.query_row(
+                "SELECT rowid FROM memories WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )?;
+            let tokenized = tokenize_cjk_boundaries(content);
+            self.conn.execute(
+                "INSERT INTO memories_fts(rowid, content) VALUES (?, ?)",
+                params![rowid, tokenized],
+            )?;
+            Ok(())
+        })();
+
+        if needs_tx {
+            match &result {
+                Ok(_) => self.conn.execute_batch("COMMIT")?,
+                Err(_) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                }
+            }
+        }
+        result
+    }
     fn row_to_provenance(row: &rusqlite::Row) -> Result<ProvenanceRecord, rusqlite::Error> {
         let gate_scores_str: Option<String> = row.get(6)?;
         let gate_scores: Option<GateScores> =

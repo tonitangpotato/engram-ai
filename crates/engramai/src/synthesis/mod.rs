@@ -10,6 +10,7 @@
 
 pub mod cluster;
 pub mod engine;
+pub mod entity_sets;
 pub mod gate;
 pub mod insight;
 pub mod provenance;
