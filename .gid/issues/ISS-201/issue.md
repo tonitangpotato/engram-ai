@@ -763,3 +763,27 @@ Secondary (smaller): ~6% of extracted memories are pure interrogative turns ("X 
 - **(a) list-aware retrieval** — detect enumeration/list intent ("what/which … s") → widen K dramatically OR do per-item sub-retrieval then union the results. Cheapest test.
 - **(b) aggregate-memory extraction** — synthesize set memories ("person's hobbies: X, Y, Z") during consolidation so the whole set is one high-ranking candidate.
 - **(c) interrogative-turn filter** — stop the extractor emitting question-only/backchannel memories that crowd the K=10 window.
+
+### lever-(a) list-aware retrieval — global-K probe (2026-06-13): CONFIRMED, biggest lever yet
+
+Ran the blunt global-K A/B (runs `ISS201-LISTK-{A,B}-conv26-20260613T060852Z`): Arm A K=10 (status quo) vs Arm B K=30 (wider window), LEVER2 envelope, only `ENGRAM_BENCH_TOP_K` differs.
+
+| metric | A (K=10) | B (K=30) | Δ |
+|---|---|---|---|
+| overall | 0.5066 | **0.5855** | **+7.9pp** |
+| single-hop | 0.3438 | **0.5625** | **+21.9pp** |
+| multi-hop | 0.3514 | 0.3784 | +2.7pp |
+| open-domain | 0.4615 | 0.5385 | +7.7pp |
+| temporal | 0.6714 | 0.7143 | +4.3pp |
+
+**+7.9pp overall is far beyond the ±2pp cross-ingestion noise floor.** Single-hop +21.9pp is the largest single lever found in the entire ISS-201 campaign.
+
+**Per-bucket flip analysis (the precise signal, not the noisy overall):**
+- **LIST (20 ids): A_won=8 → B_won=13 = net +5 questions correct.** Gains: q15 (activities), q24 (destress methods), q34 (events), q38 (6-item hobbies list), q39 (LGBTQ activities), q52 (pet names Oliver/Luna/Bailey). One loss: q51 (judge wobble).
+- **ATOMIC guard (10 ids): A_won=3 → B_won=4, ZERO regressions** — even gained q3 (adoption agencies). **Wider K does NOT hurt atomic/precise queries.** This kills the "more candidates = more noise = worse precision" concern.
+
+**Root cause confirmed:** the scattered list items the autopsy mapped (beach@15, violin@77, swimming@69) now fit inside the K=30 window, so the generator can assemble complete sets and pass the binary judge.
+
+**Open questions before shipping:**
+1. **conv-44 cross-validation** — is K=30 a conv-26 overfit, or corpus-general? (MMR λ=0.5 looked good on conv-26 then died on conv-44 — must not repeat that mistake.) Run the same A/B on conv-44 next.
+2. **global K=30 vs targeted list-aware K** — given ZERO atomic regression, global K=30 may simply be strictly better (no need to detect list intent). But it inflates generator context cost on the ~80% non-list queries. Decide after conv-44: if the lift replicates with no regression, ship global K=30; if atomic regresses on conv-44, build the targeted detector (enumeration-intent → widen K only for list questions).
