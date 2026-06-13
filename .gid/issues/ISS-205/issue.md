@@ -405,3 +405,48 @@ ISS-206 (date legibility) — gold has no in-text date — and a controlled
 ranking A/B should be run on a date-BEARING query after ISS-208
 (edge-visibility undercount on dense anchors) is fixed, to avoid a confounded
 measurement.
+
+## Baseline crowding — DB-verified (V2-OFF default envelope, 2026-06-13)
+
+The original follow-up asked for the crowding claim to be DB-verified
+*before* trusting the design. Done, on the AC-3 fresh conv-26 substrate
+`.tmppGptnQ` (locked ISS-190 envelope: V2 OFF, entity-set OFF, K=10 — so
+this is a property of the BASE graph, not of any rejected lever):
+
+- **Dated episodes are rare:** 53 / 440 memories (~12%) carry a
+  `day`-precision temporal mark + `occurred_on` edge.
+- **Entity graph is highly concentrated:** out-degree `Caroline`=197,
+  `Melanie`=78, long tail (art=33, painting=23, family=13, …).
+- **Per-anchor haystack is huge:** `Melanie` is mentioned by **136**
+  distinct memories; `Caroline`=197 out-edges. A single dated episode is
+  one needle in a 100–200-memory same-anchor haystack → the recency-scan
+  seed path (factual.rs ~620) evicts it exactly as the design predicts.
+- **Recall-probe corroboration (ISS-225, 2026-06-13):** conv-26 temporal
+  recall@200 ≈ 0.47 (gold IS in the pool) while end-to-end temporal score
+  is far lower — gold is *present but ranked below top-K*, the textbook
+  crowding signature this issue targets.
+
+This confirms ISS-205's reservation is an **independent** retrieval lever:
+the crowding exists in the baseline without ISS-203 V2. The reservation is
+therefore valuable on its own (temporal/single-hop), AND is the
+trade-off-breaker that would let ISS-203 V2 entity-consolidation ship
+without regressing multi-hop (consolidation raises density → crowding →
+which reservation neutralises for the dated-episode case).
+
+## Cross-issue standing (2026-06-13, from ISS-201 lever sweep closure)
+
+ISS-201 closed out all ranking levers (K/MMR/CE/HyDE/entity-channel/
+factual-reweight: none ships) and lever-(b) entity-set synthesis (falsified
+for ship: single-hop list net -3; input completeness blocked by entity
+fragmentation; the de-frag fix ISS-203 V2 is itself rejected for crowding).
+The converged conclusion: the list/aggregate + temporal deficit is a
+multi-objective tension (completeness vs crowding), and **ISS-205 is the
+highest-leverage open item** because it is the only mechanism that relaxes
+that tension. Recommended as the next implementation target.
+
+Implementation is fully designed above and the GraphQuery surface already
+exists (`temporal_reservation_override`, default-off/inert). Remaining work
+is: the third seed path in factual.rs + unit tests (AC-1/AC-2) + the
+`ENGRAM_BENCH_TEMPORAL_RESERVATION` wire + conv-26/conv-44 A/B (AC-3..5).
+Note the q0 end-to-end flip also needs ISS-206 (date legibility to the
+generator); ISS-205 alone proves the ranking half (gold reaches top-K).

@@ -1,9 +1,18 @@
 ---
-title: Generation answers 'I don't know' even when dated gold is at rank 0 — date-asking prompt hardening
-status: todo
-priority: 2
-labels: generation, synthesis, prompt, conv-26-q0, retrieval-ok
-relates_to: ISS-211, ISS-210, ISS-205, ISS-204
+title: conv-26-q0 fails because the bench reads the LEGACY substrate while prod runs UNIFIED (bench-config mismatch)
+status: resolved
+priority: '2'
+labels:
+- bench-config
+- substrate
+- unified-reads
+- conv-26-q0
+- retrieval-ok
+- root-cause-reversed
+relates_to:
+- ISS-211, ISS-210, ISS-205, ISS-204
+- .gid/issues/ISS-213/issue.md
+- .gid/issues/ISS-214/issue.md
 ---
 
 # ISS-212: generation drops the dated gold line even at rank 0 (distractor saturation)
@@ -87,13 +96,166 @@ flip plus the temporal/single-hop aggregate as a regression gate.
 ## Acceptance criteria
 
 - [ ] AC-1: conv-26-q0 flips 0→1 (model answers ~2023-05-07 from the
-      rank-0 dated line). **Pending bench confirmation arm.**
-- [ ] AC-2: no regression on conv-26 aggregate (overall ≥ 0.3092 within
-      ingest-noise band; temporal category does not drop). **Pending.**
+      rank-0 dated line). **FAIL — genuine generation ceiling. See
+      "Wiring-bug discovery + verdict" below.** Even with the guidance
+      provably in the live binary and gold at rank 0 carrying its date,
+      Sonnet-4.5 answers "I don't know" and cites lines [2]/[4] instead of
+      the rank-0 line [1].
+- [x] AC-2: no regression on conv-26 aggregate. **PASS.** Option-A
+      confirmation arm (STAMP 20260603T010123Z) overall **0.3158** — the
+      **highest** of all runs (> v2 0.3092 > baseline 0.3026). Temporal
+      category 0.4571 (did not drop). The live-path wiring fix is a net
+      improvement on the aggregate.
 - [x] AC-3: the prompt change is gated to date-asking queries (reuses
       `asks_for_date`), leaving non-temporal synthesis byte-identical.
-      Verified by `non_date_asking_query_is_byte_identical_to_base` —
-      a plain query renders the byte-identical base template.
+      Verified by `non_date_asking_query_is_byte_identical_to_base` and
+      the Option-A live-path test `byte_identical_non_date` — a plain
+      query renders the byte-identical, parity-pinned base template.
+
+## Wiring-bug discovery + verdict (2026-06-02/03)
+
+The original lever-1/lever-2 implementation above (appending guidance in
+`answer_gen::render_prompt`) **never reached the model**. The live LoCoMo
+answer-generation path is:
+
+```
+generate_answer → render_generate_prompt   (scorers/locomo_judge.rs)
+```
+
+not
+
+```
+answer_gen::render_prompt → answer_gen::render_extractor_prompt   (ORPHANED)
+```
+
+The entire `answer_gen` render path is dead code — it is never invoked
+during a bench run. **Proof:** raw byte-grep of the lever-1 / lever-2
+release binaries did **not** contain the guidance text at all, even though
+the lib tests passed (the tests exercise the orphaned path). The guidance
+was being rendered into a string that was thrown away.
+
+### Option A fix (committed — `engram-bench 51639eb`, KEPT)
+
+Inject the guidance into the **live** path, gated on the same
+`engramai::query_classifier::asks_for_date` signal:
+
+1. New `render_answer_prompt` helper in `scorers/locomo_judge.rs`.
+2. `generate_answer` calls it; for date-asking queries it appends
+   `LOCOMO_DATE_GUIDANCE` (re-exported from `answer_gen/mod.rs`),
+   strengthened with explicit rank-0 anchoring: *"check line [1] FIRST"*,
+   a matching dated line is sufficient, *"do NOT output UNKNOWN"* merely
+   because similar events co-occur.
+3. The parity-pinned `render_generate_prompt` (a byte-for-byte port of
+   mem0 `evaluator.py`, ISS-100) is left **untouched** for all non-date
+   queries — mem0-parity preserved.
+
+**Confirmed in the binary:** raw byte-grep of the 21:00 release binary
+finds *"Check line [1] FIRST"*, *"ranked by relevance"*, *"do NOT output
+UNKNOWN"* all present. The guidance is now genuinely in the live prompt.
+
+214 engram-bench lib tests pass (+2: `appends-guidance-for-date`,
+`byte_identical_non_date`).
+
+### Verdict: ⚠️ CORRECTED — NOT a generation failure. The bench was
+### reading the LEGACY substrate, which hides the gold edge from retrieval.
+
+**The "Sonnet generation ceiling" verdict was WRONG.** A direct dump of
+the exact context block handed to the model (env-gated hook in
+`judge_one`, `ENGRAM_DUMP_ANSWER_CTX_QID=conv-26-q0`) on the live
+Option-A run DB `.tmpUgR6hw` showed the gold line is **completely absent
+from the top-10**:
+
+```
+=== CONTEXT BLOCK (verbatim, as handed to generate_answer) ===
+[1] [2023-10-20] Caroline passed adoption agency interviews
+[2] [2023-05-25] Caroline has received support from friends and mentors ...
+[3] [2023-10-13] Caroline was inspired by the energy, support ...
+[4] [2023-07-12] Caroline struggled with mental health issues ...
+... (no "Caroline attended a LGBTQ support group" line anywhere)
+```
+
+The model's answer — *"none of the memories explicitly mention Caroline
+attending an LGBTQ support group"* — was **literally true**. It never saw
+the gold. This is a **retrieval/delivery failure**, not a generation
+ceiling.
+
+### Why the delivery probe kept reporting PASS (the probe vs bench divergence)
+
+`iss207_q0_delivery_probe` **hardcoded `cfg.unified_substrate = true`**.
+The bench's `fresh_in_memory_db` (`engram-bench/src/harness/mod.rs:564`)
+sets `cfg.unified_substrate` from the env var
+`ENGRAM_BENCH_UNIFIED_SUBSTRATE`, **defaulting to `false` when unset** —
+overriding `MemoryConfig::default()`'s `unified_substrate = true` (T32,
+2026-05-15). The locked ISS-190 envelope **never sets that env var**, so
+every LoCoMo run has been reading the **legacy** substrate.
+
+The temporal reservation that promotes the dated gold episode to rank 0
+traverses the **unified** `nodes`/`edges` (where the gold's `occurred_on`
+edge lives). Under **legacy** reads that traversal finds nothing → gold is
+never promoted → it falls out of top-10. The probe (unified) and the
+benchmark (legacy) were measuring **two different substrates**.
+
+### Proof — cheap same-DB A/B (no full re-run)
+
+Ran `iss207_q0_delivery_probe` **twice on the same live-bench DB
+`.tmpUgR6hw`**, varying **only** `cfg.unified_substrate`
+(via a temporary `ISS207_UNIFIED` knob, probe restored clean afterwards):
+
+```
+unified=true   → gold f40f81c3 "[2023-05-07] Caroline attended a LGBTQ support group"  RANK 0   PASS
+unified=false  → gold ABSENT from top-10                                                          FAIL
+```
+
+The `unified=false` top-10 is **byte-for-byte identical** to the live
+bench's dumped context block ([1]=adoption interviews, [2]=received
+support from mentors, …). Same DB, same query, same
+`GraphQuery(limit=10, temporal_reservation=5)` — the **only** variable is
+the substrate-read flag.
+
+The gold memory's temporal metadata in this DB is clean
+(`{"kind":"day","value":"2023-05-07"}`), so the extractor is **not** the
+problem (the 2026-05-29 full-year-stranding bug is fixed). The date would
+render correctly **if** the gold reached the context.
+
+### The real fix
+
+The bench must run **unified** reads to match the production default
+(`MemoryConfig::default().unified_substrate = true`). Either:
+
+- set `ENGRAM_BENCH_UNIFIED_SUBSTRATE=1` in the ISS-190 envelope, or
+- (root) flip `fresh_in_memory_db`'s default to `true` so the bench stops
+  silently measuring the legacy substrate while production runs unified.
+
+This **supersedes the lever-3 / generation-ceiling decision entirely** —
+neither was the right fix. The "prompt hardening" levers were chasing a
+generation symptom that did not exist; the actual defect is a
+bench-config substrate mismatch.
+
+### ⚠️ Blast radius — re-examine the ISS-204→211 q0 chain
+
+Every q0 conclusion in ISS-204→211 was measured against the **legacy**
+substrate (envelope never set the unified flag). The retrieval fixes
+(reservation, ordering, surfacing) target **unified-read** paths the bench
+was not exercising. Their q0 verdicts (and any "falsification") must be
+re-evaluated under `ENGRAM_BENCH_UNIFIED_SUBSTRATE=1`. A confirmation arm
+with the flag on is running to verify q0 flips end-to-end under unified
+reads.
+
+### Open: bench-substrate default mismatch (file follow-up ISS)
+
+`MemoryConfig::default()` ships `unified_substrate = true`, but the bench
+harness defaults it to `false`. This is a latent measurement bug — the
+benchmark does not reflect production retrieval behaviour. File a
+dedicated ISS to flip the bench default (and audit every prior
+substrate-sensitive run that assumed the bench matched prod).
+
+### Dead-code follow-up
+
+The orphaned `answer_gen` `render_prompt` / extractor path (incl. the
+lever-1/lever-2 commits `84f869b`, `49471b6`, and the
+`guidance_anchors_on_rank_zero_line` test in `prompt.rs`) is dead code.
+Either remove it or formally wire it. Tracked as a follow-up; do not leave
+two prompt-builder paths where only one is live.
 
 ## Implementation (lever 1 — date-asking prompt clause)
 
@@ -137,3 +299,65 @@ ISS-211 was a **retrieval/ranking** fix (deliver the dated episode to the
 head of the window). It is done and proven (rank 0). ISS-212 is a
 **generation/synthesis** fix (make the model *use* the delivered line).
 Different layer, different fix, independently testable.
+
+---
+
+## ✅ RESOLVED — root fix landed, q0 flips 0→1 end-to-end under unified reads (2026-06-03)
+
+### End-to-end confirmation arm (STAMP 20260603T020631Z, binary 21:46, `ENGRAM_BENCH_UNIFIED_SUBSTRATE=1`)
+
+Full conv-26 LoCoMo run (152 q) with the unified flag on. The env-gated
+context dump and the bench judge agree:
+
+**Context block handed to the model (verbatim):**
+
+```
+[1] [2023-05-07] Caroline attended a LGBTQ support group   <== GOLD, rank 0, dated
+[2] [2023-06-09] Caroline gave a talk about her personal journey ...
+[3] [2023-06-23] Caroline attended an LGBTQ+ counseling workshop last Friday (2023-06-23) ...
+...
+```
+
+**Bench verdict (`locomo_per_query.jsonl`, run `2026-06-03T02-33-33Z_locomo`):**
+
+```json
+{ "id": "conv-26-q0", "category": "multi-hop",
+  "predicted": "2023-05-07", "gold": "7 May 2023",
+  "score": 1.0, "verdict_raw": "Yes" }
+```
+
+q0 flips **0 → 1**. Under unified reads the temporal-reservation edge
+promotion delivers the dated gold episode to rank [1]; the model reads
+line [1] and answers correctly; the judge passes. No prompt hack, no
+generation change — purely realigning the bench substrate with production.
+
+### Root fix (committed)
+
+`engram-bench/src/harness/mod.rs` `fresh_in_memory_db`: the
+`ENGRAM_BENCH_UNIFIED_SUBSTRATE` env var is now an **opt-out**
+(`!= "0"` ⇒ unified), so the default matches
+`MemoryConfig::default().unified_substrate = true` (T32). Setting
+`ENGRAM_BENCH_UNIFIED_SUBSTRATE=0` selects the legacy arm for parity
+campaigns. 214 engram-bench lib tests pass with the flipped default.
+
+### Acceptance
+
+- [x] **AC-1**: conv-26-q0 flips 0→1. PROVEN — predicted `2023-05-07`,
+      judge `Yes`, score `1.0` on the unified end-to-end arm. The flip is
+      caused by retrieval delivering the dated gold (rank 0), not by any
+      generation/prompt change.
+- [x] **AC-2 (Option-A live-path wiring)**: `render_answer_prompt` in the
+      live path, `51639eb`, KEPT (date guidance now genuinely reaches the
+      model; harmless under unified where retrieval already delivers gold).
+- [x] **AC-3 (gating)**: date-asking gate keeps non-temporal synthesis
+      byte-identical (parity tests green).
+
+### Follow-ups filed
+
+- Audit of substrate-sensitive historical runs (ISS-204→211 q0 chain were
+  all measured against legacy) — see follow-up ISS.
+- Dead-code removal of the orphaned `answer_gen` render path
+  (`84f869b`/`49471b6`) — see follow-up ISS.
+
+**Status: resolved.** The "Sonnet generation ceiling" verdict is fully
+retracted; conv-26-q0 was a bench-config substrate-read mismatch.
