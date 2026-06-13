@@ -1255,3 +1255,38 @@ single-hop regression is not worth corpus-general validation per the K=30
 overfit lesson). lever-(b) needs a higher-quality set-synthesis (complete
 enumeration without item drop/noise) before re-test; the current impl is
 falsified for shipping as-is.
+
+## lever-(b) root-cause: input completeness is gated by entity fragmentation (2026-06-13)
+
+Traced the AC-3 conv-26 substrate (.tmppGptnQ) for why entity-set
+synthesis coin-flips on list questions. The prompt + present-filter are
+sound (5 anti-noise rules, hallucination guard). The defect is UPSTREAM:
+the set members come from `cand.objects` = a single entity's outgoing
+structural edges, but the entity graph is FRAGMENTED by unstripped
+possessive/prepositional phrases.
+
+Evidence — "Caroline" splits into 14+ separate entity nodes:
+`Caroline`, `Caroline's advice`, `Caroline's art`, `Caroline's city`,
+`Caroline's journey`, `Caroline's talk`, `Caroline's wellbeing`,
+`supporting Caroline`, ... (case-split is FIXED — caroline/Caroline merged
+per ISS-203 partial — but possessive/prepositional fragmentation remains).
+
+Impact on lever-(b):
+- Each `Caroline's X` fragment node has low out-degree → fails
+  `min_degree=6` → never becomes a set candidate.
+- The canonical `Caroline` node's object list is MISSING every fact that
+  hangs off a fragment node → synthesized sets are structurally incomplete
+  → item-drop ("beach, mountains, forest" loses an item) = the coin-flip
+  losses we measured.
+
+**Conclusion:** lever-(b) ceiling is locked by entity fragmentation. The
+prompt cannot recover members that never reached the subject entity. The
+fix is NOT a better synthesis prompt — it is ISS-203 canonicalization
+(strip possessive/prepositional wrappers to the head noun; merge fragments
+into the subject) which is BOTH the root of sub-direction C AND the
+prerequisite for lever-(b). Sequence: land ISS-203 possessive/prep
+stripping → re-run lever-(b) A/B → expect coin-flip to become a stable
+list-category gain once set inputs are complete.
+
+Relates: ISS-203 (canonicalization root fix), ISS-225 (recall ceiling
+umbrella, sub-direction C = entity-memory disambiguation).
