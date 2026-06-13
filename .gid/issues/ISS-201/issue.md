@@ -669,3 +669,27 @@ The bench already has the knobs (`ENGRAM_BENCH_K_SEED` + `ENGRAM_BENCH_BM25_POOL
 - Arm B: K_SEED=250 + BM25_POOL=250 + CE k_in=250 (pool matches CE appetite; CE finally sees recalled gold)
 
 Hypothesis: B lifts single-hop/multi-hop meaningfully (the 35pp ranking gap the recall probe exposed). If B flat → the gap is generation-side not ranking, pivot to answer-guidance. Tracking run STAMP added on launch.
+
+### k_seed A/B result (2026-06-13) — FALSIFIED, ranking is NOT the bottleneck
+
+Ran the independent A/B (runs `ISS201-KSEED-{A,B}-conv26-20260613T043653Z`):
+
+| arm | overall | single-hop | multi-hop | open-domain | temporal |
+|---|---|---|---|---|---|
+| A (k_seed=10, status quo) | 0.5132 | 0.375 | 0.3514 | 0.4615 | 0.6714 |
+| B (K_SEED=250 + BM25_POOL=250) | 0.5000 | 0.375 | 0.3514 | 0.4615 | 0.6429 |
+
+**Zero gain; overall −1.3pp (within ±2pp ingestion noise + temporal −2.9pp).** single-hop / multi-hop / open-domain byte-identical.
+
+**Correction to the starvation hypothesis above:** instrumenting Arm A's pool depth (`grep candidates= arm-A.log`) showed most queries already carry **200–300 candidates** — only 24 queries hit candidates=50. The factual plan's `memories_mentioning_entity` channel is NOT k_seed-limited; CE k_in=250 was already reranking a deep pool on most queries, NOT empty capacity. Widening k_seed to 250 therefore fed CE the same gold it already saw → no reorder change.
+
+### Bottleneck localized by elimination → GENERATION layer
+
+Three independent measurements now converge:
+1. Recall probe: gold reaches bi-encoder top-50 (multi-hop @50=0.81). Recall ✓ not the bottleneck.
+2. Pool depth: CE reranks 200–300 candidates; gold is in-pool. Pool ✓ not the bottleneck.
+3. k_seed A/B: widening the pool yields zero gain. Ranking ✓ not the bottleneck.
+
+The only remaining layer is **generation**: the model receives candidates containing the gold (top-200, post-CE likely top-10) but answers wrong/IDK because it won't perform secondary reasoning (date subtraction, count aggregation, inference). This is exactly thesis-layer 3 (generation over-caution).
+
+**Next lever = answer-guidance (prompt the model to reason from dated/counted evidence), NOT ranking, NOT recall, NOT embedder swap.** Do not re-tune k_seed — falsified here.
