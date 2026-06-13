@@ -1060,3 +1060,64 @@ conv-44's hard list questions.
   candidate set (scatter beyond any reasonable window) or were never extracted
   into memories. **The next real lever must target retrieval recall / extraction
   coverage of list members — not K sizing.**
+
+---
+
+## Member-level recall diagnostic — the deficit is TWO problems (2026-06-13)
+
+Ran the pure bi-encoder top-200 recall probe (`iss186_candidate_pool_probe`,
+bypasses fusion/CE/MMR) on conv-26 all-152q, then checked **each gold list
+member's rank** individually (the aggregate `gold_hits` matcher requires ALL
+members in one memory, which unfairly D-buckets list questions — member-level
+is the correct lens).
+
+### Aggregate recall ceiling (pure bi-encoder, top-200)
+
+- single-hop recall@200 = **0.312** (68% gold MISSED beyond top-200)
+- open-domain recall@200 = **0.000** (gold NEVER in top-200 for any of 13)
+- temporal recall@200 = 0.471 · multi-hop = 0.919 · **ALL = 0.507**
+
+Half of all gold evidence is absent from the top-200 **before any reranking**.
+This is a recall ceiling, not a ranking problem.
+
+### Member-level split of the LIST bucket
+
+**Problem 1 — RANK SCATTER (members present, spread beyond K=10):**
+- q15: pottery@58 camping@149 painting@15 swimming@69 — **4/4 present**
+- q18: beach@15 mountains@2 forest@6 — **3/3 present**
+- q24: running@1 pottery@74 — **2/2 present**
+- q38: 5/6 present, ranks 14-143
+
+These members ARE retrievable — just scattered far beyond K=10. A wider final-K
+or better fusion-diversity **does** help them (exactly why conv-26 K=30 flipped
+q15/q24/q34/q38/q39).
+
+**Problem 2 — EXTRACTION ABSENCE (member not in top-200 at all):**
+- q34: Mentoring program + school speech — **0/2 present**
+- q39: all four members — **0/4 present**
+- q19: dinosaurs absent · q48: bowls absent · q32: school speech absent
+- q23: "Nothing is Impossible" absent
+
+These members were never extracted into a memory (or embed too far from the
+query). **No K-widening recovers them.**
+
+### Why this explains the K=30 conv-26-vs-conv-44 divergence
+
+conv-26's flippable list questions are mostly **Problem 1** (scatter) → K=30
+caught them. conv-44's hard list zeros are mostly **Problem 2** (extraction
+absence) → K=30 was flat. Global K=30 isn't "overfit" so much as it only ever
+addresses scatter, and the two corpora have different scatter/absence ratios.
+
+### Revised lever map
+
+1. **Problem 1 (scatter)** — addressable by fusion-diversity (MMR is already
+   wired, λ-tunable) or a *list-intent* final-K bump. The earlier "targeted-K
+   not worth building" call stands ONLY because the gains are small and
+   corpus-dependent; if pursued, pair it with MMR so the wider window adds
+   diverse members rather than near-duplicates of rank-1.
+2. **Problem 2 (extraction absence)** — the bigger, more general frontier.
+   Members like "mentoring program", "school speech", "dinosaurs", "bowls" never
+   made it into a retrievable memory. Next step: trace the extractor on the
+   conv-26 episodes that *state* these facts — are multi-item / incidental
+   mentions being dropped or collapsed during extraction? This is a NEW issue
+   (extraction recall), distinct from ISS-201's retrieval-side scope.
