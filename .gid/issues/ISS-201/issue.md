@@ -1,12 +1,24 @@
 ---
-title: "conv-26 LoCoMo failure decomposition: 3 distinct layers (retrieval short-circuit / generation over-caution / judge wobble), NOT a single bottleneck"
+title: 'conv-26 LoCoMo failure decomposition: 3 distinct layers (retrieval short-circuit / generation over-caution / judge wobble), NOT a single bottleneck'
 status: open
 priority: P1
 severity: major
-labels: [v04-unified-substrate, locomo, diagnosis, retrieval, generation]
+labels:
+- v04-unified-substrate
+- locomo
+- diagnosis
+- retrieval
+- generation
 feature: v04-unified-substrate
 created: 2026-05-31
-relates_to: [ISS-198, ISS-186, ISS-149, ISS-161, ISS-179, ISS-188]
+relates_to:
+- ISS-198
+- ISS-186
+- ISS-149
+- ISS-161
+- ISS-179
+- ISS-188
+- .gid/issues/ISS-225/issue.md
 ---
 
 # Summary

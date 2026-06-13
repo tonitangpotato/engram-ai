@@ -15,6 +15,7 @@ relates_to:
 - ISS-140
 - engram:ISS-142
 - engram:ISS-143
+- .gid/issues/ISS-225/issue.md
 filed: 2026-05-23
 filed_by: rustclaw
 depends_on: .gid/issues/ISS-140/issue.md
