@@ -815,3 +815,49 @@ This is exactly the MMR λ=0.5 trap — a knob that looks like the biggest lever
 **Decision — PIVOT to lever (b) aggregate-memory extraction.** A window widening cannot solve item scatter that exceeds the window; the robust fix is to make the *set* a single high-ranking candidate at ingestion/consolidation time (synthesize "person's hobbies: X, Y, Z" memories), so list answers retrieve as one unit regardless of where individual mentions scatter. This also avoids the per-query generator context-cost inflation that global K=30 would impose on the ~80% non-list queries.
 
 A *targeted* enumeration-intent detector (widen K only for list questions) is NOT worth building given conv-44 shows the lift doesn't even hold for lists on a second corpus — the scatter-beyond-window failure mode is what kills it, and a targeted K=30 would hit the same wall. Lever (b) is the next concrete step; lever (c) interrogative-turn filter remains a cheap parallel cleanup.
+
+---
+
+## lever-(b) DESIGN: entity-centric aggregate-memory synthesis (2026-06-13)
+
+### Problem this fixes
+List/set questions ("what are X's hobbies/pets/instruments") fail because the answer items scatter across retrieval ranks and never co-locate in top-K. conv-44 proved a window-widening (global K) fix is a per-corpus overfit. The robust fix: make each *set* a single high-ranking candidate at consolidation time, so a list answer retrieves as ONE memory.
+
+### Substrate reality (probed on conv-44 Arm B substrate, 2026-06-13)
+The enumerable sets EXIST in the graph but are NOT separable by deterministic grouping:
+- Central person "Audrey" = 528 outgoing structural edges. Predicate dist: `related_to` 216, `uses` 131, `occurred_on` 93, `leads_to` 33, `depends_on` 32, `part_of` 14.
+- The pet-set {Pepper, Precious, Panda} AND the hobby-set {hiking, bird-watching, nature} BOTH live inside the single flat `related_to` bag of 216 targets — interleaved with pure noise ("photo", "girlfriend", "apartment", "making memories", "furry friend").
+- Canonical predicate vocab (IsA/PartOf/WorksAt/Uses/RelatedTo/OccurredOn/...) has NO fine-grained relations (`plays_instrument`, `has_pet`, `has_hobby`). Across the whole corpus `related_to` is 494 of all structural edges — the dominant fallback.
+
+**Therefore a naive `GROUP BY (subject, predicate)` produces one giant `related_to` blob per person, not clean answerable sets.** Aggregation MUST be an LLM clustering pass, not SQL.
+
+### Why the existing synthesis subsystem can't be reused as-is
+`synthesis/engine.rs` clusters by *embedding-graph Infomap* (topic similarity) and `synthesis/insight.rs` builds prompts that explicitly demand a "NEW observation / pattern / rule, NOT a summary" and forbid enumeration. That is the opposite of what a set-memory needs (exhaustive enumeration of one attribute of one entity). Reusing the cluster→LLM plumbing is fine; the *clustering key* and the *prompt* must both change.
+
+### Design
+
+**Clustering key = subject entity (not embedding topic).**
+1. New consolidation sub-pass `synthesize_entity_sets` (runs inside `sleep_cycle` / `consolidate`, after dirty-cluster synthesis).
+2. Candidate selection: pick entity nodes whose outgoing structural-edge count ≥ threshold (e.g. ≥ 6) AND that have ≥ N (e.g. ≥ 3) distinct object targets — these are the entities that *could* answer a list question. Skip low-degree entities (no set to form).
+3. For each candidate entity: gather all `(predicate, object_text, source_memory_id)` outgoing edges (cap at a budget, e.g. top 60 by edge weight/recency to bound the prompt).
+4. **LLM bucketing call** (Haiku): given entity name + the flat object list, return JSON of typed attribute-sets, e.g. `{"pets":["Pepper","Precious","Panda"], "hobbies":["hiking","bird-watching"], ...}`, dropping noise/non-set items. The prompt forces: only group items that are genuinely co-members of one attribute; discard relational/event/possessive fragments; do not invent items not present.
+5. For each returned set with ≥ 2 members, emit (or UPDATE) one **set-memory**: content = canonical surface form ("Audrey's pets: Pepper, Precious, Panda"), `memory_type=Factual`, high importance, provenance edges to every contributing source_memory_id, and a `set_memory` marker in attributes so it is idempotently re-synthesizable (UPDATE not duplicate on re-run).
+
+**Idempotency / drift:** key the set-memory on `(entity_id, attribute_label)`. On re-consolidation, re-bucket and diff: add new members, keep existing, mark removed only if the source edge was invalidated. Mirrors the existing insight `clusters_auto_updated` path.
+
+**Retrieval impact:** set-memory is a normal memory, so it enters the same FTS + vector pools. A list question ("what are Audrey's pets") will embed close to "Audrey's pets: ..." and retrieve the WHOLE set at rank ~0 — solving the co-location problem at the source instead of fighting it with K.
+
+### A/B plan (must cross-validate, per the K=30 lesson)
+- Flag: `ENGRAM_BENCH_ENTITY_SETS` (default off) gating `synthesize_entity_sets`.
+- Arm A = off, Arm B = on. Same LEVER2 envelope.
+- Run BOTH conv-26 AND conv-44 before any ship decision (the K=30 trap: conv-26-only looked great then died on conv-44).
+- Primary signal = per-bucket flip on the same LIST id sets already classified (conv-26: q15,18,19,23,24,32,34,38,39,47,48,51,52,56,60,61,65,66,70,78; conv-44: q2,3,9,12,21,23,29,31,35,36,41,51,54). Guard = ATOMIC ids must not regress (a wrong set-memory could pollute atomic retrieval).
+- Ship rule: LIST net-positive on BOTH corpora AND ATOMIC no-regress on BOTH → ship. Otherwise iterate the bucketing prompt or abandon.
+
+### Open risks
+- **Noise leakage:** if the LLM buckets "girlfriend"/"apartment" into a spurious set, the set-memory becomes a confident distractor that could cost atomic questions (the q48-style regression seen with K=30). The prompt's discard-rule and the ATOMIC guard are the defense; watch the guard closely.
+- **Entity fragmentation (ISS-203):** "Caroline" vs "caroline" vs "Caroline's art" split the edges across nodes, so a set may be incomplete. Lever-(b) benefits from but does not require ISS-203 canonicalization; note the interaction.
+- **Cost:** one extra Haiku call per high-degree entity per consolidation. Bounded by the degree threshold (only ~handful of central entities per conversation).
+
+### Next concrete step
+Implement `synthesize_entity_sets` behind the flag + the bucketing prompt, then run the conv-26 + conv-44 A/B. Do NOT ship on a single corpus.
