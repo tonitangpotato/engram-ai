@@ -649,3 +649,23 @@ The original premise ("memory recall hit-rate <50%") is **false**. The J-score d
 3. **Generation over-caution** — facts present in candidates (marriage date, beach mentions), model refuses to compute "date − date = 5 years" / "multiple mentions → once or twice a year", answers IDK. → ISS-201 answer-guidance track.
 
 **Retrieval (bi-encoder recall) is not the bottleneck and the embedder does not need replacing.** Next real levers = ranking (CE) + generation (answer-from-evidence prompting), per the Step-2 autopsy. Probe artifacts: `/tmp/recall_probe/` (jsonl + analyse.py).
+
+---
+
+## Follow-up lever (2026-06-13) — k_seed starvation: CE k_in=250 has been running on a 10-candidate pool
+
+The recall probe above proved gold reaches bi-encoder top-50 (multi-hop @50=0.81) but final answers miss. Traced the pipeline to find why CE can't fix it:
+
+- **`orchestrator.rs:1455`**: `with_k_seed(query.k_seed_override.unwrap_or(query.limit))` — the fusion seed pool defaults to `query.limit` (=K=10), NOT the budget.rs default of 10-per-channel. Only widened if `k_seed_override` is set.
+- **`cross_encoder.rs:272`**: CE reranks `candidates[..k_in]`. LEVER2 sets `k_in=250`.
+- **But no LEVER2 / ISS-223 run ever set `ENGRAM_BENCH_K_SEED`** → k_seed stayed = limit = 10 → fusion fed CE only ~10 candidates → **CE's k_in=250 was empty capacity. CE was reshuffling the 10 gold-poor candidates fusion already picked, never seeing the top-11..50 gold the bi-encoder recalled.**
+
+This is exactly what `api.rs:203` warns ("k_seed=limit too narrow to surface specific-fact evidence episodes, widen k_seed") and what ISS-159's residual ("CE can't save gold not in the fusion pool") pointed at — now root-caused with hard recall data.
+
+The bench already has the knobs (`ENGRAM_BENCH_K_SEED` + `ENGRAM_BENCH_BM25_POOL`, locomo.rs:581/592 — note both must lift together). They were simply never used alongside CE.
+
+**Experiment (independent arms, pool-level change so same-DB A/B not applicable):**
+- Arm A: LEVER2 status quo (k_seed=10, CE k_in=250 = empty capacity)
+- Arm B: K_SEED=250 + BM25_POOL=250 + CE k_in=250 (pool matches CE appetite; CE finally sees recalled gold)
+
+Hypothesis: B lifts single-hop/multi-hop meaningfully (the 35pp ranking gap the recall probe exposed). If B flat → the gap is generation-side not ranking, pivot to answer-guidance. Tracking run STAMP added on launch.
