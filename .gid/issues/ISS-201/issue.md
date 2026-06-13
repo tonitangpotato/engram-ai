@@ -871,3 +871,78 @@ Confirmed the bench DOES build the full graph before queries, so set-memories ca
 - **emit pattern to mirror:** the existing insight path in `synthesis/engine.rs` (transaction boundary, provenance edges, `clusters_auto_updated` idempotent-update logic) — reuse the storage/provenance plumbing, replace the clustering key (entity, not Infomap) and the prompt (enumerate, not abstract).
 
 ISS-106 cautionary note carried in locomo.rs already documents WHY a naive embedding-topic compile regressed; lever-(b)'s entity-keyed clustering is the deliberate avoidance of that failure mode.
+
+---
+
+## lever-(b) FALSIFIED on conv-26 (2026-06-13)
+
+Implemented (engram `3570c119`, engram-bench `9147e13`) and A/B'd on conv-26.
+Run `ISS201-ESET-{A,B}-conv26-20260613T091147Z`, LEVER2 envelope, only
+`ENGRAM_BENCH_ENTITY_SETS` toggled.
+
+**Synthesis fired cleanly:** `considered=20 bucketed=20 written=22 updated=0
+llm_calls=20 errors=0` — 20 high-degree entities bucketed by Haiku with zero
+parse/LLM errors, 22 set-memories written to the pool. The mechanism works.
+
+**But the verdict is negative on the primary signal:**
+
+| metric | A (off) | B (on) | Δ |
+|---|---|---|---|
+| overall | 0.5066 | 0.5197 | +1.3pp (within ±2pp re-ingest noise) |
+| single-hop | 0.4062 | 0.3125 | **−9.4pp** |
+| multi-hop | 0.3514 | 0.3784 | +2.7pp |
+| temporal | 0.6286 | 0.700 | +7.1pp |
+| **LIST(20)** | A_won=9 | B_won=6 | **net −3** |
+| ATOMIC(10) | A_won=3 | B_won=3 | net 0 |
+
+LIST gains: q51. LIST losses: q18, q19, q24, q52. **Ship rule (LIST net>0)
+FAILS.** conv-44 NOT launched — falsified on its home corpus.
+
+### Root cause: the set-memory is a LOSSY, HIGH-RANKING DISTRACTOR
+
+The hypothesis was "items scatter, never co-locate, so synthesize one complete
+memory." The opposite happened. Per-query autopsy of the 4 LIST losses (all the
+same pattern):
+
+- **q52 (Melanie's pets, gold "Oliver, Luna, Bailey" — the canonical lever-(b)
+  target):** A enumerated all three from scattered fact-memories ("Luna (dog),
+  Oliver (cat), Bailey (cat)") → correct. B answered "two cats Oliver and
+  Bailey" → **dropped Luna**, wrong. The synthesized pets-set bucketed only the
+  cats (mis-typed / lost a member), ranked high, and the generator anchored on
+  it INSTEAD of enumerating from the raw facts.
+- **q18 (camping spots, gold "beach, mountains, forest"):** A got all three; B
+  dropped "beach".
+- **q24 (destress, gold "Running, pottery"):** A listed 5 incl. both; B
+  narrowed and the judge marked it 0.
+- **q19 (kids' likes, gold "dinosaurs, nature"):** both verbose, B's bucket
+  re-shaped the list away from the gold tokens.
+
+**The individual fact-memories were already retrieving well enough to
+enumerate.** The set-memory did not ADD the missing item — it REPLACED the rich
+scattered evidence with a lossy bucket and then crowded out the raw facts (high
+rank as a single dense candidate). The LLM-bucketing pass is itself lossy
+(member-dropping, mis-typing two-cats-vs-three-pets) and becomes a confident
+distractor — exactly the q48-style failure mode the ATOMIC guard was watching
+for, but it landed on LIST instead.
+
+### Decision
+
+- **lever-(b) abandoned for retrieval/LoCoMo.** The premise (scatter beyond
+  top-K) does not hold on conv-26 the way the single-hop autopsy implied — the
+  facts ARE in top-K; the deficit is generation enumeration-completeness, not
+  retrieval co-location. A synthesized set can only match or under-perform the
+  raw enumeration, and in practice under-performs because bucketing is lossy.
+- **Code kept inert** (flag default off, byte-identical arm A) — the storage
+  helpers + module are sound and unit/round-trip tested; no revert needed.
+- **Real bug fixed in passing:** `upsert_set_memory`'s FTS refresh used the
+  FTS5 `('delete', rowid, '')` special command (requires exact prior content,
+  else leaves the row → same-rowid reinsert collides 1555). Now uses the
+  canonical `DELETE ... WHERE rowid` idiom. Worth keeping regardless.
+- **Pivot:** the consistent signal across BOTH lever-(a) (K=30) and lever-(b) is
+  that LIST/enumeration answers are **generation-completeness** limited, not
+  retrieval-limited — A's verbose multi-item answers beat B's narrowed ones.
+  Next lever = generation-side: prompt the answerer to enumerate ALL matching
+  items from the evidence (anti-narrowing guidance), reusing the
+  `ENGRAM_BENCH_ANSWER_GUIDANCE` same-pool A/B harness. This is cheap (no
+  re-ingest, judge-twice on one pool) and directly targets the observed loss
+  mode (B dropping members the evidence contained).
