@@ -1121,3 +1121,50 @@ addresses scatter, and the two corpora have different scatter/absence ratios.
    conv-26 episodes that *state* these facts — are multi-item / incidental
    mentions being dropped or collapsed during extraction? This is a NEW issue
    (extraction recall), distinct from ISS-201's retrieval-side scope.
+
+---
+
+## Source-episode trace: most "extraction absence" is gold-grounding / phrasing, not extraction (2026-06-13)
+
+Traced the Problem-2 absent members back to the raw conv-26 episodes
+(`benchmarks/fixtures/locomo/.../conversations.jsonl`, 419 episodes). The
+"extraction absence" bucket is mostly **not** an extractor bug:
+
+- **q19** ("What do Melanie's kids like?", gold "dinosaurs, nature") — episode
+  97: *"They were stoked for the dinosaur exhibit! They love learning about
+  animals."* The token "dinosaur" exists, but it ranks **>200** because the
+  episode is a one-time **event** ("exhibit visit"), while the question asks for
+  a **preference**. Query↔document phrasing asymmetry, not extraction loss.
+- **q34** ("What events has Caroline participated in to help children?", gold
+  "Mentoring program, school speech") — **"school speech" appears 0× in all 419
+  episodes.** "mentor" appears 7× but only as people who *support* Caroline
+  ("support from friends and mentors", "my friends, family and mentors are my
+  rocks"). **No episode states Caroline ran a mentoring program or gave a school
+  speech.** The gold is essentially **unsupported by the conversation.**
+
+### Implication for the achievable ceiling
+
+A meaningful fraction of conv-26 single-hop/list "misses" are either
+**ungroundable** (gold not in corpus) or **recall-limited by event-vs-preference
+asymmetry**. The achievable J-score ceiling on conv-26 is **below 100%**, which
+partly explains the persistent ~0.50–0.53 plateau independent of ranking work.
+
+### Final lever map (closing this investigation thread)
+
+- ❌ Hybrid-pool widening — already done / by-design, no fix exists.
+- ❌ CE seed-pool deepening (KSEED) — flat, not the bottleneck.
+- ❌ Global K=30 — conv-26-only; only ever helps Problem-1 scatter.
+- ❌ Targeted list-intent K — premise (atomic-regression dodge) was bogus; only
+  helps scatter, and even then corpus-dependently.
+- ✅ **Problem-1 SCATTER** (members at ranks 15-149) — best addressed by
+  **MMR-diversity tuning** (λ already wired) so the existing window surfaces
+  *diverse* members instead of rank-1 near-dupes. Cheap, bounded, no new plumbing.
+- ✅ **Query↔document asymmetry** subset of Problem-2 — addressable by **query
+  expansion / HyDE** (event→preference bridging) — but ISS-141/HyDE was already
+  explored; revisit only as a query-layer concern.
+- ⛔ **Ungroundable gold** (q34 "school speech") — not fixable; it caps the
+  ceiling and should be excluded from any "list recall" target metric.
+
+**ISS-201 retrieval-side levers are exhausted.** Remaining upside is
+MMR-diversity for scatter + accepting a sub-1.0 grounded ceiling. Extraction
+recall is a separate concern only for the genuine event-vs-preference subset.
