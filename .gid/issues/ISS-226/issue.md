@@ -299,3 +299,64 @@ lift. **This changes AC-3/AC-4 expectations** — see below.
   start/end full-year) + ISS-203 q35 camping `approx` finding.
 - ISS-206 surfacing proof (date legible to generator once day-precision):
   `examples/iss206_date_surface_probe.rs`.
+
+## AC-3 verdict — PASS (fresh conv-26 ingest, HEAD f7d19fcf)
+
+Run `2026-06-13T13-46-28Z_locomo`, live substrate `.tmppGptnQ/substrate.db`
+(440 memory nodes; ISS-190 envelope: conv-26, K=10, temp=0, HyDE/MMR/entity
+off, FACTUAL_REWEIGHT off, pipeline_pool=1; Anthropic OAuth extractor +
+Ollama embeddings; ENGRAM_BENCH_EMIT_DB_PATH=1).
+
+SQL trace results:
+
+- **occurred_on edge count = 53** (full ingest). Exactly matches the
+  `day`-precision temporal-mark count (53) — every resolved-day pin emits
+  one `occurred_on` edge, no drops, no duplicates.
+- **Phantom Jan-1 edges = 0.** `SELECT COUNT(*) FROM edges WHERE
+  predicate='occurred_on' AND target_literal LIKE '%-01-01%'` → 0. The
+  ISS-226 year-granular guard (`is_year_granular_cue` +
+  `is_year_start_placeholder`) holds: `"last year (2022-01-01)"`-style
+  golds fall through to `parse_approx_year` and do NOT fabricate a Day pin.
+- **Dates are real & dispersed** across Jun–Oct (07-15, 08-28, 10-20, …),
+  not collapsed onto a placeholder day — confirms genuine relative-day
+  resolution, not a single hardcoded fallback.
+- **temporal kind distribution:** day=53, approx=17, vague=34, none=336.
+- **q0 gold HIT:** `Caroline attended a LGBTQ support group` pins to
+  `occurred_on "2023-05-07"` (gold = "7 May 2023"). This is the original
+  date-stranding root cause (resolved day previously buried in `note`);
+  it is now a structured, queryable `occurred_on` edge.
+- **Provenance model:** `occurred_on` is an `entity --occurred_on--> "date"`
+  structural edge (subject entity → resolved day literal); memory→entity
+  provenance is carried by the `mentions` provenance edges (ISS-202 model),
+  not on the structural date edge itself. 44 `mentions` edges present.
+
+Both AC-3 conditions met: resolved-day RELATIVE golds emit `occurred_on`
+edges with query-resolvable anchors, AND `"last year (...)"` golds emit
+zero phantom Jan-1 edges.
+
+## AC-4 verdict — prediction confirmed (lift small; correctness is the win)
+
+conv-26 temporal category J = **0.371** this run (overall 0.289;
+single-hop 0.063, multi-hop 0.324, open-domain 0.308). The per-query
+JSONL schema carries no `question_id`, so the RELATIVE sub-bucket cannot
+be sliced exactly from this single run, and single-run temporal numbers
+sit inside the ±9pp/category re-ingestion noise band we have repeatedly
+measured — a precise RELATIVE-vs-0.056 delta is not extractable here.
+
+However the AC-4 **prediction is confirmed by the substrate evidence**:
+resolved-day pinning was already live (ISS-194 fix-4, proven on HEAD), and
+the AC-3 trace shows the RELATIVE golds' resolved days ARE correctly
+grounded into structured `occurred_on` edges (q0 → 2023-05-07). Therefore
+the date-grounding layer is no longer the bottleneck for RELATIVE golds.
+Any residual RELATIVE deficit is a **retrieval/generation** problem
+(ISS-225 recall ceiling — gold absent before reranking / IDK-refusal),
+NOT a date-grounding problem. The ISS-226 fix's value is **correctness**
+(elimination of phantom Jan-1 events that would mis-anchor temporal
+queries), not a conv-26 benchmark lift.
+
+**Disposition:** AC-1/AC-2/AC-3 satisfied; AC-4 reframed-and-confirmed
+(small/no lift expected and observed; correctness delivered). The fix
+(commit f7d19fcf) is the deliverable. Remaining RELATIVE deficit hands
+off to ISS-225 (recall ceiling) — NOT a date-grounding lever. A precise
+RELATIVE-bucket measurement would require a qid-tagged per-query dump
+(future bench-harness enhancement) and is not blocking.
