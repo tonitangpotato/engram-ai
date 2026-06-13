@@ -4,8 +4,21 @@ title: 'Recall-ceiling umbrella: bi-encoder recall@200 ~0.51 is the true LoCoMo 
 status: open
 priority: P1
 severity: degradation
-labels: [retrieval, recall, extraction, grounding, locomo, umbrella]
-relates_to: [engram:ISS-201, engram:ISS-223, engram:ISS-141, engram:ISS-190, engram:ISS-191, engram:ISS-069]
+labels:
+- retrieval
+- recall
+- extraction
+- grounding
+- locomo
+- umbrella
+relates_to:
+- engram:ISS-201
+- engram:ISS-223
+- engram:ISS-141
+- engram:ISS-190
+- engram:ISS-191
+- engram:ISS-069
+- .gid/issues/ISS-226/issue.md
 filed: 2026-06-13
 filed_by: rustclaw
 ---
@@ -99,7 +112,18 @@ All three reduce to: **recall + grounding.** Not ranking.
 
 ## Sub-directions (each gets its own scoped issue once chosen)
 
-### (A) Date-grounding — pin resolved dates into memory text/structured fields
+### (A) Date-grounding — pin RELATIVE-date golds into day-precision → ISS-226 (FILED)
+> **Scoped + filed as ISS-226 (2026-06-13).** Investigation revealed the
+> date chain (ISS-190/191/204/205/206) is ALREADY landed: day-precision
+> dates become traversable `occurred_on` edges and surface to the
+> generator; q0 flips. The single unbuilt piece is the **RELATIVE-date
+> bucket** — ISS-204 AC-4 measured EXACT 0.588 vs RELATIVE 0.056
+> (53pp gap). RELATIVE golds never reach day-precision (resolved day
+> stranded in the `Approx` mark's `note` field, `start`/`end` collapse to
+> full-year), so ISS-204's producer emits no edge. ISS-226's fix: promote
+> the `note`-resolved day into day-precision `start`/`end` upstream of the
+> existing producer. First step is a forensic probe sizing the pinnable
+> denominator before any code or bench.
 - **Target:** the temporal date-stranding family (13/18 temporal-IDK
   failures where gold is not in top-200, plus conv-26-q0 / q106 / q118).
 - **Prior art:** ISS-190 (duration → year) and ISS-191 (structured
