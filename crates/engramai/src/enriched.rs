@@ -526,7 +526,20 @@ pub fn parse_temporal_mark(s: &str) -> TemporalMark {
     // here and fall through to `parse_approx_year`.
     if !has_fuzz_marker(trimmed) {
         if let Some(d) = first_embedded_day(trimmed) {
-            return TemporalMark::Day(d);
+            // ISS-226 guardrail — reject year-granular placeholder days.
+            //
+            // The reference-date preamble resolves a year-granular relative
+            // cue ("last year", "next year", "a year ago") to a synthetic
+            // Jan-1 stand-in, e.g. "last year (2022-01-01)". `first_embedded_day`
+            // would greedily pin that to `Day(2022-01-01)`, fabricating
+            // day-precision the extractor never resolved and polluting the
+            // `occurred_on` graph with phantom Jan-1 events. When the cue is
+            // year-granular AND the embedded day is a Jan-1 placeholder, fall
+            // through to `parse_approx_year` so it surfaces as a year-granular
+            // `Approx` interval instead.
+            if !(is_year_granular_cue(trimmed) && is_year_start_placeholder(d)) {
+                return TemporalMark::Day(d);
+            }
         }
     }
 
@@ -563,6 +576,32 @@ fn has_fuzz_marker(s: &str) -> bool {
         || lower.contains("about")
         || lower.contains("approximately")
         || lower.contains("circa")
+}
+
+/// ISS-226 — true when the relative cue is year-granular, meaning any
+/// embedded date is a synthetic stand-in for a bare year rather than a
+/// resolved calendar day. Matches the phrasings the reference-date preamble
+/// emits when it can only resolve to a year ("last year", "next year",
+/// "a year ago", "N years ago", "the year before"). Deliberately narrow:
+/// month/week/day cues ("last month", "this week", "yesterday") are NOT
+/// year-granular and their embedded resolved day is genuine.
+fn is_year_granular_cue(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("last year")
+        || lower.contains("next year")
+        || lower.contains("year ago")
+        || lower.contains("years ago")
+        || lower.contains("year before")
+        || lower.contains("year earlier")
+}
+
+/// ISS-226 — true when the date is a January-1 stand-in, the convention the
+/// preamble uses for a bare-year resolution (e.g. "2022" → 2022-01-01). Used
+/// together with [`is_year_granular_cue`] so a genuine event that really did
+/// happen on a January 1st (paired with a day/week/month cue) is unaffected.
+fn is_year_start_placeholder(d: NaiveDate) -> bool {
+    use chrono::Datelike;
+    d.month() == 1 && d.day() == 1
 }
 
 /// ISS-194 fix 4 — find the FIRST complete `YYYY-MM-DD` substring and return
@@ -1171,6 +1210,79 @@ mod tests {
         assert!(has_fuzz_marker("around 2020"));
         assert!(has_fuzz_marker("approximately 2020"));
         assert!(!has_fuzz_marker("yesterday (2023-05-07)"));
+    }
+
+    /// ISS-226 AC-1/AC-2 probe — the exact `temporal` strings the extractor
+    /// produced on conv-26 (read off a stored substrate). Documents which
+    /// resolve to day-precision (so ISS-204 emits an `occurred_on` edge) and
+    /// which must stay coarse. This is the empirical ground truth behind the
+    /// "vague-with-resolved-day" finding: a relative cue carrying a precise
+    /// resolved day pins to `Day`; a relative cue carrying only a year-
+    /// granular placeholder (e.g. "last year (2022-01-01)") must NOT be
+    /// promoted to a precise day it never actually resolved.
+    #[test]
+    fn iss226_conv26_relative_day_strings_pin_correctly() {
+        use TemporalMark::*;
+
+        // Resolved-day relatives → Day (these feed occurred_on edges).
+        for (input, y, m, d) in [
+            ("yesterday (2023-05-07)", 2023, 5, 7),
+            ("yesterday (2023-07-05)", 2023, 7, 5),
+            ("yesterday (2023-07-02)", 2023, 7, 2),
+            ("last week (2023-05-29)", 2023, 5, 29),
+            ("last week (2023-06-19)", 2023, 6, 19),
+            ("last week (2023-06-26)", 2023, 6, 26),
+            ("this week (2023-08-21)", 2023, 8, 21),
+            ("last week (2023-08-14)", 2023, 8, 14),
+        ] {
+            match parse_temporal_mark(input) {
+                Day(got) => assert_eq!(
+                    got,
+                    NaiveDate::from_ymd_opt(y, m, d).unwrap(),
+                    "{input:?} should pin to {y}-{m:02}-{d:02}"
+                ),
+                other => panic!("{input:?} expected Day, got {other:?}"),
+            }
+        }
+
+        // Multi-cue strings: the FIRST embedded resolved day wins (the lead
+        // event date), trailing duration/aspect notes do not block the pin.
+        for (input, y, m, d) in [
+            (
+                "last week (2023-05-29) (past/completed); three years ago (duration since transition start)",
+                2023,
+                5,
+                29,
+            ),
+            ("this month (2023-07-01), future/planned", 2023, 7, 1),
+            ("this week (2023-08-21), past/completed", 2023, 8, 21),
+            ("last week (2023-08-14) (created a self-portrait)", 2023, 8, 14),
+        ] {
+            match parse_temporal_mark(input) {
+                Day(got) => assert_eq!(
+                    got,
+                    NaiveDate::from_ymd_opt(y, m, d).unwrap(),
+                    "{input:?} lead day should win"
+                ),
+                other => panic!("{input:?} expected Day, got {other:?}"),
+            }
+        }
+
+        // GUARDRAIL: a year-granular placeholder day must NOT be promoted to
+        // a precise Day. "last year (2022-01-01)" is the LoCoMo cross-year
+        // bucket — the 2022-01-01 is a synthetic Jan-1 stand-in for a bare
+        // year, not a resolved calendar day. Pinning it to Day would
+        // fabricate day-precision the extractor never had and pollute the
+        // occurred_on graph with phantom Jan-1 events (ISS-226 scope fence).
+        match parse_temporal_mark("last year (2022-01-01)") {
+            Day(_) => panic!(
+                "year-granular placeholder 'last year (2022-01-01)' must NOT \
+                 pin to Day — it is a bare-year stand-in, not a resolved day"
+            ),
+            // Acceptable: Approx (year-granular interval) or Vague.
+            Approx { .. } | Vague(_) => {}
+            other => panic!("unexpected mark for placeholder: {other:?}"),
+        }
     }
 
     // -- serde round-trip --

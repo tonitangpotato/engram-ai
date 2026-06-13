@@ -214,6 +214,64 @@ not on any string that happens to match the date GLOB.
 
 - **AC-1** — ✅ DONE (verdict above). Pinnable denominator ≈ 25/31
   vague-with-resolved-day marks; gate cleared.
+
+## AC-2 VERDICT (2026-06-13) — scope narrowed by code-layer ground truth
+
+Implementing AC-2 required reading the live classification site
+(`enriched.rs::parse_temporal_mark`, the path `from_extracted` actually
+calls). Two corrections to the AC-1 framing emerged — recorded honestly:
+
+1. **The `.tmpC27eKq` substrate was STALE.** It shows `kind=vague` for
+   `"yesterday (2023-05-07)"`, but that DB predates the live HEAD parser.
+   **ISS-194 fix-4 (commit 9c30fe66, 2026-05-29) already pins embedded
+   resolved days to `Day`.** A direct unit test against the 8 resolved-day
+   relatives + 4 multi-cue strings from the probe confirms HEAD pins ALL
+   of them to `Day` correctly (test
+   `iss226_conv26_relative_day_strings_pin_correctly`). So the
+   resolved-day half of the lever was already shipped; the AC-1 "25
+   pinnable, lever wide open" conclusion was measuring a stale DB.
+
+2. **The genuine unfixed defect is the INVERSE — a guardrail leak.**
+   `first_embedded_day` greedily pins *any* embedded `YYYY-MM-DD`,
+   including the synthetic Jan-1 placeholders the preamble emits for
+   year-granular cues: `"last year (2022-01-01)"` was pinning to
+   `Day(2022-01-01)`. That **fabricates day-precision the extractor never
+   resolved** and would pollute the `occurred_on` graph with phantom Jan-1
+   events. This is the exact cross-year bucket (q1/q26/q49, gold="2022")
+   that ISS-226 fenced out of scope — and it was being mis-pinned.
+
+**Fix shipped:** added `is_year_granular_cue` + `is_year_start_placeholder`
+guards in `parse_temporal_mark`. When the cue is year-granular ("last
+year" / "next year" / "N years ago" / "year before/earlier") AND the
+embedded day is Jan-1, fall through to `parse_approx_year` → surfaces as a
+year-granular `Approx` interval instead of a phantom precise `Day`.
+Month/week/day cues ("last month", "this week", "yesterday") are
+untouched — their embedded resolved day is genuine. Tests: the ISS-226
+probe asserts both the correct pins AND the placeholder guard;
+`iss194_*` regression tests still pass; full lib **2179 passed, 0 failed**.
+
+**Net effect on ISS-226's original target:** the resolved-day RELATIVE
+golds (most of the 25) were ALREADY pinning to `Day` on HEAD, so the
+expected conv-26 RELATIVE-bucket lift from "promote vague→day" is largely
+already realized in any fresh-binary ingest. The remaining value of this
+fix is *correctness* (stop fabricating Jan-1 events), not a large J-score
+lift. **This changes AC-3/AC-4 expectations** — see below.
+
+- **AC-2** — ✅ DONE. `parse_temporal_mark` correctly pins resolved-day
+  relatives to `Day` (pre-existing, fix-4) and now correctly REFUSES to
+  pin year-granular Jan-1 placeholders (new guard). Unit tests cover both.
+
+- **AC-3** — DB-verify on a FRESH conv-26 ingest (current HEAD binary)
+  that resolved-day RELATIVE golds emit `occurred_on` edges with non-NULL
+  provenance, AND that `"last year (...)"` golds do NOT emit phantom Jan-1
+  `occurred_on` edges. (The stale-DB AC-1 probe cannot verify this — needs
+  a fresh ingest.)
+- **AC-4** — RELATIVE bucket on conv-26 vs the 0.056 baseline. **Revised
+  expectation:** because resolved-day pinning was already live, the lift
+  may be small; the primary success signal is AC-3 graph correctness +
+  no EXACT/non-temporal regression + conv-44 cross-val no-regression. A
+  large RELATIVE lift would actually indicate the 0.056 baseline was
+  measured on a pre-fix-4 binary (worth confirming).
 - **AC-2** — If the lever is confirmed: temporal-mark construction
   promotes a `note`-resolved day into day-precision `start`/`end`; unit
   test asserts a relative expression with a resolved day yields a
