@@ -1290,3 +1290,47 @@ list-category gain once set inputs are complete.
 
 Relates: ISS-203 (canonicalization root fix), ISS-225 (recall ceiling
 umbrella, sub-direction C = entity-memory disambiguation).
+
+## CORRECTION to the lever-(b) → ISS-203 dependency claim (2026-06-13)
+
+The preceding section proposed "land ISS-203 canonicalization → lever-(b)
+coin-flip becomes a stable gain." **This is wrong and is hereby corrected**
+after reading the resolved ISS-203 in full (it was already validated on
+conv-26 + conv-44, and REJECTED).
+
+ISS-203's de-fragmentation approach (V2 triple prompt: possessive/prep
+decomposition + entity merge) was DB-verified on two corpora to:
+1. produce ZERO `belongs_to`/`associated_with` edges (half the design inert),
+2. merge entities -21%, which RAISES per-entity edge density and CROWDS
+   date-bearing episodes out of top-K → multi-hop -8pp on BOTH conv-26 and
+   conv-44. V2 stays default OFF (rejected).
+
+So the dependency is NOT "lever-(b) needs ISS-203's merge." The honest
+cross-constraint is sharper:
+
+- lever-(b) set-synthesis input is incomplete BECAUSE facts hang off
+  `Caroline's X` fragment nodes (verified: fragments don't link back to the
+  canonical `Caroline`, never reach `min_degree`).
+- BUT the obvious fix (merge fragments into the canonical entity, ISS-203 V2)
+  is already falsified — it amplifies crowding and regresses multi-hop.
+
+Therefore lever-(b) and de-fragmentation are entangled in a TRADE-OFF, not a
+clean prerequisite chain: more entity consolidation → better set inputs but
+worse temporal/multi-hop crowding. Any future lever-(b) work must NOT assume
+ISS-203-style merging as a free prerequisite; it must either (a) source set
+members from the mention/provenance layer (graph_memory_entity_mentions /
+edges provenance) WITHOUT collapsing entity nodes, or (b) be paired with the
+ranking-layer date-reservation fix (the ISS-190/191/203-follow-up track) so
+the density increase doesn't crowd dated episodes.
+
+**Net standing of all ISS-201 retrieval+synthesis levers (2026-06-13):**
+- Ranking levers (K, MMR, CE, HyDE, entity-channel, factual-reweight): tried,
+  none clears ship gate (conv-26 overfit or marginal).
+- lever-(b) entity-set synthesis: directional-correct, falsified for ship as-is
+  (single-hop list net -3); input completeness blocked by entity fragmentation;
+  the de-frag fix (ISS-203) is itself rejected for crowding regression.
+- Conclusion: the list/aggregate deficit is a genuine multi-objective tension
+  (completeness vs crowding), not a single missing lever. Next real work is the
+  ranking-layer date-reservation fix that would let entity consolidation happen
+  WITHOUT crowding dated episodes — that unblocks BOTH V2 default-on AND a
+  retried lever-(b). That fix is the highest-leverage open item.
