@@ -722,3 +722,44 @@ Ran the same-DB A/B (`ENGRAM_BENCH_ANSWER_GUIDANCE_AB`, run `ISS201-GUIDANCE-AB-
 | generation | answer-guidance A/B | +0.66pp, within noise — marginal |
 
 **The residual deficit concentrates in SINGLE-HOP, which is floored at ~3–6% and is immune to recall-widening, ranking-widening, and prompting.** This points the next investigation at the single-hop **extraction surface-form**: the gold fact is recalled (in the candidate pool) but stored in a form the generator cannot map to the question's surface (e.g. dated event with date stranded out of text, possessive/phrase-entity fragmentation, atomic fact buried in a multi-clause summary). That is an *extraction/representation* problem, not retrieval, ranking, or generation-prompting. Candidate next levers: (a) atomic single-fact extraction (one fact per memory), (b) date-into-text pinning (already partly done ISS-190/191/204 — verify it reaches single-hop golds), (c) entity-mention canonicalization (ISS-203) so single-hop anchor resolution lands on the right node.
+
+### single-hop extraction autopsy (2026-06-13) — DECISIVE REFRAME: it's a LIST problem
+
+Ran an evidence-grounded autopsy on the 30 floored single-hop misses (arm A of run `ISS201-GUIDANCE-AB-conv26-20260610T190847Z`), joining fixture questions+gold+evidence with the per-query `retrieved_candidates` and a per-item top-200 recall probe. Scripts archived to `artifacts/`.
+
+**Bucket tally (n=30):**
+
+| bucket | n | meaning |
+|---|---|---|
+| LIST-MISS | 11 | gold is a multi-item set; <50% of items in the K=10 pool |
+| LIST-PARTIAL | 9 | gold is a set; ≥50% items in pool but incomplete → gen undercounts |
+| ATOMIC-MISS | 7 | genuine single deep-fact, absent from pool |
+| ATOMIC-INPOOL | 2 | fact present, gen/judge surface mismatch |
+| DATE-STRAND | 1 | date stripped from text |
+
+**Headline: 20/30 (67%) are LIST/SET questions** ("what hobbies", "which pets", "what instruments", "which books"). The "single-hop" label is a misnomer — these require gathering scattered items across many memories into one set.
+
+**Root cause (verified via per-item top-200 recall probe):** list items are SCATTERED across retrieval ranks, not co-located. Examples:
+
+- q18 (camping spots = beach, mountains, forest): mountain @rank 2, forest @6, **beach @15** → beach falls outside K=10 → incomplete list → judge=0
+- q60 (instruments = clarinet, violin): clarinet @3, **violin @77**
+- q15 (activities = pottery, camping, painting, swimming): camping @149, swimming @69
+- q66 (marshmallow @12, stories @67)
+- q52 (pets Oliver/Luna/Bailey): all @≤3 — but the *atomic memory* doesn't exist; "Oliver" only appears as an aside inside a cat-anecdote memory, never as a clean "Melanie's pets are Oliver, Luna, Bailey"
+
+**Every list item exists in the source conversation** (hand-verified against episodes) — this is NOT a storage drop. It is a **co-location + window** problem: to score a list answer the generator needs ALL items co-present in top-K=10, but they rank at 2/6/15/77/149 so only a partial set fits.
+
+**Two compounding defects:**
+1. **No atomic aggregate memory.** Extraction never consolidates "Melanie camped at: beach, mountains, forest" into a single memory; each item lives in its own episode ranking independently.
+2. **K=10 window too small to hold a scattered set.**
+
+Secondary (smaller): ~6% of extracted memories are pure interrogative turns ("X asked Y what…") carrying no answerable fact, +~11% backchannel/dialogue noise polluting the pool.
+
+**ATOMIC-MISS (7)** are the only true deep-fact misses: q3 (adoption agencies), q4 (Transgender woman), q7 (Single), q11 (Sweden), q71 (Becoming Nicole), q75 (3 kids) — single facts stated once, not surfacing.
+
+**Why the earlier elimination chain masked this:** recall was measured as whole-pool bag-of-words hit-rate, which counts each list item as "recalled" because each is individually in top-200. But list answers need the items JOINTLY in top-10 — they never co-occur. recall✓/ranking✓ were both true *for atomic queries* and false *for list queries*, which the aggregate metric averaged away.
+
+**Next levers (data-pointed):**
+- **(a) list-aware retrieval** — detect enumeration/list intent ("what/which … s") → widen K dramatically OR do per-item sub-retrieval then union the results. Cheapest test.
+- **(b) aggregate-memory extraction** — synthesize set memories ("person's hobbies: X, Y, Z") during consolidation so the whole set is one high-ranking candidate.
+- **(c) interrogative-turn filter** — stop the extractor emitting question-only/backchannel memories that crowd the K=10 window.
